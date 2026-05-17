@@ -74,12 +74,6 @@ Hermes ACP dispatch.
 - `skills/trading-agents-workflow/` - Codex skill instructions for this integration.
 - `openclaw.plugin.json`, `package.json`, `index.js`, `src/`, `bin/` - OpenClaw runtime plugin source.
 
-## Human Gate Action Plans
-
-Meeting conclusions that need Flashcat confirmation must not be submitted as plain summaries. `cat_claw` must attach an action plan with the recommended path, alternatives, risk boundary, post-approval dispatch chain, artifact targets, acceptance criteria, next Human Gate trigger, and stop condition. Use `templates/human-gate-action-plan.md` for this handoff.
-
-After approval, `main` turns the decision into the next workflow dispatches and `cat_claw` keeps tracking receipts until Flashcat accepts the outcome, asks for another iteration, blocks the work, or stops the workflow.
-
 ## Operating Rules
 
 - Preserve ISO timestamps on governance records and receipts.
