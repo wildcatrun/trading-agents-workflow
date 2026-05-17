@@ -32,6 +32,27 @@ Cat-claw `cat_claw` is the meeting-system companion agent and secretariat. It li
 
 Other agents contribute within their professional boundaries. They do not replace `main` as chair and do not replace `cat_claw` as the minutes, conclusion, or Human Gate owner.
 
+## Continuous Workflow Contract
+
+A meeting conclusion is not the end of a workflow. If a conclusion needs Flashcat confirmation, `cat_claw` must submit an action plan together with the Human Gate request. A valid request includes the objective, recommended path, alternatives, risk boundary, post-approval dispatch chain, owners, artifact paths, acceptance criteria, next Human Gate trigger, and stop condition.
+
+The expected state progression is:
+
+```text
+discussion_started
+-> conclusion_drafted_by_main
+-> minutes_and_action_plan_required_from_cat_claw
+-> human_gate_pending | auto_dispatch_allowed
+-> dispatching
+-> receipts_collecting
+-> cat_claw_summary_submitted
+-> flashcat_accepts | continue_requested | blocked | stopped
+```
+
+After Flashcat approves a Human Gate item, `main` should convert the decision into the next workflow dispatches and keep moving. `cat_claw` continues tracking receipts, gaps, next confirmation points, and final acceptance. Flashcat should not have to decompose the work step by step; Flashcat intervenes for direction confirmation, high-risk authorization, and final acceptance.
+
+Low-risk research, note taking, template work, data checks, and engineering support should continue automatically inside the granted boundary. Trading actions, production deployment, secrets, model routing, Gateway restarts, database migrations, and other high-impact work must return to Human Gate.
+
 ## Communication Boundary
 
 Local Mac Codex is Flashcat's control panel and outbound operator surface. It can help Flashcat send instructions, queries, reviews, and maintenance requests into the cat system through OpenClaw Gateway and this workflow plugin.
