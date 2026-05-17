@@ -22,6 +22,7 @@ v0.6 upgrades the old meeting-only plugin into a unified trading workflow substr
 - Telegram live outbox and Human Gate request loop for Flashcat confirmation
 - Stability governance fields for durable dispatches, trace correlation, idempotency, retry taxonomy, readiness snapshots, side-effect ledger, runtime run records, and incident state documents
 - Workflow task pool for long-running initiatives, task dependencies, expected artifacts, and supervisor-style advance decisions
+- Workflow checkpoints for session overflow recovery and compact next-action handoff
 
 This is not an independent agent runtime, not a Gateway replacement, not a Hermes runtime, and not a live trading executor. It does not call trading_core or Telegram directly; it records reviewed intents, dispatch queues, transcripts, Telegram outbox entries, and later records trading_core receipts.
 
@@ -127,6 +128,7 @@ SQLite stores control-plane state and queryable indexes:
 - `workflow_runs`
 - `workflow_tasks`
 - `workflow_task_dependencies`
+- `workflow_checkpoints`
 - `artifact_index`
 - `protocol_objects`
 - `executable_trade_intents`
@@ -229,6 +231,9 @@ Workflow and tracking:
 - `workflow.task.list`
 - `workflow.tasks`
 - `workflow.advance`
+- `workflow.checkpoint`
+- `workflow.context_checkpoint`
+- `context.checkpoint`
 - `workflow.readiness`
 - `workflow.topology`
 - `protocol.record`
@@ -274,6 +279,20 @@ Use `workflow.advance` after a discussion, dispatch batch, receipt collection cy
 - `completed`: the run meets its stated acceptance or explicit completion condition.
 
 With `autoDispatch=true`, `workflow.advance` records `meeting.dispatch` rows for ready tasks and moves them to `in_progress`. It does not bypass Gateway, runtime registry, receipt tracking, or Human Gate review.
+
+## Workflow Checkpoints
+
+Use `workflow.checkpoint` whenever a workflow phase ends, context approaches the compaction threshold, a Human Gate package is submitted, or a new session needs to continue prior work. The checkpoint is the durable recovery package for cat-brain `main`; it keeps the session small by storing only the minimum resumable state plus artifact references.
+
+Checkpoint contents:
+
+- objective, acceptance criteria, stop condition, status, phase, and decision
+- active task ids, blocked task ids, task counts, and pending Human Gate count
+- artifact references from `artifact_index` and completed task artifacts
+- next action candidates
+- context budget policy, defaulting to restore from checkpoint plus referenced artifacts only
+
+The checkpoint writes JSON and Markdown under `workflows/checkpoints/`, stores a queryable row in `workflow_checkpoints`, and indexes the Markdown file as a `workflow_checkpoint` artifact.
 
 ### Telegram Live Targets
 
@@ -352,6 +371,7 @@ node bin/cat-meeting-governance.mjs cat_claw-audit --root "$ROOT"
 node bin/cat-meeting-governance.mjs workflow-run --workflow demo-initiative --objective "Improve long-term stock tracking" --acceptance-criteria "next action package exists" --stop-condition "Flashcat accepts or blocks" --phase planning --root "$ROOT"
 node bin/cat-meeting-governance.mjs workflow-task --workflow demo-initiative --task demo-task-001 --owner main --runtime openclaw --agent main --summary "Create next phase plan" --expected-artifact "workflow artifact or minutes path" --root "$ROOT"
 node bin/cat-meeting-governance.mjs workflow-advance --workflow demo-initiative --root "$ROOT"
+node bin/cat-meeting-governance.mjs workflow-checkpoint --workflow demo-initiative --summary "Context recovery checkpoint" --next-action "continue active tasks" --root "$ROOT"
 
 PROPOSAL=$(node bin/cat-meeting-governance.mjs trade-proposal --asset stock --symbol 000001.SZ --summary "cat_heart proposal demo" --side buy --quantity 100 --root "$ROOT")
 RISK_ID=demo-risk-001

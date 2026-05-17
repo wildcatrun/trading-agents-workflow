@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 5;
+export const WORKFLOW_SCHEMA_VERSION = 6;
 export const DEFAULT_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
@@ -66,6 +66,7 @@ export function workflowPaths(rootDir, input = {}) {
     memosDir: path.join(root, "memos"),
     gatesDir: path.join(root, "gates"),
     artifactsDir: path.join(root, "artifacts"),
+    checkpointsDir: path.join(root, "workflows", "checkpoints"),
     protocolDir: path.join(root, "protocol"),
     intentsDir: path.join(root, "intents"),
     receiptsDir: path.join(root, "receipts"),
@@ -285,6 +286,7 @@ async function ensureWorkflowLayout(rootDir, input = {}) {
     fs.mkdir(paths.memosDir, { recursive: true }),
     fs.mkdir(paths.gatesDir, { recursive: true }),
     fs.mkdir(paths.artifactsDir, { recursive: true }),
+    fs.mkdir(paths.checkpointsDir, { recursive: true }),
     fs.mkdir(paths.protocolDir, { recursive: true }),
     fs.mkdir(paths.intentsDir, { recursive: true }),
     fs.mkdir(paths.receiptsDir, { recursive: true }),
@@ -492,6 +494,25 @@ CREATE TABLE IF NOT EXISTS workflow_task_dependencies (
   FOREIGN KEY(task_id) REFERENCES workflow_tasks(task_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_task_dependencies_depends ON workflow_task_dependencies(depends_on_task_id);
+CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+  checkpoint_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  phase TEXT,
+  decision TEXT,
+  summary TEXT,
+  resume_payload_json TEXT NOT NULL,
+  active_tasks_json TEXT NOT NULL DEFAULT '[]',
+  blocked_tasks_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  next_actions_json TEXT NOT NULL DEFAULT '[]',
+  context_budget_json TEXT NOT NULL DEFAULT '{}',
+  path TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_checkpoints_workflow ON workflow_checkpoints(workflow_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS artifact_index (
   artifact_id TEXT PRIMARY KEY,
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,
@@ -1017,6 +1038,7 @@ UNION ALL SELECT 'gates', COUNT(*) FROM review_gates
 UNION ALL SELECT 'workflows', COUNT(*) FROM workflow_runs
 UNION ALL SELECT 'workflow_tasks', COUNT(*) FROM workflow_tasks
 UNION ALL SELECT 'workflow_task_dependencies', COUNT(*) FROM workflow_task_dependencies
+UNION ALL SELECT 'workflow_checkpoints', COUNT(*) FROM workflow_checkpoints
 UNION ALL SELECT 'protocol_objects', COUNT(*) FROM protocol_objects
 UNION ALL SELECT 'trade_intents', COUNT(*) FROM executable_trade_intents
 UNION ALL SELECT 'trading_core_receipts', COUNT(*) FROM trading_core_receipts
@@ -1056,7 +1078,7 @@ export async function workflowRunUpsert(rootDir, input = {}) {
   const payload = parseJsonValue(input.payload, input.payload || {});
   await sqlite(paths.dbFile, `
 INSERT INTO workflow_runs(workflow_id, workflow_type, status, instrument_id, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
-VALUES (${sqlValue(workflowId)}, ${sqlValue(workflowType)}, ${sqlValue(status)}, ${sqlValue(input.instrumentId || input.instrument_id || null)}, ${sqlValue(input.ownerAgent || input.owner_agent || "main")}, ${sqlValue(input.summary || input.text || "")}, ${sqlValue(input.objective || input.goal || "")}, ${sqlValue(input.acceptanceCriteria || input.acceptance_criteria || "")}, ${sqlValue(input.stopCondition || input.stop_condition || "")}, ${sqlValue(input.phase || input.currentPhase || input.current_phase || "planning")}, ${sqlValue(input.currentDecision || input.current_decision || "")}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+VALUES (${sqlValue(workflowId)}, ${sqlValue(workflowType)}, ${sqlValue(status)}, ${sqlValue(input.instrumentId || input.instrument_id || null)}, ${sqlValue(input.ownerAgent || input.owner_agent || "main")}, ${sqlValue(input.summary || input.text || "")}, ${sqlValue(input.objective || input.goal || "")}, ${sqlValue(input.acceptanceCriteria || input.acceptance_criteria || "")}, ${sqlValue(input.stopCondition || input.stop_condition || "")}, ${sqlValue(input.phase || input.currentPhase || input.current_phase || "")}, ${sqlValue(input.currentDecision || input.current_decision || "")}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
 ON CONFLICT(workflow_id) DO UPDATE SET
   workflow_type=excluded.workflow_type,
   status=excluded.status,
@@ -1233,6 +1255,170 @@ WHERE workflow_id=${sqlValue(workflowId)};`);
     taskHumanGates: taskHumanGates.length
   };
   return { workflowId, decision, checkedAt, summary, readyTasks, blockedTasks: blocked, dispatched, dbFile: paths.dbFile };
+}
+
+function renderWorkflowCheckpointMarkdown(record) {
+  const taskLine = (task) => `- ${task.task_id}: ${task.status} | ${task.owner_agent || ""}/${task.runtime || ""}/${task.agent_id || ""} | ${task.summary || ""}`.trim();
+  const artifactLine = (artifact) => `- ${artifact.kind || "artifact"}: ${artifact.path || artifact.actual_artifact_ref || ""} ${artifact.summary ? `| ${artifact.summary}` : ""}`.trim();
+  const actionLine = (action) => `- ${action}`.trim();
+  return `# Workflow Checkpoint
+
+- checkpoint_id: ${record.checkpointId}
+- workflow_id: ${record.workflowId}
+- status: ${record.status}
+- phase: ${record.phase || ""}
+- decision: ${record.decision || ""}
+- created_by: ${record.createdBy}
+- created_at: ${record.createdAt}
+
+## Summary
+
+${record.summary || "待补充。"}
+
+## Resume Payload
+
+\`\`\`json
+${JSON.stringify(record.resumePayload, null, 2)}
+\`\`\`
+
+## Active Tasks
+
+${record.activeTasks.length ? record.activeTasks.map(taskLine).join("\n") : "- none"}
+
+## Blocked Tasks
+
+${record.blockedTasks.length ? record.blockedTasks.map(taskLine).join("\n") : "- none"}
+
+## Artifact Refs
+
+${record.artifactRefs.length ? record.artifactRefs.map(artifactLine).join("\n") : "- none"}
+
+## Next Actions
+
+${record.nextActions.length ? record.nextActions.map(actionLine).join("\n") : "- none"}
+`;
+}
+
+export async function workflowCheckpoint(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const createdAt = nowIso();
+  const checkpointId = String(input.checkpointId || input.checkpoint_id || safeId("checkpoint")).trim();
+  const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
+  if (!workflowRows[0]) throw new Error(`workflow not found: ${workflowId}`);
+  const workflow = workflowRows[0];
+  const tasks = await sqlite(paths.dbFile, `
+SELECT * FROM workflow_tasks
+WHERE workflow_id=${sqlValue(workflowId)}
+ORDER BY CASE priority WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, created_at;`, { json: true });
+  const activeTasks = tasks.filter((task) => ["pending", "in_progress"].includes(task.status));
+  const blockedTasks = tasks.filter((task) => ["blocked", "failed"].includes(task.status));
+  const doneTasks = tasks.filter((task) => task.status === "done");
+  const artifactRows = await sqlite(paths.dbFile, `
+SELECT artifact_id, kind, path, summary, created_by, created_at
+FROM artifact_index
+WHERE workflow_id=${sqlValue(workflowId)}
+ORDER BY created_at DESC
+LIMIT 50;`, { json: true });
+  const taskArtifacts = tasks
+    .filter((task) => task.actual_artifact_ref)
+    .map((task) => ({
+      kind: "workflow_task_artifact",
+      task_id: task.task_id,
+      path: task.actual_artifact_ref,
+      summary: task.summary || ""
+    }));
+  const artifactRefs = [...artifactRows, ...taskArtifacts];
+  const workflowHumanGates = await pendingHumanGateCount(paths, workflowId);
+  const pendingHumanGates = workflowHumanGates + activeTasks.filter((task) => Number(task.human_gate_required || 0) > 0).length;
+  const nextActions = toList(input.nextActions || input.next_actions).length
+    ? toList(input.nextActions || input.next_actions)
+    : [
+        activeTasks.length ? "continue_or_collect_active_task_receipts" : "",
+        blockedTasks.length ? "resolve_blocked_tasks_or_escalate" : "",
+        pendingHumanGates ? "cat_claw_submit_pending_human_gate_package" : "",
+        !activeTasks.length && !blockedTasks.length && doneTasks.length ? "cat_claw_prepare_summary_or_next_phase" : "",
+        !tasks.length ? "main_create_next_phase_tasks" : ""
+      ].filter(Boolean);
+  const resumePayload = {
+    workflowId,
+    objective: workflow.objective || "",
+    acceptanceCriteria: workflow.acceptance_criteria || "",
+    stopCondition: workflow.stop_condition || "",
+    status: workflow.status,
+    phase: workflow.current_phase || "",
+    decision: workflow.current_decision || "",
+    summary: input.summary || workflow.summary || "",
+    counts: {
+      totalTasks: tasks.length,
+      activeTasks: activeTasks.length,
+      doneTasks: doneTasks.length,
+      blockedTasks: blockedTasks.length,
+      pendingHumanGates,
+      artifactRefs: artifactRefs.length
+    },
+    activeTaskIds: activeTasks.map((task) => task.task_id),
+    blockedTaskIds: blockedTasks.map((task) => task.task_id),
+    artifactRefs: artifactRefs.map((artifact) => artifact.path || artifact.actual_artifact_ref || "").filter(Boolean),
+    nextActions
+  };
+  const contextBudget = {
+    mode: input.mode || input.contextMode || input.context_mode || "checkpoint",
+    tokenBudget: numberOrNull(input.tokenBudget || input.token_budget),
+    compactAtPercent: numberOrNull(input.compactAtPercent || input.compact_at_percent) ?? 70,
+    restorePolicy: input.restorePolicy || input.restore_policy || "load_checkpoint_plus_referenced_artifacts_only"
+  };
+  const record = {
+    checkpointId,
+    workflowId,
+    status: workflow.status,
+    phase: workflow.current_phase || "",
+    decision: workflow.current_decision || "",
+    summary: input.summary || workflow.summary || "",
+    resumePayload,
+    activeTasks,
+    blockedTasks,
+    artifactRefs,
+    nextActions,
+    contextBudget,
+    createdBy: input.createdBy || input.created_by || input.from || "main",
+    createdAt
+  };
+  const jsonRelPath = await writeJsonArtifact(paths.root, paths.checkpointsDir, checkpointId, record);
+  const markdownRelPath = await writeTextArtifact(paths.root, paths.checkpointsDir, checkpointId, "md", renderWorkflowCheckpointMarkdown(record));
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES (${sqlValue(checkpointId)}, ${sqlValue(workflowId)}, ${sqlValue(record.status)}, ${sqlValue(record.phase)}, ${sqlValue(record.decision)}, ${sqlValue(record.summary)}, ${sqlValue(JSON.stringify(resumePayload))}, ${sqlValue(JSON.stringify(activeTasks))}, ${sqlValue(JSON.stringify(blockedTasks))}, ${sqlValue(JSON.stringify(artifactRefs))}, ${sqlValue(JSON.stringify(nextActions))}, ${sqlValue(JSON.stringify(contextBudget))}, ${sqlValue(markdownRelPath)}, ${sqlValue(record.createdBy)}, ${sqlValue(createdAt)})
+ON CONFLICT(checkpoint_id) DO UPDATE SET
+  status=excluded.status,
+  phase=excluded.phase,
+  decision=excluded.decision,
+  summary=excluded.summary,
+  resume_payload_json=excluded.resume_payload_json,
+  active_tasks_json=excluded.active_tasks_json,
+  blocked_tasks_json=excluded.blocked_tasks_json,
+  artifact_refs_json=excluded.artifact_refs_json,
+  next_actions_json=excluded.next_actions_json,
+  context_budget_json=excluded.context_budget_json,
+  path=excluded.path,
+  created_by=excluded.created_by,
+  created_at=excluded.created_at;`);
+  await sqlite(paths.dbFile, `
+INSERT INTO artifact_index(artifact_id, instrument_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES (${sqlValue(checkpointId)}, NULL, ${sqlValue(workflowId)}, 'workflow_checkpoint', ${sqlValue(markdownRelPath)}, ${sqlValue(record.summary)}, ${sqlValue(record.createdBy)}, ${sqlValue(createdAt)})
+ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
+  return {
+    checkpointId,
+    workflowId,
+    status: record.status,
+    phase: record.phase,
+    decision: record.decision,
+    relativePath: markdownRelPath,
+    jsonRelativePath: jsonRelPath,
+    resumePayload,
+    dbFile: paths.dbFile
+  };
 }
 
 export async function instrumentUpsert(rootDir, input) {
@@ -2567,6 +2753,10 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return workflowTaskList(rootDir, input);
     case "workflow.advance":
       return workflowAdvance(rootDir, input);
+    case "workflow.checkpoint":
+    case "workflow.context_checkpoint":
+    case "context.checkpoint":
+      return workflowCheckpoint(rootDir, input);
     case "runtime.agent":
     case "runtime.agent.upsert":
       return runtimeAgentUpsert(rootDir, input);

@@ -163,6 +163,25 @@ CREATE TABLE workflow_task_dependencies (
   FOREIGN KEY(task_id) REFERENCES workflow_tasks(task_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_task_dependencies_depends ON workflow_task_dependencies(depends_on_task_id);
+CREATE TABLE workflow_checkpoints (
+  checkpoint_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  phase TEXT,
+  decision TEXT,
+  summary TEXT,
+  resume_payload_json TEXT NOT NULL,
+  active_tasks_json TEXT NOT NULL DEFAULT '[]',
+  blocked_tasks_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  next_actions_json TEXT NOT NULL DEFAULT '[]',
+  context_budget_json TEXT NOT NULL DEFAULT '{}',
+  path TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_workflow_checkpoints_workflow ON workflow_checkpoints(workflow_id, created_at DESC);
 CREATE TABLE artifact_index (
   artifact_id TEXT PRIMARY KEY,
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,

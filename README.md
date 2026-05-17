@@ -12,6 +12,8 @@ Runtime SQLite databases and backup databases are intentionally excluded from Gi
 
 `workflow.advance` is the first supervisor loop. It inspects tasks, dependencies, receipts, artifacts, and Human Gate state, then decides whether to plan, dispatch ready work, keep collecting receipts, ask `cat_claw` for a summary package, mark the run blocked, or complete it.
 
+`workflow.checkpoint` creates the session-overflow recovery package. It snapshots objective, acceptance criteria, phase, decision, active tasks, blocked tasks, artifact refs, Human Gate pressure, and next actions into `workflow_checkpoints` plus JSON/Markdown artifacts under `workflows/checkpoints/`. New agent sessions should restore from the latest checkpoint and referenced artifacts instead of replaying the full chat history.
+
 ## OpenClaw Plugin
 
 This repository also contains the OpenClaw runtime plugin source that is currently deployed on the development server under:
@@ -85,5 +87,6 @@ Hermes ACP dispatch.
 - Preserve ISO timestamps on governance records and receipts.
 - Keep workflow dispatch, receipt, runtime and side-effect records auditable.
 - Keep each active workflow tied to explicit next actions; meeting conclusions that require Flashcat confirmation should include the next action package for `cat_claw`, not just a passive summary.
+- Treat session context as disposable execution space. Durable state must be in `workflow_runs`, `workflow_tasks`, `workflow_checkpoints`, receipts, and artifacts.
 - Treat the public Wanman repository as a limited architecture reference. The target behavior is the more advanced continuous supervisor loop observed on the live Wanman product: decompose, dispatch, collect artifacts, review, and continue until accepted, blocked, or stopped.
 - Do not commit runtime databases, local credentials, private keys, raw account data, generated dependency directories, or large archives.

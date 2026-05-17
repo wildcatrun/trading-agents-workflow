@@ -12,6 +12,7 @@ function usage() {
   trading-agents-workflow workflow-task-update --task ID [--status STATUS] [--artifact PATH] [--blocked-reason TEXT] [--root DIR]
   trading-agents-workflow workflow-tasks [--workflow ID] [--status STATUS] [--owner AGENT] [--limit N] [--root DIR]
   trading-agents-workflow workflow-advance --workflow ID [--meeting ID] [--auto-dispatch] [--goal-complete] [--root DIR]
+  trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
   trading-agents-workflow runtime-agent --runtime RUNTIME --agent AGENT [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
@@ -148,6 +149,20 @@ function toAction({ command, positional, options }) {
           meetingId: options.meeting,
           autoDispatch: options["auto-dispatch"] === "true",
           goalComplete: options["goal-complete"] === "true"
+        }
+      };
+    case "workflow-checkpoint":
+      return {
+        root,
+        input: {
+          action: "workflow.checkpoint",
+          workflowId: options.workflow,
+          checkpointId: options.checkpoint,
+          summary: options.summary,
+          nextActions: listOption(options["next-action"]),
+          tokenBudget: options["token-budget"],
+          compactAtPercent: options["compact-at"],
+          restorePolicy: options["restore-policy"]
         }
       };
     case "runtime-agent":

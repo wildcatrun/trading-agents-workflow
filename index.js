@@ -56,6 +56,9 @@ const toolParameters = {
         "workflow.task.list",
         "workflow.tasks",
         "workflow.advance",
+        "workflow.checkpoint",
+        "workflow.context_checkpoint",
+        "context.checkpoint",
         "protocol.record",
         "runtime.agent.upsert",
         "runtime.bridge",
@@ -171,6 +174,11 @@ const toolParameters = {
     autoDispatch: { type: "boolean" },
     goalComplete: { type: "boolean" },
     limit: { type: "number" },
+    checkpointId: { type: "string" },
+    nextActions: { type: "array", items: { type: "string" } },
+    tokenBudget: { type: "number" },
+    compactAtPercent: { type: "number" },
+    restorePolicy: { type: "string" },
     traceId: { type: "string" },
     maxAttempts: { type: "number" },
     staleDays: { type: "number" }
@@ -681,6 +689,30 @@ function registerCli(api) {
           meetingId: options.meeting,
           autoDispatch: Boolean(options.autoDispatch),
           goalComplete: Boolean(options.goalComplete)
+        }), null, 2));
+      });
+
+    command.command("workflow-checkpoint")
+      .requiredOption("--workflow <workflowId>", "Workflow id")
+      .option("--checkpoint <checkpointId>", "Checkpoint id")
+      .option("--summary <summary>", "Checkpoint summary")
+      .option("--next-action <action>", "Next action; repeatable", (value, previous) => [...previous, value], [])
+      .option("--token-budget <tokens>", "Context token budget")
+      .option("--compact-at <percent>", "Compaction trigger percent")
+      .option("--restore-policy <policy>", "Restore policy")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.checkpoint",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          checkpointId: options.checkpoint,
+          summary: options.summary,
+          nextActions: options.nextAction,
+          tokenBudget: Number(options.tokenBudget),
+          compactAtPercent: Number(options.compactAt),
+          restorePolicy: options.restorePolicy
         }), null, 2));
       });
 
