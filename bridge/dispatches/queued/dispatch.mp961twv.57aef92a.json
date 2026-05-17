@@ -1,0 +1,11 @@
+{
+  "meetingId": "hermes-smoke-20260517",
+  "dispatchId": "dispatch.mp961twv.57aef92a",
+  "runtime": "hermes",
+  "agentId": "cat_heart",
+  "dispatchType": "smoke_test",
+  "prompt": "请用两句话确认你作为猫之心正在 Hermes runtime 中响应 trading-agents-workflow 调度；说明你负责交易策略和 Trade Proposal 草案。只做角色确认，不要针对真实标的生成交易建议或可执行交易意图。",
+  "phase": "",
+  "chair": "main",
+  "payload": {}
+}

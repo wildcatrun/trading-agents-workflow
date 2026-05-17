@@ -1,0 +1,11 @@
+{
+  "meetingId": "hermes-smoke-20260517",
+  "dispatchId": "dispatch.mp961tv4.1d9cb190",
+  "runtime": "hermes",
+  "agentId": "cat_body",
+  "dispatchType": "smoke_test",
+  "prompt": "请用两句话确认你作为猫之体正在 Hermes runtime 中响应 trading-agents-workflow 调度；说明你负责 trading_sim/trading_core、脚本、回测、debug 和 code review。不要修改文件，不要运行外部命令。",
+  "phase": "",
+  "chair": "main",
+  "payload": {}
+}

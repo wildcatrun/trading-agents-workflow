@@ -1,0 +1,24 @@
+{
+  "schema_version": 6,
+  "meeting_id": "hermes-smoke-20260517",
+  "meeting_type": "system_governance",
+  "title": "Hermes smoke test",
+  "status": "open",
+  "phase": "opening",
+  "chair_agent": "main",
+  "secretary_agent": "cat_claw",
+  "participants": [
+    "main",
+    "cat_penclaw"
+  ],
+  "observers": [
+    "cat_claw"
+  ],
+  "visibility": "silent",
+  "human_gate_required": false,
+  "notify_targets": [],
+  "telegram_target": "",
+  "created_by": "main",
+  "created_at": "2026-05-17T02:35:56.627Z",
+  "closed_at": ""
+}

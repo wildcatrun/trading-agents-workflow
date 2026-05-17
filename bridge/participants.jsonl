@@ -1,0 +1,6 @@
+{"meetingId":"hermes-smoke-20260517","agentKey":"hermes:cat_penclaw","runtime":"hermes","agentId":"cat_penclaw","participantRole":"content_archive_document_ops","updatedAt":"2026-05-17T02:36:14.433Z"}
+{"meetingId":"hermes-smoke-20260517","agentKey":"hermes:cat_nose","runtime":"hermes","agentId":"cat_nose","participantRole":"sentiment_analyst","updatedAt":"2026-05-17T02:38:46.616Z"}
+{"meetingId":"hermes-smoke-20260517","agentKey":"hermes:cat_ears","runtime":"hermes","agentId":"cat_ears","participantRole":"news_event_analyst","updatedAt":"2026-05-17T02:38:46.684Z"}
+{"meetingId":"hermes-smoke-20260517","agentKey":"hermes:cat_eyes","runtime":"hermes","agentId":"cat_eyes","participantRole":"fundamental_analyst","updatedAt":"2026-05-17T02:38:46.744Z"}
+{"meetingId":"hermes-smoke-20260517","agentKey":"hermes:cat_body","runtime":"hermes","agentId":"cat_body","participantRole":"technical_operations_trading_infra","updatedAt":"2026-05-17T02:38:46.809Z"}
+{"meetingId":"hermes-smoke-20260517","agentKey":"hermes:cat_heart","runtime":"hermes","agentId":"cat_heart","participantRole":"trading_manager_trade_proposal","updatedAt":"2026-05-17T02:38:46.880Z"}

@@ -1,0 +1,32 @@
+# Local runtime and editor noise
+.DS_Store
+*.swp
+*.tmp
+*.bak
+
+# Python / Node rebuildable artifacts
+__pycache__/
+*.py[cod]
+node_modules/
+dist/
+build/
+coverage/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime state and backups
+*.db
+*.db-*
+backups/
+
+# Large local archives
+*.tar
+*.tar.gz
+*.zip

@@ -1,0 +1,11 @@
+{
+  "meetingId": "hermes-smoke-20260517",
+  "dispatchId": "dispatch.mp961ttb.408a1287",
+  "runtime": "hermes",
+  "agentId": "cat_eyes",
+  "dispatchType": "smoke_test",
+  "prompt": "请用两句话确认你作为猫之眼正在 Hermes runtime 中响应 trading-agents-workflow 调度；说明你负责基本面分析。不要调用外部工具，不要生成交易建议。",
+  "phase": "",
+  "chair": "main",
+  "payload": {}
+}

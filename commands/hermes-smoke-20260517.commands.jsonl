@@ -1,0 +1,1 @@
+{"schema_version":6,"command_id":"meetingcmd.mp95y6af.3fb92c64","ts":"2026-05-17T02:35:56.631Z","status":"accepted","meeting_id":"hermes-smoke-20260517","source":"tool","from":"main","target":"main","type":"start_meeting","text":"Meeting created: Hermes smoke test","metadata":{"meeting_type":"system_governance","visibility":"silent","secretary_agent":"cat_claw"}}
