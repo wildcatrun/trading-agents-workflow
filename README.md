@@ -48,6 +48,20 @@ enabled = true
 
 The MCP server is intentionally read-oriented. It can inspect local Git state, read governance JSONL logs, query `runtime_agents`, and take read-only development-server snapshots. Publishing changes still requires normal Git review and push.
 
+## OpenClaw Gateway Tool Policy
+
+For route-shell agents to dispatch migrated agents through this plugin, OpenClaw
+must both load the plugin and expose its tool. Keep `trading-agents-workflow` in
+`plugins.allow`, keep `openclaw.plugin.json` declaring
+`contracts.tools=["trading_agents_workflow"]`, and add
+`trading_agents_workflow` to `tools.alsoAllow` when using restrictive profiles
+such as `tools.profile="coding"`.
+
+After source, load-path, or tool-policy changes, run `openclaw config validate`
+and reload or restart the actual Gateway. A route-shell smoke test should confirm
+that `trading_agents_workflow` appears in the agent tool list before relying on
+Hermes ACP dispatch.
+
 ## Layout
 
 - `artifacts/` - generated or curated workflow artifacts.

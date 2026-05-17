@@ -160,6 +160,51 @@ Standalone smoke CLI:
 node bin/cat-meeting-governance.mjs ...
 ```
 
+## OpenClaw Gateway Configuration
+
+The OpenClaw plugin manifest is the source of truth for tool contracts. Keep
+`openclaw.plugin.json` declaring:
+
+```json
+{
+  "contracts": {
+    "tools": ["trading_agents_workflow"]
+  }
+}
+```
+
+The Gateway tool policy must also expose the tool to agent turns. When the root
+config uses a restrictive profile such as `tools.profile: "coding"`, add the
+tool name to `tools.alsoAllow` while keeping the plugin id in `plugins.allow`:
+
+```json
+{
+  "plugins": {
+    "allow": ["trading-agents-workflow"],
+    "entries": {
+      "trading-agents-workflow": {
+        "enabled": true,
+        "config": {
+          "rootDir": "/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow"
+        }
+      }
+    },
+    "load": {
+      "paths": ["/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout"]
+    }
+  },
+  "tools": {
+    "profile": "coding",
+    "alsoAllow": ["trading_agents_workflow"]
+  }
+}
+```
+
+After changing plugin source, plugin load paths, or tool policy, validate config
+and reload or restart the actual Gateway process. A route-shell smoke test should
+show `trading_agents_workflow` in the agent tool list before mixed-runtime
+dispatches are considered ready.
+
 ## Actions
 
 Workflow and tracking:

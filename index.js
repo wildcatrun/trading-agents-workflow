@@ -1048,6 +1048,19 @@ export default definePluginEntry({
   id: "trading-agents-workflow",
   name: "Trading Agents Workflow",
   description: "OpenClaw native trading agents workflow, meeting governance, and SQLite tracking layer.",
+  contracts: {
+    tools: ["trading_agents_workflow"]
+  },
+  configSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      rootDir: {
+        type: "string",
+        description: "Optional workflow root. Defaults to /home/flashcat/.openclaw/shared/trading-agents-workflow."
+      }
+    }
+  },
   register(api) {
     const execute = async (_id, params) => jsonText(await runAction(resolveRoot(api), params || {}));
     api.registerTool({
