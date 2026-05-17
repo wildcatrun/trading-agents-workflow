@@ -591,6 +591,8 @@ function registerCli(api) {
       .requiredOption("--meeting <meetingId>", "Meeting id")
       .option("--chat <chatId>", "Telegram group chat id")
       .option("--channel <channelId>", "Telegram channel id")
+      .option("--target <target>", "Configured Telegram target alias")
+      .option("--target-name <name>", "Configured Telegram target name")
       .option("--human-gate-channel <channelId>", "Human Gate Telegram channel id")
       .option("--mode <mode>", "transparent, digest, silent", "transparent")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
@@ -602,6 +604,8 @@ function registerCli(api) {
           meetingId: options.meeting,
           chatId: options.chat,
           channelId: options.channel,
+          target: options.target,
+          targetName: options.targetName,
           humanGateChannelId: options.humanGateChannel,
           mode: options.mode
         }), null, 2));

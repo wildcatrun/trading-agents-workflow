@@ -239,6 +239,26 @@ Workflow and tracking:
 - `gate.review`
 - `cat_claw.audit`
 
+### Telegram Live Targets
+
+`telegram.live` requires a concrete `chatId` or `channelId` for active non-silent meetings. It refuses to create an active transparent live link with an empty target, because that leaves meeting messages in an undeliverable outbox while making agents think the meeting is live.
+
+Targets can be supplied directly with `chatId` / `channelId`, through CLI flags such as `--chat`, `--channel`, `--target`, or `--target-name`, or by placing `telegram-targets.json` in the workflow root:
+
+```json
+{
+  "aliases": {
+    "stock-tracking": { "chatId": "-1000000000000" },
+    "股票追踪": { "chatId": "-1000000000000" }
+  },
+  "meetingPatterns": [
+    { "pattern": "stock-tracking", "chatId": "-1000000000000" }
+  ]
+}
+```
+
+If a legacy live link has no target, `meeting.ingest` marks the message as `failed_missing_target` instead of enqueueing a targetless Telegram outbox row.
+
 ## Stability CLI Examples
 
 Passive readiness:

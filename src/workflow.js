@@ -117,6 +117,86 @@ function parseJsonValue(value, fallback = {}) {
   }
 }
 
+async function readOptionalJson(file) {
+  try {
+    return JSON.parse(await fs.readFile(file, "utf8"));
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function readTelegramTargetConfig(paths) {
+  const files = [
+    path.join(paths.root, "telegram-targets.json"),
+    path.join(paths.root, "config", "telegram-targets.json")
+  ];
+  for (const file of files) {
+    const config = await readOptionalJson(file);
+    if (config && typeof config === "object") return config;
+  }
+  return {};
+}
+
+function targetValue(entry) {
+  if (typeof entry === "string") return { chatId: entry, channelId: "" };
+  if (!entry || typeof entry !== "object") return { chatId: "", channelId: "" };
+  return {
+    chatId: String(entry.chatId || entry.chat_id || entry.chat || "").trim(),
+    channelId: String(entry.channelId || entry.channel_id || entry.channel || "").trim(),
+    humanGateChannelId: String(entry.humanGateChannelId || entry.human_gate_channel_id || "").trim()
+  };
+}
+
+function lookupTelegramAlias(config, key) {
+  const trimmed = String(key || "").trim();
+  if (!trimmed) return null;
+  const aliases = config.aliases || config.targets || {};
+  const entry = aliases[trimmed] || aliases[trimmed.toLowerCase()];
+  return entry ? targetValue(entry) : null;
+}
+
+async function resolveTelegramLiveTarget(paths, meetingId, input) {
+  const direct = {
+    chatId: String(input.chatId || input.chat_id || "").trim(),
+    channelId: String(input.channelId || input.channel_id || "").trim(),
+    humanGateChannelId: String(input.humanGateChannelId || input.human_gate_channel_id || "").trim()
+  };
+  if (direct.chatId || direct.channelId) return { ...direct, source: "input" };
+
+  const config = await readTelegramTargetConfig(paths);
+  const targetKeys = [
+    input.targetRef,
+    input.target_ref,
+    input.target,
+    input.targetName,
+    input.target_name,
+    input.telegramTarget,
+    input.telegram_target,
+    input.groupName,
+    input.group_name
+  ];
+  for (const key of targetKeys) {
+    const match = lookupTelegramAlias(config, key);
+    if (match && (match.chatId || match.channelId)) return { ...match, source: "alias" };
+  }
+
+  const rules = config.meetingPatterns || config.meeting_patterns || [];
+  for (const rule of Array.isArray(rules) ? rules : []) {
+    const pattern = String(rule.pattern || rule.match || "").trim();
+    if (!pattern) continue;
+    const flags = rule.caseSensitive || rule.case_sensitive ? "" : "i";
+    if (new RegExp(pattern, flags).test(meetingId)) {
+      const match = targetValue(rule);
+      if (match.chatId || match.channelId) return { ...match, source: "meeting_pattern" };
+    }
+  }
+
+  const fallback = targetValue(config.default || config.defaultTarget || config.default_target);
+  if (fallback.chatId || fallback.channelId) return { ...fallback, source: "default" };
+  return { ...direct, source: "unresolved" };
+}
+
 function jsonHash(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -1593,9 +1673,16 @@ export async function telegramLiveConfigure(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
   const createdAt = nowIso();
+  const mode = String(input.mode || "transparent").trim();
+  const status = String(input.status || "active").trim();
+  const target = await resolveTelegramLiveTarget(paths, meetingId, input);
+  if (status === "active" && mode !== "silent" && !target.chatId && !target.channelId) {
+    throw new Error(`telegram live target is required for active ${mode} meeting: ${meetingId}`);
+  }
+  const humanGateChannelId = target.humanGateChannelId || input.humanGateChannelId || input.human_gate_channel_id || target.channelId || target.chatId || "";
   await sqlite(paths.dbFile, `
 INSERT INTO telegram_live_links(meeting_id, chat_id, channel_id, mode, status, human_gate_channel_id, created_at, updated_at)
-VALUES (${sqlValue(meetingId)}, ${sqlValue(input.chatId || input.chat_id || "")}, ${sqlValue(input.channelId || input.channel_id || "")}, ${sqlValue(input.mode || "transparent")}, ${sqlValue(input.status || "active")}, ${sqlValue(input.humanGateChannelId || input.human_gate_channel_id || input.channelId || input.channel_id || "")}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+VALUES (${sqlValue(meetingId)}, ${sqlValue(target.chatId)}, ${sqlValue(target.channelId)}, ${sqlValue(mode)}, ${sqlValue(status)}, ${sqlValue(humanGateChannelId)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
 ON CONFLICT(meeting_id) DO UPDATE SET
   chat_id=excluded.chat_id,
   channel_id=excluded.channel_id,
@@ -1603,7 +1690,7 @@ ON CONFLICT(meeting_id) DO UPDATE SET
   status=excluded.status,
   human_gate_channel_id=excluded.human_gate_channel_id,
   updated_at=excluded.updated_at;`);
-  return { meetingId, chatId: input.chatId || input.chat_id || "", channelId: input.channelId || input.channel_id || "", status: input.status || "active", dbFile: paths.dbFile };
+  return { meetingId, chatId: target.chatId, channelId: target.channelId, humanGateChannelId, mode, status, targetSource: target.source, dbFile: paths.dbFile };
 }
 
 async function telegramLinkFor(paths, meetingId) {
@@ -1683,15 +1770,20 @@ VALUES (${sqlValue(messageId)}, ${sqlValue(meetingId)}, ${sqlValue(runtime)}, ${
   const link = await telegramLinkFor(paths, meetingId);
   let telegramOutbox = null;
   if (link && String(link.mode || "transparent") !== "silent") {
-    telegramOutbox = await enqueueTelegramOutbox(paths, {
-      meetingId,
-      targetKind: "group",
-      targetRef: link.chat_id || link.channel_id || "",
-      messageType: "meeting_live",
-      text: `[${runtime}:${agentId}] ${text}`,
-      payload: { messageId, runtime, agentId, phase: input.phase || "" }
-    });
-    await sqlite(paths.dbFile, `UPDATE mixed_meeting_messages SET telegram_live_status='queued' WHERE message_id=${sqlValue(messageId)};`);
+    const targetRef = link.chat_id || link.channel_id || "";
+    if (targetRef) {
+      telegramOutbox = await enqueueTelegramOutbox(paths, {
+        meetingId,
+        targetKind: "group",
+        targetRef,
+        messageType: "meeting_live",
+        text: `[${runtime}:${agentId}] ${text}`,
+        payload: { messageId, runtime, agentId, phase: input.phase || "" }
+      });
+      await sqlite(paths.dbFile, `UPDATE mixed_meeting_messages SET telegram_live_status='queued' WHERE message_id=${sqlValue(messageId)};`);
+    } else {
+      await sqlite(paths.dbFile, `UPDATE mixed_meeting_messages SET telegram_live_status='failed_missing_target' WHERE message_id=${sqlValue(messageId)};`);
+    }
   }
   return { meetingId, messageId, runtime, agentId, transcriptPath, telegramOutbox, dbFile: paths.dbFile };
 }
