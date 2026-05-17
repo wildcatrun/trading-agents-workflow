@@ -1,0 +1,219 @@
+#!/usr/bin/env node
+import { runAction } from "../src/core.js";
+
+function usage() {
+  console.log(`Usage:
+  trading-agents-workflow status [--root DIR]
+  trading-agents-workflow workflow-status [--asset TYPE --symbol SYMBOL] [--root DIR]
+  trading-agents-workflow workflow-readiness [--active-checks] [--root DIR]
+  trading-agents-workflow workflow-topology [--root DIR]
+  trading-agents-workflow runtime-agent --runtime RUNTIME --agent AGENT [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
+  trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
+  trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
+  trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--root DIR]
+  trading-agents-workflow meeting-ingest --meeting ID --runtime RUNTIME --agent AGENT --text TEXT [--type TYPE] [--phase PHASE] [--root DIR]
+  trading-agents-workflow runtime-bridge [--runtime hermes_acp] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--dry-run] [--root DIR]
+  trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--from AGENT] [--channel CHANNEL_ID] [--root DIR]
+  trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
+  trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
+  trading-agents-workflow telegram-outbox [--status queued|sent|failed] [--limit N] [--mark OUTBOX_ID] [--root DIR]
+  trading-agents-workflow trade-proposal --asset TYPE --symbol SYMBOL [--summary TEXT] [--side SIDE] [--quantity N] [--order-type TYPE] [--proposal-id ID] [--payload JSON] [--root DIR]
+  trading-agents-workflow risk-decision --proposal ID [--status approved|rejected|pending] [--summary TEXT] [--reviewer AGENT] [--risk-decision-id ID] [--root DIR]
+  trading-agents-workflow human-gate-workflow [--human-gate-id ID] [--parent ID] [--gate TYPE] [--status approved|rejected|pending] [--text TEXT] [--assurance mtls] [--root DIR]
+  trading-agents-workflow trade-intent --asset TYPE --symbol SYMBOL --side SIDE --proposal ID --risk ID --human-gate ID [--intent-id ID] [--quantity N] [--order-type TYPE] [--actor flashcat] [--assurance mtls] [--cert FINGERPRINT] [--source codex_mtls] [--idempotency-key KEY] [--root DIR]
+  trading-agents-workflow trading-core-receipt --intent ID [--status accepted|submitted|filled|rejected] [--ref REF] [--receipt-id ID] [--summary TEXT] [--root DIR]
+  trading-agents-workflow side-effect --type TYPE [--status planned|started|committed|failed|uncertain|rolled_back] [--trace-id ID] [--idempotency-key KEY] [--payload JSON] [--root DIR]
+  trading-agents-workflow incident-state --incident ID [--status active|mitigating|monitoring|resolved] [--mode degraded|critical-only|paper-only|frozen|normal] [--plane NAME] [--summary TEXT] [--exit-criteria TEXT] [--root DIR]
+  trading-agents-workflow instrument --asset TYPE --symbol SYMBOL [--name NAME] [--exchange EX] [--currency CCY] [--tag TAG] [--root DIR]
+  trading-agents-workflow radar-update --asset TYPE --symbol SYMBOL [--zone ZONE] [--retail N] [--news N] [--fundamental N] [--summary TEXT] [--root DIR]
+  trading-agents-workflow thesis-update --asset TYPE --symbol SYMBOL [--title TITLE] [--summary TEXT] [--status active|stale|invalidated] [--owner AGENT] [--falsification TEXT] [--review-due DATE] [--root DIR]
+  trading-agents-workflow evidence --asset TYPE --symbol SYMBOL [--kind KIND] [--source SOURCE] [--reliability R] [--summary TEXT] [--supports TEXT] [--conflicts TEXT] [--root DIR]
+  trading-agents-workflow research-memo --asset TYPE --symbol SYMBOL [--title TITLE] [--summary TEXT] [--conclusion TEXT] [--root DIR]
+  trading-agents-workflow gate-review [--asset TYPE --symbol SYMBOL] [--gate TYPE] [--status pending|approved|rejected|waived] [--summary TEXT] [--reviewer AGENT] [--human-gate] [--root DIR]
+  trading-agents-workflow cat_claw-audit [--stale-days N] [--root DIR]
+  trading-agents-workflow create --id ID --title TITLE [--type TYPE] [--goal TEXT] [--chair AGENT] [--secretary AGENT] [--participant AGENT] [--observer AGENT] [--notify TARGET] [--telegram TARGET] [--mode MODE] [--root DIR]
+  trading-agents-workflow append MEETING_ID --text TEXT [--section SECTION] [--actor AGENT] [--root DIR]
+  trading-agents-workflow action-item MEETING_ID [--op create|update|list] [--id ID] [--title TITLE] [--owner AGENT] [--status STATUS] [--required-artifact PATH] [--root DIR]
+  trading-agents-workflow decision MEETING_ID [--op create|update|list] [--id ID] [--title TITLE] [--status STATUS] [--approved-by AGENT] [--evidence PATH] [--human-gate] [--root DIR]
+  trading-agents-workflow minutes MEETING_ID [--text TEXT] [--mode write|append] [--root DIR]
+  trading-agents-workflow validate MEETING_ID [--root DIR]`);
+}
+
+function parseArgv(argv) {
+  const args = [...argv];
+  const command = args.shift() || "status";
+  const positional = [];
+  const options = {};
+  while (args.length > 0) {
+    const item = args.shift();
+    if (!item.startsWith("--")) {
+      positional.push(item);
+      continue;
+    }
+    const key = item.slice(2);
+    const value = args[0] && !args[0].startsWith("--") ? args.shift() : "true";
+    if (options[key] === undefined) options[key] = value;
+    else if (Array.isArray(options[key])) options[key].push(value);
+    else options[key] = [options[key], value];
+  }
+  return { command, positional, options };
+}
+
+function listOption(value) {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function toAction({ command, positional, options }) {
+  const root = options.root;
+  switch (command) {
+    case "help":
+    case "--help":
+    case "-h":
+      usage();
+      return null;
+    case "status":
+      return { root, input: { action: "status" } };
+    case "init":
+      return { root, input: { action: "init" } };
+    case "workflow-status":
+      return { root, input: { action: "workflow.status", assetType: options.asset, symbol: options.symbol } };
+    case "workflow-readiness":
+      return { root, input: { action: "workflow.readiness", activeChecks: options["active-checks"] === "true" } };
+    case "workflow-topology":
+      return { root, input: { action: "workflow.topology" } };
+    case "runtime-agent":
+      return { root, input: { action: "runtime.agent.upsert", runtime: options.runtime, agentId: options.agent, displayName: options.name, role: options.role, endpointRef: options.endpoint } };
+    case "meeting-participant":
+      return { root, input: { action: "meeting.runtime_participant", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, participantRole: options.role, chair: options.chair === "true", decider: options.decider === "true", secretary: options.secretary === "true", liveMode: options["live-mode"] } };
+    case "telegram-live":
+      return { root, input: { action: "telegram.live", meetingId: options.meeting, chatId: options.chat, channelId: options.channel, humanGateChannelId: options["human-gate-channel"], mode: options.mode } };
+    case "meeting-dispatch":
+      return { root, input: { action: "meeting.dispatch", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, prompt: options.prompt, dispatchType: options.type, priority: options.priority, createdBy: options.from, traceId: options["trace-id"], idempotencyKey: options["idempotency-key"], maxAttempts: options["max-attempts"] } };
+    case "meeting-ingest":
+      return { root, input: { action: "meeting.ingest", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, text: options.text, messageType: options.type, phase: options.phase } };
+    case "runtime-bridge":
+      return { root, input: { action: "runtime.bridge.drain", runtime: options.runtime, limit: options.limit, timeoutSeconds: options["timeout-seconds"], sessionMode: options["session-mode"], acpBackend: options["acp-backend"], acpAgent: options["acp-agent"], sessionKey: options["session-key"], dryRun: options["dry-run"] === "true", hermesBin: options["hermes-bin"] } };
+    case "human-gate-request":
+      return { root, input: { action: "human_gate.request", meetingId: options.meeting, text: options.text, gateType: options.gate, from: options.from, channelId: options.channel } };
+    case "meeting-resume":
+      return { root, input: { action: "meeting.resume", meetingId: options.meeting, text: options.text, from: options.from } };
+    case "meeting-disperse":
+      return { root, input: { action: "meeting.disperse", meetingId: options.meeting, text: options.text, targets: listOption(options.target), from: options.from } };
+    case "telegram-outbox":
+      return { root, input: { action: "telegram.outbox", operation: options.mark ? "mark" : "list", outboxId: options.mark, status: options.status, limit: options.limit } };
+    case "trade-proposal":
+      return { root, input: { action: "trade.proposal", assetType: options.asset, symbol: options.symbol, summary: options.summary, side: options.side, quantity: options.quantity, orderType: options["order-type"], proposalId: options["proposal-id"], from: options.from, payload: options.payload } };
+    case "risk-decision":
+      return { root, input: { action: "risk.decision", assetType: options.asset, symbol: options.symbol, proposalId: options.proposal, riskDecisionId: options["risk-decision-id"], status: options.status, summary: options.summary, reviewerAgent: options.reviewer, payload: options.payload } };
+    case "human-gate-workflow":
+      return { root, input: { action: "human_gate.record", humanGateId: options["human-gate-id"], parentObjectId: options.parent, gateType: options.gate, status: options.status, text: options.text, actor: options.actor, assurance: options.assurance, payload: options.payload } };
+    case "trade-intent":
+      return { root, input: { action: "trade.intent", assetType: options.asset, symbol: options.symbol, side: options.side, quantity: options.quantity, orderType: options["order-type"], proposalId: options.proposal, riskDecisionId: options.risk, humanGateId: options["human-gate"], intentId: options["intent-id"], actor: options.actor, assurance: options.assurance, clientCertFingerprint: options.cert, sourceSystem: options.source, idempotencyKey: options["idempotency-key"], payload: options.payload } };
+    case "trading-core-receipt":
+      return { root, input: { action: "trading_core.receipt", intentId: options.intent, status: options.status, tradingCoreRef: options.ref, receiptId: options["receipt-id"], summary: options.summary, payload: options.payload } };
+    case "side-effect":
+      return { root, input: { action: "side_effect.record", sideEffectType: options.type, status: options.status, traceId: options["trace-id"], workflowId: options["workflow-id"], dispatchId: options["dispatch-id"], idempotencyKey: options["idempotency-key"], payload: options.payload } };
+    case "incident-state":
+      return { root, input: { action: "incident.state", incidentId: options.incident, status: options.status, mode: options.mode, affectedPlanes: listOption(options.plane), summary: options.summary, commander: options.commander, impact: options.impact, currentHypothesis: options.hypothesis, mitigation: options.mitigation, rollbackOptions: options.rollback, exitCriteria: options["exit-criteria"], nextUpdateAt: options["next-update-at"], payload: options.payload } };
+    case "instrument":
+      return { root, input: { action: "instrument.upsert", assetType: options.asset, symbol: options.symbol, name: options.name, exchange: options.exchange, currency: options.currency, tags: listOption(options.tag) } };
+    case "radar-update":
+      return { root, input: { action: "radar.update", assetType: options.asset, symbol: options.symbol, name: options.name, radarZone: options.zone, retailHeatScore: options.retail, newsCatalystScore: options.news, fundamentalScore: options.fundamental, summary: options.summary } };
+    case "thesis-update":
+      return { root, input: { action: "thesis.update", assetType: options.asset, symbol: options.symbol, name: options.name, title: options.title, summary: options.summary, status: options.status, ownerAgent: options.owner, falsificationTriggers: options.falsification, reviewDueAt: options["review-due"] } };
+    case "evidence":
+      return { root, input: { action: "research.evidence", assetType: options.asset, symbol: options.symbol, name: options.name, kind: options.kind, source: options.source, reliability: options.reliability, summary: options.summary, supports: options.supports, conflicts: options.conflicts } };
+    case "research-memo":
+      return { root, input: { action: "research.memo", assetType: options.asset, symbol: options.symbol, name: options.name, title: options.title, summary: options.summary, conclusion: options.conclusion } };
+    case "gate-review":
+      return { root, input: { action: "gate.review", assetType: options.asset, symbol: options.symbol, gateType: options.gate, status: options.status, summary: options.summary, reviewerAgent: options.reviewer, humanGateRequired: options["human-gate"] === "true" } };
+    case "cat_claw-audit":
+      return { root, input: { action: "cat_claw.audit", staleDays: options["stale-days"] } };
+    case "create":
+      return {
+        root,
+        input: {
+          action: "meeting.create",
+          meetingId: options.id,
+          title: options.title,
+          meetingType: options.type,
+          goal: options.goal,
+          chair: options.chair,
+          secretaryAgent: options.secretary,
+          participants: listOption(options.participant),
+          observers: listOption(options.observer),
+          notifyTargets: listOption(options.notify),
+          telegramTarget: options.telegram,
+          mode: options.mode
+        }
+      };
+    case "append":
+      return { root, input: { action: "meeting.append", meetingId: positional[0], text: options.text, section: options.section, actor: options.actor } };
+    case "command":
+      return { root, input: { action: "meeting.command", meetingId: positional[0], type: options.type, text: options.text, from: options.from, target: options.target, source: options.source, priority: options.priority } };
+    case "summary":
+      return { root, input: { action: "meeting.summary", meetingId: positional[0], summary: options.text, telegramText: options.telegram } };
+    case "artifact":
+      return { root, input: { action: "meeting.artifact", meetingId: positional[0], name: options.name, kind: options.kind, content: options.content, summary: options.summary } };
+    case "state":
+      return { root, input: { action: "meeting.state", meetingId: positional[0], status: options.status, phase: options.phase, ...(options["human-gate"] === "true" ? { humanGateRequired: true } : {}) } };
+    case "action-item":
+      return {
+        root,
+        input: {
+          action: "meeting.action_item",
+          meetingId: positional[0],
+          operation: options.op,
+          itemId: options.id,
+          title: options.title,
+          ownerAgent: options.owner,
+          status: options.status,
+          requiredArtifact: options["required-artifact"]
+        }
+      };
+    case "decision":
+      return {
+        root,
+        input: {
+          action: "meeting.decision",
+          meetingId: positional[0],
+          operation: options.op,
+          decisionId: options.id,
+          title: options.title,
+          status: options.status,
+          approvedBy: options["approved-by"],
+          evidence: listOption(options.evidence),
+          humanGateRequired: options["human-gate"] === "true"
+        }
+      };
+    case "minutes":
+      return { root, input: { action: "meeting.minutes", meetingId: positional[0], text: options.text, mode: options.mode } };
+    case "notify":
+      return { root, input: { action: "meeting.notify", meetingId: positional[0], summary: options.summary, target: options.target, channel: options.channel, humanGateRequired: options["human-gate"] === "true" } };
+    case "validate":
+      return { root, input: { action: "meeting.validate", meetingId: positional[0] } };
+    case "cat_claw-observe":
+      return { root, input: { action: "cat_claw.observe", meetingId: positional[0], text: options.text } };
+    case "cat_claw-digest":
+      return { root, input: { action: "cat_claw.digest", period: options.period, date: options.date } };
+    case "human-gate":
+      return { root, input: { action: "human_gate.record", meetingId: positional[0], gateType: options.gate, text: options.text, status: options.status, from: options.from } };
+    case "telegram-bridge":
+      return { root, input: { action: "telegram.bridge", meetingId: positional[0], type: options.type, text: options.text, from: options.from, chatId: options.chat, messageId: options.message } };
+    case "handoff":
+      return { root, input: { action: "meeting.handoff", meetingId: positional[0], to: options.to, text: options.text, from: options.from, priority: options.priority } };
+    case "close":
+      return { root, input: { action: "meeting.close", meetingId: positional[0], summary: options.summary, closedBy: options.by } };
+    default:
+      throw new Error(`unknown command: ${command}`);
+  }
+}
+
+try {
+  const request = toAction(parseArgv(process.argv.slice(2)));
+  if (request) console.log(JSON.stringify(await runAction(request.root, request.input), null, 2));
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}

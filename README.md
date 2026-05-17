@@ -6,6 +6,26 @@ This repository tracks durable workflow assets: governance logs, bridge/message 
 
 Runtime SQLite databases and backup databases are intentionally excluded from Git. Keep credentials, raw trading account data, OAuth tokens, private keys, and local environment files out of this repository.
 
+## OpenClaw Plugin
+
+This repository also contains the OpenClaw runtime plugin source that is currently deployed on the development server under:
+
+```text
+/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow
+```
+
+Tracked OpenClaw plugin files include:
+
+- `openclaw.plugin.json`
+- `package.json`
+- `index.js`
+- `src/core.js`
+- `src/workflow.js`
+- `bin/cat-meeting-governance.mjs`
+- `docs/openclaw-plugin-readme.md`
+
+The development server still owns the live runtime copy. Do not replace or pull into the live plugin directory without a backup, diff review, syntax check, smoke test, and explicit Human Gate for any Gateway reload or restart.
+
 ## Codex Installation
 
 This repository includes a minimal Codex plugin manifest and MCP server:
@@ -38,6 +58,7 @@ The MCP server is intentionally read-oriented. It can inspect local Git state, r
 - `docs/tracking-schema.sql` - schema export for `tracking.db`.
 - `scripts/trading_agents_workflow_mcp.py` - local Codex MCP server.
 - `skills/trading-agents-workflow/` - Codex skill instructions for this integration.
+- `openclaw.plugin.json`, `package.json`, `index.js`, `src/`, `bin/` - OpenClaw runtime plugin source.
 
 ## Operating Rules
 

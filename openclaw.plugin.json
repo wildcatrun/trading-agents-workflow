@@ -1,0 +1,30 @@
+{
+  "id": "trading-agents-workflow",
+  "name": "Trading Agents Workflow",
+  "description": "OpenClaw native trading agents workflow layer with mixed-runtime meetings, SQLite state, Telegram outbox, protocol objects, mTLS-gated trade intents, and trading_core receipts.",
+  "version": "0.6.0",
+  "contracts": {
+    "tools": [
+      "trading_agents_workflow"
+    ]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "rootDir": {
+        "type": "string",
+        "description": "Optional workflow root. Defaults to /home/flashcat/.openclaw/shared/trading-agents-workflow."
+      }
+    }
+  },
+  "uiHints": {
+    "rootDir": {
+      "label": "Workflow root",
+      "help": "Directory containing tracking.db, meetings/, commands/, states/, thesis/, radar/, evidence/, memos/, gates/, protocol/, intents/, receipts/, bridge/, workflows/, artifacts/, templates/, and index/."
+    }
+  }
+}
