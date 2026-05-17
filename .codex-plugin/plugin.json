@@ -1,0 +1,40 @@
+{
+  "name": "trading-agents-workflow",
+  "version": "0.1.0",
+  "description": "Codex control-plane access for the trading-agents workflow registry, governance logs, and Git-managed workflow assets.",
+  "author": {
+    "name": "Flashcat",
+    "email": "flashcat@localhost",
+    "url": "https://github.com/wildcatrun"
+  },
+  "homepage": "https://github.com/wildcatrun/trading-agents-workflow",
+  "repository": "https://github.com/wildcatrun/trading-agents-workflow",
+  "license": "UNLICENSED",
+  "keywords": [
+    "trading-agents",
+    "workflow",
+    "codex",
+    "mcp",
+    "governance"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Trading Agents Workflow",
+    "shortDescription": "Inspect cat-system workflow registry, logs, and Git state.",
+    "longDescription": "Provides local Codex with a governed MCP entrypoint for trading-agents-workflow readiness logs, runtime agent registry, server snapshots, and local Git status.",
+    "developerName": "Flashcat",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "MCP"
+    ],
+    "websiteURL": "https://github.com/wildcatrun/trading-agents-workflow",
+    "defaultPrompt": [
+      "Check trading-agents workflow readiness.",
+      "List registered runtime agents.",
+      "Compare workflow server state with Git."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

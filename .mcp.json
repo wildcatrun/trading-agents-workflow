@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "trading-agents-workflow": {
+      "command": "python3",
+      "args": [
+        "./scripts/trading_agents_workflow_mcp.py"
+      ],
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 240,
+      "enabled": true
+    }
+  }
+}
