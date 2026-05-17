@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 4;
+export const WORKFLOW_SCHEMA_VERSION = 5;
 export const DEFAULT_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
@@ -22,6 +22,9 @@ const ORDER_TYPES = new Set(["market", "limit", "stop", "stop_limit", "twap", "v
 const RECEIPT_STATUSES = new Set(["accepted", "rejected", "submitted", "filled", "partial", "cancelled", "failed"]);
 const RUNTIMES = new Set(["openclaw", "openclaw_route_shell", "hermes", "hermes_acp", "telegram", "local_codex", "codex", "claude_code", "claude-code", "opencode", "trading_sim", "trading_core", "system", "other"]);
 const DISPATCH_STATUSES = new Set(["queued", "sent", "acked", "failed", "cancelled"]);
+const WORKFLOW_RUN_STATUSES = new Set(["active", "waiting_human", "blocked", "completed", "stopped", "cancelled"]);
+const WORKFLOW_TASK_STATUSES = new Set(["pending", "in_progress", "done", "blocked", "failed", "cancelled"]);
+const WORKFLOW_TASK_PRIORITIES = new Set(["steer", "high", "normal", "low"]);
 const INCIDENT_STATUSES = new Set(["active", "mitigating", "monitoring", "resolved", "cancelled"]);
 const INCIDENT_MODES = new Set(["normal", "degraded", "critical-only", "paper-only", "frozen"]);
 const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout", "acp_unavailable", "transient_runtime"]);
@@ -442,9 +445,53 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,
   owner_agent TEXT NOT NULL,
   summary TEXT,
+  objective TEXT,
+  acceptance_criteria TEXT,
+  stop_condition TEXT,
+  current_phase TEXT,
+  current_decision TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS workflow_tasks (
+  task_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  parent_task_id TEXT,
+  phase TEXT,
+  owner_agent TEXT NOT NULL,
+  runtime TEXT,
+  agent_id TEXT,
+  task_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'normal',
+  depends_on_json TEXT NOT NULL DEFAULT '[]',
+  expected_artifact TEXT,
+  actual_artifact_ref TEXT,
+  receipt_required INTEGER NOT NULL DEFAULT 1,
+  human_gate_required INTEGER NOT NULL DEFAULT 0,
+  summary TEXT,
+  prompt TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  blocked_reason TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  due_at TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_tasks_workflow ON workflow_tasks(workflow_id, status, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_tasks_owner ON workflow_tasks(owner_agent, status, created_at);
+CREATE TABLE IF NOT EXISTS workflow_task_dependencies (
+  task_id TEXT NOT NULL,
+  depends_on_task_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(task_id, depends_on_task_id),
+  FOREIGN KEY(task_id) REFERENCES workflow_tasks(task_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_depends ON workflow_task_dependencies(depends_on_task_id);
 CREATE TABLE IF NOT EXISTS artifact_index (
   artifact_id TEXT PRIMARY KEY,
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,
@@ -690,6 +737,14 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated
 }
 
 async function migrateDatabase(dbFile) {
+  await ensureColumns(dbFile, "workflow_runs", [
+    ["objective", "TEXT"],
+    ["acceptance_criteria", "TEXT"],
+    ["stop_condition", "TEXT"],
+    ["current_phase", "TEXT"],
+    ["current_decision", "TEXT"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"]
+  ]);
   await ensureColumns(dbFile, "review_gates", [
     ["resume_pointer", "TEXT"],
     ["expires_at", "TEXT"],
@@ -960,6 +1015,8 @@ UNION ALL SELECT 'evidence', COUNT(*) FROM evidence_items
 UNION ALL SELECT 'memos', COUNT(*) FROM research_memos
 UNION ALL SELECT 'gates', COUNT(*) FROM review_gates
 UNION ALL SELECT 'workflows', COUNT(*) FROM workflow_runs
+UNION ALL SELECT 'workflow_tasks', COUNT(*) FROM workflow_tasks
+UNION ALL SELECT 'workflow_task_dependencies', COUNT(*) FROM workflow_task_dependencies
 UNION ALL SELECT 'protocol_objects', COUNT(*) FROM protocol_objects
 UNION ALL SELECT 'trade_intents', COUNT(*) FROM executable_trade_intents
 UNION ALL SELECT 'trading_core_receipts', COUNT(*) FROM trading_core_receipts
@@ -987,6 +1044,195 @@ UNION ALL SELECT 'telegram_outbox', COUNT(*) FROM telegram_outbox;`, { json: tru
     return { ...result, instrument, state };
   }
   return result;
+}
+
+export async function workflowRunUpsert(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const createdAt = nowIso();
+  const workflowId = String(input.workflowId || input.workflow_id || input.initiativeId || input.initiative_id || safeId("workflow")).trim();
+  const statusRaw = String(input.status || "active").trim();
+  const status = WORKFLOW_RUN_STATUSES.has(statusRaw) ? statusRaw : "active";
+  const workflowType = String(input.workflowType || input.workflow_type || input.type || "initiative").trim();
+  const payload = parseJsonValue(input.payload, input.payload || {});
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_runs(workflow_id, workflow_type, status, instrument_id, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
+VALUES (${sqlValue(workflowId)}, ${sqlValue(workflowType)}, ${sqlValue(status)}, ${sqlValue(input.instrumentId || input.instrument_id || null)}, ${sqlValue(input.ownerAgent || input.owner_agent || "main")}, ${sqlValue(input.summary || input.text || "")}, ${sqlValue(input.objective || input.goal || "")}, ${sqlValue(input.acceptanceCriteria || input.acceptance_criteria || "")}, ${sqlValue(input.stopCondition || input.stop_condition || "")}, ${sqlValue(input.phase || input.currentPhase || input.current_phase || "planning")}, ${sqlValue(input.currentDecision || input.current_decision || "")}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+ON CONFLICT(workflow_id) DO UPDATE SET
+  workflow_type=excluded.workflow_type,
+  status=excluded.status,
+  instrument_id=COALESCE(excluded.instrument_id, workflow_runs.instrument_id),
+  owner_agent=excluded.owner_agent,
+  summary=CASE WHEN excluded.summary != '' THEN excluded.summary ELSE workflow_runs.summary END,
+  objective=CASE WHEN excluded.objective != '' THEN excluded.objective ELSE workflow_runs.objective END,
+  acceptance_criteria=CASE WHEN excluded.acceptance_criteria != '' THEN excluded.acceptance_criteria ELSE workflow_runs.acceptance_criteria END,
+  stop_condition=CASE WHEN excluded.stop_condition != '' THEN excluded.stop_condition ELSE workflow_runs.stop_condition END,
+  current_phase=CASE WHEN excluded.current_phase != '' THEN excluded.current_phase ELSE workflow_runs.current_phase END,
+  current_decision=CASE WHEN excluded.current_decision != '' THEN excluded.current_decision ELSE workflow_runs.current_decision END,
+  payload_json=excluded.payload_json,
+  updated_at=excluded.updated_at;`);
+  return { workflowId, status, workflowType, dbFile: paths.dbFile };
+}
+
+export async function workflowTaskCreate(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const createdAt = nowIso();
+  const workflowId = String(input.workflowId || input.workflow_id || input.initiativeId || input.initiative_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  await workflowRunUpsert(rootDir, {
+    ...input,
+    workflowId,
+    workflowType: input.workflowType || input.workflow_type || "initiative",
+    status: input.workflowStatus || input.workflow_status || "active"
+  });
+  const taskId = String(input.taskId || input.task_id || safeId("task")).trim();
+  const statusRaw = String(input.status || "pending").trim();
+  const status = WORKFLOW_TASK_STATUSES.has(statusRaw) ? statusRaw : "pending";
+  const priorityRaw = String(input.priority || "normal").trim();
+  const priority = WORKFLOW_TASK_PRIORITIES.has(priorityRaw) ? priorityRaw : "normal";
+  const ownerAgent = String(input.ownerAgent || input.owner_agent || input.agentId || input.agent_id || "main").trim();
+  const runtime = String(input.runtime || "").trim();
+  const agentId = String(input.agentId || input.agent_id || ownerAgent).trim();
+  const dependsOn = toList(input.dependsOn || input.depends_on || input.after);
+  const payload = parseJsonValue(input.payload, input.payload || {});
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_tasks(task_id, workflow_id, parent_task_id, phase, owner_agent, runtime, agent_id, task_type, status, priority, depends_on_json, expected_artifact, actual_artifact_ref, receipt_required, human_gate_required, summary, prompt, payload_json, blocked_reason, created_by, created_at, due_at, started_at, completed_at, updated_at)
+VALUES (${sqlValue(taskId)}, ${sqlValue(workflowId)}, ${sqlValue(input.parentTaskId || input.parent_task_id || "")}, ${sqlValue(input.phase || "")}, ${sqlValue(ownerAgent)}, ${sqlValue(runtime)}, ${sqlValue(agentId)}, ${sqlValue(input.taskType || input.task_type || input.type || "task")}, ${sqlValue(status)}, ${sqlValue(priority)}, ${sqlValue(JSON.stringify(dependsOn))}, ${sqlValue(input.expectedArtifact || input.expected_artifact || "")}, ${sqlValue(input.actualArtifactRef || input.actual_artifact_ref || input.artifactRef || input.artifact_ref || "")}, ${sqlValue(input.receiptRequired ?? input.receipt_required ?? true)}, ${sqlValue(input.humanGateRequired ?? input.human_gate_required ?? false)}, ${sqlValue(input.summary || input.text || "")}, ${sqlValue(input.prompt || input.text || "")}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(input.blockedReason || input.blocked_reason || "")}, ${sqlValue(input.createdBy || input.created_by || input.from || "main")}, ${sqlValue(createdAt)}, ${sqlValue(input.dueAt || input.due_at || "")}, ${sqlValue(status === "in_progress" ? createdAt : "")}, ${sqlValue(status === "done" ? createdAt : "")}, ${sqlValue(createdAt)});`);
+  for (const dependency of dependsOn) {
+    await sqlite(paths.dbFile, `
+INSERT OR IGNORE INTO workflow_task_dependencies(task_id, depends_on_task_id, created_at)
+VALUES (${sqlValue(taskId)}, ${sqlValue(dependency)}, ${sqlValue(createdAt)});`);
+  }
+  return { taskId, workflowId, status, priority, ownerAgent, runtime, agentId, dependsOn, dbFile: paths.dbFile };
+}
+
+export async function workflowTaskUpdate(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const taskId = String(input.taskId || input.task_id || "").trim();
+  if (!taskId) throw new Error("taskId is required");
+  const currentRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_tasks WHERE task_id=${sqlValue(taskId)} LIMIT 1;`, { json: true });
+  if (!currentRows[0]) throw new Error(`workflow task not found: ${taskId}`);
+  const current = currentRows[0];
+  const updatedAt = nowIso();
+  const statusRaw = String(input.status || current.status).trim();
+  const status = WORKFLOW_TASK_STATUSES.has(statusRaw) ? statusRaw : current.status;
+  const payload = input.payload === undefined ? current.payload_json : JSON.stringify(parseJsonValue(input.payload, input.payload || {}));
+  await sqlite(paths.dbFile, `
+UPDATE workflow_tasks
+SET status=${sqlValue(status)},
+    summary=${sqlValue(input.summary ?? current.summary ?? "")},
+    prompt=${sqlValue(input.prompt ?? current.prompt ?? "")},
+    expected_artifact=${sqlValue(input.expectedArtifact ?? input.expected_artifact ?? current.expected_artifact ?? "")},
+    actual_artifact_ref=${sqlValue(input.actualArtifactRef ?? input.actual_artifact_ref ?? input.artifactRef ?? input.artifact_ref ?? current.actual_artifact_ref ?? "")},
+    blocked_reason=${sqlValue(input.blockedReason ?? input.blocked_reason ?? current.blocked_reason ?? "")},
+    payload_json=${sqlValue(payload)},
+    started_at=${sqlValue(status === "in_progress" && !current.started_at ? updatedAt : current.started_at || "")},
+    completed_at=${sqlValue(["done", "failed", "cancelled"].includes(status) && !current.completed_at ? updatedAt : current.completed_at || "")},
+    updated_at=${sqlValue(updatedAt)}
+WHERE task_id=${sqlValue(taskId)};`);
+  return { taskId, workflowId: current.workflow_id, status, dbFile: paths.dbFile };
+}
+
+export async function workflowTaskList(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const filters = [];
+  if (input.workflowId || input.workflow_id) filters.push(`workflow_id=${sqlValue(input.workflowId || input.workflow_id)}`);
+  if (input.status) filters.push(`status=${sqlValue(input.status)}`);
+  if (input.ownerAgent || input.owner_agent) filters.push(`owner_agent=${sqlValue(input.ownerAgent || input.owner_agent)}`);
+  const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const limit = Math.max(1, Math.min(500, Number(input.limit || 100)));
+  const rows = await sqlite(paths.dbFile, `
+SELECT * FROM workflow_tasks
+${where}
+ORDER BY workflow_id, CASE priority WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, created_at
+LIMIT ${limit};`, { json: true });
+  return { count: rows.length, tasks: rows, dbFile: paths.dbFile };
+}
+
+async function pendingHumanGateCount(paths, workflowId) {
+  const rows = await sqlite(paths.dbFile, `
+SELECT (
+  SELECT COUNT(*) FROM review_gates
+  WHERE workflow_id=${sqlValue(workflowId)}
+    AND (status='pending' OR (human_gate_required=1 AND status NOT IN ('approved','waived','rejected')))
+) + (
+  SELECT COUNT(*) FROM protocol_objects
+  WHERE object_type='human_gate_record'
+    AND status='pending'
+    AND (payload_json LIKE ${sqlValue(`%${workflowId}%`)} OR parent_object_id=${sqlValue(workflowId)})
+) AS count;`, { json: true });
+  return Number(rows[0]?.count || 0);
+}
+
+export async function workflowAdvance(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const checkedAt = nowIso();
+  const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
+  if (!workflowRows[0]) throw new Error(`workflow not found: ${workflowId}`);
+  const tasks = await sqlite(paths.dbFile, `SELECT * FROM workflow_tasks WHERE workflow_id=${sqlValue(workflowId)} ORDER BY created_at;`, { json: true });
+  const statusByTask = Object.fromEntries(tasks.map((task) => [task.task_id, task.status]));
+  const workflowHumanGates = await pendingHumanGateCount(paths, workflowId);
+  const blocked = tasks.filter((task) => task.status === "blocked" || task.status === "failed");
+  const inProgress = tasks.filter((task) => task.status === "in_progress");
+  const pending = tasks.filter((task) => task.status === "pending");
+  const taskHumanGates = pending.filter((task) => Number(task.human_gate_required || 0) > 0);
+  const pendingHumanGates = workflowHumanGates + taskHumanGates.length;
+  const readyTasks = pending.filter((task) => {
+    if (Number(task.human_gate_required || 0) > 0) return false;
+    const deps = toList(parseJsonValue(task.depends_on_json, []));
+    return deps.every((dep) => statusByTask[dep] === "done");
+  });
+  let decision = "needs_planning";
+  if (pendingHumanGates > 0) decision = "human_gate_pending";
+  else if (!tasks.length) decision = "needs_planning";
+  else if (readyTasks.length) decision = "dispatch_ready";
+  else if (inProgress.length) decision = "receipts_collecting";
+  else if (tasks.every((task) => task.status === "done")) decision = input.goalComplete || input.goal_complete ? "completed" : "cat_claw_summary_required";
+  else if (blocked.length) decision = "blocked";
+  else decision = "waiting_dependencies";
+
+  const dispatched = [];
+  if (Boolean(input.autoDispatch || input.auto_dispatch) && decision === "dispatch_ready") {
+    for (const task of readyTasks) {
+      if (!task.runtime || !task.agent_id) continue;
+      const dispatch = await meetingDispatch(rootDir, {
+        workflowRootDir: input.workflowRootDir || input.workflow_root,
+        meetingId: input.meetingId || input.meeting_id || workflowId,
+        workflowId,
+        traceId: input.traceId || input.trace_id || `${workflowId}:${task.task_id}`,
+        idempotencyKey: `workflow_task:${task.task_id}:dispatch`,
+        runtime: task.runtime,
+        agentId: task.agent_id,
+        dispatchType: task.task_type || "workflow_task",
+        priority: task.priority === "steer" ? "steer" : "normal",
+        prompt: task.prompt || task.summary || "",
+        createdBy: input.createdBy || input.created_by || "main",
+        payload: { taskId: task.task_id, expectedArtifact: task.expected_artifact || "", workflowAdvance: true }
+      });
+      await workflowTaskUpdate(rootDir, { workflowRootDir: input.workflowRootDir || input.workflow_root, taskId: task.task_id, status: "in_progress" });
+      dispatched.push({ taskId: task.task_id, dispatchId: dispatch.dispatchId, runtime: task.runtime, agentId: task.agent_id, status: dispatch.status, deduped: dispatch.deduped || false });
+    }
+    if (dispatched.length) decision = "dispatching";
+  }
+
+  await sqlite(paths.dbFile, `
+UPDATE workflow_runs
+SET current_decision=${sqlValue(decision)}, updated_at=${sqlValue(checkedAt)},
+    status=${sqlValue(decision === "completed" ? "completed" : decision === "human_gate_pending" ? "waiting_human" : decision === "blocked" ? "blocked" : workflowRows[0].status)}
+WHERE workflow_id=${sqlValue(workflowId)};`);
+  const summary = {
+    total: tasks.length,
+    pending: Math.max(0, pending.length - dispatched.length),
+    ready: Math.max(0, readyTasks.length - dispatched.length),
+    inProgress: inProgress.length + dispatched.length,
+    done: tasks.filter((task) => task.status === "done").length,
+    blocked: blocked.length,
+    pendingHumanGates,
+    workflowHumanGates,
+    taskHumanGates: taskHumanGates.length
+  };
+  return { workflowId, decision, checkedAt, summary, readyTasks, blockedTasks: blocked, dispatched, dbFile: paths.dbFile };
 }
 
 export async function instrumentUpsert(rootDir, input) {
@@ -2309,6 +2555,18 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.topology":
     case "trading_workflow.topology":
       return workflowTopology(rootDir, input);
+    case "workflow.run.upsert":
+    case "workflow.initiative.upsert":
+      return workflowRunUpsert(rootDir, input);
+    case "workflow.task.create":
+      return workflowTaskCreate(rootDir, input);
+    case "workflow.task.update":
+      return workflowTaskUpdate(rootDir, input);
+    case "workflow.task.list":
+    case "workflow.tasks":
+      return workflowTaskList(rootDir, input);
+    case "workflow.advance":
+      return workflowAdvance(rootDir, input);
     case "runtime.agent":
     case "runtime.agent.upsert":
       return runtimeAgentUpsert(rootDir, input);

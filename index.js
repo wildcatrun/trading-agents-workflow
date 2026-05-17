@@ -49,6 +49,13 @@ const toolParameters = {
         "workflow.status",
         "workflow.readiness",
         "workflow.topology",
+        "workflow.run.upsert",
+        "workflow.initiative.upsert",
+        "workflow.task.create",
+        "workflow.task.update",
+        "workflow.task.list",
+        "workflow.tasks",
+        "workflow.advance",
         "protocol.record",
         "runtime.agent.upsert",
         "runtime.bridge",
@@ -149,6 +156,21 @@ const toolParameters = {
     gateId: { type: "string" },
     reviewerAgent: { type: "string" },
     workflowId: { type: "string" },
+    workflowType: { type: "string" },
+    initiativeId: { type: "string" },
+    objective: { type: "string" },
+    acceptanceCriteria: { type: "string" },
+    stopCondition: { type: "string" },
+    taskId: { type: "string" },
+    parentTaskId: { type: "string" },
+    taskType: { type: "string" },
+    dependsOn: { type: "array", items: { type: "string" } },
+    expectedArtifact: { type: "string" },
+    actualArtifactRef: { type: "string" },
+    receiptRequired: { type: "boolean" },
+    autoDispatch: { type: "boolean" },
+    goalComplete: { type: "boolean" },
+    limit: { type: "number" },
     traceId: { type: "string" },
     maxAttempts: { type: "number" },
     staleDays: { type: "number" }
@@ -538,6 +560,127 @@ function registerCli(api) {
         console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
           action: "workflow.topology",
           workflowRootDir: options.workflowRoot
+        }), null, 2));
+      });
+
+    command.command("workflow-run")
+      .requiredOption("--workflow <workflowId>", "Workflow or initiative id")
+      .option("--type <workflowType>", "Workflow type", "initiative")
+      .option("--status <status>", "active, waiting_human, blocked, completed, stopped", "active")
+      .option("--owner <agent>", "Owner agent", "main")
+      .option("--summary <summary>", "Summary")
+      .option("--objective <objective>", "Objective")
+      .option("--acceptance <criteria>", "Acceptance criteria")
+      .option("--acceptance-criteria <criteria>", "Acceptance criteria")
+      .option("--stop-condition <condition>", "Stop condition")
+      .option("--phase <phase>", "Current phase", "planning")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.run.upsert",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          workflowType: options.type,
+          status: options.status,
+          ownerAgent: options.owner,
+          summary: options.summary,
+          objective: options.objective,
+          acceptanceCriteria: options.acceptanceCriteria || options.acceptance,
+          stopCondition: options.stopCondition,
+          phase: options.phase
+        }), null, 2));
+      });
+
+    command.command("workflow-task")
+      .requiredOption("--workflow <workflowId>", "Workflow id")
+      .option("--task <taskId>", "Task id")
+      .option("--owner <agent>", "Owner agent", "main")
+      .option("--runtime <runtime>", "Runtime")
+      .option("--agent <agentId>", "Runtime agent id")
+      .option("--type <taskType>", "Task type", "task")
+      .option("--phase <phase>", "Workflow phase")
+      .option("--priority <priority>", "steer, high, normal, low", "normal")
+      .option("--after <taskIds>", "Comma-separated dependency task ids")
+      .option("--summary <summary>", "Task summary")
+      .option("--prompt <prompt>", "Task prompt")
+      .option("--expected-artifact <artifact>", "Expected artifact")
+      .option("--human-gate", "Requires Human Gate before dispatch")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.task.create",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          taskId: options.task,
+          ownerAgent: options.owner,
+          runtime: options.runtime,
+          agentId: options.agent,
+          taskType: options.type,
+          phase: options.phase,
+          priority: options.priority,
+          dependsOn: options.after ? options.after.split(",").map((item) => item.trim()).filter(Boolean) : [],
+          summary: options.summary,
+          prompt: options.prompt,
+          expectedArtifact: options.expectedArtifact,
+          humanGateRequired: Boolean(options.humanGate)
+        }), null, 2));
+      });
+
+    command.command("workflow-task-update")
+      .requiredOption("--task <taskId>", "Task id")
+      .option("--status <status>", "pending, in_progress, done, blocked, failed, cancelled")
+      .option("--artifact <artifactRef>", "Actual artifact reference")
+      .option("--blocked-reason <reason>", "Blocked reason")
+      .option("--summary <summary>", "Task summary")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.task.update",
+          workflowRootDir: options.workflowRoot,
+          taskId: options.task,
+          status: options.status,
+          actualArtifactRef: options.artifact,
+          blockedReason: options.blockedReason,
+          summary: options.summary
+        }), null, 2));
+      });
+
+    command.command("workflow-tasks")
+      .option("--workflow <workflowId>", "Workflow id")
+      .option("--status <status>", "Task status")
+      .option("--owner <agent>", "Owner agent")
+      .option("--limit <limit>", "Limit", "100")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.task.list",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          status: options.status,
+          ownerAgent: options.owner,
+          limit: Number(options.limit)
+        }), null, 2));
+      });
+
+    command.command("workflow-advance")
+      .requiredOption("--workflow <workflowId>", "Workflow id")
+      .option("--meeting <meetingId>", "Meeting id for generated dispatches")
+      .option("--auto-dispatch", "Create dispatches for ready tasks")
+      .option("--goal-complete", "Mark workflow completed when all tasks are done")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.advance",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          autoDispatch: Boolean(options.autoDispatch),
+          goalComplete: Boolean(options.goalComplete)
         }), null, 2));
       });
 

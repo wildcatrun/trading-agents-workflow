@@ -7,6 +7,11 @@ function usage() {
   trading-agents-workflow workflow-status [--asset TYPE --symbol SYMBOL] [--root DIR]
   trading-agents-workflow workflow-readiness [--active-checks] [--root DIR]
   trading-agents-workflow workflow-topology [--root DIR]
+  trading-agents-workflow workflow-run --workflow ID [--objective TEXT] [--acceptance-criteria TEXT] [--stop-condition TEXT] [--phase PHASE] [--root DIR]
+  trading-agents-workflow workflow-task --workflow ID [--task ID] [--owner AGENT] [--runtime RUNTIME] [--agent AGENT] [--after TASK_IDS] [--expected-artifact PATH] [--root DIR]
+  trading-agents-workflow workflow-task-update --task ID [--status STATUS] [--artifact PATH] [--blocked-reason TEXT] [--root DIR]
+  trading-agents-workflow workflow-tasks [--workflow ID] [--status STATUS] [--owner AGENT] [--limit N] [--root DIR]
+  trading-agents-workflow workflow-advance --workflow ID [--meeting ID] [--auto-dispatch] [--goal-complete] [--root DIR]
   trading-agents-workflow runtime-agent --runtime RUNTIME --agent AGENT [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
@@ -82,6 +87,69 @@ function toAction({ command, positional, options }) {
       return { root, input: { action: "workflow.readiness", activeChecks: options["active-checks"] === "true" } };
     case "workflow-topology":
       return { root, input: { action: "workflow.topology" } };
+    case "workflow-run":
+      return {
+        root,
+        input: {
+          action: "workflow.run.upsert",
+          workflowId: options.workflow,
+          workflowType: options.type,
+          status: options.status,
+          ownerAgent: options.owner,
+          summary: options.summary,
+          objective: options.objective,
+          acceptanceCriteria: options["acceptance-criteria"] || options.acceptance,
+          stopCondition: options["stop-condition"],
+          phase: options.phase
+        }
+      };
+    case "workflow-task":
+      return {
+        root,
+        input: {
+          action: "workflow.task.create",
+          workflowId: options.workflow,
+          taskId: options.task,
+          parentTaskId: options.parent,
+          ownerAgent: options.owner,
+          runtime: options.runtime,
+          agentId: options.agent,
+          taskType: options.type,
+          phase: options.phase,
+          priority: options.priority,
+          dependsOn: options.after ? String(options.after).split(",").map((item) => item.trim()).filter(Boolean) : [],
+          summary: options.summary,
+          prompt: options.prompt,
+          expectedArtifact: options["expected-artifact"],
+          receiptRequired: options["receipt-required"] !== "false",
+          humanGateRequired: options["human-gate"] === "true"
+        }
+      };
+    case "workflow-task-update":
+      return {
+        root,
+        input: {
+          action: "workflow.task.update",
+          taskId: options.task,
+          status: options.status,
+          actualArtifactRef: options.artifact,
+          blockedReason: options["blocked-reason"],
+          summary: options.summary
+        }
+      };
+    case "workflow-tasks":
+      return { root, input: { action: "workflow.task.list", workflowId: options.workflow, status: options.status, ownerAgent: options.owner, limit: options.limit } };
+    case "workflow-advance":
+      return {
+        root,
+        input: {
+          action: "workflow.advance",
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          autoDispatch: options["auto-dispatch"] === "true",
+          goalComplete: options["goal-complete"] === "true"
+        }
+      };
     case "runtime-agent":
       return { root, input: { action: "runtime.agent.upsert", runtime: options.runtime, agentId: options.agent, displayName: options.name, role: options.role, endpointRef: options.endpoint } };
     case "meeting-participant":

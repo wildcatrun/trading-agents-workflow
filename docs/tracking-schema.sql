@@ -116,9 +116,53 @@ CREATE TABLE workflow_runs (
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,
   owner_agent TEXT NOT NULL,
   summary TEXT,
+  objective TEXT,
+  acceptance_criteria TEXT,
+  stop_condition TEXT,
+  current_phase TEXT,
+  current_decision TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE workflow_tasks (
+  task_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  parent_task_id TEXT,
+  phase TEXT,
+  owner_agent TEXT NOT NULL,
+  runtime TEXT,
+  agent_id TEXT,
+  task_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'normal',
+  depends_on_json TEXT NOT NULL DEFAULT '[]',
+  expected_artifact TEXT,
+  actual_artifact_ref TEXT,
+  receipt_required INTEGER NOT NULL DEFAULT 1,
+  human_gate_required INTEGER NOT NULL DEFAULT 0,
+  summary TEXT,
+  prompt TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  blocked_reason TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  due_at TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_workflow_tasks_workflow ON workflow_tasks(workflow_id, status, priority, created_at);
+CREATE INDEX idx_workflow_tasks_owner ON workflow_tasks(owner_agent, status, created_at);
+CREATE TABLE workflow_task_dependencies (
+  task_id TEXT NOT NULL,
+  depends_on_task_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(task_id, depends_on_task_id),
+  FOREIGN KEY(task_id) REFERENCES workflow_tasks(task_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_task_dependencies_depends ON workflow_task_dependencies(depends_on_task_id);
 CREATE TABLE artifact_index (
   artifact_id TEXT PRIMARY KEY,
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,

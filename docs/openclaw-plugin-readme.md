@@ -21,6 +21,7 @@ v0.6 upgrades the old meeting-only plugin into a unified trading workflow substr
 - `hermes_acp` runtime bridge for invoking Hermes profile agents through OpenClaw ACPX
 - Telegram live outbox and Human Gate request loop for Flashcat confirmation
 - Stability governance fields for durable dispatches, trace correlation, idempotency, retry taxonomy, readiness snapshots, side-effect ledger, runtime run records, and incident state documents
+- Workflow task pool for long-running initiatives, task dependencies, expected artifacts, and supervisor-style advance decisions
 
 This is not an independent agent runtime, not a Gateway replacement, not a Hermes runtime, and not a live trading executor. It does not call trading_core or Telegram directly; it records reviewed intents, dispatch queues, transcripts, Telegram outbox entries, and later records trading_core receipts.
 
@@ -124,6 +125,8 @@ SQLite stores control-plane state and queryable indexes:
 - `research_memos`
 - `review_gates`
 - `workflow_runs`
+- `workflow_tasks`
+- `workflow_task_dependencies`
 - `artifact_index`
 - `protocol_objects`
 - `executable_trade_intents`
@@ -219,6 +222,13 @@ Workflow and tracking:
 
 - `workflow.init`
 - `workflow.status`
+- `workflow.run.upsert`
+- `workflow.initiative.upsert`
+- `workflow.task.create`
+- `workflow.task.update`
+- `workflow.task.list`
+- `workflow.tasks`
+- `workflow.advance`
 - `workflow.readiness`
 - `workflow.topology`
 - `protocol.record`
@@ -246,6 +256,24 @@ Workflow and tracking:
 - `incident.state`
 - `gate.review`
 - `cat_claw.audit`
+
+## Workflow Task Pool
+
+Use `workflow.run.upsert` for durable goals that outlive one meeting. A run should declare the objective, acceptance criteria, stop condition, and current phase so cat-brain `main` can keep pushing the workflow instead of only reporting that a discussion happened.
+
+Use `workflow.task.create` to turn the next phase into concrete tasks. Each task should name the owner agent, execution runtime, priority, dependencies, expected artifact, receipt requirement, and whether a Human Gate is required before the task can be treated as complete.
+
+Use `workflow.advance` after a discussion, dispatch batch, receipt collection cycle, or artifact review. It returns a structured decision:
+
+- `needs_planning`: no actionable task exists yet.
+- `dispatch_ready`: pending tasks are unblocked and can be dispatched.
+- `receipts_collecting`: work is in progress or finished tasks still need receipts/artifacts.
+- `cat_claw_summary_required`: all required work is done and `cat_claw` should package the conclusion or next Human Gate.
+- `human_gate_pending`: a confirmation gate blocks continuation.
+- `blocked`: no task can advance without intervention.
+- `completed`: the run meets its stated acceptance or explicit completion condition.
+
+With `autoDispatch=true`, `workflow.advance` records `meeting.dispatch` rows for ready tasks and moves them to `in_progress`. It does not bypass Gateway, runtime registry, receipt tracking, or Human Gate review.
 
 ### Telegram Live Targets
 
@@ -320,6 +348,10 @@ node bin/cat-meeting-governance.mjs evidence --asset stock --symbol 000001.SZ --
 node bin/cat-meeting-governance.mjs research-memo --asset stock --symbol 000001.SZ --title "Demo memo" --summary "sample memo" --conclusion "continue tracking" --root "$ROOT"
 node bin/cat-meeting-governance.mjs gate-review --asset stock --symbol 000001.SZ --gate risk_gate --status pending --summary "risk review required" --human-gate --root "$ROOT"
 node bin/cat-meeting-governance.mjs cat_claw-audit --root "$ROOT"
+
+node bin/cat-meeting-governance.mjs workflow-run --workflow demo-initiative --objective "Improve long-term stock tracking" --acceptance-criteria "next action package exists" --stop-condition "Flashcat accepts or blocks" --phase planning --root "$ROOT"
+node bin/cat-meeting-governance.mjs workflow-task --workflow demo-initiative --task demo-task-001 --owner main --runtime openclaw --agent main --summary "Create next phase plan" --expected-artifact "workflow artifact or minutes path" --root "$ROOT"
+node bin/cat-meeting-governance.mjs workflow-advance --workflow demo-initiative --root "$ROOT"
 
 PROPOSAL=$(node bin/cat-meeting-governance.mjs trade-proposal --asset stock --symbol 000001.SZ --summary "cat_heart proposal demo" --side buy --quantity 100 --root "$ROOT")
 RISK_ID=demo-risk-001

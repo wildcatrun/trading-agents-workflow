@@ -6,6 +6,12 @@ This repository tracks durable workflow assets: governance logs, bridge/message 
 
 Runtime SQLite databases and backup databases are intentionally excluded from Git. Keep credentials, raw trading account data, OAuth tokens, private keys, and local environment files out of this repository.
 
+## Workflow Progression
+
+`trading-agents-workflow` is evolving from meeting capture into the durable task board for cat-system work. A long-running goal should be represented as a `workflow_run` with objective, acceptance criteria, stop condition, current phase, and current decision. Concrete work belongs in `workflow_tasks`, where each task has an owner agent, runtime, status, priority, dependency list, expected artifact, receipt requirement, and optional Human Gate requirement.
+
+`workflow.advance` is the first supervisor loop. It inspects tasks, dependencies, receipts, artifacts, and Human Gate state, then decides whether to plan, dispatch ready work, keep collecting receipts, ask `cat_claw` for a summary package, mark the run blocked, or complete it.
+
 ## OpenClaw Plugin
 
 This repository also contains the OpenClaw runtime plugin source that is currently deployed on the development server under:
@@ -78,4 +84,6 @@ Hermes ACP dispatch.
 
 - Preserve ISO timestamps on governance records and receipts.
 - Keep workflow dispatch, receipt, runtime and side-effect records auditable.
+- Keep each active workflow tied to explicit next actions; meeting conclusions that require Flashcat confirmation should include the next action package for `cat_claw`, not just a passive summary.
+- Treat the public Wanman repository as a limited architecture reference. The target behavior is the more advanced continuous supervisor loop observed on the live Wanman product: decompose, dispatch, collect artifacts, review, and continue until accepted, blocked, or stopped.
 - Do not commit runtime databases, local credentials, private keys, raw account data, generated dependency directories, or large archives.
