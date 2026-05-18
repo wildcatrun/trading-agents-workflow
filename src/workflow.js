@@ -28,6 +28,8 @@ const WORKFLOW_TASK_PRIORITIES = new Set(["steer", "high", "normal", "low"]);
 const INCIDENT_STATUSES = new Set(["active", "mitigating", "monitoring", "resolved", "cancelled"]);
 const INCIDENT_MODES = new Set(["normal", "degraded", "critical-only", "paper-only", "frozen"]);
 const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout", "acp_unavailable", "transient_runtime"]);
+const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_report"]);
+const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = "8390724843";
 
 function nowIso() {
   return new Date().toISOString();
@@ -2052,6 +2054,8 @@ async function appendTranscript(paths, meetingId, line) {
 
 async function enqueueTelegramOutbox(paths, input) {
   const outboxId = input.outboxId || input.outbox_id || safeId("tg");
+  const existing = await sqlite(paths.dbFile, `SELECT outbox_id, status FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`, { json: true });
+  if (existing[0]) return { outboxId, status: existing[0].status, deduped: true };
   const createdAt = nowIso();
   const payload = parseJsonValue(input.payload, input.payload || {});
   await sqlite(paths.dbFile, `
@@ -2069,6 +2073,72 @@ VALUES (${sqlValue(outboxId)}, ${sqlValue(input.meetingId || input.meeting_id ||
     createdAt
   });
   return { outboxId, status: input.status || "queued" };
+}
+
+function telegramChunks(text, limit = 3500) {
+  const value = String(text || "").trim();
+  if (value.length <= limit) return [value];
+  const chunks = [];
+  let remaining = value;
+  while (remaining.length > limit) {
+    let splitAt = remaining.lastIndexOf("\n", limit);
+    if (splitAt < Math.floor(limit * 0.5)) splitAt = limit;
+    chunks.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks.map((chunk, index) => chunks.length > 1 ? `[${index + 1}/${chunks.length}]\n${chunk}` : chunk);
+}
+
+async function deliverTelegramOutboxRow(paths, row, input = {}) {
+  const payload = parseJsonValue(row.payload_json, {});
+  const account = String(input.account || payload.account || "cat_claw").trim();
+  const target = String(input.target || row.target_ref || DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID).trim();
+  const openclawBin = String(input.openclawBin || input.openclaw_bin || "openclaw").trim();
+  const timeoutSeconds = Math.max(5, Math.min(120, Number(input.timeoutSeconds || input.timeout_seconds || 30)));
+  const chunks = telegramChunks(row.text);
+  const deliveredAt = nowIso();
+  const receipts = [];
+  try {
+    for (const chunk of chunks) {
+      const { stdout, stderr } = await execFileAsync(openclawBin, [
+        "message",
+        "send",
+        "--channel",
+        "telegram",
+        "--account",
+        account,
+        "--target",
+        target,
+        "--message",
+        chunk,
+        "--json"
+      ], {
+        cwd: paths.root,
+        timeout: timeoutSeconds * 1000,
+        maxBuffer: 4 * 1024 * 1024
+      });
+      const parsed = parseJsonValue(String(stdout || "").trim(), null);
+      if (!parsed || parsed.payload?.ok === false || parsed.ok === false) {
+        throw new Error(`telegram send failed: ${String(stdout || stderr || "").slice(0, 1000)}`);
+      }
+      receipts.push(parsed.payload || parsed);
+    }
+    const updatedPayload = { ...payload, delivery: { channel: "telegram", account, target, deliveredAt, receipts } };
+    await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='sent', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(deliveredAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)};`);
+    return { outboxId: row.outbox_id, status: "sent", account, target, parts: chunks.length, receipts };
+  } catch (error) {
+    const failedAt = nowIso();
+    const updatedPayload = { ...payload, delivery: { channel: "telegram", account, target, failedAt, error: String(error?.message || error).slice(0, 2000), receipts } };
+    await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='failed', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(failedAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)};`);
+    return { outboxId: row.outbox_id, status: "failed", account, target, error: String(error?.message || error).slice(0, 2000), receipts };
+  }
 }
 
 async function ensureRuntimeAgent(paths, input) {
@@ -2589,7 +2659,28 @@ VALUES (${sqlValue(messageId)}, ${sqlValue(meetingId)}, ${sqlValue(runtime)}, ${
       await sqlite(paths.dbFile, `UPDATE mixed_meeting_messages SET telegram_live_status='failed_missing_target' WHERE message_id=${sqlValue(messageId)};`);
     }
   }
-  return { meetingId, messageId, runtime, agentId, transcriptPath, telegramOutbox, dbFile: paths.dbFile };
+  let reportOutbox = null;
+  if (REPORT_MESSAGE_TYPES.has(messageType) && payload.deliverySucceeded !== true) {
+    const dispatchId = String(payload.dispatchId || payload.dispatch_id || "").trim();
+    reportOutbox = await enqueueTelegramOutbox(paths, {
+      outboxId: dispatchId ? `report-${cleanFileSegment(dispatchId)}` : `report-${messageId}`,
+      meetingId,
+      targetKind: "private",
+      targetRef: DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
+      messageType,
+      text,
+      payload: {
+        ...payload,
+        messageId,
+        workflowId: payload.workflowId || payload.workflow_id || meetingId,
+        dispatchId,
+        reportDeliveryRequired: true,
+        account: "cat_claw",
+        target: DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID
+      }
+    });
+  }
+  return { meetingId, messageId, runtime, agentId, transcriptPath, telegramOutbox, reportOutbox, dbFile: paths.dbFile };
 }
 
 function hermesProfileFromEndpoint(endpointRef, agentId) {
@@ -3170,6 +3261,21 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'disperse', 'queued', ${sq
 
 export async function telegramOutbox(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
+  if (input.operation === "deliver" || input.deliver) {
+    const limit = Math.max(1, Math.min(20, Number(input.limit || 5)));
+    const outboxId = String(input.outboxId || input.outbox_id || "").trim();
+    const where = outboxId ? `outbox_id=${sqlValue(outboxId)}` : `status=${sqlValue(input.status || "queued")}`;
+    const rows = await sqlite(paths.dbFile, `
+SELECT * FROM telegram_outbox
+WHERE ${where}
+ORDER BY created_at
+LIMIT ${limit};`, { json: true });
+    const results = [];
+    for (const row of rows) {
+      results.push(await deliverTelegramOutboxRow(paths, row, input));
+    }
+    return { operation: "deliver", count: rows.length, results, dbFile: paths.dbFile };
+  }
   if (input.operation === "mark" || input.operation === "update") {
     const outboxId = String(input.outboxId || input.outbox_id || "").trim();
     if (!outboxId) throw new Error("outboxId is required");

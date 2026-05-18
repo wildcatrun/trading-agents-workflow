@@ -323,6 +323,14 @@ CLI example:
 node bin/cat-meeting-governance.mjs workflow-supervise --workflow demo-initiative --meeting demo-initiative --auto-dispatch --root "$ROOT"
 ```
 
+When a `workflow_secretary_report` or `human_gate_report` runtime message is acked but does not prove IM delivery, `meeting.ingest` automatically creates a private Telegram outbox item for Flashcat. Deliver it explicitly through the governed Gateway path:
+
+```bash
+node bin/cat-meeting-governance.mjs telegram-outbox --deliver --account cat_claw --target 8390724843 --root "$ROOT"
+```
+
+This makes Cat Claw reporting two-phase: runtime report produced, then IM delivery receipt recorded. Workflow completion should not assume Flashcat received a Human Gate package until the outbox row is `sent`.
+
 ## Workflow Checkpoints
 
 Use `workflow.checkpoint` whenever a workflow phase ends, context approaches the compaction threshold, a Human Gate package is submitted, or a new session needs to continue prior work. The checkpoint is the durable recovery package for cat-brain `main`; it keeps the session small by storing only the minimum resumable state plus artifact references.

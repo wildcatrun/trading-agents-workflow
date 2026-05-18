@@ -24,7 +24,7 @@ function usage() {
   trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--from AGENT] [--channel CHANNEL_ID] [--root DIR]
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
-  trading-agents-workflow telegram-outbox [--status queued|sent|failed] [--limit N] [--mark OUTBOX_ID] [--root DIR]
+  trading-agents-workflow telegram-outbox [--status queued|sent|failed] [--limit N] [--mark OUTBOX_ID] [--deliver] [--account cat_claw] [--target CHAT_ID] [--root DIR]
   trading-agents-workflow trade-proposal --asset TYPE --symbol SYMBOL [--summary TEXT] [--side SIDE] [--quantity N] [--order-type TYPE] [--proposal-id ID] [--payload JSON] [--root DIR]
   trading-agents-workflow risk-decision --proposal ID [--status approved|rejected|pending] [--summary TEXT] [--reviewer AGENT] [--risk-decision-id ID] [--root DIR]
   trading-agents-workflow human-gate-workflow [--human-gate-id ID] [--parent ID] [--gate TYPE] [--status approved|rejected|pending] [--text TEXT] [--assurance mtls] [--root DIR]
@@ -231,7 +231,20 @@ function toAction({ command, positional, options }) {
     case "meeting-disperse":
       return { root, input: { action: "meeting.disperse", meetingId: options.meeting, text: options.text, targets: listOption(options.target), from: options.from } };
     case "telegram-outbox":
-      return { root, input: { action: "telegram.outbox", operation: options.mark ? "mark" : "list", outboxId: options.mark, status: options.status, limit: options.limit } };
+      return {
+        root,
+        input: {
+          action: "telegram.outbox",
+          operation: options.deliver === "true" ? "deliver" : options.mark ? "mark" : "list",
+          outboxId: options.mark || options.outbox,
+          status: options.status,
+          limit: options.limit,
+          account: options.account,
+          target: options.target,
+          openclawBin: options["openclaw-bin"],
+          timeoutSeconds: options["timeout-seconds"]
+        }
+      };
     case "trade-proposal":
       return { root, input: { action: "trade.proposal", assetType: options.asset, symbol: options.symbol, summary: options.summary, side: options.side, quantity: options.quantity, orderType: options["order-type"], proposalId: options["proposal-id"], from: options.from, payload: options.payload } };
     case "risk-decision":
