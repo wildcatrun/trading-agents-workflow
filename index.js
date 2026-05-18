@@ -69,7 +69,10 @@ const toolParameters = {
         "meeting.dispatch",
         "meeting.ingest",
         "human_gate.request",
+        "human_gate.button_callback",
+        "human_gate.callback",
         "human_gate.inbox",
+        "human_gate.console",
         "human_gate.batch_inbox",
         "meeting.resume",
         "meeting.disperse",
@@ -175,6 +178,9 @@ const toolParameters = {
     dependsOn: { type: "array", items: { type: "string" } },
     expectedArtifact: { type: "string" },
     actualArtifactRef: { type: "string" },
+    buttons: {},
+    options: {},
+    choices: {},
     receiptRequired: { type: "boolean" },
     autoDispatch: { type: "boolean" },
     goalComplete: { type: "boolean" },
@@ -247,6 +253,10 @@ const toolParameters = {
     targetKind: { type: "string" },
     targetRef: { type: "string" },
     eventId: { type: "string" },
+    token: { type: "string" },
+    callbackToken: { type: "string" },
+    callbackChatId: { type: "string" },
+    callbackMessageId: { type: "string" },
     targets: { type: "array", items: { type: "string" } },
     limit: { type: "number" },
     timeoutSeconds: { type: "number" },
@@ -842,6 +852,7 @@ function registerCli(api) {
       .requiredOption("--meeting <meetingId>", "Meeting id")
       .requiredOption("--text <text>", "Question for Flashcat")
       .option("--gate <gateType>", "Gate type", "fact_confirmation")
+      .option("--button <jsonOrLabel...>", "Button option JSON or label")
       .option("--from <agent>", "Requester", "cat_claw")
       .option("--target <chatId>", "Telegram target", "8390724843")
       .option("--account <accountId>", "Telegram account", "cat_claw")
@@ -856,6 +867,7 @@ function registerCli(api) {
           meetingId: options.meeting,
           text: options.text,
           gateType: options.gate,
+          buttons: options.button || [],
           from: options.from,
           target: options.target,
           account: options.account,
@@ -883,6 +895,48 @@ function registerCli(api) {
           limit: Number(options.limit),
           target: options.target,
           from: options.from
+        }), null, 2));
+      });
+
+    command.command("human-gate-console")
+      .option("--workflow <workflowId>", "Workflow id")
+      .option("--batch <batchId>", "Batch id")
+      .option("--title <title>", "Console title")
+      .option("--limit <limit>", "Limit", "100")
+      .option("--target <chatId>", "Telegram target", "8390724843")
+      .option("--from <agent>", "Creator", "cat_claw")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "human_gate.console",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          batchId: options.batch,
+          title: options.title,
+          limit: Number(options.limit),
+          target: options.target,
+          from: options.from
+        }), null, 2));
+      });
+
+    command.command("human-gate-callback")
+      .requiredOption("--token <token>", "Human Gate button callback token")
+      .option("--actor <actor>", "Actor", "flashcat")
+      .option("--from <actor>", "Actor fallback")
+      .option("--runtime <runtime>", "Resume dispatch runtime", "openclaw")
+      .option("--agent <agent>", "Resume dispatch agent", "main")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "human_gate.button_callback",
+          workflowRootDir: options.workflowRoot,
+          token: options.token,
+          actor: options.actor || options.from,
+          runtime: options.runtime,
+          agentId: options.agent,
+          sourceSystem: "human_gate_console"
         }), null, 2));
       });
 
@@ -1257,6 +1311,38 @@ function registerCli(api) {
   });
 }
 
+function registerHumanGateButtons(api) {
+  if (typeof api.registerInteractiveHandler !== "function") return;
+  api.registerInteractiveHandler({
+    channel: "telegram",
+    namespace: "tawhg",
+    handler: async (ctx) => {
+      const root = resolveRoot(api);
+      const result = await runAction(root, {
+        action: "human_gate.button_callback",
+        token: ctx.callback?.payload,
+        actor: ctx.senderId || "flashcat",
+        sourceSystem: "telegram_button",
+        callbackChatId: ctx.callback?.chatId,
+        callbackMessageId: ctx.callback?.messageId,
+        payload: {
+          accountId: ctx.accountId,
+          senderId: ctx.senderId,
+          senderUsername: ctx.senderUsername,
+          callbackData: ctx.callback?.data
+        }
+      });
+      if (result.status === "approved" || result.status === "rejected") {
+        await ctx.respond?.clearButtons?.();
+      }
+      if (result.replyText) {
+        await ctx.respond?.reply?.({ text: result.replyText });
+      }
+      return { handled: true };
+    }
+  });
+}
+
 export default definePluginEntry({
   id: "trading-agents-workflow",
   name: "Trading Agents Workflow",
@@ -1283,5 +1369,6 @@ export default definePluginEntry({
       execute
     });
     registerCli(api);
+    registerHumanGateButtons(api);
   }
 });

@@ -327,6 +327,30 @@ CREATE TABLE telegram_outbox (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX idx_telegram_outbox_status ON telegram_outbox(status, created_at);
+CREATE TABLE human_gate_buttons (
+  button_id TEXT PRIMARY KEY,
+  callback_token TEXT NOT NULL UNIQUE,
+  human_gate_id TEXT NOT NULL,
+  workflow_id TEXT,
+  meeting_id TEXT,
+  label TEXT NOT NULL,
+  decision_status TEXT NOT NULL,
+  button_role TEXT,
+  artifact_ref TEXT,
+  summary TEXT,
+  prompt TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  selected_by TEXT,
+  selected_at TEXT,
+  callback_chat_id TEXT,
+  callback_message_id TEXT
+);
+CREATE INDEX idx_human_gate_buttons_gate ON human_gate_buttons(human_gate_id, status, created_at);
+CREATE INDEX idx_human_gate_buttons_workflow ON human_gate_buttons(workflow_id, status, created_at);
 CREATE TABLE human_gate_batches (
   batch_id TEXT PRIMARY KEY,
   status TEXT NOT NULL,

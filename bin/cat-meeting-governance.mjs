@@ -21,8 +21,10 @@ function usage() {
   trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--root DIR]
   trading-agents-workflow meeting-ingest --meeting ID --runtime RUNTIME --agent AGENT --text TEXT [--type TYPE] [--phase PHASE] [--root DIR]
   trading-agents-workflow runtime-bridge [--runtime openclaw|hermes|hermes_acp] [--dispatch ID] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--openclaw-bin PATH] [--dry-run] [--report-delivery false] [--root DIR]
-  trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--from AGENT] [--target CHAT_ID] [--channel CHANNEL_ID] [--deliver true|false] [--root DIR]
+  trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--button JSON_OR_LABEL] [--from AGENT] [--target CHAT_ID] [--channel CHANNEL_ID] [--deliver true|false] [--root DIR]
   trading-agents-workflow human-gate-inbox [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
+  trading-agents-workflow human-gate-console [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
+  trading-agents-workflow human-gate-callback --token TOKEN [--actor flashcat] [--runtime openclaw] [--agent main] [--root DIR]
   trading-agents-workflow human-gate-resume --workflow ID [--meeting ID] [--status approved|rejected] [--text TEXT] [--human-gate-id ID] [--root DIR]
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
@@ -228,18 +230,31 @@ function toAction({ command, positional, options }) {
     case "runtime-bridge":
       return { root, input: { action: "runtime.bridge.drain", runtime: options.runtime, dispatchId: options.dispatch || options["dispatch-id"], limit: options.limit, timeoutSeconds: options["timeout-seconds"], sessionMode: options["session-mode"], acpBackend: options["acp-backend"], acpAgent: options["acp-agent"], sessionKey: options["session-key"], dryRun: options["dry-run"] === "true", hermesBin: options["hermes-bin"], openclawBin: options["openclaw-bin"], reportDelivery: options["report-delivery"] } };
     case "human-gate-request":
-      return { root, input: { action: "human_gate.request", meetingId: options.meeting, text: options.text, gateType: options.gate, from: options.from, target: options.target, channelId: options.channel, autoDeliver: options.deliver === "true", account: options.account } };
+      return { root, input: { action: "human_gate.request", meetingId: options.meeting, text: options.text, gateType: options.gate, buttons: listOption(options.button), from: options.from, target: options.target, channelId: options.channel, autoDeliver: options.deliver === "true", account: options.account } };
     case "human-gate-inbox":
+    case "human-gate-console":
       return {
         root,
         input: {
-          action: "human_gate.inbox",
+          action: command === "human-gate-console" ? "human_gate.console" : "human_gate.inbox",
           workflowId: options.workflow,
           batchId: options.batch,
           title: options.title,
           limit: options.limit,
           target: options.target,
           from: options.from
+        }
+      };
+    case "human-gate-callback":
+      return {
+        root,
+        input: {
+          action: "human_gate.button_callback",
+          token: options.token,
+          actor: options.actor || options.from,
+          runtime: options.runtime,
+          agentId: options.agent,
+          sourceSystem: "human_gate_console"
         }
       };
     case "human-gate-resume":

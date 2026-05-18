@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { runWorkflowAction, workflowStatus } from "./workflow.js";
 
 export const PLUGIN_ID = "trading-agents-workflow";
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 export const DEFAULT_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 
 const VALID_MEETING_ID = /^[a-z0-9][a-z0-9._-]{2,120}$/;
@@ -1222,9 +1222,12 @@ export async function runAction(rootDir, input = {}) {
     action === "meeting.resume" ||
     action === "meeting.disperse" ||
     action === "human_gate.request" ||
+    action === "human_gate.button_callback" ||
+    action === "human_gate.callback" ||
     action === "human_gate.resume" ||
     action === "human_gate.confirm" ||
     action === "human_gate.inbox" ||
+    action === "human_gate.console" ||
     action === "human_gate.batch_inbox" ||
     action === "human_gate.review" ||
     (action === "human_gate.record" && !input.meetingId && !input.meeting_id) ||

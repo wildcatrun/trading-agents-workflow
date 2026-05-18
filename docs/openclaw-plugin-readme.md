@@ -252,6 +252,8 @@ Workflow and tracking:
 - `meeting.ingest`
 - `human_gate.request`
 - `human_gate.inbox`
+- `human_gate.console`
+- `human_gate.button_callback`
 - `human_gate.batch_inbox`
 - `meeting.resume`
 - `meeting.disperse`
@@ -345,9 +347,9 @@ This makes Cat Claw reporting two-phase but self-contained: runtime report produ
 
 When `workflow.supervise --drain` creates a Cat Claw closeout dispatch, it drains that exact dispatch and lets `runtime-bridge` deliver the report outbox. If delivery fails, the report dispatch can still be `acked`, but the returned `reportDelivery.status` and `telegram_outbox.status` must be treated as the communication-plane truth.
 
-Use `human_gate.inbox` when Flashcat would otherwise receive many one-off Cat Claw requests. It gathers pending `human_gate_record` objects, Human-Gate review gates, gated workflow tasks, and queued or failed Cat Claw Telegram report deliveries into one batch. The output is a queryable `human_gate_batches` row, `human_gate_batch_items`, and paired HTML/JSON artifacts under `human-gates/inbox/`.
+Use `human_gate.inbox` or its secretary-facing alias `human_gate.console` when Flashcat would otherwise receive many one-off Cat Claw requests. It gathers pending `human_gate_record` objects, Human-Gate review gates, gated workflow tasks, and queued or failed Cat Claw Telegram report deliveries into one batch. The output is a queryable `human_gate_batches` row, `human_gate_batch_items`, and paired HTML/JSON artifacts under `human-gates/inbox/`.
 
-The inbox is an observation and batching surface. P0/P1 items are marked for individual review; lower-risk P2/P3 items can be grouped after a quick scan. The action does not auto-approve work, execute trades, bypass Cat Brain, or replace `human_gate.resume`.
+The inbox is the Flashcat/Cat Claw operation console surface. P0/P1 items are marked for individual review; lower-risk P2/P3 items can be grouped after a quick scan. If a pending Human Gate has recorded button choices, the console renders those buttons with the exact `tawhg:<token>`, tool action, and CLI callback command. Generating the console does not auto-approve work, execute trades, bypass Cat Brain, or replace a deliberate button callback / `human_gate.resume`.
 
 CLI example:
 
@@ -359,16 +361,40 @@ node bin/cat-meeting-governance.mjs human-gate-inbox \
   --root "$ROOT"
 ```
 
+Console alias:
+
+```bash
+node bin/cat-meeting-governance.mjs human-gate-console \
+  --workflow demo-initiative \
+  --batch demo-console \
+  --title "Flashcat Human Gate Console" \
+  --root "$ROOT"
+```
+
 `human_gate.request` must create a deliverable request, not a targetless queue item. If no meeting live channel is configured, it falls back to Flashcat's private Telegram chat `8390724843` through the `cat_claw` account. It honors explicit `target`, `targetRef`, `chatId`, or the first `notifyTargets` entry before falling back. The returned `targetRef`, `deliveryAccount`, `telegramOutbox.status`, and optional `delivery.status` are part of the contract; Cat Claw must not treat a request as delivered until a receipt exists or the direct Telegram reply itself is the acknowledged delivery path.
+
+When the request has mutually exclusive choices, Cat Claw should provide `buttons`. The plugin stores each button in `human_gate_buttons`, renders the same choices in the Human Gate console, sends Telegram inline buttons through OpenClaw `presentation`, and handles the `tawhg:<token>` callback directly. A button callback records the selected decision, clears/supersedes sibling buttons, appends a meeting resume event, and dispatches `human_gate_resume` to cat-brain `main`. Agents must not infer Flashcat's intent from natural-language replies when a button request is active.
 
 CLI example:
 
 ```bash
 node bin/cat-meeting-governance.mjs human-gate-request \
   --meeting demo-initiative \
-  --text "Confirm whether to continue Plan C evidence collection" \
+  --text "选择下一步推进方案" \
+  --button '{"label":"A 只迁 heartbeat","status":"approved","summary":"Approve A"}' \
+  --button '{"label":"B heartbeat + professional cron","status":"approved","summary":"Approve B"}' \
+  --button '{"label":"C 同波纳入 Realtime/Data bridge-systemd","status":"approved","summary":"Approve C"}' \
   --target 8390724843 \
   --from cat_claw \
+  --root "$ROOT"
+```
+
+If Flashcat selects from the operation console instead of Telegram, use the copied callback command:
+
+```bash
+node bin/cat-meeting-governance.mjs human-gate-callback \
+  --token CALLBACK_TOKEN \
+  --actor flashcat \
   --root "$ROOT"
 ```
 

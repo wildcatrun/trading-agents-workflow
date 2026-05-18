@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 7;
+export const WORKFLOW_SCHEMA_VERSION = 8;
 export const DEFAULT_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
@@ -742,6 +742,30 @@ CREATE TABLE IF NOT EXISTS telegram_outbox (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_telegram_outbox_status ON telegram_outbox(status, created_at);
+CREATE TABLE IF NOT EXISTS human_gate_buttons (
+  button_id TEXT PRIMARY KEY,
+  callback_token TEXT NOT NULL UNIQUE,
+  human_gate_id TEXT NOT NULL,
+  workflow_id TEXT,
+  meeting_id TEXT,
+  label TEXT NOT NULL,
+  decision_status TEXT NOT NULL,
+  button_role TEXT,
+  artifact_ref TEXT,
+  summary TEXT,
+  prompt TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  selected_by TEXT,
+  selected_at TEXT,
+  callback_chat_id TEXT,
+  callback_message_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_human_gate_buttons_gate ON human_gate_buttons(human_gate_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_human_gate_buttons_workflow ON human_gate_buttons(workflow_id, status, created_at);
 CREATE TABLE IF NOT EXISTS human_gate_batches (
   batch_id TEXT PRIMARY KEY,
   status TEXT NOT NULL,
@@ -858,6 +882,30 @@ CREATE INDEX IF NOT EXISTS idx_mixed_dispatches_retry ON mixed_meeting_dispatche
 CREATE INDEX IF NOT EXISTS idx_side_effects_idempotency ON side_effect_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE INDEX IF NOT EXISTS idx_incident_states_status ON incident_states(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_readiness_snapshots_checked ON readiness_snapshots(checked_at DESC);
+CREATE TABLE IF NOT EXISTS human_gate_buttons (
+  button_id TEXT PRIMARY KEY,
+  callback_token TEXT NOT NULL UNIQUE,
+  human_gate_id TEXT NOT NULL,
+  workflow_id TEXT,
+  meeting_id TEXT,
+  label TEXT NOT NULL,
+  decision_status TEXT NOT NULL,
+  button_role TEXT,
+  artifact_ref TEXT,
+  summary TEXT,
+  prompt TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  selected_by TEXT,
+  selected_at TEXT,
+  callback_chat_id TEXT,
+  callback_message_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_human_gate_buttons_gate ON human_gate_buttons(human_gate_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_human_gate_buttons_workflow ON human_gate_buttons(workflow_id, status, created_at);
 CREATE TABLE IF NOT EXISTS human_gate_batches (
   batch_id TEXT PRIMARY KEY,
   status TEXT NOT NULL,
@@ -2220,6 +2268,7 @@ function humanGateItem(sourceType, sourceId, fields = {}) {
     requiresIndividualApproval: Boolean(requiresIndividualApproval),
     status: fields.status || "pending",
     actionHint: fields.actionHint || "",
+    buttons: Array.isArray(fields.buttons) ? fields.buttons : [],
     createdAt: fields.createdAt || nowIso(),
     payload: fields.payload || {},
     path: fields.path || ""
@@ -2227,19 +2276,71 @@ function humanGateItem(sourceType, sourceId, fields = {}) {
 }
 
 function riskSummaryFor(items) {
-  const summary = { total: items.length, P0: 0, P1: 0, P2: 0, P3: 0, individual: 0, batchEligible: 0 };
+  const summary = { total: items.length, P0: 0, P1: 0, P2: 0, P3: 0, individual: 0, batchEligible: 0, buttonChoices: 0 };
   for (const item of items) {
     summary[item.riskTier] = Number(summary[item.riskTier] || 0) + 1;
     if (item.requiresIndividualApproval) summary.individual += 1;
     else summary.batchEligible += 1;
+    summary.buttonChoices += Array.isArray(item.buttons) ? item.buttons.length : 0;
   }
   return summary;
+}
+
+function shellQuote(value) {
+  return `'${String(value || "").replace(/'/g, "'\\''")}'`;
+}
+
+function humanGateButtonFromRow(row, rootDir = "") {
+  const callbackToken = String(row.callback_token || "").trim();
+  const rootArg = rootDir ? ` --root ${shellQuote(rootDir)}` : ` --root "$ROOT"`;
+  return {
+    buttonId: row.button_id,
+    callbackToken,
+    humanGateId: row.human_gate_id,
+    workflowId: row.workflow_id || "",
+    meetingId: row.meeting_id || "",
+    label: row.label,
+    decisionStatus: row.decision_status,
+    role: row.button_role || "",
+    artifactRef: row.artifact_ref || "",
+    summary: row.summary || "",
+    prompt: row.prompt || "",
+    status: row.status,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    selectedBy: row.selected_by || "",
+    selectedAt: row.selected_at || "",
+    callbackData: callbackToken ? `tawhg:${callbackToken}` : "",
+    toolAction: { action: "human_gate.button_callback", token: callbackToken, actor: "flashcat" },
+    cliCommand: callbackToken ? `node bin/cat-meeting-governance.mjs human-gate-callback --token ${callbackToken} --actor flashcat${rootArg}` : "",
+    payload: parseJsonValue(row.payload_json, {})
+  };
+}
+
+async function humanGateButtonsByGate(paths, gateIds = []) {
+  const ids = [...new Set(gateIds.map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!ids.length) return new Map();
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM human_gate_buttons
+WHERE human_gate_id IN (${ids.map(sqlValue).join(",")})
+ORDER BY created_at ASC;`, { json: true });
+  const grouped = new Map();
+  for (const row of rows) {
+    const button = humanGateButtonFromRow(row, paths.root);
+    const list = grouped.get(button.humanGateId) || [];
+    list.push(button);
+    grouped.set(button.humanGateId, list);
+  }
+  return grouped;
 }
 
 async function collectHumanGateInboxItems(paths, input = {}) {
   const workflowId = String(input.workflowId || input.workflow_id || "").trim();
   const limit = Math.max(1, Math.min(500, Number(input.limit || 100)));
   const items = [];
+  const pendingHumanGateIds = [];
 
   const humanGates = await sqlite(paths.dbFile, `
 SELECT object_id, status, source_agent, parent_object_id, path, payload_json, created_at
@@ -2253,6 +2354,7 @@ LIMIT ${limit};`, { json: true });
     const gateWorkflowId = body.workflowId || payload.workflowId || row.parent_object_id || "";
     if (!workflowFilterMatches(workflowId, gateWorkflowId)) continue;
     const gateType = body.gateType || payload.gateType || "human_gate_record";
+    pendingHumanGateIds.push(row.object_id);
     items.push(humanGateItem("human_gate_record", row.object_id, {
       workflowId: gateWorkflowId,
       meetingId: gateWorkflowId,
@@ -2264,6 +2366,15 @@ LIMIT ${limit};`, { json: true });
       path: row.path,
       payload: { sourceAgent: row.source_agent, parentObjectId: row.parent_object_id, payload }
     }));
+  }
+  const buttonGroups = await humanGateButtonsByGate(paths, pendingHumanGateIds);
+  for (const item of items) {
+    if (item.sourceType !== "human_gate_record") continue;
+    const buttons = buttonGroups.get(item.sourceId) || [];
+    if (!buttons.length) continue;
+    item.buttons = buttons;
+    item.payload = { ...item.payload, buttons };
+    item.actionHint = "select one recorded button; do not infer intent from natural language";
   }
 
   const reviewGates = await sqlite(paths.dbFile, `
@@ -2352,6 +2463,20 @@ LIMIT ${limit};`, { json: true });
 
 function renderHumanGateInboxHtml(batch) {
   const riskClass = (tier) => `risk-${String(tier || "P3").toLowerCase()}`;
+  const buttonHtml = (buttons = []) => {
+    if (!buttons.length) return `<span class="muted">-</span>`;
+    return buttons.map((button) => `
+            <div class="choice-row">
+              <button type="button" class="choice choice-${escapeHtml(button.decisionStatus)}" data-command="${escapeHtml(button.cliCommand || "")}">${escapeHtml(button.label)}</button>
+              <div class="choice-meta">
+                <span>${escapeHtml(button.decisionStatus)}</span>
+                <span>${escapeHtml(button.status)}</span>
+                ${button.artifactRef ? `<span>artifact: ${escapeHtml(button.artifactRef)}</span>` : ""}
+                <code>${escapeHtml(button.callbackData || "")}</code>
+                <code>${escapeHtml(button.cliCommand || "")}</code>
+              </div>
+            </div>`).join("\n");
+  };
   const rowHtml = batch.items.map((item) => `
         <tr class="${riskClass(item.riskTier)}">
           <td>${escapeHtml(item.riskTier)}</td>
@@ -2359,6 +2484,7 @@ function renderHumanGateInboxHtml(batch) {
           <td>${escapeHtml(item.workflowId || "-")}</td>
           <td>${escapeHtml(item.title)}</td>
           <td>${escapeHtml(item.summary || "-")}</td>
+          <td>${buttonHtml(item.buttons)}</td>
           <td>${escapeHtml(item.defaultAction)}</td>
           <td>${item.requiresIndividualApproval ? "single" : "batch ok"}</td>
           <td>${escapeHtml(item.status)}</td>
@@ -2376,25 +2502,36 @@ function renderHumanGateInboxHtml(batch) {
     main { max-width: 1280px; margin: 0 auto; padding: 24px; }
     h1 { font-size: 24px; margin: 0 0 8px; }
     .meta { color: #52606d; margin-bottom: 20px; }
-    .summary { display: grid; grid-template-columns: repeat(6, minmax(100px, 1fr)); gap: 8px; margin: 16px 0 20px; }
+    .summary { display: grid; grid-template-columns: repeat(7, minmax(100px, 1fr)); gap: 8px; margin: 16px 0 20px; }
     .metric { background: white; border: 1px solid #d9e2ec; border-radius: 6px; padding: 10px 12px; }
     .metric strong { display: block; font-size: 20px; }
     table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #d9e2ec; }
     th, td { text-align: left; vertical-align: top; padding: 10px; border-bottom: 1px solid #e4e7eb; font-size: 13px; }
     th { background: #eef2f7; position: sticky; top: 0; z-index: 1; }
     code { font-size: 12px; color: #334e68; }
+    .muted { color: #829ab1; }
+    .choice-row { display: grid; grid-template-columns: minmax(130px, 0.8fr) minmax(220px, 1.4fr); gap: 8px; align-items: start; padding: 6px 0; border-bottom: 1px solid #eef2f7; }
+    .choice-row:last-child { border-bottom: 0; }
+    .choice { appearance: none; border: 1px solid #bcccdc; background: #f8fafc; color: #1f2933; border-radius: 5px; padding: 7px 9px; font-size: 12px; font-weight: 650; text-align: left; cursor: pointer; }
+    .choice-approved { border-color: #15803d; background: #f0fdf4; color: #14532d; }
+    .choice-rejected { border-color: #b91c1c; background: #fef2f2; color: #7f1d1d; }
+    .choice-pending, .choice-expired { border-color: #64748b; background: #f8fafc; color: #334155; }
+    .choice-meta { display: flex; flex-direction: column; gap: 4px; color: #52606d; }
+    .choice-meta code { white-space: normal; overflow-wrap: anywhere; }
+    .copied { outline: 2px solid #0f766e; }
     .risk-p0 td:first-child { border-left: 5px solid #b91c1c; font-weight: 700; }
     .risk-p1 td:first-child { border-left: 5px solid #d97706; font-weight: 700; }
     .risk-p2 td:first-child { border-left: 5px solid #2563eb; font-weight: 700; }
     .risk-p3 td:first-child { border-left: 5px solid #16a34a; font-weight: 700; }
     .empty { background: white; border: 1px solid #d9e2ec; border-radius: 6px; padding: 20px; }
-    @media (max-width: 900px) { .summary { grid-template-columns: repeat(2, 1fr); } table { min-width: 1000px; } .scroll { overflow-x: auto; } }
+    @media (max-width: 900px) { .summary { grid-template-columns: repeat(2, 1fr); } table { min-width: 1250px; } .scroll { overflow-x: auto; } }
   </style>
 </head>
 <body>
 <main>
-  <h1>Human Gate Inbox</h1>
+  <h1>Flashcat Human Gate Console</h1>
   <div class="meta">batch_id: <code>${escapeHtml(batch.batchId)}</code> | created_at: ${escapeHtml(batch.createdAt)} | target: ${escapeHtml(batch.targetRef)}</div>
+  <div class="meta">Choice buttons copy the exact callback command. Cat Claw must record a selected button token, not infer Flashcat intent from free text.</div>
   <section class="summary">
     <div class="metric"><span>Total</span><strong>${batch.riskSummary.total}</strong></div>
     <div class="metric"><span>P0</span><strong>${batch.riskSummary.P0}</strong></div>
@@ -2402,6 +2539,7 @@ function renderHumanGateInboxHtml(batch) {
     <div class="metric"><span>P2</span><strong>${batch.riskSummary.P2}</strong></div>
     <div class="metric"><span>P3</span><strong>${batch.riskSummary.P3}</strong></div>
     <div class="metric"><span>Batch eligible</span><strong>${batch.riskSummary.batchEligible}</strong></div>
+    <div class="metric"><span>Button choices</span><strong>${batch.riskSummary.buttonChoices}</strong></div>
   </section>
   ${batch.items.length ? `<div class="scroll"><table>
     <thead>
@@ -2411,6 +2549,7 @@ function renderHumanGateInboxHtml(batch) {
         <th>Workflow</th>
         <th>Title</th>
         <th>Summary</th>
+        <th>Choice buttons</th>
         <th>Default action</th>
         <th>Approval mode</th>
         <th>Status</th>
@@ -2421,6 +2560,26 @@ function renderHumanGateInboxHtml(batch) {
     </tbody>
   </table></div>` : `<div class="empty">No pending Human Gate items.</div>`}
 </main>
+<script>
+  document.querySelectorAll(".choice").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const command = button.dataset.command || "";
+      if (!command) return;
+      try {
+        await navigator.clipboard.writeText(command);
+        button.classList.add("copied");
+        const original = button.textContent;
+        button.textContent = "Copied";
+        window.setTimeout(() => {
+          button.textContent = original;
+          button.classList.remove("copied");
+        }, 1200);
+      } catch {
+        window.prompt("Copy Human Gate callback command", command);
+      }
+    });
+  });
+</script>
 </body>
 </html>`;
 }
@@ -2429,9 +2588,9 @@ function renderHumanGateTelegramSummary(batch) {
   const s = batch.riskSummary;
   const topItems = batch.items.slice(0, 5).map((item) => `- ${item.riskTier} ${item.sourceType} ${item.workflowId || "-"}: ${item.title}`).join("\n");
   return [
-    `Human Gate Inbox | ${batch.createdAt}`,
+    `Human Gate Console | ${batch.createdAt}`,
     `batch_id: ${batch.batchId}`,
-    `pending: ${s.total} | P0 ${s.P0} | P1 ${s.P1} | P2 ${s.P2} | P3 ${s.P3}`,
+    `pending: ${s.total} | buttons: ${s.buttonChoices} | P0 ${s.P0} | P1 ${s.P1} | P2 ${s.P2} | P3 ${s.P3}`,
     `individual: ${s.individual} | batch_eligible: ${s.batchEligible}`,
     `html: ${batch.htmlPath}`,
     "",
@@ -2552,8 +2711,8 @@ async function deliverTelegramOutboxRow(paths, row, input = {}) {
   const deliveredAt = nowIso();
   const receipts = [];
   try {
-    for (const chunk of chunks) {
-      const { stdout, stderr } = await execFileAsync(openclawBin, [
+    for (const [index, chunk] of chunks.entries()) {
+      const args = [
         "message",
         "send",
         "--channel",
@@ -2565,7 +2724,11 @@ async function deliverTelegramOutboxRow(paths, row, input = {}) {
         "--message",
         chunk,
         "--json"
-      ], {
+      ];
+      if (payload.presentation && index === chunks.length - 1) {
+        args.push("--presentation", JSON.stringify(payload.presentation));
+      }
+      const { stdout, stderr } = await execFileAsync(openclawBin, args, {
         cwd: paths.root,
         timeout: timeoutSeconds * 1000,
         maxBuffer: 4 * 1024 * 1024
@@ -3667,6 +3830,100 @@ LIMIT ${limit};`, { json: true });
   return { runtime, count: rows.length, results, dbFile: paths.dbFile };
 }
 
+function humanGateButtonOptions(input = {}) {
+  const raw = input.buttons ?? input.options ?? input.choices;
+  const parsed = parseJsonValue(raw, raw);
+  const values = Array.isArray(parsed) ? parsed : [];
+  return values.map((rawItem, index) => {
+    const item = typeof rawItem === "string" ? parseJsonValue(rawItem, rawItem) : rawItem;
+    const value = item && typeof item === "object" ? item : { label: String(item || "").trim() };
+    const label = String(value.label || value.title || value.text || value.name || `Option ${index + 1}`).trim();
+    if (!label) return null;
+    const statusRaw = String(value.status || value.decisionStatus || value.decision_status || "approved").trim();
+    const decisionStatus = HUMAN_GATE_STATUSES.has(statusRaw) ? statusRaw : "approved";
+    const role = String(value.role || value.buttonRole || value.button_role || (decisionStatus === "rejected" ? "reject" : "approve")).trim();
+    return {
+      label,
+      decisionStatus,
+      role,
+      style: value.style || (decisionStatus === "approved" ? "success" : decisionStatus === "rejected" ? "danger" : "secondary"),
+      artifactRef: String(value.artifactRef || value.artifact_ref || value.path || "").trim(),
+      summary: String(value.summary || value.description || value.text || label).trim(),
+      prompt: String(value.prompt || value.nextAction || value.next_action || "").trim(),
+      payload: value
+    };
+  }).filter(Boolean);
+}
+
+async function createHumanGateButtons(paths, input = {}) {
+  const humanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
+  if (!humanGateId) return [];
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  const meetingId = String(input.meetingId || input.meeting_id || workflowId).trim();
+  const createdBy = String(input.createdBy || input.created_by || input.from || "cat_claw").trim();
+  const createdAt = nowIso();
+  const options = humanGateButtonOptions(input);
+  const buttons = [];
+  for (const [index, option] of options.entries()) {
+    const callbackToken = textHash(`${humanGateId}:${index}:${option.label}:${createdAt}`).slice(0, 24);
+    const buttonId = `hgatebtn.${callbackToken}`;
+    await sqlite(paths.dbFile, `
+INSERT INTO human_gate_buttons(button_id, callback_token, human_gate_id, workflow_id, meeting_id, label, decision_status, button_role, artifact_ref, summary, prompt, payload_json, status, created_by, created_at, updated_at)
+VALUES (${sqlValue(buttonId)}, ${sqlValue(callbackToken)}, ${sqlValue(humanGateId)}, ${sqlValue(workflowId)}, ${sqlValue(meetingId)}, ${sqlValue(option.label)}, ${sqlValue(option.decisionStatus)}, ${sqlValue(option.role)}, ${sqlValue(option.artifactRef)}, ${sqlValue(option.summary)}, ${sqlValue(option.prompt)}, ${sqlValue(JSON.stringify(option.payload || {}))}, 'active', ${sqlValue(createdBy)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
+    buttons.push({
+      buttonId,
+      callbackToken,
+      humanGateId,
+      workflowId,
+      meetingId,
+      label: option.label,
+      decisionStatus: option.decisionStatus,
+      role: option.role,
+      style: option.style,
+      artifactRef: option.artifactRef,
+      summary: option.summary,
+      prompt: option.prompt,
+      callbackData: `tawhg:${callbackToken}`
+    });
+  }
+  return buttons;
+}
+
+function humanGateButtonPresentation(input = {}, buttons = []) {
+  if (!buttons.length) return null;
+  const text = String(input.text || input.summary || "").trim();
+  return {
+    title: input.title || "Human Gate",
+    tone: "warning",
+    blocks: [
+      text ? { type: "text", text } : null,
+      { type: "context", text: "请点击按钮确认。按钮会写入 Human Gate decision 并恢复 workflow；不要靠自然语言猜测选项。" },
+      {
+        type: "buttons",
+        buttons: buttons.map((button) => ({
+          label: button.label,
+          value: button.callbackData,
+          style: button.style
+        }))
+      }
+    ].filter(Boolean)
+  };
+}
+
+function humanGateButtonFallbackText(input = {}, buttons = []) {
+  const text = String(input.text || input.summary || "").trim();
+  if (!buttons.length) return text;
+  const lines = [
+    text,
+    "",
+    "Human Gate 请选择按钮：",
+    ...buttons.map((button) => `- [${button.label}] callback=${button.callbackData}`),
+    "",
+    "系统应使用按钮 callback 推进 workflow，不应根据自然语言猜测闪电猫意图。"
+  ].filter((line) => line !== "");
+  return lines.join("\n");
+}
+
 export async function humanGateRequest(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
@@ -3683,11 +3940,20 @@ export async function humanGateRequest(rootDir, input) {
     sourceSystem: input.sourceSystem || input.source_system || "openclaw",
     sourceAgent: requester
   });
+  const buttons = await createHumanGateButtons(paths, {
+    ...input,
+    workflowId,
+    meetingId,
+    humanGateId: gate.objectId,
+    createdBy: requester
+  });
+  const presentation = humanGateButtonPresentation(input, buttons);
+  const text = humanGateButtonFallbackText(input, buttons);
   const eventId = safeId("control");
   const createdAt = nowIso();
   await sqlite(paths.dbFile, `
 INSERT INTO meeting_control_events(event_id, meeting_id, event_type, status, summary, payload_json, created_by, created_at)
-VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pending', ${sqlValue(input.summary || input.text || "")}, ${sqlValue(JSON.stringify({ humanGateId: gate.objectId, gateType, workflowId }))}, ${sqlValue(requester)}, ${sqlValue(createdAt)});`);
+VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pending', ${sqlValue(input.summary || input.text || "")}, ${sqlValue(JSON.stringify({ humanGateId: gate.objectId, gateType, workflowId, buttons }))}, ${sqlValue(requester)}, ${sqlValue(createdAt)});`);
   const link = await telegramLinkFor(paths, meetingId);
   const channelTarget = firstText(input.channelId, input.channel_id, input.channel);
   const explicitTarget = firstText(input.targetRef, input.target_ref, input.target, input.chatId, input.chat_id, input.notifyTargets, input.notify_targets, channelTarget);
@@ -3700,8 +3966,8 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
     targetKind,
     targetRef,
     messageType: "human_gate_request",
-    text: input.text || input.summary || "",
-    payload: { humanGateId: gate.objectId, gateType, workflowId, eventId, account: deliveryAccount, requester, targetKind, targetRef }
+    text,
+    payload: { humanGateId: gate.objectId, gateType, workflowId, eventId, account: deliveryAccount, requester, targetKind, targetRef, buttons, presentation }
   });
   let delivery = null;
   const shouldDeliver = boolOption(input.autoDeliver ?? input.auto_deliver ?? input.deliver, false);
@@ -3709,7 +3975,110 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
     const rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(telegramOutbox.outboxId)} LIMIT 1;`, { json: true });
     if (rows[0]) delivery = await deliverTelegramOutboxRow(paths, rows[0], { ...input, account: deliveryAccount, target: targetRef });
   }
-  return { meetingId, workflowId, humanGateId: gate.objectId, gateType, eventId, targetKind, targetRef, deliveryAccount, telegramOutbox, deliveryRequired: telegramOutbox.status === "queued" && !delivery, delivery, status: "pending", dbFile: paths.dbFile };
+  return { meetingId, workflowId, humanGateId: gate.objectId, gateType, eventId, buttons, presentation, targetKind, targetRef, deliveryAccount, telegramOutbox, deliveryRequired: telegramOutbox.status === "queued" && !delivery, delivery, status: "pending", dbFile: paths.dbFile };
+}
+
+export async function humanGateButtonCallback(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const rawToken = String(input.token || input.callbackToken || input.callback_token || input.payload || "").trim();
+  const token = rawToken.startsWith("tawhg:") ? rawToken.slice("tawhg:".length) : rawToken;
+  if (!token) throw new Error("callback token is required");
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} LIMIT 1;`, { json: true });
+  const button = rows[0];
+  if (!button) return { handled: true, status: "unknown", token, replyText: "Human Gate 按钮已失效或不存在。" };
+  if (button.status !== "active") return { handled: true, status: button.status, token, replyText: "Human Gate 按钮已经处理过。" };
+  const selectedAt = nowIso();
+  const actor = String(input.actor || input.senderId || input.sender_id || input.from || "flashcat").trim();
+  const callbackChatId = String(input.callbackChatId || input.callback_chat_id || "").trim();
+  const callbackMessageId = String(input.callbackMessageId || input.callback_message_id || "").trim();
+  await sqlite(paths.dbFile, `
+UPDATE human_gate_buttons
+SET status=CASE WHEN button_id=${sqlValue(button.button_id)} THEN 'selected' ELSE 'superseded' END,
+    selected_by=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(actor)} ELSE selected_by END,
+    selected_at=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(selectedAt)} ELSE selected_at END,
+    callback_chat_id=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(callbackChatId)} ELSE callback_chat_id END,
+    callback_message_id=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(callbackMessageId)} ELSE callback_message_id END,
+    updated_at=${sqlValue(selectedAt)}
+WHERE human_gate_id=${sqlValue(button.human_gate_id)} AND status='active';`);
+  await sqlite(paths.dbFile, `
+UPDATE protocol_objects
+SET status=${sqlValue(button.decision_status)}, updated_at=${sqlValue(selectedAt)}
+WHERE object_id=${sqlValue(button.human_gate_id)} AND object_type='human_gate_record';`);
+  const resume = await meetingResume(rootDir, {
+    workflowRootDir: paths.root,
+    meetingId: button.meeting_id || button.workflow_id,
+    from: actor,
+    status: button.decision_status,
+    text: `Human Gate button selected: ${button.label}`,
+    payload: {
+      workflowId: button.workflow_id,
+      humanGateId: button.human_gate_id,
+      buttonId: button.button_id,
+      callbackToken: token,
+      status: button.decision_status,
+      source: "human_gate.button_callback"
+    }
+  });
+  let dispatch = null;
+  if (["approved", "rejected"].includes(button.decision_status)) {
+    const nextAction = button.decision_status === "approved"
+      ? "Continue the next workflow round under the selected Human Gate button boundary."
+      : "Revise the plan according to the selected Human Gate rejection button and prepare a new next-action package.";
+    dispatch = await meetingDispatch(rootDir, {
+      workflowRootDir: paths.root,
+      meetingId: button.meeting_id || button.workflow_id,
+      workflowId: button.workflow_id,
+      traceId: `${button.workflow_id}:human_gate_button:${token}`,
+      idempotencyKey: `workflow:${button.workflow_id}:human_gate_button:${button.button_id}`,
+      runtime: input.runtime || "openclaw",
+      agentId: input.agentId || input.agent_id || "main",
+      dispatchType: "human_gate_resume",
+      priority: "steer",
+      createdBy: actor,
+      prompt: [
+        `Human Gate button selected: ${button.label}`,
+        `Human Gate status: ${button.decision_status}`,
+        `Workflow ID: ${button.workflow_id}`,
+        `Meeting ID: ${button.meeting_id}`,
+        `Human Gate ID: ${button.human_gate_id}`,
+        `Button ID: ${button.button_id}`,
+        button.summary ? `Button summary: ${button.summary}` : "",
+        button.artifact_ref ? `Artifact ref: ${button.artifact_ref}` : "",
+        button.prompt ? `Selected action: ${button.prompt}` : "",
+        "",
+        "You are cat-brain main. Resume the workflow from this exact button decision.",
+        nextAction,
+        "Do not reinterpret Flashcat intent from natural language. Use the selected button payload as the controlling Human Gate decision."
+      ].filter(Boolean).join("\n"),
+      payload: {
+        workflowId: button.workflow_id,
+        meetingId: button.meeting_id,
+        humanGateId: button.human_gate_id,
+        buttonId: button.button_id,
+        buttonLabel: button.label,
+        status: button.decision_status,
+        artifactRef: button.artifact_ref || "",
+        summary: button.summary || "",
+        selectedAt,
+        selectedBy: actor,
+        humanGateResume: true,
+        buttonPayload: parseJsonValue(button.payload_json, {})
+      }
+    });
+  }
+  return {
+    handled: true,
+    status: button.decision_status,
+    workflowId: button.workflow_id,
+    meetingId: button.meeting_id,
+    humanGateId: button.human_gate_id,
+    buttonId: button.button_id,
+    label: button.label,
+    resume,
+    dispatch,
+    replyText: `已记录 Human Gate 选择：${button.label}`,
+    dbFile: paths.dbFile
+  };
 }
 
 export async function humanGateResume(rootDir, input) {
@@ -3950,7 +4319,11 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return runtimeBridgeDrain(rootDir, input);
     case "human_gate.request":
       return humanGateRequest(rootDir, input);
+    case "human_gate.button_callback":
+    case "human_gate.callback":
+      return humanGateButtonCallback(rootDir, input);
     case "human_gate.inbox":
+    case "human_gate.console":
     case "human_gate.batch_inbox":
       return humanGateInbox(rootDir, input);
     case "human_gate.resume":
