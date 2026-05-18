@@ -32,3 +32,7 @@ Before publishing updates:
 3. Export schema changes to `docs/tracking-schema.sql` when database structure changes.
 4. Scan for tokens, OAuth credentials, private keys, account data, and unexpectedly large files.
 5. Commit and push through the configured GitHub SSH remote.
+
+## Context References
+
+When Flashcat refers to an approved option by shorthand, such as `Plan C`, `方案C`, or `C方案`, resolve the shorthand through `workflow.context.resolve` before acting. If no durable alias exists, create or request a `workflow.alias.upsert` record that binds the shorthand to the workflow id, canonical artifact, constraints, and next action. Do not infer plan names only from chat memory.

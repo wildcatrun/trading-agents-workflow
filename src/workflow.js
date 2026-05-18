@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 7;
+export const WORKFLOW_SCHEMA_VERSION = 8;
 export const DEFAULT_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
@@ -544,6 +544,27 @@ CREATE TABLE IF NOT EXISTS workflow_checkpoints (
   FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_checkpoints_workflow ON workflow_checkpoints(workflow_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_context_aliases (
+  alias_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  meeting_id TEXT,
+  alias TEXT NOT NULL,
+  normalized_alias TEXT NOT NULL,
+  canonical_title TEXT,
+  artifact_ref TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  summary TEXT,
+  constraints_text TEXT,
+  next_action TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(workflow_id, normalized_alias),
+  FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_context_aliases_workflow ON workflow_context_aliases(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_context_aliases_norm ON workflow_context_aliases(normalized_alias);
 CREATE TABLE IF NOT EXISTS artifact_index (
   artifact_id TEXT PRIMARY KEY,
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,
@@ -1269,6 +1290,268 @@ ${where}
 ORDER BY workflow_id, CASE priority WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, created_at
 LIMIT ${limit};`, { json: true });
   return { count: rows.length, tasks: rows, dbFile: paths.dbFile };
+}
+
+function normalizeContextAlias(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s\u3000._:：/\\|()[\]{}"'“”‘’`-]+/g, "")
+    .replace(/[，。！？、；;,.!?]/g, "")
+    .trim();
+}
+
+function contextReferenceText(input = {}) {
+  return firstText(input.reference, input.ref, input.query, input.text, input.summary, input.title);
+}
+
+function contextReferenceTokens(value) {
+  const text = String(value || "").normalize("NFKC");
+  const tokens = [normalizeContextAlias(text)];
+  const planMatches = [...text.matchAll(/plan\s*([a-z0-9])/gi)];
+  for (const match of planMatches) tokens.push(normalizeContextAlias(`plan${match[1]}`));
+  const optionMatches = [...text.matchAll(/(?:方案|选项)\s*([a-z0-9])/gi)];
+  for (const match of optionMatches) tokens.push(normalizeContextAlias(`方案${match[1]}`));
+  const reverseOptionMatches = [...text.matchAll(/([a-z0-9])\s*(?:方案|选项)/gi)];
+  for (const match of reverseOptionMatches) tokens.push(normalizeContextAlias(`${match[1]}方案`));
+  return [...new Set(tokens.filter((token) => token.length >= 2))];
+}
+
+function contextAliasMatchScore(queryTokens, normalizedAlias) {
+  const alias = normalizeContextAlias(normalizedAlias);
+  if (alias.length < 2) return 0;
+  let score = 0;
+  for (const token of queryTokens) {
+    if (token === alias) score = Math.max(score, 1000 + alias.length);
+    else if (token.includes(alias)) score = Math.max(score, 500 + alias.length);
+    else if (alias.includes(token) && token.length >= 4) score = Math.max(score, 100 + token.length);
+  }
+  return score;
+}
+
+function safeArtifactPath(value) {
+  const raw = String(value || "").split("#")[0].trim();
+  if (!raw || path.isAbsolute(raw) || raw.includes("\0")) return "";
+  const normalized = path.normalize(raw);
+  if (normalized.startsWith("..") || path.isAbsolute(normalized)) return "";
+  return normalized;
+}
+
+async function readArtifactExcerpt(paths, artifactRef, limit = 2500) {
+  const safePath = safeArtifactPath(artifactRef);
+  if (!safePath) return "";
+  try {
+    const text = await fs.readFile(path.join(paths.root, safePath), "utf8");
+    return text.slice(0, limit);
+  } catch {
+    return "";
+  }
+}
+
+async function workflowContextFallbackCandidates(paths, workflowId, queryTokens) {
+  if (!workflowId) return [];
+  const rows = await sqlite(paths.dbFile, `
+SELECT artifact_id AS source_id, workflow_id, '' AS meeting_id, kind AS canonical_title, path AS artifact_ref, summary, '' AS constraints_text, '' AS next_action, created_by, created_at, 'artifact_index' AS source
+FROM artifact_index
+WHERE workflow_id=${sqlValue(workflowId)}
+UNION ALL
+SELECT checkpoint_id AS source_id, workflow_id, '' AS meeting_id, 'workflow_checkpoint' AS canonical_title, path AS artifact_ref, summary, '' AS constraints_text, '' AS next_action, created_by, created_at, 'workflow_checkpoint' AS source
+FROM workflow_checkpoints
+WHERE workflow_id=${sqlValue(workflowId)}
+ORDER BY created_at DESC
+LIMIT 100;`, { json: true });
+  return rows
+    .map((row) => {
+      const haystack = normalizeContextAlias(`${row.canonical_title || ""} ${row.artifact_ref || ""} ${row.summary || ""}`);
+      const score = Math.max(...queryTokens.map((token) => (haystack.includes(token) ? 80 + token.length : 0)), 0);
+      return {
+        ...row,
+        alias_id: row.source_id,
+        alias: row.canonical_title || row.source,
+        normalized_alias: "",
+        status: "active",
+        payload_json: "{}",
+        match_score: score,
+        match_source: row.source
+      };
+    })
+    .filter((row) => row.match_score > 0);
+}
+
+async function workflowContextResolutionRecord(paths, match, input = {}) {
+  const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(match.workflow_id)} LIMIT 1;`, { json: true });
+  const workflow = workflowRows[0] || null;
+  const includeArtifact = boolOption(input.includeArtifact ?? input.include_artifact, true);
+  const includeAdvance = boolOption(input.includeAdvance ?? input.include_advance, false);
+  const artifactExcerpt = includeArtifact ? await readArtifactExcerpt(paths, match.artifact_ref || "") : "";
+  const currentAdvance = includeAdvance && workflow
+    ? await workflowAdvance(paths.root, { workflowRootDir: paths.root, workflowId: match.workflow_id, meetingId: match.meeting_id || match.workflow_id, autoDispatch: false })
+    : null;
+  return {
+    status: "resolved",
+    workflowId: match.workflow_id,
+    meetingId: match.meeting_id || match.workflow_id,
+    matchedAlias: {
+      aliasId: match.alias_id,
+      alias: match.alias,
+      normalizedAlias: match.normalized_alias || "",
+      source: match.match_source || "workflow_context_aliases",
+      score: match.match_score
+    },
+    canonicalTitle: match.canonical_title || "",
+    artifactRef: match.artifact_ref || "",
+    summary: match.summary || "",
+    constraints: match.constraints_text || "",
+    nextAction: match.next_action || "",
+    payload: parseJsonValue(match.payload_json, {}),
+    workflow: workflow
+      ? {
+          status: workflow.status,
+          phase: workflow.current_phase || "",
+          decision: workflow.current_decision || "",
+          objective: workflow.objective || "",
+          updatedAt: workflow.updated_at
+        }
+      : null,
+    currentAdvance,
+    artifactExcerpt,
+    instruction: "Resolve workflow references from this record before continuing; do not infer Plan/方案 names from chat memory alone."
+  };
+}
+
+export async function workflowContextAliasUpsert(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const workflowRows = await sqlite(paths.dbFile, `SELECT workflow_id FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
+  if (!workflowRows[0]) throw new Error(`workflow not found: ${workflowId}`);
+  const aliasValues = toList(input.aliases || input.alias || input.reference || input.references);
+  if (!aliasValues.length) throw new Error("alias is required");
+  const createdAt = nowIso();
+  const createdBy = String(input.createdBy || input.created_by || input.from || "main").trim();
+  const records = [];
+  for (const alias of aliasValues) {
+    const normalizedAlias = normalizeContextAlias(alias);
+    if (normalizedAlias.length < 2) throw new Error(`alias is too short: ${alias}`);
+    const aliasId = aliasValues.length === 1 && input.aliasId ? String(input.aliasId) : `ctxalias.${textHash(`${workflowId}:${normalizedAlias}`).slice(0, 16)}`;
+    await sqlite(paths.dbFile, `
+INSERT INTO workflow_context_aliases(alias_id, workflow_id, meeting_id, alias, normalized_alias, canonical_title, artifact_ref, status, summary, constraints_text, next_action, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(aliasId)}, ${sqlValue(workflowId)}, ${sqlValue(input.meetingId || input.meeting_id || workflowId)}, ${sqlValue(alias)}, ${sqlValue(normalizedAlias)}, ${sqlValue(input.canonicalTitle || input.canonical_title || input.title || "")}, ${sqlValue(input.artifactRef || input.artifact_ref || input.path || input.resumePointer || input.resume_pointer || "")}, ${sqlValue(input.status || "active")}, ${sqlValue(input.summary || input.text || "")}, ${sqlValue(input.constraints || input.constraintsText || input.constraints_text || "")}, ${sqlValue(input.nextAction || input.next_action || "")}, ${sqlValue(JSON.stringify(parseJsonValue(input.payload, input.payload || {})))}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+ON CONFLICT(workflow_id, normalized_alias) DO UPDATE SET
+  meeting_id=excluded.meeting_id,
+  alias=excluded.alias,
+  canonical_title=excluded.canonical_title,
+  artifact_ref=excluded.artifact_ref,
+  status=excluded.status,
+  summary=excluded.summary,
+  constraints_text=excluded.constraints_text,
+  next_action=excluded.next_action,
+  payload_json=excluded.payload_json,
+  created_by=excluded.created_by,
+  updated_at=excluded.updated_at;`);
+    records.push({ aliasId, workflowId, alias, normalizedAlias });
+  }
+  return { workflowId, count: records.length, aliases: records, dbFile: paths.dbFile };
+}
+
+export async function workflowContextResolve(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const reference = contextReferenceText(input);
+  if (!reference) throw new Error("reference/text is required");
+  const workflowId = String(input.workflowId || input.workflow_id || input.meetingId || input.meeting_id || "").trim();
+  const queryTokens = contextReferenceTokens(reference);
+  const aliasFilter = workflowId ? `AND workflow_id=${sqlValue(workflowId)}` : "";
+  const aliasRows = await sqlite(paths.dbFile, `
+SELECT alias_id, workflow_id, meeting_id, alias, normalized_alias, canonical_title, artifact_ref, status, summary, constraints_text, next_action, payload_json, created_by, created_at, updated_at
+FROM workflow_context_aliases
+WHERE status='active' ${aliasFilter}
+ORDER BY updated_at DESC
+LIMIT 500;`, { json: true });
+  const aliasMatches = aliasRows
+    .map((row) => ({
+      ...row,
+      match_score: contextAliasMatchScore(queryTokens, row.normalized_alias),
+      match_source: "workflow_context_aliases"
+    }))
+    .filter((row) => row.match_score > 0);
+  const fallbackMatches = aliasMatches.length ? [] : await workflowContextFallbackCandidates(paths, workflowId, queryTokens);
+  const matches = [...aliasMatches, ...fallbackMatches]
+    .sort((a, b) => b.match_score - a.match_score || String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")));
+  if (!matches.length) {
+    return {
+      status: "unresolved",
+      workflowId: workflowId || "",
+      reference,
+      normalizedReference: normalizeContextAlias(reference),
+      queryTokens,
+      instruction: "No durable workflow context alias matched this reference. Ask for the workflow id or create workflow.alias.upsert before acting.",
+      dbFile: paths.dbFile
+    };
+  }
+  const top = matches[0];
+  const tied = matches.filter((match) => match.match_score === top.match_score && match.workflow_id !== top.workflow_id);
+  if (!workflowId && tied.length) {
+    return {
+      status: "ambiguous",
+      reference,
+      normalizedReference: normalizeContextAlias(reference),
+      queryTokens,
+      candidates: matches.slice(0, 10).map((match) => ({
+        workflowId: match.workflow_id,
+        meetingId: match.meeting_id || match.workflow_id,
+        alias: match.alias,
+        canonicalTitle: match.canonical_title || "",
+        artifactRef: match.artifact_ref || "",
+        summary: match.summary || "",
+        score: match.match_score,
+        source: match.match_source
+      })),
+      instruction: "Multiple workflow references matched. Provide workflowId or meetingId before continuing.",
+      dbFile: paths.dbFile
+    };
+  }
+  const resolved = await workflowContextResolutionRecord(paths, top, input);
+  return {
+    ...resolved,
+    reference,
+    normalizedReference: normalizeContextAlias(reference),
+    queryTokens,
+    candidates: matches.slice(0, 5).map((match) => ({
+      workflowId: match.workflow_id,
+      alias: match.alias,
+      canonicalTitle: match.canonical_title || "",
+      artifactRef: match.artifact_ref || "",
+      score: match.match_score,
+      source: match.match_source
+    })),
+    dbFile: paths.dbFile
+  };
+}
+
+function renderContextResolutionForPrompt(resolution) {
+  if (!resolution) return "";
+  if (resolution.status !== "resolved") {
+    return [
+      "Resolved workflow reference:",
+      `status: ${resolution.status}`,
+      resolution.reference ? `reference: ${resolution.reference}` : "",
+      resolution.instruction || ""
+    ].filter(Boolean).join("\n");
+  }
+  return [
+    "Resolved workflow reference:",
+    `status: resolved`,
+    `reference: ${resolution.reference || ""}`,
+    `matched_alias: ${resolution.matchedAlias?.alias || ""}`,
+    `workflow_id: ${resolution.workflowId}`,
+    `canonical_title: ${resolution.canonicalTitle || ""}`,
+    `artifact_ref: ${resolution.artifactRef || ""}`,
+    resolution.summary ? `summary: ${resolution.summary}` : "",
+    resolution.constraints ? `constraints: ${resolution.constraints}` : "",
+    resolution.nextAction ? `next_action: ${resolution.nextAction}` : "",
+    resolution.artifactExcerpt ? `artifact_excerpt:\n${resolution.artifactExcerpt.slice(0, 1600)}` : "",
+    "Use the resolved reference above as the controlling context for this Human Gate resume."
+  ].filter(Boolean).join("\n");
 }
 
 function parseWorkerSpec(value, fallbackRuntime = "openclaw") {
@@ -3720,6 +4003,25 @@ export async function humanGateResume(rootDir, input) {
   const status = HUMAN_GATE_STATUSES.has(String(input.status || "approved")) ? String(input.status || "approved") : "approved";
   const actor = String(input.actor || input.from || "flashcat").trim();
   const text = String(input.text || input.summary || "").trim();
+  let contextResolution = null;
+  if (text) {
+    try {
+      contextResolution = await workflowContextResolve(rootDir, {
+        workflowRootDir: paths.root,
+        workflowId,
+        meetingId,
+        reference: text,
+        includeArtifact: true,
+        includeAdvance: false
+      });
+    } catch (error) {
+      contextResolution = {
+        status: "error",
+        reference: text,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
   const gate = await workflowHumanGateRecord(rootDir, {
     ...input,
     workflowRootDir: paths.root,
@@ -3767,6 +4069,7 @@ export async function humanGateResume(rootDir, input) {
         `Meeting ID: ${meetingId}`,
         `Human Gate ID: ${gate.objectId}`,
         `Flashcat confirmation: ${text || "(no extra text)"}`,
+        renderContextResolutionForPrompt(contextResolution),
         "",
         "You are cat-brain main. Resume the workflow from this Human Gate decision.",
         nextAction,
@@ -3777,11 +4080,12 @@ export async function humanGateResume(rootDir, input) {
         meetingId,
         humanGateId: gate.objectId,
         status,
-        humanGateResume: true
+        humanGateResume: true,
+        contextResolution
       }
     });
   }
-  return { workflowId, meetingId, humanGateId: gate.objectId, status, resume, dispatch, dbFile: paths.dbFile };
+  return { workflowId, meetingId, humanGateId: gate.objectId, status, contextResolution, resume, dispatch, dbFile: paths.dbFile };
 }
 
 export async function meetingResume(rootDir, input) {
@@ -3923,6 +4227,12 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.task.list":
     case "workflow.tasks":
       return workflowTaskList(rootDir, input);
+    case "workflow.alias.upsert":
+    case "workflow.context_alias.upsert":
+      return workflowContextAliasUpsert(rootDir, input);
+    case "workflow.context.resolve":
+    case "workflow.resolve":
+      return workflowContextResolve(rootDir, input);
     case "workflow.advance":
       return workflowAdvance(rootDir, input);
     case "workflow.supervise":
