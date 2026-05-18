@@ -226,6 +226,7 @@ Workflow and tracking:
 - `workflow.status`
 - `workflow.run.upsert`
 - `workflow.initiative.upsert`
+- `workflow.swarm.plan`
 - `workflow.task.create`
 - `workflow.task.update`
 - `workflow.task.list`
@@ -266,6 +267,31 @@ Workflow and tracking:
 ## Workflow Task Pool
 
 Use `workflow.run.upsert` for durable goals that outlive one meeting. A run should declare the objective, acceptance criteria, stop condition, and current phase so cat-brain `main` can keep pushing the workflow instead of only reporting that a discussion happened.
+
+Use `workflow.swarm.plan` when a goal benefits from Kimi-style swarm execution: split one objective into bounded shards, assign each shard across a worker pool, and create a reducer task that depends on all shard tasks. This gives cat-brain `main` a governed fan-out/fan-in primitive while preserving cat-system role boundaries.
+
+Important boundaries:
+
+- Shards are durable `workflow_tasks`, not unmanaged sub-agent sessions.
+- Worker assignment must still use registered runtimes and agent ids.
+- The reducer task synthesizes evidence, gaps, disagreement, and next action; it does not bypass Cat Heart, Cat Claw, or Human Gate.
+- Fan-out is capped by `fanoutLimit` and defaults to the explicit shard count, not unbounded spawning.
+
+CLI example:
+
+```bash
+node bin/cat-meeting-governance.mjs workflow-swarm \
+  --workflow stock-tracking-upgrade \
+  --objective "完善股票长期追踪制度和散户活跃度分析" \
+  --target "基本面制度" \
+  --target "消息面制度" \
+  --target "情绪与散户活跃度" \
+  --worker hermes_acp:cat_eyes \
+  --worker hermes_acp:cat_ears \
+  --worker hermes_acp:cat_nose \
+  --reducer openclaw:main \
+  --root "$ROOT"
+```
 
 Use `workflow.task.create` to turn the next phase into concrete tasks. Each task should name the owner agent, execution runtime, priority, dependencies, expected artifact, receipt requirement, and whether a Human Gate is required before the task can be treated as complete.
 

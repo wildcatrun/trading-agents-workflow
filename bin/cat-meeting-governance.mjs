@@ -8,6 +8,7 @@ function usage() {
   trading-agents-workflow workflow-readiness [--active-checks] [--root DIR]
   trading-agents-workflow workflow-topology [--root DIR]
   trading-agents-workflow workflow-run --workflow ID [--objective TEXT] [--acceptance-criteria TEXT] [--stop-condition TEXT] [--phase PHASE] [--root DIR]
+  trading-agents-workflow workflow-swarm --workflow ID --objective TEXT [--target TEXT] [--worker runtime:agent] [--reducer runtime:agent] [--fanout-limit N] [--root DIR]
   trading-agents-workflow workflow-task --workflow ID [--task ID] [--owner AGENT] [--runtime RUNTIME] [--agent AGENT] [--after TASK_IDS] [--expected-artifact PATH] [--root DIR]
   trading-agents-workflow workflow-task-update --task ID [--status STATUS] [--artifact PATH] [--blocked-reason TEXT] [--root DIR]
   trading-agents-workflow workflow-tasks [--workflow ID] [--status STATUS] [--owner AGENT] [--limit N] [--root DIR]
@@ -103,6 +104,30 @@ function toAction({ command, positional, options }) {
           acceptanceCriteria: options["acceptance-criteria"] || options.acceptance,
           stopCondition: options["stop-condition"],
           phase: options.phase
+        }
+      };
+    case "workflow-swarm":
+      return {
+        root,
+        input: {
+          action: "workflow.swarm.plan",
+          workflowId: options.workflow,
+          objective: options.objective || options.goal || options.summary,
+          acceptanceCriteria: options["acceptance-criteria"] || options.acceptance,
+          stopCondition: options["stop-condition"],
+          phase: options.phase,
+          shards: listOption(options.target || options.shard || options.item || options.symbol),
+          shardCount: options["shard-count"],
+          fanoutLimit: options["fanout-limit"],
+          workers: listOption(options.worker),
+          reducer: options.reducer,
+          taskPrefix: options["task-prefix"],
+          instructions: options.instructions,
+          prompt: options.prompt,
+          expectedArtifact: options["expected-artifact"],
+          reducerArtifact: options["reducer-artifact"],
+          reducerHumanGate: options["reducer-human-gate"] === "true",
+          createdBy: options.from
         }
       };
     case "workflow-task":
