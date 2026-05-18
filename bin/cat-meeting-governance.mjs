@@ -22,6 +22,7 @@ function usage() {
   trading-agents-workflow meeting-ingest --meeting ID --runtime RUNTIME --agent AGENT --text TEXT [--type TYPE] [--phase PHASE] [--root DIR]
   trading-agents-workflow runtime-bridge [--runtime openclaw|hermes|hermes_acp] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--openclaw-bin PATH] [--dry-run] [--root DIR]
   trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--from AGENT] [--channel CHANNEL_ID] [--root DIR]
+  trading-agents-workflow human-gate-resume --workflow ID [--meeting ID] [--status approved|rejected] [--text TEXT] [--human-gate-id ID] [--root DIR]
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
   trading-agents-workflow telegram-outbox [--status queued|sent|failed] [--limit N] [--mark OUTBOX_ID] [--deliver] [--account cat_claw] [--target CHAT_ID] [--root DIR]
@@ -226,6 +227,22 @@ function toAction({ command, positional, options }) {
       return { root, input: { action: "runtime.bridge.drain", runtime: options.runtime, limit: options.limit, timeoutSeconds: options["timeout-seconds"], sessionMode: options["session-mode"], acpBackend: options["acp-backend"], acpAgent: options["acp-agent"], sessionKey: options["session-key"], dryRun: options["dry-run"] === "true", hermesBin: options["hermes-bin"], openclawBin: options["openclaw-bin"] } };
     case "human-gate-request":
       return { root, input: { action: "human_gate.request", meetingId: options.meeting, text: options.text, gateType: options.gate, from: options.from, channelId: options.channel } };
+    case "human-gate-resume":
+      return {
+        root,
+        input: {
+          action: "human_gate.resume",
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          humanGateId: options["human-gate-id"],
+          status: options.status,
+          text: options.text,
+          gateType: options.gate,
+          actor: options.actor || options.from,
+          runtime: options.runtime,
+          agentId: options.agent
+        }
+      };
     case "meeting-resume":
       return { root, input: { action: "meeting.resume", meetingId: options.meeting, text: options.text, from: options.from } };
     case "meeting-disperse":

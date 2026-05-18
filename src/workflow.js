@@ -3221,6 +3221,78 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
   return { meetingId, humanGateId: gate.objectId, eventId, telegramOutbox, status: "pending", dbFile: paths.dbFile };
 }
 
+export async function humanGateResume(rootDir, input) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || input.parentObjectId || input.parent_object_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id || workflowId);
+  const status = HUMAN_GATE_STATUSES.has(String(input.status || "approved")) ? String(input.status || "approved") : "approved";
+  const actor = String(input.actor || input.from || "flashcat").trim();
+  const text = String(input.text || input.summary || "").trim();
+  const gate = await workflowHumanGateRecord(rootDir, {
+    ...input,
+    workflowRootDir: paths.root,
+    workflowId,
+    parentObjectId: input.parentObjectId || input.parent_object_id || workflowId,
+    status,
+    actor,
+    sourceSystem: input.sourceSystem || input.source_system || "telegram",
+    sourceAgent: actor,
+    gateType: input.gateType || input.gate_type || "workflow_continuation",
+    summary: text
+  });
+  const resume = await meetingResume(rootDir, {
+    workflowRootDir: paths.root,
+    meetingId,
+    from: actor,
+    status,
+    text: text || `Human Gate ${status} by ${actor}`,
+    payload: {
+      workflowId,
+      humanGateId: gate.objectId,
+      status,
+      source: input.source || "human_gate.resume"
+    }
+  });
+  let dispatch = null;
+  if (["approved", "rejected"].includes(status)) {
+    const nextAction = status === "approved"
+      ? "Continue the next workflow round under the approved boundary."
+      : "Revise the plan according to the rejected Human Gate and prepare a new next-action package.";
+    dispatch = await meetingDispatch(rootDir, {
+      workflowRootDir: paths.root,
+      meetingId,
+      workflowId,
+      traceId: `${workflowId}:human_gate_${status}:${Date.now()}`,
+      idempotencyKey: `workflow:${workflowId}:human_gate_resume:${gate.objectId}`,
+      runtime: input.runtime || "openclaw",
+      agentId: input.agentId || input.agent_id || "main",
+      dispatchType: "human_gate_resume",
+      priority: "steer",
+      createdBy: actor,
+      prompt: [
+        `Human Gate status: ${status}`,
+        `Workflow ID: ${workflowId}`,
+        `Meeting ID: ${meetingId}`,
+        `Human Gate ID: ${gate.objectId}`,
+        `Flashcat confirmation: ${text || "(no extra text)"}`,
+        "",
+        "You are cat-brain main. Resume the workflow from this Human Gate decision.",
+        nextAction,
+        "Create or update concrete workflow tasks for the next round, preserve Cat Claw as the secretary/Human Gate reporting path, and do not execute high-impact operations without a new Human Gate."
+      ].join("\n"),
+      payload: {
+        workflowId,
+        meetingId,
+        humanGateId: gate.objectId,
+        status,
+        humanGateResume: true
+      }
+    });
+  }
+  return { workflowId, meetingId, humanGateId: gate.objectId, status, resume, dispatch, dbFile: paths.dbFile };
+}
+
 export async function meetingResume(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
@@ -3387,6 +3459,9 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return runtimeBridgeDrain(rootDir, input);
     case "human_gate.request":
       return humanGateRequest(rootDir, input);
+    case "human_gate.resume":
+    case "human_gate.confirm":
+      return humanGateResume(rootDir, input);
     case "meeting.resume":
       return meetingResume(rootDir, input);
     case "meeting.disperse":

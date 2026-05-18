@@ -331,6 +331,17 @@ node bin/cat-meeting-governance.mjs telegram-outbox --deliver --account cat_claw
 
 This makes Cat Claw reporting two-phase: runtime report produced, then IM delivery receipt recorded. Workflow completion should not assume Flashcat received a Human Gate package until the outbox row is `sent`.
 
+After Flashcat confirms or rejects a Human Gate, record the decision with `human_gate.resume`. This writes the Human Gate record, appends a meeting resume event, and creates a `human_gate_resume` dispatch back to cat-brain `main` so the next workflow round can continue from the confirmed boundary:
+
+```bash
+node bin/cat-meeting-governance.mjs human-gate-resume \
+  --workflow demo-initiative \
+  --meeting demo-initiative \
+  --status approved \
+  --text "Flashcat approved B plan; continue dry-run manifest phase" \
+  --root "$ROOT"
+```
+
 ## Workflow Checkpoints
 
 Use `workflow.checkpoint` whenever a workflow phase ends, context approaches the compaction threshold, a Human Gate package is submitted, or a new session needs to continue prior work. The checkpoint is the durable recovery package for cat-brain `main`; it keeps the session small by storing only the minimum resumable state plus artifact references.

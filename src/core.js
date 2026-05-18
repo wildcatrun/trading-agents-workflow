@@ -1109,6 +1109,8 @@ export async function runAction(rootDir, input = {}) {
     action === "meeting.resume" ||
     action === "meeting.disperse" ||
     action === "human_gate.request" ||
+    action === "human_gate.resume" ||
+    action === "human_gate.confirm" ||
     action === "human_gate.review" ||
     (action === "human_gate.record" && !input.meetingId && !input.meeting_id) ||
     action === "cat_claw.audit"
