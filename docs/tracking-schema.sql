@@ -182,27 +182,6 @@ CREATE TABLE workflow_checkpoints (
   FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_workflow_checkpoints_workflow ON workflow_checkpoints(workflow_id, created_at DESC);
-CREATE TABLE workflow_context_aliases (
-  alias_id TEXT PRIMARY KEY,
-  workflow_id TEXT NOT NULL,
-  meeting_id TEXT,
-  alias TEXT NOT NULL,
-  normalized_alias TEXT NOT NULL,
-  canonical_title TEXT,
-  artifact_ref TEXT,
-  status TEXT NOT NULL DEFAULT 'active',
-  summary TEXT,
-  constraints_text TEXT,
-  next_action TEXT,
-  payload_json TEXT NOT NULL DEFAULT '{}',
-  created_by TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(workflow_id, normalized_alias),
-  FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
-);
-CREATE INDEX idx_context_aliases_workflow ON workflow_context_aliases(workflow_id, status, updated_at DESC);
-CREATE INDEX idx_context_aliases_norm ON workflow_context_aliases(normalized_alias);
 CREATE TABLE artifact_index (
   artifact_id TEXT PRIMARY KEY,
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,

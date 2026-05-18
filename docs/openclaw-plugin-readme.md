@@ -359,26 +359,6 @@ node bin/cat-meeting-governance.mjs human-gate-inbox \
   --root "$ROOT"
 ```
 
-Use `workflow.alias.upsert` and `workflow.context.resolve` for short option references such as `Plan C`, `方案C`, or `C方案`. A secretary or chair must resolve the shorthand to the canonical workflow artifact before acting, especially after Human Gate confirmation.
-
-CLI example:
-
-```bash
-node bin/cat-meeting-governance.mjs workflow-alias \
-  --workflow demo-initiative \
-  --alias "Plan C" \
-  --alias "方案C" \
-  --artifact artifacts/demo-initiative/plan-c-next-round-tasks.md \
-  --title "Plan C: approved dry-run boundary" \
-  --summary "Plan C canonical context for this workflow" \
-  --root "$ROOT"
-
-node bin/cat-meeting-governance.mjs workflow-resolve \
-  --workflow demo-initiative \
-  --reference "继续推进 Plan C" \
-  --root "$ROOT"
-```
-
 `human_gate.request` must create a deliverable request, not a targetless queue item. If no meeting live channel is configured, it falls back to Flashcat's private Telegram chat `8390724843` through the `cat_claw` account. It honors explicit `target`, `targetRef`, `chatId`, or the first `notifyTargets` entry before falling back. The returned `targetRef`, `deliveryAccount`, `telegramOutbox.status`, and optional `delivery.status` are part of the contract; Cat Claw must not treat a request as delivered until a receipt exists or the direct Telegram reply itself is the acknowledged delivery path.
 
 CLI example:
@@ -404,8 +384,6 @@ node bin/cat-meeting-governance.mjs human-gate-resume \
 ```
 
 Cat Claw must preserve the original confirmation timestamp, source channel, and Flashcat text in the resume text or payload, then verify the generated dispatch id. If `human_gate.resume` is not available in the current session, Cat Claw must report `human_gate_resume_blocked` with the missing tool or runtime reason instead of treating the decision as complete.
-
-When the resume text includes a shorthand such as `Plan C`, `human_gate.resume` resolves it through `workflow.context.resolve` and embeds the resolved artifact, constraints, and next action into the Cat Brain dispatch prompt and payload.
 
 ## Workflow Checkpoints
 

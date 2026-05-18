@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { runWorkflowAction, workflowStatus } from "./workflow.js";
 
 export const PLUGIN_ID = "trading-agents-workflow";
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 7;
 export const DEFAULT_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 
 const VALID_MEETING_ID = /^[a-z0-9][a-z0-9._-]{2,120}$/;

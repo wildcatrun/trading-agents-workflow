@@ -12,8 +12,6 @@ function usage() {
   trading-agents-workflow workflow-task --workflow ID [--task ID] [--owner AGENT] [--runtime RUNTIME] [--agent AGENT] [--after TASK_IDS] [--expected-artifact PATH] [--root DIR]
   trading-agents-workflow workflow-task-update --task ID [--status STATUS] [--artifact PATH] [--blocked-reason TEXT] [--root DIR]
   trading-agents-workflow workflow-tasks [--workflow ID] [--status STATUS] [--owner AGENT] [--limit N] [--root DIR]
-  trading-agents-workflow workflow-alias --workflow ID --alias TEXT [--title TEXT] [--artifact PATH] [--summary TEXT] [--constraints TEXT] [--next-action TEXT] [--root DIR]
-  trading-agents-workflow workflow-resolve --workflow ID --reference TEXT [--no-artifact] [--include-advance] [--root DIR]
   trading-agents-workflow workflow-advance --workflow ID [--meeting ID] [--auto-dispatch] [--goal-complete] [--root DIR]
   trading-agents-workflow workflow-supervise --workflow ID [--meeting ID] [--auto-dispatch] [--drain] [--max-cycles N] [--auto-report false] [--openclaw-bin PATH] [--root DIR]
   trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
@@ -170,36 +168,6 @@ function toAction({ command, positional, options }) {
       };
     case "workflow-tasks":
       return { root, input: { action: "workflow.task.list", workflowId: options.workflow, status: options.status, ownerAgent: options.owner, limit: options.limit } };
-    case "workflow-alias":
-      return {
-        root,
-        input: {
-          action: "workflow.alias.upsert",
-          workflowId: options.workflow,
-          meetingId: options.meeting,
-          alias: listOption(options.alias),
-          canonicalTitle: options.title,
-          artifactRef: options.artifact,
-          summary: options.summary,
-          constraints: options.constraints,
-          nextAction: options["next-action"],
-          status: options.status,
-          from: options.from,
-          payload: options.payload
-        }
-      };
-    case "workflow-resolve":
-      return {
-        root,
-        input: {
-          action: "workflow.context.resolve",
-          workflowId: options.workflow,
-          meetingId: options.meeting,
-          reference: options.reference || options.text || options.query,
-          includeArtifact: options["no-artifact"] !== "true",
-          includeAdvance: options["include-advance"] === "true"
-        }
-      };
     case "workflow-advance":
       return {
         root,
