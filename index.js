@@ -51,6 +51,7 @@ const toolParameters = {
         "workflow.topology",
         "workflow.run.upsert",
         "workflow.initiative.upsert",
+        "workflow.swarm.plan",
         "workflow.task.create",
         "workflow.task.update",
         "workflow.task.list",
@@ -68,6 +69,8 @@ const toolParameters = {
         "meeting.dispatch",
         "meeting.ingest",
         "human_gate.request",
+        "human_gate.inbox",
+        "human_gate.batch_inbox",
         "meeting.resume",
         "meeting.disperse",
         "telegram.outbox",
@@ -192,6 +195,7 @@ const toolParameters = {
     proposalId: { type: "string" },
     riskDecisionId: { type: "string" },
     humanGateId: { type: "string" },
+    batchId: { type: "string" },
     intentId: { type: "string" },
     receiptId: { type: "string" },
     sideEffectId: { type: "string" },
@@ -849,6 +853,28 @@ function registerCli(api) {
           gateType: options.gate,
           from: options.from,
           channelId: options.channel
+        }), null, 2));
+      });
+
+    command.command("human-gate-inbox")
+      .option("--workflow <workflowId>", "Workflow id")
+      .option("--batch <batchId>", "Batch id")
+      .option("--title <title>", "Inbox title")
+      .option("--limit <limit>", "Limit", "100")
+      .option("--target <chatId>", "Telegram target", "8390724843")
+      .option("--from <agent>", "Creator", "cat_claw")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "human_gate.inbox",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          batchId: options.batch,
+          title: options.title,
+          limit: Number(options.limit),
+          target: options.target,
+          from: options.from
         }), null, 2));
       });
 

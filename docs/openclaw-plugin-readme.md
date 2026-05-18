@@ -23,6 +23,7 @@ v0.6 upgrades the old meeting-only plugin into a unified trading workflow substr
 - Stability governance fields for durable dispatches, trace correlation, idempotency, retry taxonomy, readiness snapshots, side-effect ledger, runtime run records, and incident state documents
 - Workflow task pool for long-running initiatives, task dependencies, expected artifacts, and supervisor-style advance decisions
 - Workflow checkpoints for session overflow recovery and compact next-action handoff
+- Human Gate Inbox batches that collect pending approvals, delivery failures, and review gates into HTML/JSON tables for Flashcat
 
 This is not an independent agent runtime, not a Gateway replacement, not a Hermes runtime, and not a live trading executor. It does not call trading_core or Telegram directly; it records reviewed intents, dispatch queues, transcripts, Telegram outbox entries, and later records trading_core receipts.
 
@@ -109,6 +110,8 @@ Minimum operational contracts:
     telegram/
     human_gates/
   workflows/
+  human-gates/
+    inbox/
   artifacts/
   templates/
   index/
@@ -141,6 +144,8 @@ SQLite stores control-plane state and queryable indexes:
 - `runtime_runs`
 - `telegram_live_links`
 - `telegram_outbox`
+- `human_gate_batches`
+- `human_gate_batch_items`
 - `meeting_control_events`
 - `incident_states`
 - `readiness_snapshots`
@@ -245,6 +250,8 @@ Workflow and tracking:
 - `meeting.dispatch`
 - `meeting.ingest`
 - `human_gate.request`
+- `human_gate.inbox`
+- `human_gate.batch_inbox`
 - `meeting.resume`
 - `meeting.disperse`
 - `telegram.outbox`
@@ -334,6 +341,20 @@ node bin/cat-meeting-governance.mjs telegram-outbox --deliver --account cat_claw
 This makes Cat Claw reporting two-phase but self-contained: runtime report produced, then IM delivery receipt recorded. Workflow completion should not assume Flashcat received a Human Gate package until the outbox row is `sent`.
 
 When `workflow.supervise --drain` creates a Cat Claw closeout dispatch, it drains that exact dispatch and lets `runtime-bridge` deliver the report outbox. If delivery fails, the report dispatch can still be `acked`, but the returned `reportDelivery.status` and `telegram_outbox.status` must be treated as the communication-plane truth.
+
+Use `human_gate.inbox` when Flashcat would otherwise receive many one-off Cat Claw requests. It gathers pending `human_gate_record` objects, Human-Gate review gates, gated workflow tasks, and queued or failed Cat Claw Telegram report deliveries into one batch. The output is a queryable `human_gate_batches` row, `human_gate_batch_items`, and paired HTML/JSON artifacts under `human-gates/inbox/`.
+
+The inbox is an observation and batching surface. P0/P1 items are marked for individual review; lower-risk P2/P3 items can be grouped after a quick scan. The action does not auto-approve work, execute trades, bypass Cat Brain, or replace `human_gate.resume`.
+
+CLI example:
+
+```bash
+node bin/cat-meeting-governance.mjs human-gate-inbox \
+  --workflow demo-initiative \
+  --batch demo-inbox \
+  --title "Demo Human Gate Inbox" \
+  --root "$ROOT"
+```
 
 After Flashcat confirms, rejects, or selects an option for a Human Gate, record the decision with `human_gate.resume`. This is mandatory for Cat Claw when the confirmation arrives in Flashcat's private Telegram chat. A chat acknowledgement is not enough. The resume action writes the Human Gate record, appends a meeting resume event, and creates a `human_gate_resume` dispatch back to cat-brain `main` so the next workflow round can continue from the confirmed boundary:
 

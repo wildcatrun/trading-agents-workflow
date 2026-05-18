@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 6;
+export const WORKFLOW_SCHEMA_VERSION = 7;
 export const DEFAULT_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
@@ -86,6 +86,7 @@ export function workflowPaths(rootDir, input = {}) {
     messagesDir: path.join(root, "bridge", "messages"),
     telegramDir: path.join(root, "bridge", "telegram"),
     humanGateDir: path.join(root, "bridge", "human_gates"),
+    humanGateInboxDir: path.join(root, "human-gates", "inbox"),
     workflowsDir: path.join(root, "workflows"),
     templatesDir: path.join(root, "templates"),
     exportsDir: path.join(root, "exports"),
@@ -306,6 +307,7 @@ async function ensureWorkflowLayout(rootDir, input = {}) {
     fs.mkdir(paths.messagesDir, { recursive: true }),
     fs.mkdir(paths.telegramDir, { recursive: true }),
     fs.mkdir(paths.humanGateDir, { recursive: true }),
+    fs.mkdir(paths.humanGateInboxDir, { recursive: true }),
     fs.mkdir(paths.workflowsDir, { recursive: true }),
     fs.mkdir(paths.templatesDir, { recursive: true }),
     fs.mkdir(paths.exportsDir, { recursive: true }),
@@ -722,6 +724,41 @@ CREATE TABLE IF NOT EXISTS telegram_outbox (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_telegram_outbox_status ON telegram_outbox(status, created_at);
+CREATE TABLE IF NOT EXISTS human_gate_batches (
+  batch_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  title TEXT,
+  target_ref TEXT,
+  risk_summary_json TEXT NOT NULL DEFAULT '{}',
+  default_action TEXT,
+  html_path TEXT,
+  json_path TEXT,
+  telegram_summary TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_human_gate_batches_status ON human_gate_batches(status, created_at DESC);
+CREATE TABLE IF NOT EXISTS human_gate_batch_items (
+  batch_id TEXT NOT NULL REFERENCES human_gate_batches(batch_id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  workflow_id TEXT,
+  meeting_id TEXT,
+  title TEXT,
+  summary TEXT,
+  risk_tier TEXT NOT NULL,
+  default_action TEXT,
+  requires_individual_approval INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  action_hint TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(batch_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_human_gate_batch_items_batch ON human_gate_batch_items(batch_id, risk_tier, status);
+CREATE INDEX IF NOT EXISTS idx_human_gate_batch_items_source ON human_gate_batch_items(source_type, source_id);
 CREATE TABLE IF NOT EXISTS meeting_control_events (
   event_id TEXT PRIMARY KEY,
   meeting_id TEXT NOT NULL,
@@ -803,6 +840,41 @@ CREATE INDEX IF NOT EXISTS idx_mixed_dispatches_retry ON mixed_meeting_dispatche
 CREATE INDEX IF NOT EXISTS idx_side_effects_idempotency ON side_effect_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE INDEX IF NOT EXISTS idx_incident_states_status ON incident_states(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_readiness_snapshots_checked ON readiness_snapshots(checked_at DESC);
+CREATE TABLE IF NOT EXISTS human_gate_batches (
+  batch_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  title TEXT,
+  target_ref TEXT,
+  risk_summary_json TEXT NOT NULL DEFAULT '{}',
+  default_action TEXT,
+  html_path TEXT,
+  json_path TEXT,
+  telegram_summary TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_human_gate_batches_status ON human_gate_batches(status, created_at DESC);
+CREATE TABLE IF NOT EXISTS human_gate_batch_items (
+  batch_id TEXT NOT NULL REFERENCES human_gate_batches(batch_id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  workflow_id TEXT,
+  meeting_id TEXT,
+  title TEXT,
+  summary TEXT,
+  risk_tier TEXT NOT NULL,
+  default_action TEXT,
+  requires_individual_approval INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  action_hint TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(batch_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_human_gate_batch_items_batch ON human_gate_batch_items(batch_id, risk_tier, status);
+CREATE INDEX IF NOT EXISTS idx_human_gate_batch_items_source ON human_gate_batch_items(source_type, source_id);
 `);
 }
 
@@ -873,7 +945,7 @@ ${record.reviewDueAt || "待定"}
 export async function workflowInit(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   return {
-    schemaVersion: 6,
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
     workflowSchemaVersion: WORKFLOW_SCHEMA_VERSION,
     root: paths.root,
     dbFile: paths.dbFile,
@@ -1064,7 +1136,7 @@ UNION ALL SELECT 'mixed_meeting_dispatches', COUNT(*) FROM mixed_meeting_dispatc
 UNION ALL SELECT 'telegram_outbox', COUNT(*) FROM telegram_outbox;`, { json: true });
   const readiness = await workflowReadinessSnapshot(paths, input);
   const result = {
-    schemaVersion: 6,
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
     workflowSchemaVersion: WORKFLOW_SCHEMA_VERSION,
     root: paths.root,
     dbFile: paths.dbFile,
@@ -2003,7 +2075,7 @@ ORDER BY runtime, agent_id;`, { json: true });
     return acc;
   }, {});
   return {
-    schemaVersion: 6,
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
     workflowSchemaVersion: WORKFLOW_SCHEMA_VERSION,
     root: paths.root,
     runtimeRegistry,
@@ -2063,6 +2135,355 @@ async function appendTranscript(paths, meetingId, line) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, `${line}\n`, "utf8");
   return relativeTo(paths.root, filePath);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function compactText(value, max = 220) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}...` : text;
+}
+
+function workflowFilterMatches(workflowId, value) {
+  return !workflowId || String(value || "").trim() === workflowId;
+}
+
+function humanGateRiskTier(input = {}) {
+  const text = [
+    input.sourceType,
+    input.gateType,
+    input.title,
+    input.summary,
+    input.workflowId,
+    input.meetingId,
+    JSON.stringify(input.payload || {})
+  ].join(" ").toLowerCase();
+  if (/(real[- ]?trade|live[- ]?trade|live_strategy|live strategy|strategy launch|资金|实盘|真实交易|production|deploy|cutover|gateway restart|restart gateway|database migration|schema migration|private key|secret|oauth|permission expansion|权限扩大)/.test(text)) return "P0";
+  if (/(trade|order|execution|risk_budget|position|gateway|openclaw config|hermes migration|runtime migration|cron|heartbeat|config|model route|incident|权限|风控|迁移|部署|重启)/.test(text)) return "P1";
+  if (/(human_gate|review|approval|automation|workflow|dry[- ]?run|observability|report|governance|制度|治理|观察)/.test(text)) return "P2";
+  return "P3";
+}
+
+function humanGateDefaultAction(riskTier, input = {}) {
+  const text = [input.sourceType, input.gateType, input.summary, input.title].join(" ").toLowerCase();
+  if (riskTier === "P0" || riskTier === "P1") return "individual_review_required";
+  if (/reject|blocked|failed|failure|异常|失败|阻塞/.test(text)) return "ask_revision";
+  if (riskTier === "P2") return "review_then_batch";
+  return "batch_approve_allowed";
+}
+
+function humanGateActionHint(item) {
+  if (item.riskTier === "P0" || item.riskTier === "P1") return "single approve/reject/revise only";
+  if (item.defaultAction === "ask_revision") return "ask responsible agent for revision";
+  if (item.defaultAction === "review_then_batch") return "eligible for batch after quick review";
+  return "eligible for batch approve";
+}
+
+function humanGateItem(sourceType, sourceId, fields = {}) {
+  const riskTier = fields.riskTier || humanGateRiskTier({ sourceType, ...fields });
+  const defaultAction = fields.defaultAction || humanGateDefaultAction(riskTier, { sourceType, ...fields });
+  const requiresIndividualApproval = fields.requiresIndividualApproval ?? ["P0", "P1"].includes(riskTier);
+  return {
+    itemId: `item.${cleanFileSegment(sourceType)}.${cleanFileSegment(sourceId)}`,
+    sourceType,
+    sourceId,
+    workflowId: String(fields.workflowId || "").trim(),
+    meetingId: String(fields.meetingId || fields.workflowId || "").trim(),
+    title: compactText(fields.title || sourceId, 120),
+    summary: compactText(fields.summary || "", 360),
+    riskTier,
+    defaultAction,
+    requiresIndividualApproval: Boolean(requiresIndividualApproval),
+    status: fields.status || "pending",
+    actionHint: fields.actionHint || "",
+    createdAt: fields.createdAt || nowIso(),
+    payload: fields.payload || {},
+    path: fields.path || ""
+  };
+}
+
+function riskSummaryFor(items) {
+  const summary = { total: items.length, P0: 0, P1: 0, P2: 0, P3: 0, individual: 0, batchEligible: 0 };
+  for (const item of items) {
+    summary[item.riskTier] = Number(summary[item.riskTier] || 0) + 1;
+    if (item.requiresIndividualApproval) summary.individual += 1;
+    else summary.batchEligible += 1;
+  }
+  return summary;
+}
+
+async function collectHumanGateInboxItems(paths, input = {}) {
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  const limit = Math.max(1, Math.min(500, Number(input.limit || 100)));
+  const items = [];
+
+  const humanGates = await sqlite(paths.dbFile, `
+SELECT object_id, status, source_agent, parent_object_id, path, payload_json, created_at
+FROM protocol_objects
+WHERE object_type='human_gate_record' AND status='pending'
+ORDER BY created_at DESC
+LIMIT ${limit};`, { json: true });
+  for (const row of humanGates) {
+    const payload = parseJsonValue(row.payload_json, {});
+    const body = parseJsonValue(payload.payload, payload.payload || {});
+    const gateWorkflowId = body.workflowId || payload.workflowId || row.parent_object_id || "";
+    if (!workflowFilterMatches(workflowId, gateWorkflowId)) continue;
+    const gateType = body.gateType || payload.gateType || "human_gate_record";
+    items.push(humanGateItem("human_gate_record", row.object_id, {
+      workflowId: gateWorkflowId,
+      meetingId: gateWorkflowId,
+      title: `${gateType}: ${row.object_id}`,
+      summary: payload.summary || body.summary || "",
+      gateType,
+      status: row.status,
+      createdAt: row.created_at,
+      path: row.path,
+      payload: { sourceAgent: row.source_agent, parentObjectId: row.parent_object_id, payload }
+    }));
+  }
+
+  const reviewGates = await sqlite(paths.dbFile, `
+SELECT gate_id, instrument_id, workflow_id, gate_type, status, summary, reviewer_agent, human_gate_required, resume_pointer, expires_at, evidence_paths_json, created_at
+FROM review_gates
+WHERE status='pending' OR (human_gate_required=1 AND status NOT IN ('approved','rejected','waived','expired','cancelled','done'))
+ORDER BY created_at DESC
+LIMIT ${limit};`, { json: true });
+  for (const row of reviewGates) {
+    if (!workflowFilterMatches(workflowId, row.workflow_id)) continue;
+    items.push(humanGateItem("review_gate", row.gate_id, {
+      workflowId: row.workflow_id,
+      meetingId: row.workflow_id,
+      title: `${row.gate_type}: ${row.gate_id}`,
+      summary: row.summary || "",
+      gateType: row.gate_type,
+      status: row.status,
+      createdAt: row.created_at,
+      payload: {
+        instrumentId: row.instrument_id,
+        reviewerAgent: row.reviewer_agent,
+        humanGateRequired: Boolean(Number(row.human_gate_required || 0)),
+        resumePointer: row.resume_pointer,
+        expiresAt: row.expires_at,
+        evidencePaths: parseJsonValue(row.evidence_paths_json, [])
+      }
+    }));
+  }
+
+  const gatedTasks = await sqlite(paths.dbFile, `
+SELECT task_id, workflow_id, phase, owner_agent, runtime, agent_id, task_type, status, priority, expected_artifact, summary, due_at, created_at
+FROM workflow_tasks
+WHERE human_gate_required=1 AND status NOT IN ('done','failed','cancelled')
+ORDER BY created_at DESC
+LIMIT ${limit};`, { json: true });
+  for (const row of gatedTasks) {
+    if (!workflowFilterMatches(workflowId, row.workflow_id)) continue;
+    items.push(humanGateItem("workflow_task_gate", row.task_id, {
+      workflowId: row.workflow_id,
+      meetingId: row.workflow_id,
+      title: `${row.task_type}: ${row.task_id}`,
+      summary: row.summary || row.expected_artifact || "",
+      gateType: "workflow_task_human_gate",
+      status: row.status,
+      createdAt: row.created_at,
+      payload: {
+        phase: row.phase,
+        ownerAgent: row.owner_agent,
+        runtime: row.runtime,
+        agentId: row.agent_id,
+        priority: row.priority,
+        dueAt: row.due_at
+      }
+    }));
+  }
+
+  const reportDeliveryRows = await sqlite(paths.dbFile, `
+SELECT outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at
+FROM telegram_outbox
+WHERE status IN ('queued','failed') AND message_type IN ('workflow_secretary_report','human_gate_report','human_gate_request')
+ORDER BY created_at DESC
+LIMIT ${limit};`, { json: true });
+  for (const row of reportDeliveryRows) {
+    const payload = parseJsonValue(row.payload_json, {});
+    const itemWorkflowId = payload.workflowId || payload.workflow_id || row.meeting_id || "";
+    if (!workflowFilterMatches(workflowId, itemWorkflowId)) continue;
+    const riskTier = row.status === "failed" ? "P1" : "P2";
+    items.push(humanGateItem("cat_claw_delivery", row.outbox_id, {
+      workflowId: itemWorkflowId,
+      meetingId: row.meeting_id,
+      title: `${row.message_type}: ${row.outbox_id}`,
+      summary: compactText(row.text || "", 320),
+      gateType: row.message_type,
+      riskTier,
+      defaultAction: row.status === "failed" ? "repair_delivery" : "deliver_outbox",
+      requiresIndividualApproval: false,
+      status: row.status,
+      createdAt: row.created_at,
+      actionHint: row.status === "failed" ? "repair or resend delivery" : "deliver queued summary",
+      payload: { targetKind: row.target_kind, targetRef: row.target_ref, updatedAt: row.updated_at, payload }
+    }));
+  }
+
+  return items.slice(0, limit);
+}
+
+function renderHumanGateInboxHtml(batch) {
+  const riskClass = (tier) => `risk-${String(tier || "P3").toLowerCase()}`;
+  const rowHtml = batch.items.map((item) => `
+        <tr class="${riskClass(item.riskTier)}">
+          <td>${escapeHtml(item.riskTier)}</td>
+          <td>${escapeHtml(item.sourceType)}<br><code>${escapeHtml(item.sourceId)}</code></td>
+          <td>${escapeHtml(item.workflowId || "-")}</td>
+          <td>${escapeHtml(item.title)}</td>
+          <td>${escapeHtml(item.summary || "-")}</td>
+          <td>${escapeHtml(item.defaultAction)}</td>
+          <td>${item.requiresIndividualApproval ? "single" : "batch ok"}</td>
+          <td>${escapeHtml(item.status)}</td>
+          <td>${escapeHtml(item.actionHint || humanGateActionHint(item))}</td>
+        </tr>`).join("\n");
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Human Gate Inbox ${escapeHtml(batch.batchId)}</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f6f7f9; color: #1f2933; }
+    main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    .meta { color: #52606d; margin-bottom: 20px; }
+    .summary { display: grid; grid-template-columns: repeat(6, minmax(100px, 1fr)); gap: 8px; margin: 16px 0 20px; }
+    .metric { background: white; border: 1px solid #d9e2ec; border-radius: 6px; padding: 10px 12px; }
+    .metric strong { display: block; font-size: 20px; }
+    table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #d9e2ec; }
+    th, td { text-align: left; vertical-align: top; padding: 10px; border-bottom: 1px solid #e4e7eb; font-size: 13px; }
+    th { background: #eef2f7; position: sticky; top: 0; z-index: 1; }
+    code { font-size: 12px; color: #334e68; }
+    .risk-p0 td:first-child { border-left: 5px solid #b91c1c; font-weight: 700; }
+    .risk-p1 td:first-child { border-left: 5px solid #d97706; font-weight: 700; }
+    .risk-p2 td:first-child { border-left: 5px solid #2563eb; font-weight: 700; }
+    .risk-p3 td:first-child { border-left: 5px solid #16a34a; font-weight: 700; }
+    .empty { background: white; border: 1px solid #d9e2ec; border-radius: 6px; padding: 20px; }
+    @media (max-width: 900px) { .summary { grid-template-columns: repeat(2, 1fr); } table { min-width: 1000px; } .scroll { overflow-x: auto; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Human Gate Inbox</h1>
+  <div class="meta">batch_id: <code>${escapeHtml(batch.batchId)}</code> | created_at: ${escapeHtml(batch.createdAt)} | target: ${escapeHtml(batch.targetRef)}</div>
+  <section class="summary">
+    <div class="metric"><span>Total</span><strong>${batch.riskSummary.total}</strong></div>
+    <div class="metric"><span>P0</span><strong>${batch.riskSummary.P0}</strong></div>
+    <div class="metric"><span>P1</span><strong>${batch.riskSummary.P1}</strong></div>
+    <div class="metric"><span>P2</span><strong>${batch.riskSummary.P2}</strong></div>
+    <div class="metric"><span>P3</span><strong>${batch.riskSummary.P3}</strong></div>
+    <div class="metric"><span>Batch eligible</span><strong>${batch.riskSummary.batchEligible}</strong></div>
+  </section>
+  ${batch.items.length ? `<div class="scroll"><table>
+    <thead>
+      <tr>
+        <th>Risk</th>
+        <th>Source</th>
+        <th>Workflow</th>
+        <th>Title</th>
+        <th>Summary</th>
+        <th>Default action</th>
+        <th>Approval mode</th>
+        <th>Status</th>
+        <th>Action hint</th>
+      </tr>
+    </thead>
+    <tbody>${rowHtml}
+    </tbody>
+  </table></div>` : `<div class="empty">No pending Human Gate items.</div>`}
+</main>
+</body>
+</html>`;
+}
+
+function renderHumanGateTelegramSummary(batch) {
+  const s = batch.riskSummary;
+  const topItems = batch.items.slice(0, 5).map((item) => `- ${item.riskTier} ${item.sourceType} ${item.workflowId || "-"}: ${item.title}`).join("\n");
+  return [
+    `Human Gate Inbox | ${batch.createdAt}`,
+    `batch_id: ${batch.batchId}`,
+    `pending: ${s.total} | P0 ${s.P0} | P1 ${s.P1} | P2 ${s.P2} | P3 ${s.P3}`,
+    `individual: ${s.individual} | batch_eligible: ${s.batchEligible}`,
+    `html: ${batch.htmlPath}`,
+    "",
+    topItems || "- no pending items",
+    "",
+    "Suggested handling: P0/P1 single review; P2/P3 can be batched after quick scan."
+  ].join("\n");
+}
+
+export async function humanGateInbox(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const createdAt = nowIso();
+  const batchId = input.batchId || input.batch_id || safeId(`hgate-batch-${dailyKey()}`);
+  const targetRef = String(input.target || input.targetRef || input.target_ref || DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID).trim();
+  const title = String(input.title || `Human Gate Inbox ${dailyKey()}`).trim();
+  const items = await collectHumanGateInboxItems(paths, input);
+  const riskSummary = riskSummaryFor(items);
+  const batch = {
+    batchId,
+    status: items.length ? "open" : "empty",
+    title,
+    targetRef,
+    createdAt,
+    riskSummary,
+    items
+  };
+  const htmlPath = await writeTextArtifact(paths.root, paths.humanGateInboxDir, batchId, "html", renderHumanGateInboxHtml({ ...batch, htmlPath: "" }));
+  batch.htmlPath = htmlPath;
+  batch.telegramSummary = renderHumanGateTelegramSummary(batch);
+  const jsonPath = relativeTo(paths.root, path.join(paths.humanGateInboxDir, `${cleanFileSegment(batchId)}.json`));
+  batch.jsonPath = jsonPath;
+  await writeJsonArtifact(paths.root, paths.humanGateInboxDir, batchId, batch);
+
+  await sqlite(paths.dbFile, `
+INSERT INTO human_gate_batches(batch_id, status, title, target_ref, risk_summary_json, default_action, html_path, json_path, telegram_summary, created_by, created_at, updated_at)
+VALUES (${sqlValue(batchId)}, ${sqlValue(batch.status)}, ${sqlValue(title)}, ${sqlValue(targetRef)}, ${sqlValue(JSON.stringify(riskSummary))}, ${sqlValue(riskSummary.individual ? "review_p0_p1_first" : "batch_review_allowed")}, ${sqlValue(htmlPath)}, ${sqlValue(jsonPath)}, ${sqlValue(batch.telegramSummary)}, ${sqlValue(input.createdBy || input.from || "cat_claw")}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+ON CONFLICT(batch_id) DO UPDATE SET
+  status=excluded.status,
+  title=excluded.title,
+  target_ref=excluded.target_ref,
+  risk_summary_json=excluded.risk_summary_json,
+  default_action=excluded.default_action,
+  html_path=excluded.html_path,
+  json_path=excluded.json_path,
+  telegram_summary=excluded.telegram_summary,
+  updated_at=excluded.updated_at;`);
+  await sqlite(paths.dbFile, `DELETE FROM human_gate_batch_items WHERE batch_id=${sqlValue(batchId)};`);
+  for (const item of items) {
+    await sqlite(paths.dbFile, `
+INSERT INTO human_gate_batch_items(batch_id, item_id, source_type, source_id, workflow_id, meeting_id, title, summary, risk_tier, default_action, requires_individual_approval, status, action_hint, payload_json, created_at)
+VALUES (${sqlValue(batchId)}, ${sqlValue(item.itemId)}, ${sqlValue(item.sourceType)}, ${sqlValue(item.sourceId)}, ${sqlValue(item.workflowId)}, ${sqlValue(item.meetingId)}, ${sqlValue(item.title)}, ${sqlValue(item.summary)}, ${sqlValue(item.riskTier)}, ${sqlValue(item.defaultAction)}, ${sqlValue(item.requiresIndividualApproval)}, ${sqlValue(item.status)}, ${sqlValue(item.actionHint || humanGateActionHint(item))}, ${sqlValue(JSON.stringify(item.payload || {}))}, ${sqlValue(item.createdAt)});`);
+  }
+  await sqlite(paths.dbFile, `
+INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES (${sqlValue(batchId)}, ${sqlValue(input.workflowId || input.workflow_id || "")}, 'human_gate_inbox', ${sqlValue(htmlPath)}, ${sqlValue(`${riskSummary.total} pending Human Gate inbox items`)}, ${sqlValue(input.createdBy || input.from || "cat_claw")}, ${sqlValue(createdAt)})
+ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
+
+  return {
+    batchId,
+    status: batch.status,
+    createdAt,
+    targetRef,
+    count: items.length,
+    riskSummary,
+    htmlPath,
+    jsonPath,
+    telegramSummary: batch.telegramSummary,
+    items,
+    dbFile: paths.dbFile
+  };
 }
 
 async function enqueueTelegramOutbox(paths, input) {
@@ -3492,6 +3913,9 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return runtimeBridgeDrain(rootDir, input);
     case "human_gate.request":
       return humanGateRequest(rootDir, input);
+    case "human_gate.inbox":
+    case "human_gate.batch_inbox":
+      return humanGateInbox(rootDir, input);
     case "human_gate.resume":
     case "human_gate.confirm":
       return humanGateResume(rootDir, input);

@@ -38,6 +38,8 @@ By default, Cat Claw sends formal reports directly to Flashcat's Telegram privat
 
 Telegram rooms/live links are optional coordination surfaces for multi-agent live discussion, group broadcasts, or fixed project channels. They must not block Cat Claw from reporting to Flashcat.
 
+When Human Gate pressure grows beyond one or two items, Cat Claw should create a `human_gate.inbox` batch instead of sending an unstructured stream of separate requests. The batch must preserve each item's source id, workflow id, risk tier, suggested default action, approval mode, and artifact path. P0/P1 items still require individual Flashcat decisions; P2/P3 items can be grouped for batch handling after review.
+
 ## Stability Governance Addendum
 
 Cat-system stability is judged by workflow evidence, not by process liveness or

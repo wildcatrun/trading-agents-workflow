@@ -14,6 +14,8 @@ Runtime SQLite databases and backup databases are intentionally excluded from Gi
 
 `workflow.checkpoint` creates the session-overflow recovery package. It snapshots objective, acceptance criteria, phase, decision, active tasks, blocked tasks, artifact refs, Human Gate pressure, and next actions into `workflow_checkpoints` plus JSON/Markdown artifacts under `workflows/checkpoints/`. New agent sessions should restore from the latest checkpoint and referenced artifacts instead of replaying the full chat history.
 
+`human_gate.inbox` creates the secretary-facing approval table for complex workflows. It gathers pending Human Gate records, review gates, gated tasks, and Cat Claw delivery failures into `human_gate_batches`, `human_gate_batch_items`, and HTML/JSON artifacts under `human-gates/inbox/` so Flashcat can review multiple low-risk items together while P0/P1 items remain individual approvals.
+
 ## OpenClaw Plugin
 
 This repository also contains the OpenClaw runtime plugin source that is currently deployed on the development server under:
@@ -75,6 +77,7 @@ Hermes ACP dispatch.
 - `artifacts/` - generated or curated workflow artifacts.
 - `bridge/`, `commands/`, `events/`, `states/`, `index/`, `meetings/` - workflow smoke-test and runtime trace records suitable for audit.
 - `governance-logs/` - timestamped readiness, incident, dispatch/receipt, Human Gate and side-effect governance traces.
+- `human-gates/inbox/` - generated Human Gate Inbox HTML/JSON batches for Flashcat review.
 - `radar/` - workflow protocol documentation.
 - `templates/` - workflow report and review templates.
 - `docs/governance-records.md` - policy for recording workflow incidents, fixes, delivery failures, and Human Gate packages inside this plugin.

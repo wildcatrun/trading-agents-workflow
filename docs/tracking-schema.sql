@@ -327,6 +327,41 @@ CREATE TABLE telegram_outbox (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX idx_telegram_outbox_status ON telegram_outbox(status, created_at);
+CREATE TABLE human_gate_batches (
+  batch_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  title TEXT,
+  target_ref TEXT,
+  risk_summary_json TEXT NOT NULL DEFAULT '{}',
+  default_action TEXT,
+  html_path TEXT,
+  json_path TEXT,
+  telegram_summary TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_human_gate_batches_status ON human_gate_batches(status, created_at DESC);
+CREATE TABLE human_gate_batch_items (
+  batch_id TEXT NOT NULL REFERENCES human_gate_batches(batch_id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  workflow_id TEXT,
+  meeting_id TEXT,
+  title TEXT,
+  summary TEXT,
+  risk_tier TEXT NOT NULL,
+  default_action TEXT,
+  requires_individual_approval INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  action_hint TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(batch_id, item_id)
+);
+CREATE INDEX idx_human_gate_batch_items_batch ON human_gate_batch_items(batch_id, risk_tier, status);
+CREATE INDEX idx_human_gate_batch_items_source ON human_gate_batch_items(source_type, source_id);
 CREATE TABLE meeting_control_events (
   event_id TEXT PRIMARY KEY,
   meeting_id TEXT NOT NULL,
