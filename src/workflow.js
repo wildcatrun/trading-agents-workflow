@@ -1593,6 +1593,7 @@ export async function workflowSupervisor(rootDir, input = {}) {
     nextActions: input.nextActions || input.next_actions || []
   });
   let catClawReport = null;
+  let catClawReportDrain = null;
   if (autoReport && ["cat_claw_summary_required", "blocked", "human_gate_pending"].includes(finalAdvance.decision)) {
     const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
     const workflow = workflowRows[0] || { workflow_id: workflowId };
@@ -1616,6 +1617,17 @@ export async function workflowSupervisor(rootDir, input = {}) {
         reportTarget: "telegram:8390724843"
       }
     });
+    if (drain && !dryRun && catClawReport?.dispatchId) {
+      catClawReportDrain = await runtimeBridgeDrain(rootDir, {
+        ...input,
+        workflowRootDir: paths.root,
+        runtime: catClawReport.runtime,
+        dispatchId: catClawReport.dispatchId,
+        limit: 1,
+        timeoutSeconds,
+        dryRun: false
+      });
+    }
   }
   return {
     workflowId,
@@ -1626,6 +1638,7 @@ export async function workflowSupervisor(rootDir, input = {}) {
     finalAdvance,
     checkpoint,
     catClawReport,
+    catClawReportDrain,
     dryRun,
     dbFile: paths.dbFile
   };
@@ -2139,6 +2152,20 @@ SET status='failed', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, u
 WHERE outbox_id=${sqlValue(row.outbox_id)};`);
     return { outboxId: row.outbox_id, status: "failed", account, target, error: String(error?.message || error).slice(0, 2000), receipts };
   }
+}
+
+async function autoDeliverReportOutbox(paths, ingest, input = {}) {
+  if (!ingest?.reportOutbox?.outboxId) return null;
+  const enabled = boolOption(input.autoDeliverReportOutbox ?? input.auto_deliver_report_outbox ?? input.reportDelivery ?? input.report_delivery, true);
+  if (!enabled) return { outboxId: ingest.reportOutbox.outboxId, status: "queued", skipped: true };
+  const rows = await sqlite(paths.dbFile, `
+SELECT * FROM telegram_outbox
+WHERE outbox_id=${sqlValue(ingest.reportOutbox.outboxId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0];
+  if (!row) return { outboxId: ingest.reportOutbox.outboxId, status: "missing" };
+  if (row.status !== "queued") return { outboxId: row.outbox_id, status: row.status, skipped: true };
+  return deliverTelegramOutboxRow(paths, row, input);
 }
 
 async function ensureRuntimeAgent(paths, input) {
@@ -2828,6 +2855,7 @@ async function runHermesDispatch(paths, row, input = {}) {
         stderr: String(stderr || "").trim().slice(0, 2000)
       }
     });
+    const reportDelivery = await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter, profile, completedAt, messageId: ingest.messageId, attempt });
     await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { profile } });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
@@ -2843,7 +2871,7 @@ async function runHermesDispatch(paths, row, input = {}) {
       attempt,
       runtimeRunId
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter, profile, messageId: ingest.messageId };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter, profile, messageId: ingest.messageId, reportDelivery };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
@@ -3007,6 +3035,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
         events: acpEvents.slice(-20)
       }
     });
+    const reportDelivery = await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "hermes_acp", backend: backendId, acpAgent, completedAt, messageId: ingest.messageId, attempt });
     await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter: "hermes_acp", backend: backendId, acpAgent, sessionKey, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { sessionMode, events: acpEvents.slice(-20) } });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
@@ -3027,7 +3056,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       runtimeRunId
     });
     if (sessionMode === "oneshot") await backend.runtime.close({ handle, reason: "trading-agents-workflow oneshot completed", discardPersistentState: true }).catch(() => {});
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "hermes_acp", backend: backendId, acpAgent, sessionKey, messageId: ingest.messageId };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "hermes_acp", backend: backendId, acpAgent, sessionKey, messageId: ingest.messageId, reportDelivery };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
@@ -3122,6 +3151,7 @@ async function runOpenClawDispatch(paths, row, input = {}) {
         stderr: String(stderr || "").trim().slice(0, 2000)
       }
     });
+    const reportDelivery = await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "openclaw", completedAt, messageId: ingest.messageId, attempt, runId: parsed.runId || "" });
     await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter: "openclaw", status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { runId: parsed.runId || "" } });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
@@ -3138,7 +3168,7 @@ async function runOpenClawDispatch(paths, row, input = {}) {
       runtimeRunId,
       runId: parsed.runId || ""
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "openclaw", messageId: ingest.messageId, runId: parsed.runId || "" };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "openclaw", messageId: ingest.messageId, runId: parsed.runId || "", reportDelivery };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
@@ -3170,11 +3200,14 @@ export async function runtimeBridgeDrain(rootDir, input = {}) {
   const runtime = normalizeRuntime(input.runtime || "hermes");
   const limit = Math.max(1, Math.min(20, Number(input.limit || 1)));
   const dryRun = Boolean(input.dryRun || input.dry_run);
+  const dispatchId = String(input.dispatchId || input.dispatch_id || "").trim();
+  const dispatchFilter = dispatchId ? `AND d.dispatch_id=${sqlValue(dispatchId)}` : "";
   const rows = await sqlite(paths.dbFile, `
 SELECT d.*, a.display_name, a.role, a.endpoint_ref
 FROM mixed_meeting_dispatches d
 LEFT JOIN runtime_agents a ON a.agent_key=d.agent_key
 WHERE d.status='queued' AND d.runtime=${sqlValue(runtime)}
+  ${dispatchFilter}
   AND (d.next_retry_at IS NULL OR d.next_retry_at='' OR d.next_retry_at <= ${sqlValue(nowIso())})
 ORDER BY d.created_at
 LIMIT ${limit};`, { json: true });
