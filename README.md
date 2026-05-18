@@ -77,6 +77,7 @@ Hermes ACP dispatch.
 - `governance-logs/` - timestamped readiness, incident, dispatch/receipt, Human Gate and side-effect governance traces.
 - `radar/` - workflow protocol documentation.
 - `templates/` - workflow report and review templates.
+- `docs/governance-records.md` - policy for recording workflow incidents, fixes, delivery failures, and Human Gate packages inside this plugin.
 - `docs/tracking-schema.sql` - schema export for `tracking.db`.
 - `scripts/trading_agents_workflow_mcp.py` - local Codex MCP server.
 - `skills/trading-agents-workflow/` - Codex skill instructions for this integration.
@@ -85,6 +86,7 @@ Hermes ACP dispatch.
 ## Operating Rules
 
 - Preserve ISO timestamps on governance records and receipts.
+- Record `trading-agents-workflow` problems, causes, fixes, delivery receipts, and follow-up decisions inside this plugin first. Agent `AGENTS.md` files are auxiliary behavior mirrors, not the primary issue record.
 - Keep workflow dispatch, receipt, runtime and side-effect records auditable.
 - Keep each active workflow tied to explicit next actions; meeting conclusions that require Flashcat confirmation should include the next action package for `cat_claw`, not just a passive summary.
 - Treat session context as disposable execution space. Durable state must be in `workflow_runs`, `workflow_tasks`, `workflow_checkpoints`, receipts, and artifacts.
