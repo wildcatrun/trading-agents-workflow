@@ -24,6 +24,7 @@ v0.6 upgrades the old meeting-only plugin into a unified trading workflow substr
 - Workflow task pool for long-running initiatives, task dependencies, expected artifacts, and supervisor-style advance decisions
 - Workflow checkpoints for session overflow recovery and compact next-action handoff
 - Human Gate Inbox batches that collect pending approvals, delivery failures, and review gates into HTML/JSON tables for Flashcat
+- Meeting action items mirrored into `workflow_tasks` by default, so Cat Claw's secretary list is visible to the durable workflow supervisor and not trapped in JSONL-only minutes
 
 This is not an independent agent runtime, not a Gateway replacement, not a Hermes runtime, and not a live trading executor. It does not call trading_core or Telegram directly; it records reviewed intents, dispatch queues, transcripts, Telegram outbox entries, and later records trading_core receipts.
 
@@ -301,6 +302,8 @@ node bin/cat-meeting-governance.mjs workflow-swarm \
 ```
 
 Use `workflow.task.create` to turn the next phase into concrete tasks. Each task should name the owner agent, execution runtime, priority, dependencies, expected artifact, receipt requirement, and whether a Human Gate is required before the task can be treated as complete.
+
+`meeting.action_item` also mirrors new or updated action items into `workflow_tasks` by default. This keeps the meeting secretary surface and the durable workflow task board aligned. The old alias `catclaw` is normalized to `cat_claw`; comma-separated owners are split into separate workflow tasks; common migrated research/engineering agents default to `hermes_acp`, while `main` and `cat_claw` default to `openclaw`. Set `promoteToWorkflowTask=false` only for purely clerical notes that should stay out of workflow execution.
 
 Use `workflow.advance` after a discussion, dispatch batch, receipt collection cycle, or artifact review. It returns a structured decision:
 

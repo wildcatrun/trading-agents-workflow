@@ -245,7 +245,8 @@ function normalizeRuntime(value) {
 function normalizeAgentId(value) {
   const agentId = String(value || "").trim();
   if (!agentId) throw new Error("agentId is required");
-  return agentId.replace(/[^a-zA-Z0-9._:-]+/g, "_").slice(0, 96);
+  const aliased = agentId === "catclaw" ? "cat_claw" : agentId;
+  return aliased.replace(/[^a-zA-Z0-9._:-]+/g, "_").slice(0, 96);
 }
 
 function runtimeAgentKey(runtime, agentId) {
@@ -1210,9 +1211,9 @@ export async function workflowTaskCreate(rootDir, input = {}) {
   const status = WORKFLOW_TASK_STATUSES.has(statusRaw) ? statusRaw : "pending";
   const priorityRaw = String(input.priority || "normal").trim();
   const priority = WORKFLOW_TASK_PRIORITIES.has(priorityRaw) ? priorityRaw : "normal";
-  const ownerAgent = String(input.ownerAgent || input.owner_agent || input.agentId || input.agent_id || "main").trim();
+  const ownerAgent = normalizeAgentId(input.ownerAgent || input.owner_agent || input.agentId || input.agent_id || "main");
   const runtime = String(input.runtime || "").trim();
-  const agentId = String(input.agentId || input.agent_id || ownerAgent).trim();
+  const agentId = normalizeAgentId(input.agentId || input.agent_id || ownerAgent);
   const dependsOn = toList(input.dependsOn || input.depends_on || input.after);
   const payload = parseJsonValue(input.payload, input.payload || {});
   await sqlite(paths.dbFile, `

@@ -42,6 +42,8 @@ When Human Gate pressure grows beyond one or two items, Cat Claw should create a
 
 Human Gate requests must preserve the actual delivery target. A queued `telegram_outbox` row with an empty `target_ref` is not a valid Flashcat handoff. Cat Claw must verify `targetRef`, `deliveryAccount`, and a delivery receipt, or explicitly state that the request is still queued and undelivered.
 
+Meeting action items are not enough by themselves for durable workflow operation. Cat Claw may use `meeting.action_item` as the secretary-facing task list, but the plugin mirrors those entries into `workflow_tasks` by default so `workflow.advance`, `workflow.supervise`, readiness checks, and Human Gate Inbox can see and reconcile them. If an item is intentionally only a note, set `promoteToWorkflowTask=false`.
+
 ## Stability Governance Addendum
 
 Cat-system stability is judged by workflow evidence, not by process liveness or
@@ -68,3 +70,4 @@ Known governance logs for the 2026-05-18 closure upgrade:
 
 - `governance-logs/2026-05-18-cat-claw-human-gate-resume-gap.md`
 - `governance-logs/2026-05-18-cat-claw-report-auto-delivery.md`
+- `governance-logs/2026-05-18-cat-claw-action-item-runtime-gap.md`

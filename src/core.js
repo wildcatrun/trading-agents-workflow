@@ -136,6 +136,106 @@ function safeId(prefix) {
   return `${prefix}.${Date.now().toString(36)}.${randomUUID().slice(0, 8)}`;
 }
 
+function cleanSegment(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._=-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "item";
+}
+
+function normalizeAgentAlias(value) {
+  const text = String(value || "").trim();
+  return text === "catclaw" ? "cat_claw" : text;
+}
+
+function normalizeAgentList(value, fallback = "main") {
+  const agents = asStringArray(value).map(normalizeAgentAlias).filter(Boolean);
+  return agents.length ? [...new Set(agents)] : [fallback];
+}
+
+function actionItemTaskStatus(value) {
+  const status = String(value || "open").trim().toLowerCase();
+  if (["done", "complete", "completed", "closed", "resolved"].includes(status)) return "done";
+  if (["doing", "in_progress", "in-progress", "running"].includes(status)) return "in_progress";
+  if (["blocked", "waiting", "pending_human_gate"].includes(status)) return "blocked";
+  if (["failed", "error"].includes(status)) return "failed";
+  if (["cancelled", "canceled"].includes(status)) return "cancelled";
+  return "pending";
+}
+
+function defaultRuntimeForAgent(agentId) {
+  if (["cat_body", "cat_ears", "cat_eyes", "cat_heart", "cat_nose", "cat_penclaw"].includes(agentId)) return "hermes_acp";
+  if (["main", "cat_claw"].includes(agentId)) return "openclaw";
+  return "";
+}
+
+function shouldMirrorActionItem(input) {
+  return Boolean(input.promoteToWorkflowTask ?? input.promote_to_workflow_task ?? input.workflowTask ?? input.workflow_task ?? true);
+}
+
+async function mirrorActionItemToWorkflowTasks(rootDir, meetingId, item, input = {}) {
+  if (!shouldMirrorActionItem(input)) return null;
+  const owners = normalizeAgentList(item.owner_agent || input.ownerAgent || input.owner_agent || input.owner, "main");
+  const status = actionItemTaskStatus(item.status || input.status);
+  const workflowId = String(input.workflowId || input.workflow_id || meetingId).trim();
+  const baseTaskId = cleanSegment(input.taskId || input.task_id || `action-${meetingId}-${item.item_id}`);
+  const mirrored = [];
+  for (const owner of owners) {
+    const multipleOwners = owners.length > 1;
+    const taskId = multipleOwners ? `${baseTaskId}-${cleanSegment(owner)}`.slice(0, 180) : baseTaskId.slice(0, 180);
+    const runtime = String(input.runtime || defaultRuntimeForAgent(owner)).trim();
+    const payload = {
+      source: "meeting.action_item",
+      meetingId,
+      actionItemId: item.item_id,
+      originalOwnerAgent: item.owner_agent || "",
+      mirroredAt: nowIso()
+    };
+    const taskInput = {
+      workflowRootDir: rootDir,
+      workflowId,
+      taskId,
+      phase: input.phase || "meeting_action_items",
+      ownerAgent: owner,
+      runtime,
+      agentId: input.agentId || input.agent_id || owner,
+      taskType: input.taskType || input.task_type || "meeting_action_item",
+      status,
+      priority: input.priority || item.priority || "normal",
+      dependsOn: item.depends_on || input.dependsOn || input.depends_on || [],
+      expectedArtifact: item.required_artifact || input.requiredArtifact || input.required_artifact || "",
+      actualArtifactRef: input.actualArtifactRef || input.actual_artifact_ref || input.artifactRef || input.artifact_ref || "",
+      receiptRequired: input.receiptRequired ?? input.receipt_required ?? true,
+      humanGateRequired: input.humanGateRequired ?? input.human_gate_required ?? false,
+      summary: item.title || input.summary || input.text || "",
+      prompt: input.prompt || item.title || input.text || "",
+      createdBy: normalizeAgentAlias(input.createdBy || input.created_by || input.updatedBy || input.from || item.created_by || "cat_claw"),
+      dueAt: input.dueAt || input.due_at || item.due_at || "",
+      payload
+    };
+    try {
+      const created = await runWorkflowAction(rootDir, { action: "workflow.task.create", ...taskInput });
+      mirrored.push({ taskId, ownerAgent: owner, runtime, status: created.status, operation: "create" });
+    } catch (error) {
+      if (!String(error?.message || error).includes("UNIQUE constraint failed")) throw error;
+      const updated = await runWorkflowAction(rootDir, {
+        action: "workflow.task.update",
+        workflowRootDir: rootDir,
+        taskId,
+        status,
+        summary: taskInput.summary,
+        prompt: taskInput.prompt,
+        expectedArtifact: taskInput.expectedArtifact,
+        actualArtifactRef: taskInput.actualArtifactRef,
+        payload
+      });
+      mirrored.push({ taskId, ownerAgent: owner, runtime, status: updated.status, operation: "update" });
+    }
+  }
+  return mirrored;
+}
+
 function normalizeType(value, fallback = "general") {
   const type = String(value || fallback).trim();
   return MEETING_TYPES.has(type) ? type : fallback;
@@ -804,15 +904,17 @@ export async function meetingActionItem(rootDir, input) {
         item_id: input.itemId || safeId("ai"),
         meeting_id: meetingId,
         title: requireText(input.title || input.text, "title"),
-        owner_agent: String(input.ownerAgent || input.owner_agent || input.owner || "main"),
+        owner_agent: normalizeAgentList(input.ownerAgent || input.owner_agent || input.owner, "main").join(","),
         status: String(input.status || "open"),
         depends_on: asStringArray(input.dependsOn || input.depends_on),
         required_artifact: String(input.requiredArtifact || input.required_artifact || ""),
-        created_by: String(input.createdBy || input.created_by || input.from || "cat_claw"),
+        created_by: normalizeAgentAlias(input.createdBy || input.created_by || input.from || "cat_claw"),
         created_at: nowIso()
       };
       await appendJsonl(paths.actionItemsFile, item);
       await appendEvent(paths, { meeting_id: meetingId, event: "meeting.action_item.created", actor: item.created_by, item_id: item.item_id });
+      const workflowTasks = await mirrorActionItemToWorkflowTasks(rootDir, meetingId, item, input);
+      if (workflowTasks) item.workflow_tasks = workflowTasks;
       return item;
     }
     if (operation === "update") {
@@ -827,7 +929,7 @@ export async function meetingActionItem(rootDir, input) {
         ["requiredArtifact", "required_artifact"],
         ["required_artifact", "required_artifact"]
       ]) {
-        if (input[inputKey] !== undefined) updates[itemKey] = input[inputKey];
+        if (input[inputKey] !== undefined) updates[itemKey] = itemKey === "owner_agent" ? normalizeAgentList(input[inputKey], "main").join(",") : input[inputKey];
       }
       const record = {
         schema_version: SCHEMA_VERSION,
@@ -836,10 +938,20 @@ export async function meetingActionItem(rootDir, input) {
         meeting_id: meetingId,
         item_id: itemId,
         updates,
-        updated_by: String(input.updatedBy || input.from || "cat_claw")
+        updated_by: normalizeAgentAlias(input.updatedBy || input.from || "cat_claw")
       };
       await appendJsonl(paths.actionItemsFile, record);
       await appendEvent(paths, { meeting_id: meetingId, event: "meeting.action_item.updated", actor: record.updated_by, item_id: itemId, updates });
+      const syntheticItem = {
+        item_id: itemId,
+        title: updates.title || input.title || input.text || itemId,
+        owner_agent: updates.owner_agent || input.ownerAgent || input.owner_agent || "main",
+        status: updates.status || input.status || "open",
+        required_artifact: updates.required_artifact || input.requiredArtifact || input.required_artifact || "",
+        depends_on: input.dependsOn || input.depends_on || []
+      };
+      const workflowTasks = await mirrorActionItemToWorkflowTasks(rootDir, meetingId, syntheticItem, input);
+      if (workflowTasks) record.workflow_tasks = workflowTasks;
       return record;
     }
     throw new Error(`invalid action item operation: ${operation}`);
