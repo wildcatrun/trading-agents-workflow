@@ -2312,6 +2312,7 @@ VALUES (${sqlValue(runtimeRunId)}, ${sqlValue(row.dispatch_id)}, ${sqlValue(row.
 }
 
 async function runHermesDispatch(paths, row, input = {}) {
+  const adapter = String(input.adapterName || input.adapter_name || "hermes").trim() || "hermes";
   const hermesBin = resolveHome(input.hermesBin || input.hermes_bin || process.env.HERMES_BIN || "/home/flashcat/hermes-agent/venv/bin/hermes");
   const proxyEnv = {
     HTTP_PROXY: input.httpProxy || input.http_proxy || process.env.HTTP_PROXY || "http://127.0.0.1:7890",
@@ -2325,15 +2326,15 @@ async function runHermesDispatch(paths, row, input = {}) {
   const args = ["--profile", profile, "--accept-hooks", "-z", prompt];
   const startedAt = nowIso();
   const attempt = Number(row.attempt || 0) + 1;
-  await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "hermes", profile, startedAt, attempt });
-  const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "hermes", status: "started", startedAt, attempt, payload: { profile } });
+  await updateDispatch(paths, row.dispatch_id, "sent", { adapter, profile, startedAt, attempt });
+  const runtimeRunId = await recordRuntimeRun(paths, row, { adapter, status: "started", startedAt, attempt, payload: { profile } });
   await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
     event: "runtime_dispatch_started",
     dispatchId: row.dispatch_id,
     meetingId: row.meeting_id,
     runtime: row.runtime,
     agentId: row.agent_id,
-    adapter: "hermes",
+    adapter,
     profile,
     startedAt,
     attempt,
@@ -2359,41 +2360,41 @@ async function runHermesDispatch(paths, row, input = {}) {
       phase: "runtime_bridge",
       payload: {
         dispatchId: row.dispatch_id,
-        adapter: "hermes",
+        adapter,
         profile,
         stderr: String(stderr || "").trim().slice(0, 2000)
       }
     });
-    await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "hermes", profile, completedAt, messageId: ingest.messageId, attempt });
-    await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter: "hermes", status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { profile } });
+    await updateDispatch(paths, row.dispatch_id, "acked", { adapter, profile, completedAt, messageId: ingest.messageId, attempt });
+    await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { profile } });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       event: "runtime_dispatch_acked",
       dispatchId: row.dispatch_id,
       meetingId: row.meeting_id,
       runtime: row.runtime,
       agentId: row.agent_id,
-      adapter: "hermes",
+      adapter,
       profile,
       messageId: ingest.messageId,
       completedAt,
       attempt,
       runtimeRunId
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", profile, messageId: ingest.messageId };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter, profile, messageId: ingest.messageId };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
     const failureType = classifyRuntimeError(error);
     const shouldRetry = AUTO_RETRY_FAILURE_TYPES.has(failureType) && attempt < Number(row.max_attempts || 1);
-    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "hermes", profile, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
-    await recordRuntimeRun(paths, row, { adapter: "hermes", status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { profile, retry: shouldRetry } });
+    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter, profile, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
+    await recordRuntimeRun(paths, row, { adapter, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { profile, retry: shouldRetry } });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       event: "runtime_dispatch_failed",
       dispatchId: row.dispatch_id,
       meetingId: row.meeting_id,
       runtime: row.runtime,
       agentId: row.agent_id,
-      adapter: "hermes",
+      adapter,
       profile,
       failureType,
       retryScheduled: shouldRetry,
@@ -2402,7 +2403,7 @@ async function runHermesDispatch(paths, row, input = {}) {
       attempt,
       runtimeRunId
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", profile, failureType, retryScheduled: shouldRetry, error: message };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter, profile, failureType, retryScheduled: shouldRetry, error: message };
   }
 }
 
@@ -2450,6 +2451,27 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
   const timeoutSeconds = Math.max(30, Math.min(3600, Number(input.timeoutSeconds || input.timeout_seconds || 900)));
   const sessionKey = cleanFileSegment(input.sessionKey || input.session_key || `workflow-${row.meeting_id}-${row.agent_id}`);
   const prompt = buildRuntimeBridgePrompt(row);
+  let backend;
+  try {
+    backend = await resolveAcpBackend(backendId);
+  } catch (error) {
+    const fallbackDisabled = String(input.acpCliFallback ?? input.acp_cli_fallback ?? "true").trim() === "false";
+    if (fallbackDisabled) throw error;
+    await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
+      ts: nowIso(),
+      event: "runtime_dispatch_fallback",
+      dispatchId: row.dispatch_id,
+      meetingId: row.meeting_id,
+      runtime: row.runtime,
+      agentId: row.agent_id,
+      adapter: "hermes_acp",
+      fallbackAdapter: "hermes_acp_cli_fallback",
+      backend: backendId,
+      acpAgent,
+      reason: error instanceof Error ? error.message : String(error)
+    });
+    return runHermesDispatch(paths, row, { ...input, adapterName: "hermes_acp_cli_fallback", timeoutSeconds });
+  }
   const startedAt = nowIso();
   const attempt = Number(row.attempt || 0) + 1;
   await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "hermes_acp", backend: backendId, acpAgent, sessionMode, sessionKey, startedAt, attempt });
@@ -2472,7 +2494,6 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
   let timeout = null;
   const controller = new AbortController();
   try {
-    const backend = await resolveAcpBackend(backendId);
     const handle = await backend.runtime.ensureSession({
       sessionKey,
       agent: acpAgent,
@@ -2576,6 +2597,111 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
   }
 }
 
+async function runOpenClawDispatch(paths, row, input = {}) {
+  const openclawBin = String(input.openclawBin || input.openclaw_bin || process.env.OPENCLAW_BIN || "openclaw").trim();
+  const timeoutSeconds = Math.max(30, Math.min(1800, Number(input.timeoutSeconds || input.timeout_seconds || 300)));
+  const prompt = buildRuntimeBridgePrompt(row);
+  const startedAt = nowIso();
+  const attempt = Number(row.attempt || 0) + 1;
+  const args = [
+    "agent",
+    "--agent",
+    row.agent_id,
+    "--message",
+    prompt,
+    "--json",
+    "--timeout",
+    String(timeoutSeconds)
+  ];
+  await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "openclaw", openclawBin, startedAt, attempt });
+  const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "openclaw", status: "started", startedAt, attempt, payload: { openclawBin } });
+  await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
+    ts: startedAt,
+    event: "runtime_dispatch_started",
+    dispatchId: row.dispatch_id,
+    meetingId: row.meeting_id,
+    runtime: row.runtime,
+    agentId: row.agent_id,
+    adapter: "openclaw",
+    attempt,
+    runtimeRunId
+  });
+  try {
+    const { stdout, stderr } = await execFileAsync(openclawBin, args, {
+      cwd: paths.root,
+      timeout: (timeoutSeconds + 30) * 1000,
+      maxBuffer: 20 * 1024 * 1024,
+      env: { ...process.env, TRADING_AGENTS_WORKFLOW_BRIDGE: "openclaw" }
+    });
+    const raw = String(stdout || "").trim();
+    const parsed = parseJsonValue(raw, null);
+    if (!parsed || typeof parsed !== "object") throw new Error(`OpenClaw returned non-JSON output: ${raw.slice(0, 1000) || String(stderr || "").slice(0, 1000)}`);
+    if (parsed.status && parsed.status !== "ok") throw new Error(`OpenClaw agent status=${parsed.status}: ${parsed.summary || raw.slice(0, 1000)}`);
+    const payloadTexts = Array.isArray(parsed.result?.payloads)
+      ? parsed.result.payloads.map((item) => String(item?.text || "").trim()).filter(Boolean)
+      : [];
+    const text = payloadTexts.join("\n\n").trim() || String(parsed.summary || "").trim();
+    if (!text) throw new Error(`OpenClaw returned empty output: ${String(stderr || "").slice(0, 1000)}`);
+    const completedAt = nowIso();
+    const outputHash = textHash(text);
+    const ingest = await meetingIngest(paths.root, {
+      meetingId: row.meeting_id,
+      runtime: row.runtime,
+      agentId: row.agent_id,
+      text,
+      messageType: row.dispatch_type || "agent_message",
+      phase: "runtime_bridge_openclaw",
+      payload: {
+        dispatchId: row.dispatch_id,
+        adapter: "openclaw",
+        runId: parsed.runId || "",
+        deliverySucceeded: parsed.result?.deliverySucceeded ?? parsed.deliverySucceeded ?? null,
+        stderr: String(stderr || "").trim().slice(0, 2000)
+      }
+    });
+    await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "openclaw", completedAt, messageId: ingest.messageId, attempt, runId: parsed.runId || "" });
+    await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter: "openclaw", status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { runId: parsed.runId || "" } });
+    await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
+      ts: completedAt,
+      event: "runtime_dispatch_acked",
+      dispatchId: row.dispatch_id,
+      meetingId: row.meeting_id,
+      runtime: row.runtime,
+      agentId: row.agent_id,
+      adapter: "openclaw",
+      messageId: ingest.messageId,
+      completedAt,
+      attempt,
+      runtimeRunId,
+      runId: parsed.runId || ""
+    });
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "openclaw", messageId: ingest.messageId, runId: parsed.runId || "" };
+  } catch (error) {
+    const failedAt = nowIso();
+    const message = error instanceof Error ? error.message : String(error);
+    const failureType = classifyRuntimeError(error);
+    const shouldRetry = AUTO_RETRY_FAILURE_TYPES.has(failureType) && attempt < Number(row.max_attempts || 1);
+    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "openclaw", failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
+    await recordRuntimeRun(paths, row, { adapter: "openclaw", status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { retry: shouldRetry } });
+    await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
+      ts: failedAt,
+      event: "runtime_dispatch_failed",
+      dispatchId: row.dispatch_id,
+      meetingId: row.meeting_id,
+      runtime: row.runtime,
+      agentId: row.agent_id,
+      adapter: "openclaw",
+      failureType,
+      retryScheduled: shouldRetry,
+      error: message.slice(0, 2000),
+      failedAt,
+      attempt,
+      runtimeRunId
+    });
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "openclaw", failureType, retryScheduled: shouldRetry, error: message };
+  }
+}
+
 export async function runtimeBridgeDrain(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const runtime = normalizeRuntime(input.runtime || "hermes");
@@ -2596,6 +2722,8 @@ LIMIT ${limit};`, { json: true });
       results.push(await runHermesAcpDispatch(paths, row, input));
     } else if (runtime === "hermes") {
       results.push(await runHermesDispatch(paths, row, input));
+    } else if (runtime === "openclaw") {
+      results.push(await runOpenClawDispatch(paths, row, input));
     } else {
       await updateDispatch(paths, row.dispatch_id, "failed", { adapter: "none", failedAt: nowIso(), error: `runtime adapter not implemented: ${runtime}` });
       results.push({ dispatchId: row.dispatch_id, runtime, agentId: row.agent_id, status: "failed", error: `runtime adapter not implemented: ${runtime}` });

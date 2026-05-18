@@ -18,7 +18,7 @@ function usage() {
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
   trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--root DIR]
   trading-agents-workflow meeting-ingest --meeting ID --runtime RUNTIME --agent AGENT --text TEXT [--type TYPE] [--phase PHASE] [--root DIR]
-  trading-agents-workflow runtime-bridge [--runtime hermes_acp] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--dry-run] [--root DIR]
+  trading-agents-workflow runtime-bridge [--runtime openclaw|hermes|hermes_acp] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--openclaw-bin PATH] [--dry-run] [--root DIR]
   trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--from AGENT] [--channel CHANNEL_ID] [--root DIR]
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
@@ -176,7 +176,7 @@ function toAction({ command, positional, options }) {
     case "meeting-ingest":
       return { root, input: { action: "meeting.ingest", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, text: options.text, messageType: options.type, phase: options.phase } };
     case "runtime-bridge":
-      return { root, input: { action: "runtime.bridge.drain", runtime: options.runtime, limit: options.limit, timeoutSeconds: options["timeout-seconds"], sessionMode: options["session-mode"], acpBackend: options["acp-backend"], acpAgent: options["acp-agent"], sessionKey: options["session-key"], dryRun: options["dry-run"] === "true", hermesBin: options["hermes-bin"] } };
+      return { root, input: { action: "runtime.bridge.drain", runtime: options.runtime, limit: options.limit, timeoutSeconds: options["timeout-seconds"], sessionMode: options["session-mode"], acpBackend: options["acp-backend"], acpAgent: options["acp-agent"], sessionKey: options["session-key"], dryRun: options["dry-run"] === "true", hermesBin: options["hermes-bin"], openclawBin: options["openclaw-bin"] } };
     case "human-gate-request":
       return { root, input: { action: "human_gate.request", meetingId: options.meeting, text: options.text, gateType: options.gate, from: options.from, channelId: options.channel } };
     case "meeting-resume":
