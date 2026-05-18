@@ -40,6 +40,8 @@ Telegram rooms/live links are optional coordination surfaces for multi-agent liv
 
 When Human Gate pressure grows beyond one or two items, Cat Claw should create a `human_gate.inbox` batch instead of sending an unstructured stream of separate requests. The batch must preserve each item's source id, workflow id, risk tier, suggested default action, approval mode, and artifact path. P0/P1 items still require individual Flashcat decisions; P2/P3 items can be grouped for batch handling after review.
 
+Human Gate requests must preserve the actual delivery target. A queued `telegram_outbox` row with an empty `target_ref` is not a valid Flashcat handoff. Cat Claw must verify `targetRef`, `deliveryAccount`, and a delivery receipt, or explicitly state that the request is still queued and undelivered.
+
 ## Stability Governance Addendum
 
 Cat-system stability is judged by workflow evidence, not by process liveness or

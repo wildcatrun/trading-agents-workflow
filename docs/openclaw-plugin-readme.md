@@ -356,6 +356,19 @@ node bin/cat-meeting-governance.mjs human-gate-inbox \
   --root "$ROOT"
 ```
 
+`human_gate.request` must create a deliverable request, not a targetless queue item. If no meeting live channel is configured, it falls back to Flashcat's private Telegram chat `8390724843` through the `cat_claw` account. It honors explicit `target`, `targetRef`, `chatId`, or the first `notifyTargets` entry before falling back. The returned `targetRef`, `deliveryAccount`, `telegramOutbox.status`, and optional `delivery.status` are part of the contract; Cat Claw must not treat a request as delivered until a receipt exists or the direct Telegram reply itself is the acknowledged delivery path.
+
+CLI example:
+
+```bash
+node bin/cat-meeting-governance.mjs human-gate-request \
+  --meeting demo-initiative \
+  --text "Confirm whether to continue Plan C evidence collection" \
+  --target 8390724843 \
+  --from cat_claw \
+  --root "$ROOT"
+```
+
 After Flashcat confirms, rejects, or selects an option for a Human Gate, record the decision with `human_gate.resume`. This is mandatory for Cat Claw when the confirmation arrives in Flashcat's private Telegram chat. A chat acknowledgement is not enough. The resume action writes the Human Gate record, appends a meeting resume event, and creates a `human_gate_resume` dispatch back to cat-brain `main` so the next workflow round can continue from the confirmed boundary:
 
 ```bash

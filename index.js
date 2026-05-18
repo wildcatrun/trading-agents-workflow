@@ -119,7 +119,9 @@ const toolParameters = {
     requiredArtifact: { type: "string" },
     evidence: { type: "array", items: { type: "string" } },
     humanGateRequired: { type: "boolean" },
+    autoDeliver: { type: "boolean" },
     target: { type: "string" },
+    account: { type: "string" },
     channel: { type: "string" },
     period: { type: "string" },
     date: { type: "string" },
@@ -840,8 +842,11 @@ function registerCli(api) {
       .requiredOption("--meeting <meetingId>", "Meeting id")
       .requiredOption("--text <text>", "Question for Flashcat")
       .option("--gate <gateType>", "Gate type", "fact_confirmation")
-      .option("--from <agent>", "Requester", "main")
+      .option("--from <agent>", "Requester", "cat_claw")
+      .option("--target <chatId>", "Telegram target", "8390724843")
+      .option("--account <accountId>", "Telegram account", "cat_claw")
       .option("--channel <channelId>", "Telegram channel id")
+      .option("--deliver <trueOrFalse>", "Deliver immediately", "false")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
@@ -852,7 +857,10 @@ function registerCli(api) {
           text: options.text,
           gateType: options.gate,
           from: options.from,
-          channelId: options.channel
+          target: options.target,
+          account: options.account,
+          channelId: options.channel,
+          autoDeliver: options.deliver === "true"
         }), null, 2));
       });
 

@@ -116,6 +116,22 @@ function toList(value) {
   return [];
 }
 
+function firstText(...values) {
+  for (const value of values) {
+    const list = Array.isArray(value) ? value : [value];
+    for (const item of list) {
+      const text = String(item ?? "").trim();
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+function normalizeRequester(value, fallback = "cat_claw") {
+  const text = firstText(value, fallback);
+  return text === "catclaw" ? "cat_claw" : text;
+}
+
 function sqlValue(value) {
   if (value === null || value === undefined) return "NULL";
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
@@ -3652,27 +3668,46 @@ LIMIT ${limit};`, { json: true });
 export async function humanGateRequest(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
+  const requester = normalizeRequester(input.from || input.sourceAgent || input.source_agent || input.ownerAgent || input.owner_agent, "cat_claw");
+  const workflowId = firstText(input.workflowId, input.workflow_id, input.parentObjectId, input.parent_object_id, meetingId);
+  const gateType = firstText(input.gateType, input.gate_type, "workflow_continuation");
   const gate = await workflowHumanGateRecord(rootDir, {
     ...input,
+    workflowId,
+    parentObjectId: input.parentObjectId || input.parent_object_id || workflowId,
+    gateType,
+    actor: input.actor || requester,
     status: "pending",
     sourceSystem: input.sourceSystem || input.source_system || "openclaw",
-    sourceAgent: input.sourceAgent || input.source_agent || input.from || "main"
+    sourceAgent: requester
   });
   const eventId = safeId("control");
   const createdAt = nowIso();
   await sqlite(paths.dbFile, `
 INSERT INTO meeting_control_events(event_id, meeting_id, event_type, status, summary, payload_json, created_by, created_at)
-VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pending', ${sqlValue(input.summary || input.text || "")}, ${sqlValue(JSON.stringify({ humanGateId: gate.objectId, gateType: input.gateType || input.gate_type || "" }))}, ${sqlValue(input.from || input.sourceAgent || "main")}, ${sqlValue(createdAt)});`);
+VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pending', ${sqlValue(input.summary || input.text || "")}, ${sqlValue(JSON.stringify({ humanGateId: gate.objectId, gateType, workflowId }))}, ${sqlValue(requester)}, ${sqlValue(createdAt)});`);
   const link = await telegramLinkFor(paths, meetingId);
+  const channelTarget = firstText(input.channelId, input.channel_id, input.channel);
+  const explicitTarget = firstText(input.targetRef, input.target_ref, input.target, input.chatId, input.chat_id, input.notifyTargets, input.notify_targets, channelTarget);
+  const linkTarget = firstText(link?.human_gate_channel_id, link?.channel_id, link?.chat_id);
+  const targetRef = explicitTarget || linkTarget || DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID;
+  const targetKind = firstText(input.targetKind, input.target_kind) || (channelTarget || targetRef.startsWith("-") ? "channel" : "private");
+  const deliveryAccount = normalizeRequester(input.account || input.telegramAccount || input.telegram_account, "cat_claw");
   const telegramOutbox = await enqueueTelegramOutbox(paths, {
     meetingId,
-    targetKind: "channel",
-    targetRef: input.channelId || input.channel_id || link?.human_gate_channel_id || link?.channel_id || "",
+    targetKind,
+    targetRef,
     messageType: "human_gate_request",
     text: input.text || input.summary || "",
-    payload: { humanGateId: gate.objectId, gateType: input.gateType || input.gate_type || "", eventId }
+    payload: { humanGateId: gate.objectId, gateType, workflowId, eventId, account: deliveryAccount, requester, targetKind, targetRef }
   });
-  return { meetingId, humanGateId: gate.objectId, eventId, telegramOutbox, status: "pending", dbFile: paths.dbFile };
+  let delivery = null;
+  const shouldDeliver = boolOption(input.autoDeliver ?? input.auto_deliver ?? input.deliver, false);
+  if (shouldDeliver && telegramOutbox.status === "queued") {
+    const rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(telegramOutbox.outboxId)} LIMIT 1;`, { json: true });
+    if (rows[0]) delivery = await deliverTelegramOutboxRow(paths, rows[0], { ...input, account: deliveryAccount, target: targetRef });
+  }
+  return { meetingId, workflowId, humanGateId: gate.objectId, gateType, eventId, targetKind, targetRef, deliveryAccount, telegramOutbox, deliveryRequired: telegramOutbox.status === "queued" && !delivery, delivery, status: "pending", dbFile: paths.dbFile };
 }
 
 export async function humanGateResume(rootDir, input) {
