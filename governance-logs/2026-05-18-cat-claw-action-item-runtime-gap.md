@@ -49,7 +49,7 @@ default.
 
 Rules:
 
-1. `catclaw` is normalized to `cat_claw`.
+1. The retired id `catclaw` is rejected; only `cat_claw` is valid.
 2. Comma-separated owners are split into one workflow task per owner.
 3. Common migrated agents default to `hermes_acp`; `main` and `cat_claw`
    default to `openclaw`.

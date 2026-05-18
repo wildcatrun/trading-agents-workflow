@@ -14,7 +14,7 @@ v0.6 upgrades the old meeting-only plugin into a unified trading workflow substr
 - SQLite tracking state for stocks, futures, crypto, ETFs, indexes, commodities, and other instruments
 - Markdown artifacts for thesis, evidence packs, research memos, gates, and meeting minutes
 - Meeting workflow as one module inside the larger trading agents workflow
-- Catclaw secretary audit for stale thesis, missing three-face inputs, and pending gates
+- Cat Claw secretary audit for stale thesis, missing three-face inputs, and pending gates
 - Protocol objects for research signals, evidence packs, trade proposals, risk decisions, Human Gate records, executable intents, and trading_core receipts
 - mTLS-gated executable trade intents for the local Codex path
 - Mixed-runtime meeting bridge for OpenClaw and Hermes agents in one logical room
@@ -303,7 +303,7 @@ node bin/cat-meeting-governance.mjs workflow-swarm \
 
 Use `workflow.task.create` to turn the next phase into concrete tasks. Each task should name the owner agent, execution runtime, priority, dependencies, expected artifact, receipt requirement, and whether a Human Gate is required before the task can be treated as complete.
 
-`meeting.action_item` also mirrors new or updated action items into `workflow_tasks` by default. This keeps the meeting secretary surface and the durable workflow task board aligned. The old alias `catclaw` is normalized to `cat_claw`; comma-separated owners are split into separate workflow tasks; common migrated research/engineering agents default to `hermes_acp`, while `main` and `cat_claw` default to `openclaw`. Set `promoteToWorkflowTask=false` only for purely clerical notes that should stay out of workflow execution.
+`meeting.action_item` also mirrors new or updated action items into `workflow_tasks` by default. This keeps the meeting secretary surface and the durable workflow task board aligned. The only valid Cat Claw id is `cat_claw`; the retired id `catclaw` is rejected instead of silently normalized. Comma-separated owners are split into separate workflow tasks; common migrated research/engineering agents default to `hermes_acp`, while `main` and `cat_claw` default to `openclaw`. Set `promoteToWorkflowTask=false` only for purely clerical notes that should stay out of workflow execution.
 
 Use `workflow.advance` after a discussion, dispatch batch, receipt collection cycle, or artifact review. It returns a structured decision:
 

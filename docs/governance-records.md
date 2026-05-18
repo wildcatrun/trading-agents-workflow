@@ -44,6 +44,8 @@ Human Gate requests must preserve the actual delivery target. A queued `telegram
 
 Meeting action items are not enough by themselves for durable workflow operation. Cat Claw may use `meeting.action_item` as the secretary-facing task list, but the plugin mirrors those entries into `workflow_tasks` by default so `workflow.advance`, `workflow.supervise`, readiness checks, and Human Gate Inbox can see and reconcile them. If an item is intentionally only a note, set `promoteToWorkflowTask=false`.
 
+The only valid Cat Claw agent id is `cat_claw`. The retired id `catclaw` must not appear in active registry rows, task owners, dispatch targets, prompts, or delivery accounts. Plugin entry points reject it rather than accepting it as an alias.
+
 ## Stability Governance Addendum
 
 Cat-system stability is judged by workflow evidence, not by process liveness or

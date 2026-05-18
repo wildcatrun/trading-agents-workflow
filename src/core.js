@@ -146,7 +146,8 @@ function cleanSegment(value) {
 
 function normalizeAgentAlias(value) {
   const text = String(value || "").trim();
-  return text === "catclaw" ? "cat_claw" : text;
+  if (text === "catclaw") throw new Error("retired agent id catclaw is invalid; use cat_claw");
+  return text;
 }
 
 function normalizeAgentList(value, fallback = "main") {

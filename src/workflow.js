@@ -129,7 +129,8 @@ function firstText(...values) {
 
 function normalizeRequester(value, fallback = "cat_claw") {
   const text = firstText(value, fallback);
-  return text === "catclaw" ? "cat_claw" : text;
+  if (text === "catclaw") throw new Error("retired agent id catclaw is invalid; use cat_claw");
+  return text;
 }
 
 function sqlValue(value) {
@@ -245,8 +246,8 @@ function normalizeRuntime(value) {
 function normalizeAgentId(value) {
   const agentId = String(value || "").trim();
   if (!agentId) throw new Error("agentId is required");
-  const aliased = agentId === "catclaw" ? "cat_claw" : agentId;
-  return aliased.replace(/[^a-zA-Z0-9._:-]+/g, "_").slice(0, 96);
+  if (agentId === "catclaw") throw new Error("retired agent id catclaw is invalid; use cat_claw");
+  return agentId.replace(/[^a-zA-Z0-9._:-]+/g, "_").slice(0, 96);
 }
 
 function runtimeAgentKey(runtime, agentId) {
@@ -3874,7 +3875,7 @@ FROM review_gates
 WHERE status='pending' OR human_gate_required=1
 ORDER BY created_at DESC;`, { json: true });
   const filePath = path.join(paths.indexDir, `cat_claw-audit-${dailyKey()}.md`);
-  const content = `# Catclaw Workflow Audit ${dailyKey()}
+  const content = `# Cat Claw Workflow Audit ${dailyKey()}
 
 ## Stale Thesis
 
