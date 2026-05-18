@@ -37,6 +37,15 @@ function dailyKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
 
+function boolOption(value, defaultValue = false) {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  if (typeof value === "boolean") return value;
+  const text = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(text)) return true;
+  if (["0", "false", "no", "n", "off"].includes(text)) return false;
+  return Boolean(value);
+}
+
 function safeId(prefix) {
   return `${prefix}.${Date.now().toString(36)}.${randomUUID().slice(0, 8)}`;
 }
@@ -1170,6 +1179,49 @@ LIMIT ${limit};`, { json: true });
   return { count: rows.length, tasks: rows, dbFile: paths.dbFile };
 }
 
+async function syncWorkflowTasksFromDispatches(paths, workflowId) {
+  const dispatches = await sqlite(paths.dbFile, `
+SELECT dispatch_id, meeting_id, workflow_id, status, runtime, agent_id, failure_type, last_error, payload_json, updated_at, completed_at, acked_at
+FROM mixed_meeting_dispatches
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND status IN ('acked','failed','cancelled')
+ORDER BY updated_at;`, { json: true });
+  const updates = [];
+  for (const dispatch of dispatches) {
+    const payload = parseJsonValue(dispatch.payload_json, {});
+    const taskId = String(payload?.payload?.taskId || payload?.taskId || "").trim();
+    if (!taskId) continue;
+    const taskRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_tasks WHERE task_id=${sqlValue(taskId)} AND workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
+    const task = taskRows[0];
+    if (!task || ["done", "failed", "cancelled"].includes(task.status)) continue;
+    const completedAt = dispatch.completed_at || dispatch.acked_at || dispatch.updated_at || nowIso();
+    const status = dispatch.status === "acked" ? "done" : dispatch.status === "cancelled" ? "cancelled" : "failed";
+    const artifactRef = dispatch.status === "acked"
+      ? `bridge/messages/${cleanFileSegment(dispatch.meeting_id)}.messages.jsonl#${dispatch.dispatch_id}`
+      : task.actual_artifact_ref || "";
+    const blockedReason = dispatch.status === "failed"
+      ? `${dispatch.failure_type || "runtime_failed"}: ${String(dispatch.last_error || "").slice(0, 300)}`
+      : task.blocked_reason || "";
+    await sqlite(paths.dbFile, `
+UPDATE workflow_tasks
+SET status=${sqlValue(status)},
+    actual_artifact_ref=${sqlValue(artifactRef)},
+    blocked_reason=${sqlValue(blockedReason)},
+    completed_at=${sqlValue(completedAt)},
+    updated_at=${sqlValue(nowIso())}
+WHERE task_id=${sqlValue(taskId)} AND workflow_id=${sqlValue(workflowId)};`);
+    updates.push({
+      taskId,
+      dispatchId: dispatch.dispatch_id,
+      status,
+      runtime: dispatch.runtime,
+      agentId: dispatch.agent_id,
+      failureType: dispatch.failure_type || ""
+    });
+  }
+  return updates;
+}
+
 async function pendingHumanGateCount(paths, workflowId) {
   const rows = await sqlite(paths.dbFile, `
 SELECT (
@@ -1190,6 +1242,7 @@ export async function workflowAdvance(rootDir, input = {}) {
   const workflowId = String(input.workflowId || input.workflow_id || "").trim();
   if (!workflowId) throw new Error("workflowId is required");
   const checkedAt = nowIso();
+  const syncedTasks = boolOption(input.syncDispatches ?? input.sync_dispatches, true) ? await syncWorkflowTasksFromDispatches(paths, workflowId) : [];
   const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
   if (!workflowRows[0]) throw new Error(`workflow not found: ${workflowId}`);
   const tasks = await sqlite(paths.dbFile, `SELECT * FROM workflow_tasks WHERE workflow_id=${sqlValue(workflowId)} ORDER BY created_at;`, { json: true });
@@ -1254,7 +1307,132 @@ WHERE workflow_id=${sqlValue(workflowId)};`);
     workflowHumanGates,
     taskHumanGates: taskHumanGates.length
   };
-  return { workflowId, decision, checkedAt, summary, readyTasks, blockedTasks: blocked, dispatched, dbFile: paths.dbFile };
+  return { workflowId, decision, checkedAt, summary, readyTasks, blockedTasks: blocked, dispatched, syncedTasks, dbFile: paths.dbFile };
+}
+
+function supervisorReportPrompt(workflow, advanceResult, checkpointResult, input = {}) {
+  const summary = advanceResult.summary || {};
+  const blocked = (advanceResult.blockedTasks || []).map((task) => `${task.task_id}: ${task.blocked_reason || task.summary || ""}`).join("\n");
+  return [
+    "你是猫爪 cat_claw，是猫体系会议制度的秘书、Human Gate 入口和向闪电猫汇报的收口 agent。",
+    "",
+    "请基于以下 workflow 状态，向闪电猫 Telegram 私聊 8390724843 提交正式汇报。不要只告知讨论结果，必须包含下一步行动方案、需要闪电猫确认的问题、阻塞项和建议推进路径。",
+    "",
+    `timestamp: ${nowIso()}`,
+    `workflow_id: ${workflow.workflow_id}`,
+    `objective: ${workflow.objective || workflow.summary || ""}`,
+    `status: ${workflow.status}`,
+    `phase: ${workflow.current_phase || ""}`,
+    `decision: ${advanceResult.decision}`,
+    `task_counts: total=${summary.total || 0}, pending=${summary.pending || 0}, in_progress=${summary.inProgress || 0}, done=${summary.done || 0}, blocked=${summary.blocked || 0}, pending_human_gates=${summary.pendingHumanGates || 0}`,
+    checkpointResult?.relativePath ? `checkpoint: ${checkpointResult.relativePath}` : "",
+    blocked ? `blocked_tasks:\n${blocked}` : "",
+    input.text ? `flashcat_context: ${input.text}` : "",
+    "",
+    "输出要求：",
+    "1. 先给结论和当前是否可继续推进。",
+    "2. 给出下一轮具体行动方案，包括由猫之脑、猫爪、猫之体和相关专业 agent 分别做什么。",
+    "3. 如果需要闪电猫确认，明确列出确认项和默认建议。",
+    "4. 如果无需确认，说明你将如何推动下一轮并继续收口。",
+    "5. 全文带 ISO 时间戳。"
+  ].filter(Boolean).join("\n");
+}
+
+export async function workflowSupervisor(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const meetingId = String(input.meetingId || input.meeting_id || workflowId).trim();
+  const startedAt = nowIso();
+  const maxCycles = Math.max(1, Math.min(5, Number(input.maxCycles || input.max_cycles || 1)));
+  const autoDispatch = boolOption(input.autoDispatch ?? input.auto_dispatch, true);
+  const drain = boolOption(input.drain, false);
+  const autoReport = boolOption(input.autoReport ?? input.auto_report, true);
+  const reportRuntime = normalizeRuntime(input.reportRuntime || input.report_runtime || "openclaw");
+  const reportAgent = normalizeAgentId(input.reportAgent || input.report_agent || "cat_claw");
+  const runtimeLimit = Math.max(1, Math.min(20, Number(input.limit || input.runtimeLimit || input.runtime_limit || 5)));
+  const timeoutSeconds = Math.max(5, Math.min(900, Number(input.timeoutSeconds || input.timeout_seconds || 120)));
+  const dryRun = boolOption(input.dryRun ?? input.dry_run, false);
+  const cycles = [];
+  let finalAdvance = null;
+  for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
+    const advance = await workflowAdvance(rootDir, {
+      ...input,
+      workflowRootDir: paths.root,
+      workflowId,
+      meetingId,
+      autoDispatch,
+      syncDispatches: true
+    });
+    const cycleRecord = { cycle, advance, runtimeDrains: [] };
+    cycles.push(cycleRecord);
+    finalAdvance = advance;
+    if (!drain || dryRun || !advance.dispatched.length) break;
+    const runtimes = [...new Set(advance.dispatched.map((item) => item.runtime).filter(Boolean))];
+    for (const runtime of runtimes) {
+      const drained = await runtimeBridgeDrain(rootDir, {
+        ...input,
+        workflowRootDir: paths.root,
+        runtime,
+        limit: runtimeLimit,
+        timeoutSeconds,
+        dryRun: false
+      });
+      cycleRecord.runtimeDrains.push(drained);
+    }
+  }
+  finalAdvance = await workflowAdvance(rootDir, {
+    ...input,
+    workflowRootDir: paths.root,
+    workflowId,
+    meetingId,
+    autoDispatch: false,
+    syncDispatches: true
+  });
+  const checkpoint = await workflowCheckpoint(rootDir, {
+    ...input,
+    workflowRootDir: paths.root,
+    workflowId,
+    summary: input.summary || `Supervisor checkpoint at ${startedAt}; decision=${finalAdvance.decision}`,
+    nextActions: input.nextActions || input.next_actions || []
+  });
+  let catClawReport = null;
+  if (autoReport && ["cat_claw_summary_required", "blocked", "human_gate_pending"].includes(finalAdvance.decision)) {
+    const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
+    const workflow = workflowRows[0] || { workflow_id: workflowId };
+    catClawReport = await meetingDispatch(rootDir, {
+      workflowRootDir: paths.root,
+      meetingId,
+      workflowId,
+      traceId: `${workflowId}:cat_claw_report:${Date.now()}`,
+      idempotencyKey: `workflow:${workflowId}:cat_claw_report:${finalAdvance.decision}:${checkpoint.checkpointId}`,
+      runtime: reportRuntime,
+      agentId: reportAgent,
+      dispatchType: finalAdvance.decision === "human_gate_pending" ? "human_gate_report" : "workflow_secretary_report",
+      priority: "high",
+      createdBy: "workflow_supervisor",
+      prompt: supervisorReportPrompt(workflow, finalAdvance, checkpoint, input),
+      payload: {
+        workflowId,
+        meetingId,
+        checkpointId: checkpoint.checkpointId,
+        decision: finalAdvance.decision,
+        reportTarget: "telegram:8390724843"
+      }
+    });
+  }
+  return {
+    workflowId,
+    meetingId,
+    startedAt,
+    completedAt: nowIso(),
+    cycles,
+    finalAdvance,
+    checkpoint,
+    catClawReport,
+    dryRun,
+    dbFile: paths.dbFile
+  };
 }
 
 function renderWorkflowCheckpointMarkdown(record) {
@@ -2881,6 +3059,9 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return workflowTaskList(rootDir, input);
     case "workflow.advance":
       return workflowAdvance(rootDir, input);
+    case "workflow.supervise":
+    case "workflow.supervisor":
+      return workflowSupervisor(rootDir, input);
     case "workflow.checkpoint":
     case "workflow.context_checkpoint":
     case "context.checkpoint":

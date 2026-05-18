@@ -12,6 +12,7 @@ dist/
 build/
 coverage/
 .tmp-smoke/
+.tmp-*/
 
 # Local environment and credentials
 .env

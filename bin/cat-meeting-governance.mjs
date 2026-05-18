@@ -12,6 +12,7 @@ function usage() {
   trading-agents-workflow workflow-task-update --task ID [--status STATUS] [--artifact PATH] [--blocked-reason TEXT] [--root DIR]
   trading-agents-workflow workflow-tasks [--workflow ID] [--status STATUS] [--owner AGENT] [--limit N] [--root DIR]
   trading-agents-workflow workflow-advance --workflow ID [--meeting ID] [--auto-dispatch] [--goal-complete] [--root DIR]
+  trading-agents-workflow workflow-supervise --workflow ID [--meeting ID] [--auto-dispatch] [--drain] [--max-cycles N] [--auto-report false] [--root DIR]
   trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
   trading-agents-workflow runtime-agent --runtime RUNTIME --agent AGENT [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
@@ -149,6 +150,27 @@ function toAction({ command, positional, options }) {
           meetingId: options.meeting,
           autoDispatch: options["auto-dispatch"] === "true",
           goalComplete: options["goal-complete"] === "true"
+        }
+      };
+    case "workflow-supervise":
+      return {
+        root,
+        input: {
+          action: "workflow.supervise",
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          autoDispatch: options["auto-dispatch"] !== "false",
+          drain: options.drain === "true",
+          maxCycles: options["max-cycles"],
+          runtimeLimit: options.limit,
+          timeoutSeconds: options["timeout-seconds"],
+          autoReport: options["auto-report"] !== "false",
+          reportRuntime: options["report-runtime"],
+          reportAgent: options["report-agent"],
+          summary: options.summary,
+          text: options.text,
+          nextActions: listOption(options["next-action"]),
+          dryRun: options["dry-run"] === "true"
         }
       };
     case "workflow-checkpoint":

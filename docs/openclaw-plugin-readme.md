@@ -231,6 +231,7 @@ Workflow and tracking:
 - `workflow.task.list`
 - `workflow.tasks`
 - `workflow.advance`
+- `workflow.supervise`
 - `workflow.checkpoint`
 - `workflow.context_checkpoint`
 - `context.checkpoint`
@@ -279,6 +280,22 @@ Use `workflow.advance` after a discussion, dispatch batch, receipt collection cy
 - `completed`: the run meets its stated acceptance or explicit completion condition.
 
 With `autoDispatch=true`, `workflow.advance` records `meeting.dispatch` rows for ready tasks and moves them to `in_progress`. It does not bypass Gateway, runtime registry, receipt tracking, or Human Gate review.
+
+Use `workflow.supervise` as the normal wanman-style control loop for durable initiatives. One supervisor cycle does the operational work that `workflow.advance` alone cannot:
+
+- sync completed or failed runtime dispatches back into `workflow_tasks`
+- run `workflow.advance` and optionally create ready dispatches
+- optionally drain runtime bridge queues for the runtimes touched in that cycle
+- write a compact checkpoint for session overflow recovery
+- when the run is blocked, waiting on Human Gate, or ready for close-out, create a `cat_claw` report dispatch so the secretary agent submits a next-action package to Flashcat
+
+`workflow.supervise` keeps Flashcat in the observer/approval role. Cat-brain `main` still owns decomposition and orchestration; `cat_claw` still owns formal reporting and Human Gate intake. The supervisor does not make trading decisions, bypass Gateway, bypass Human Gate, or execute trades.
+
+CLI example:
+
+```bash
+node bin/cat-meeting-governance.mjs workflow-supervise --workflow demo-initiative --meeting demo-initiative --auto-dispatch --root "$ROOT"
+```
 
 ## Workflow Checkpoints
 
