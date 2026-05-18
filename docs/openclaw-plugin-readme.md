@@ -331,7 +331,7 @@ node bin/cat-meeting-governance.mjs telegram-outbox --deliver --account cat_claw
 
 This makes Cat Claw reporting two-phase: runtime report produced, then IM delivery receipt recorded. Workflow completion should not assume Flashcat received a Human Gate package until the outbox row is `sent`.
 
-After Flashcat confirms or rejects a Human Gate, record the decision with `human_gate.resume`. This writes the Human Gate record, appends a meeting resume event, and creates a `human_gate_resume` dispatch back to cat-brain `main` so the next workflow round can continue from the confirmed boundary:
+After Flashcat confirms, rejects, or selects an option for a Human Gate, record the decision with `human_gate.resume`. This is mandatory for Cat Claw when the confirmation arrives in Flashcat's private Telegram chat. A chat acknowledgement is not enough. The resume action writes the Human Gate record, appends a meeting resume event, and creates a `human_gate_resume` dispatch back to cat-brain `main` so the next workflow round can continue from the confirmed boundary:
 
 ```bash
 node bin/cat-meeting-governance.mjs human-gate-resume \
@@ -341,6 +341,8 @@ node bin/cat-meeting-governance.mjs human-gate-resume \
   --text "Flashcat approved B plan; continue dry-run manifest phase" \
   --root "$ROOT"
 ```
+
+Cat Claw must preserve the original confirmation timestamp, source channel, and Flashcat text in the resume text or payload, then verify the generated dispatch id. If `human_gate.resume` is not available in the current session, Cat Claw must report `human_gate_resume_blocked` with the missing tool or runtime reason instead of treating the decision as complete.
 
 ## Workflow Checkpoints
 
