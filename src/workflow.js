@@ -6,6 +6,8 @@ import path from "node:path";
 import tls from "node:tls";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -5463,17 +5465,180 @@ function hermesAcpAgentFromEndpoint(endpointRef, agentId) {
   return commandForProfile(profile.replace(/[^a-zA-Z0-9_-]+/g, "_"));
 }
 
-async function resolveAcpBackend(backendId) {
-  let module;
+function uniqueResolvedPaths(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const resolved = resolveHome(text);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    result.push(resolved);
+  }
+  return result;
+}
+
+async function pathAccessible(filePath) {
   try {
-    module = await import("openclaw/plugin-sdk/acp-runtime-backend");
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function openClawPackageBaseCandidates(input = {}) {
+  const explicit = [
+    input.openclawRequireBase,
+    input.openclaw_require_base,
+    process.env.TRADING_AGENTS_OPENCLAW_REQUIRE_BASE,
+    input.openclawPackageDir ? path.join(resolveHome(input.openclawPackageDir), "package.json") : "",
+    input.openclaw_package_dir ? path.join(resolveHome(input.openclaw_package_dir), "package.json") : "",
+    process.env.TRADING_AGENTS_OPENCLAW_PACKAGE_DIR ? path.join(resolveHome(process.env.TRADING_AGENTS_OPENCLAW_PACKAGE_DIR), "package.json") : "",
+    process.env.OPENCLAW_PACKAGE_DIR ? path.join(resolveHome(process.env.OPENCLAW_PACKAGE_DIR), "package.json") : ""
+  ];
+  const acpxPeerBases = acpxPackageDirCandidates(input).map((dir) => path.join(dir, "package.json"));
+  return uniqueResolvedPaths([
+    ...explicit,
+    ...acpxPeerBases,
+    "/usr/lib/node_modules/openclaw/package.json",
+    "/usr/local/lib/node_modules/openclaw/package.json"
+  ]);
+}
+
+async function importFromRequireBase(requireBase, specifier) {
+  const require = createRequire(requireBase);
+  const resolved = require.resolve(specifier);
+  return { module: await import(pathToFileURL(resolved).href), resolved };
+}
+
+async function importAcpRuntimeBackendModule(input = {}) {
+  const attempts = [];
+  try {
+    return { module: await import("openclaw/plugin-sdk/acp-runtime-backend"), source: "node-resolution:openclaw" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`OpenClaw ACP runtime SDK is unavailable in this process: ${message}`);
+    attempts.push(`node-resolution: ${message}`);
   }
-  const backend = module.getAcpRuntimeBackend?.(backendId);
-  if (!backend?.runtime) throw new Error(`ACP runtime backend is not loaded: ${backendId}`);
-  return backend;
+  for (const base of openClawPackageBaseCandidates(input)) {
+    if (!await pathAccessible(base)) continue;
+    try {
+      const resolved = await importFromRequireBase(base, "openclaw/plugin-sdk/acp-runtime-backend");
+      return { module: resolved.module, source: `require-base:${base}` };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      attempts.push(`${base}: ${message}`);
+    }
+  }
+  throw new Error(`OpenClaw ACP runtime SDK is unavailable in this process: ${attempts.join("; ")}`);
+}
+
+function acpxPackageDirCandidates(input = {}) {
+  return uniqueResolvedPaths([
+    input.acpxPackageDir,
+    input.acpx_package_dir,
+    process.env.TRADING_AGENTS_ACPX_PACKAGE_DIR,
+    process.env.OPENCLAW_ACPX_PACKAGE_DIR,
+    path.join(os.homedir(), ".openclaw", "npm", "node_modules", "@openclaw", "acpx")
+  ]);
+}
+
+async function importAcpxRegisterRuntime(input = {}) {
+  const attempts = [];
+  const direct = firstText(
+    input.acpxRegisterModule,
+    input.acpx_register_module,
+    process.env.TRADING_AGENTS_ACPX_REGISTER_MODULE
+  );
+  if (direct) {
+    const resolved = resolveHome(direct);
+    try {
+      return { module: await import(pathToFileURL(resolved).href), source: resolved };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      attempts.push(`${resolved}: ${message}`);
+    }
+  }
+  for (const dir of acpxPackageDirCandidates(input)) {
+    const registerPath = path.join(dir, "dist", "register.runtime.js");
+    if (!await pathAccessible(registerPath)) continue;
+    try {
+      return { module: await import(pathToFileURL(registerPath).href), source: registerPath };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      attempts.push(`${registerPath}: ${message}`);
+    }
+  }
+  throw new Error(`OpenClaw ACPX runtime plugin is unavailable in this process: ${attempts.join("; ") || "no @openclaw/acpx package found"}`);
+}
+
+function standaloneAcpxLogger(input = {}) {
+  if (!boolOption(input.verboseAcp ?? input.verbose_acp ?? process.env.TRADING_AGENTS_VERBOSE_ACP, false)) {
+    return { info() {}, warn() {}, error() {}, debug() {} };
+  }
+  return {
+    info(message) { console.error(`[trading-agents-workflow acpx] ${message}`); },
+    warn(message) { console.error(`[trading-agents-workflow acpx] warn: ${message}`); },
+    error(message) { console.error(`[trading-agents-workflow acpx] error: ${message}`); },
+    debug(message) { console.error(`[trading-agents-workflow acpx] debug: ${message}`); }
+  };
+}
+
+function standaloneAcpxPluginConfig(paths, input = {}) {
+  const parsedConfig = typeof input.acpxPluginConfig === "object" && input.acpxPluginConfig !== null
+    ? input.acpxPluginConfig
+    : typeof input.acpx_plugin_config === "object" && input.acpx_plugin_config !== null
+      ? input.acpx_plugin_config
+      : parseJsonValue(input.acpxPluginConfigJson || input.acpx_plugin_config_json || process.env.TRADING_AGENTS_ACPX_PLUGIN_CONFIG_JSON, {});
+  const rawConfig = parsedConfig && typeof parsedConfig === "object" && !Array.isArray(parsedConfig) ? parsedConfig : {};
+  const stateDir = resolveHome(firstText(
+    input.acpxStateDir,
+    input.acpx_state_dir,
+    process.env.TRADING_AGENTS_ACPX_STATE_DIR,
+    rawConfig.stateDir,
+    path.join(paths.bridgeDir, "acpx-runtime")
+  ));
+  const cwd = resolveHome(firstText(
+    input.acpxCwd,
+    input.acpx_cwd,
+    rawConfig.cwd,
+    paths.root
+  ));
+  return {
+    ...rawConfig,
+    cwd,
+    stateDir
+  };
+}
+
+async function startStandaloneAcpxBackend(paths, input = {}) {
+  const imported = await importAcpxRegisterRuntime(input);
+  const createService = imported.module.createAcpxRuntimeService;
+  if (typeof createService !== "function") throw new Error(`OpenClaw ACPX runtime plugin has no createAcpxRuntimeService export: ${imported.source}`);
+  const pluginConfig = standaloneAcpxPluginConfig(paths, input);
+  const service = createService({ pluginConfig });
+  await service.start({
+    workspaceDir: paths.root,
+    stateDir: pluginConfig.stateDir,
+    config: { acp: { allowedAgents: toList(input.acpAllowedAgents || input.acp_allowed_agents || process.env.TRADING_AGENTS_ACP_ALLOWED_AGENTS) } },
+    logger: standaloneAcpxLogger(input)
+  });
+  return { source: imported.source, stateDir: pluginConfig.stateDir };
+}
+
+async function resolveAcpBackend(backendId, input = {}, paths = null) {
+  const normalizedBackendId = String(backendId || "acpx").trim().toLowerCase() || "acpx";
+  const imported = await importAcpRuntimeBackendModule(input);
+  let backend = imported.module.getAcpRuntimeBackend?.(normalizedBackendId);
+  let source = imported.source;
+  if (!backend?.runtime && normalizedBackendId === "acpx" && paths) {
+    const standalone = await startStandaloneAcpxBackend(paths, input);
+    backend = imported.module.getAcpRuntimeBackend?.(normalizedBackendId);
+    source = `${source}; acpx-service:${standalone.source}`;
+  }
+  if (!backend?.runtime) throw new Error(`ACP runtime backend is not loaded: ${normalizedBackendId}`);
+  return { backend, source };
 }
 
 function acpTextFromEvent(event) {
@@ -5493,8 +5658,11 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
   const startedAt = nowIso();
   const attempt = Number(row.attempt || 0) + 1;
   let backend;
+  let backendSource = "";
   try {
-    backend = await resolveAcpBackend(backendId);
+    const resolvedBackend = await resolveAcpBackend(backendId, input, paths);
+    backend = resolvedBackend.backend;
+    backendSource = resolvedBackend.source;
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
@@ -5523,8 +5691,8 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     });
     return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "acp", backend: backendId, acpAgent, sessionKey, failureType, retryScheduled: shouldRetry, error: message };
   }
-  await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "acp", backend: backendId, acpAgent, sessionMode, sessionKey, startedAt, attempt });
-  const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "started", startedAt, attempt, payload: { sessionMode } });
+  await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "acp", backend: backendId, backendSource, acpAgent, sessionMode, sessionKey, startedAt, attempt });
+  const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "started", startedAt, attempt, payload: { sessionMode, backendSource } });
   await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
     ts: startedAt,
     event: "runtime_dispatch_started",
@@ -5534,6 +5702,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     agentId: row.agent_id,
     adapter: "acp",
     backend: backendId,
+    backendSource,
     acpAgent,
     sessionMode,
     sessionKey,
@@ -5586,6 +5755,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
         dispatchId: row.dispatch_id,
         adapter: "acp",
         backend: backendId,
+        backendSource,
         acpAgent,
         sessionMode,
         sessionKey,
@@ -5595,7 +5765,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     });
     const reportDelivery = await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "acp", backend: backendId, acpAgent, completedAt, messageId: ingest.messageId, attempt });
-    await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { sessionMode, events: acpEvents.slice(-20) } });
+    await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { sessionMode, backendSource, events: acpEvents.slice(-20) } });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: completedAt,
       event: "runtime_dispatch_acked",
@@ -5605,6 +5775,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       agentId: row.agent_id,
       adapter: "acp",
       backend: backendId,
+      backendSource,
       acpAgent,
       sessionMode,
       sessionKey,
@@ -5621,7 +5792,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     const failureType = classifyRuntimeError(error);
     const shouldRetry = AUTO_RETRY_FAILURE_TYPES.has(failureType) && attempt < Number(row.max_attempts || 1);
     await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
-    await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, retry: shouldRetry } });
+    await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, backendSource, retry: shouldRetry } });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: failedAt,
       event: "runtime_dispatch_failed",
@@ -5631,6 +5802,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       agentId: row.agent_id,
       adapter: "acp",
       backend: backendId,
+      backendSource,
       acpAgent,
       sessionMode,
       sessionKey,

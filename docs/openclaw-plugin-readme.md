@@ -64,7 +64,7 @@ platform=hermers agent=cat_body executionAdapter=acp imIngressOwner=openclaw_gat
 platform=hermers agent=cat_heart executionAdapter=acp imIngressOwner=openclaw_gateway imIngressAdapter=openclaw_route_shell workflowIngressAdapter=acp endpointRef=hermers-profile:catheart
 ```
 
-The bridge drains queued workflow dispatches for `platform=hermers` by calling the Gateway-loaded ACP backend, default `acpx`, with persistent ACP sessions. Every dispatch, runtime run, ingest, and transcript entry carries an ISO timestamp. Dispatches can also carry `workflow_id`, `trace_id`, `idempotency_key`, `attempt`, `max_attempts`, `failure_type`, `sent_at`, `acked_at`, and `completed_at` so long-running agent work can be resumed and audited.
+The bridge drains queued workflow dispatches for `platform=hermers` by calling the official ACP backend, default `acpx`, with persistent ACP sessions. In a standalone worker process, the bridge resolves the OpenClaw ACP SDK from controlled package roots and starts the official `@openclaw/acpx` runtime service when the backend is not already registered. Every dispatch, runtime run, ingest, and transcript entry carries an ISO timestamp. Dispatches can also carry `workflow_id`, `trace_id`, `idempotency_key`, `attempt`, `max_attempts`, `failure_type`, `sent_at`, `acked_at`, and `completed_at` so long-running agent work can be resumed and audited.
 
 `workflow_ingress_adapter=acp` is strict. If the ACP backend is unavailable in the worker process, the dispatch fails closed with `failure_type=acp_unavailable`; it does not silently fall back to the Hermers CLI. The CLI path is a separate explicit adapter, `workflow_ingress_adapter=cli`, and should be used only for reviewed fallback or recovery.
 
