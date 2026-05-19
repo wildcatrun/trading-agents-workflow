@@ -4336,7 +4336,7 @@ LIMIT 1;`, { json: true });
 }
 
 async function ensureRuntimeAgent(paths, input) {
-  const runtime = normalizeRuntime(input.platform || input.runtime);
+  const runtime = normalizeRuntime(input.runtime || input.runtimeKey || input.runtime_key || input.platform);
   const agentId = normalizeAgentId(input.agentId || input.agent_id);
   const agentKey = runtimeAgentKey(runtime, agentId);
   const createdAt = nowIso();

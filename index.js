@@ -986,6 +986,7 @@ function registerCli(api) {
     command.command("runtime-agent")
       .requiredOption("--platform <platform>", "openclaw, hermers, or another registered platform")
       .requiredOption("--agent <agentId>", "Agent id")
+      .option("--runtime <runtimeKey>", "Registry runtime key, for example openclaw_route_shell for a Gateway route-shell ingress")
       .option("--name <displayName>", "Display name")
       .option("--role <role>", "Agent role")
       .option("--execution-adapter <adapter>", "native, acp, api, webhook, queue, route_shell")
@@ -1002,6 +1003,7 @@ function registerCli(api) {
         console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
           action: "runtime.agent.upsert",
           workflowRootDir: options.workflowRoot,
+          runtime: options.runtime,
           platform: options.platform,
           agentId: options.agent,
           displayName: options.name,

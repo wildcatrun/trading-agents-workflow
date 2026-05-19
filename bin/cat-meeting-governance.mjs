@@ -18,7 +18,7 @@ function usage() {
   trading-agents-workflow workflow-supervise-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--drain true|false] [--max-cycles N] [--auto-report true|false] [--root DIR]
   trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermers] [--limit N] [--job-limit N] [--tick-budget-ms N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--root DIR]
   trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
-  trading-agents-workflow runtime-agent --platform PLATFORM --agent AGENT [--execution-adapter ADAPTER] [--im-ingress-owner OWNER] [--im-ingress-adapter ADAPTER] [--workflow-ingress-adapter ADAPTER] [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
+  trading-agents-workflow runtime-agent --platform PLATFORM --agent AGENT [--runtime RUNTIME_KEY] [--execution-adapter ADAPTER] [--im-ingress-owner OWNER] [--im-ingress-adapter ADAPTER] [--workflow-ingress-adapter ADAPTER] [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
   trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--chat-id ID] [--sender-id ID] [--target-platform PLATFORM] [--target-adapter ADAPTER] [--drain-now true|false] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
@@ -284,6 +284,7 @@ function toAction({ command, positional, options }) {
         root,
         input: {
           action: "runtime.agent.upsert",
+          runtime: options.runtime,
           platform: options.platform,
           agentId: options.agent,
           displayName: options.name,
