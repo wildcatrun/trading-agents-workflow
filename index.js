@@ -1800,7 +1800,7 @@ function routeShellConfig(api) {
   return {
     enabled: configured.enabled === true || boolConfig(envEnabled, false),
     agentIds: new Set(configList(configured.agentIds || configured.agent_ids, DEFAULT_ROUTE_SHELL_AGENT_IDS).map(normalizeAgentId)),
-    channels: new Set(configList(configured.channels, ["telegram"]).map((item) => item.toLowerCase())),
+    channels: new Set(configList(configured.channels, ["*"]).map((item) => item.toLowerCase())),
     targetRuntime: String(configured.targetRuntime || configured.target_runtime || "").trim(),
     priority: String(configured.priority || "normal").trim() || "normal",
     drainNow: boolConfig(configured.drainNow ?? configured.drain_now, false),
@@ -2293,7 +2293,7 @@ export default definePluginEntry({
       routeShell: {
         type: "object",
         additionalProperties: false,
-        description: "Optional pre-agent physical route-shell forwarding. When enabled, before_dispatch handles configured OpenClaw route-shell agents and queues work to their primary runtime instead of running the route-shell agent model.",
+        description: "Optional pre-agent physical route-shell forwarding for Gateway message sources. When enabled, before_dispatch handles configured OpenClaw route-shell agents and queues work to their primary runtime instead of running the route-shell agent model.",
         properties: {
           enabled: { type: "boolean" },
           agentIds: { type: "array", items: { type: "string" } },

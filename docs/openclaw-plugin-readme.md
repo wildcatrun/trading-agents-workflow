@@ -68,7 +68,7 @@ The current active registry has six `hermes_acp` primary agents, six `openclaw_r
 
 ## Route-Shell Physical Forwarding
 
-Route-shell forwarding must be a Gateway pre-dispatch routing action, not an agent prompt convention. When `routeShell.enabled=true`, the plugin registers a `before_dispatch` hook. If an inbound Telegram message is already targeted at a configured `openclaw_route_shell` agent session, the hook:
+Route-shell forwarding must be a Gateway pre-dispatch routing action, not an agent prompt convention. When `routeShell.enabled=true`, the plugin registers a `before_dispatch` hook. If any inbound Gateway message is already targeted at a configured `openclaw_route_shell` agent session, the hook:
 
 - extracts the route-shell agent id from the OpenClaw session key, for example `agent:cat_ears:telegram:...`;
 - records a `route_shell_ingress` message with timestamp and source metadata;
@@ -87,7 +87,7 @@ Configuration example:
   "routeShell": {
     "enabled": true,
     "agentIds": ["cat_body", "cat_ears", "cat_eyes", "cat_heart", "cat_nose", "cat_penclaw"],
-    "channels": ["telegram"],
+    "channels": ["*"],
     "priority": "normal",
     "drainNow": false,
     "ack": true,
