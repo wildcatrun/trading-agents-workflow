@@ -26,7 +26,8 @@ function usage() {
   trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--button JSON_OR_LABEL] [--from AGENT] [--target CHAT_ID] [--channel CHANNEL_ID] [--deliver true|false] [--root DIR]
   trading-agents-workflow human-gate-inbox [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
   trading-agents-workflow human-gate-console [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
-  trading-agents-workflow human-gate-callback --token TOKEN [--actor flashcat] [--runtime openclaw] [--agent main] [--root DIR]
+  trading-agents-workflow human-gate-callback --token TOKEN [--actor flashcat] [--feedback TEXT] [--runtime openclaw] [--agent main] [--root DIR]
+  trading-agents-workflow human-gate-feedback --text TEXT [--token TOKEN] [--actor flashcat] [--runtime openclaw] [--agent main] [--root DIR]
   trading-agents-workflow human-gate-resume --workflow ID [--meeting ID] [--status approved|rejected|paused|terminated] [--text TEXT] [--human-gate-id ID] [--root DIR]
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
@@ -286,6 +287,20 @@ function toAction({ command, positional, options }) {
           action: "human_gate.button_callback",
           token: options.token,
           actor: options.actor || options.from,
+          feedbackText: options.feedback || options.text,
+          runtime: options.runtime,
+          agentId: options.agent,
+          sourceSystem: "human_gate_console"
+        }
+      };
+    case "human-gate-feedback":
+      return {
+        root,
+        input: {
+          action: "human_gate.feedback",
+          token: options.token,
+          actor: options.actor || options.from,
+          text: options.text,
           runtime: options.runtime,
           agentId: options.agent,
           sourceSystem: "human_gate_console"

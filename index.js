@@ -125,6 +125,8 @@ const toolParameters = {
         "human_gate.request",
         "human_gate.button_callback",
         "human_gate.callback",
+        "human_gate.feedback",
+        "human_gate.submit_feedback",
         "human_gate.inbox",
         "human_gate.console",
         "human_gate.batch_inbox",
@@ -1091,6 +1093,8 @@ function registerCli(api) {
       .requiredOption("--token <token>", "Human Gate button callback token")
       .option("--actor <actor>", "Actor", "flashcat")
       .option("--from <actor>", "Actor fallback")
+      .option("--feedback <text>", "Flashcat original words or review feedback")
+      .option("--text <text>", "Flashcat original words or review feedback")
       .option("--runtime <runtime>", "Resume dispatch runtime", "openclaw")
       .option("--agent <agent>", "Resume dispatch agent", "main")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
@@ -1101,6 +1105,29 @@ function registerCli(api) {
           workflowRootDir: options.workflowRoot,
           token: options.token,
           actor: options.actor || options.from,
+          feedbackText: options.feedback || options.text,
+          runtime: options.runtime,
+          agentId: options.agent,
+          sourceSystem: "human_gate_console"
+        }), null, 2));
+      });
+
+    command.command("human-gate-feedback")
+      .requiredOption("--text <text>", "Flashcat original words or review feedback")
+      .option("--token <token>", "Optional Human Gate button callback token")
+      .option("--actor <actor>", "Actor", "flashcat")
+      .option("--from <actor>", "Actor fallback")
+      .option("--runtime <runtime>", "Resume dispatch runtime", "openclaw")
+      .option("--agent <agent>", "Resume dispatch agent", "main")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "human_gate.feedback",
+          workflowRootDir: options.workflowRoot,
+          token: options.token,
+          actor: options.actor || options.from,
+          text: options.text,
           runtime: options.runtime,
           agentId: options.agent,
           sourceSystem: "human_gate_console"
@@ -1675,13 +1702,72 @@ function registerHumanGateButtons(api) {
           callbackData: ctx.callback?.data
         }
       });
-      if (["approved", "rejected", "paused", "terminated"].includes(result.status)) {
+      if (["feedback_pending", "approved", "rejected", "paused", "terminated"].includes(result.status)) {
         await ctx.respond?.clearButtons?.();
       }
       if (result.replyText) {
         await ctx.respond?.reply?.({ text: result.replyText });
       }
       return { handled: true };
+    }
+  });
+}
+
+function commandContextField(ctx, keys) {
+  for (const key of keys) {
+    const value = key.split(".").reduce((cursor, part) => cursor?.[part], ctx);
+    if (value !== undefined && value !== null && value !== "") return String(value);
+  }
+  return "";
+}
+
+async function replyToCommandContext(ctx, text) {
+  if (!text) return;
+  if (typeof ctx?.respond?.reply === "function") {
+    await ctx.respond.reply({ text });
+    return;
+  }
+  if (typeof ctx?.reply === "function") {
+    try {
+      await ctx.reply({ text });
+    } catch {
+      await ctx.reply(text);
+    }
+    return;
+  }
+  if (typeof ctx?.ui?.notify === "function") ctx.ui.notify(text, "info");
+}
+
+function registerHumanGateFeedbackCommand(api) {
+  if (typeof api.registerCommand !== "function") return;
+  api.registerCommand({
+    name: "hgate",
+    description: "提交当前等待中的 Human Gate 闪电猫原话或审核意见。",
+    channels: ["telegram"],
+    handler: async (args = "", ctx = {}) => {
+      const text = String(args || ctx.args || ctx.text || "").trim();
+      const actor = commandContextField(ctx, ["senderId", "sender.id", "from.id"]) || "flashcat";
+      const callbackChatId = commandContextField(ctx, ["chatId", "message.chat.id", "from.chatId", "to"]);
+      const result = await runAction(resolveRoot(api), {
+        action: "human_gate.feedback",
+        text,
+        actor,
+        senderId: actor,
+        accountId: commandContextField(ctx, ["accountId", "account.id"]),
+        callbackChatId,
+        callbackMessageId: commandContextField(ctx, ["messageId", "message.message_id"]),
+        sourceSystem: "telegram_hgate_command",
+        payload: {
+          channel: commandContextField(ctx, ["channel", "channelId"]),
+          accountId: commandContextField(ctx, ["accountId", "account.id"]),
+          senderId: actor,
+          senderUsername: commandContextField(ctx, ["senderUsername", "sender.username", "from.username"]),
+          chatId: callbackChatId,
+          messageId: commandContextField(ctx, ["messageId", "message.message_id"])
+        }
+      });
+      await replyToCommandContext(ctx, result.replyText || JSON.stringify(result));
+      return result;
     }
   });
 }
@@ -1744,5 +1830,6 @@ export default definePluginEntry({
     registerCli(api);
     registerControlLoop(api);
     registerHumanGateButtons(api);
+    registerHumanGateFeedbackCommand(api);
   }
 });

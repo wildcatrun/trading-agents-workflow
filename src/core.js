@@ -1224,6 +1224,8 @@ export async function runAction(rootDir, input = {}) {
     action === "human_gate.request" ||
     action === "human_gate.button_callback" ||
     action === "human_gate.callback" ||
+    action === "human_gate.feedback" ||
+    action === "human_gate.submit_feedback" ||
     action === "human_gate.resume" ||
     action === "human_gate.confirm" ||
     action === "human_gate.inbox" ||
