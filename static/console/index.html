@@ -12,34 +12,51 @@
         <h1>Workflow Console</h1>
         <p id="configLine">Loading...</p>
       </div>
-      <nav>
+      <nav class="view-tabs" aria-label="Workflow views">
         <button data-view="active">Active</button>
         <button data-view="waiting_human">Human Gate</button>
         <button data-view="blocked">Blocked</button>
         <button data-view="paused">Paused</button>
+        <button data-view="updated_24h">24h</button>
       </nav>
     </header>
     <main class="layout">
-      <section class="panel workflows">
+      <section class="panel workflows" aria-label="Workflow queue">
         <div class="panel-head">
-          <h2>Workflows</h2>
+          <div>
+            <h2>Workflows</h2>
+            <p id="workflowCount" class="muted">0 loaded</p>
+          </div>
           <button id="refreshButton">Refresh</button>
         </div>
-        <div id="workflowList" class="list"></div>
+        <div id="metrics" class="metrics"></div>
+        <div id="workflowList" class="list" role="list"></div>
       </section>
-      <section class="panel detail">
+      <section class="panel detail" aria-label="Workflow detail">
         <div class="panel-head">
-          <h2 id="detailTitle">Select a workflow</h2>
-          <button id="previewButton" disabled>Preview Supervise</button>
+          <div>
+            <h2 id="detailTitle">Select a workflow</h2>
+            <p id="detailSubtitle" class="muted">No workflow selected.</p>
+          </div>
+          <div class="actions">
+            <span id="actionStatus" class="action-status"></span>
+            <button id="previewButton" disabled>Preview Supervise</button>
+          </div>
         </div>
+        <div id="detailSummary" class="summary-strip"></div>
         <div class="tabs">
           <button data-tab="overview" class="active">Overview</button>
           <button data-tab="tasks">Tasks</button>
           <button data-tab="dispatches">Dispatches</button>
+          <button data-tab="runtime-runs">Runtime</button>
+          <button data-tab="timeline">Timeline</button>
           <button data-tab="human-gates">Human Gate</button>
+          <button data-tab="outbox">Outbox</button>
           <button data-tab="operations">Operations</button>
+          <button data-tab="evidence">Evidence</button>
+          <button data-tab="raw">Raw</button>
         </div>
-        <pre id="detailBody" class="json"></pre>
+        <section id="detailBody" class="detail-body"></section>
       </section>
     </main>
     <script src="/app.js" type="module"></script>

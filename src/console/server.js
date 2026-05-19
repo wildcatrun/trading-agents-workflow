@@ -167,6 +167,7 @@ export function createConsoleServer(options = {}) {
         if (child === "outbox") return json(res, 200, await readModel.outbox(workflowId, query));
         if (child === "checkpoints") return json(res, 200, await readModel.checkpoints(workflowId));
         if (child === "evidence") return json(res, 200, await readModel.evidence(workflowId));
+        if (child === "timeline") return json(res, 200, await readModel.timeline(workflowId, query));
       }
       if (req.method === "GET" && pathname === "/api/runtime-agents") return json(res, 200, await readModel.runtimeAgents());
       if (req.method === "GET" && pathname === "/api/operations/summary") return json(res, 200, await readModel.operationsSummary());

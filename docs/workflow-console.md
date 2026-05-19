@@ -6,7 +6,9 @@ Current scope:
 
 - standalone Node HTTP process
 - native static frontend under `static/console/`
+- workbench UI for workflow queue, task cards/tables, dispatch/runtime tracking, Human Gate/outbox/evidence panels and raw JSON fallback
 - read-only SQLite read model for workflow list/detail, tasks, dispatches, Human Gate records, outbox, checkpoints, runtime agents and operations summary
+- aggregated workflow timeline assembled from tasks, dispatches, runtime runs, Human Gate records/buttons, outbox, checkpoints, artifacts, side effects and incidents
 - action gateway limited to preview actions by default
 - no second scheduler, no direct business-table writes from the UI
 
@@ -66,6 +68,7 @@ It must not use `workflow.advance` or `workflow.supervise` for planning buttons.
 - `GET /api/workflows/:workflowId/outbox`
 - `GET /api/workflows/:workflowId/checkpoints`
 - `GET /api/workflows/:workflowId/evidence`
+- `GET /api/workflows/:workflowId/timeline`
 - `GET /api/runtime-agents`
 - `GET /api/operations/summary`
 - `GET /api/readiness/latest`
