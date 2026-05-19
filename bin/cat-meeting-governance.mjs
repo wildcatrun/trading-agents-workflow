@@ -19,6 +19,7 @@ function usage() {
   trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermes_acp] [--limit N] [--job-limit N] [--tick-budget-ms N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--root DIR]
   trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
   trading-agents-workflow runtime-agent --runtime RUNTIME --agent AGENT [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
+  trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--chat-id ID] [--sender-id ID] [--target-runtime RUNTIME] [--drain-now true|false] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
   trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--root DIR]
@@ -280,6 +281,23 @@ function toAction({ command, positional, options }) {
       };
     case "runtime-agent":
       return { root, input: { action: "runtime.agent.upsert", runtime: options.runtime, agentId: options.agent, displayName: options.name, role: options.role, endpointRef: options.endpoint } };
+    case "route-shell-ingest":
+      return {
+        root,
+        input: {
+          action: "route_shell.ingest",
+          routeAgentId: options.agent,
+          text: options.text,
+          sourceMessageId: options["message-id"],
+          chatId: options["chat-id"],
+          senderId: options["sender-id"],
+          sourceSystem: options.source || "cli",
+          targetRuntime: options["target-runtime"],
+          priority: options.priority,
+          drainNow: options["drain-now"] === "true",
+          timeoutSeconds: options["timeout-seconds"]
+        }
+      };
     case "meeting-participant":
       return { root, input: { action: "meeting.runtime_participant", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, participantRole: options.role, chair: options.chair === "true", decider: options.decider === "true", secretary: options.secretary === "true", liveMode: options["live-mode"] } };
     case "telegram-live":

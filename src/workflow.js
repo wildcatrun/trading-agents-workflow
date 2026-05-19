@@ -37,6 +37,7 @@ const CONTROL_LOOP_WORKFLOW_STATUSES = new Set(["active", "waiting_human", "bloc
 const CONTROL_LOOP_ACTIVE_JOB_STATUSES = new Set(["queued", "running", "retry_scheduled"]);
 const HUMAN_GATE_TEXT_POLICY_VERSION = "human_gate_chinese_feedback_style_v1";
 const HUMAN_GATE_WEB_APP_ROUTE_PATH = "/plugins/trading-agents-workflow/human-gate";
+const ROUTE_SHELL_PRIMARY_RUNTIME_ORDER = ["hermes_acp", "hermes"];
 const TELEGRAM_BUTTON_STYLES = new Set(["danger", "success", "primary"]);
 const HUMAN_GATE_PLAN_STYLE = "success";
 const HUMAN_GATE_CONTROL_STYLES = {
@@ -571,6 +572,11 @@ async function sqlite(dbFile, sql, { json = false } = {}) {
     }
     throw error;
   }
+}
+
+function isSqliteConstraintError(error) {
+  const text = `${error?.message || ""}\n${error?.stderr || ""}`.toLowerCase();
+  return text.includes("constraint failed") || text.includes("unique constraint failed");
 }
 
 async function tableColumns(dbFile, tableName) {
@@ -4581,11 +4587,246 @@ export async function meetingDispatch(rootDir, input) {
     maxAttempts,
     payload: parseJsonValue(input.payload, input.payload || {})
   };
-  await sqlite(paths.dbFile, `
+  try {
+    await sqlite(paths.dbFile, `
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
 VALUES (${sqlValue(dispatchId)}, ${sqlValue(meetingId)}, ${sqlValue(workflowId)}, ${sqlValue(traceId)}, ${sqlValue(idempotencyKey)}, ${sqlValue(runtime)}, ${sqlValue(agentId)}, ${sqlValue(agent.agentKey)}, ${sqlValue(payload.dispatchType)}, ${sqlValue(status)}, ${sqlValue(input.priority || "normal")}, 0, ${sqlValue(maxAttempts)}, ${sqlValue(payload.prompt)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(payload.chair)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
+  } catch (error) {
+    if (idempotencyKey && isSqliteConstraintError(error)) {
+      const existing = await sqlite(paths.dbFile, `SELECT * FROM mixed_meeting_dispatches WHERE idempotency_key=${sqlValue(idempotencyKey)} LIMIT 1;`, { json: true });
+      if (existing[0]) {
+        return {
+          meetingId,
+          dispatchId: existing[0].dispatch_id,
+          runtime: existing[0].runtime,
+          agentId: existing[0].agent_id,
+          status: existing[0].status,
+          traceId: existing[0].trace_id,
+          idempotencyKey,
+          deduped: true,
+          dbFile: paths.dbFile
+        };
+      }
+    }
+    throw error;
+  }
   const relPath = await writeJsonArtifact(paths.root, path.join(paths.dispatchesDir, status), dispatchId, payload);
   return { meetingId, workflowId, traceId, idempotencyKey, dispatchId, runtime, agentId, status, relativePath: relPath, dbFile: paths.dbFile };
+}
+
+async function findActiveRuntimeAgent(paths, runtime, agentId) {
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM runtime_agents
+WHERE runtime=${sqlValue(normalizeRuntime(runtime))}
+  AND agent_id=${sqlValue(normalizeAgentId(agentId))}
+  AND status='active'
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function resolveRouteShellTarget(paths, input = {}) {
+  const routeAgentId = normalizeAgentId(input.routeAgentId || input.route_agent_id || input.agentId || input.agent_id || input.target || "");
+  const requireRouteShell = boolOption(input.requireRouteShell ?? input.require_route_shell, true);
+  const routeShell = await findActiveRuntimeAgent(paths, "openclaw_route_shell", routeAgentId);
+  if (requireRouteShell && !routeShell) {
+    return {
+      ok: false,
+      status: "route_failed",
+      routeAgentId,
+      reason: `active openclaw_route_shell registry row not found for ${routeAgentId}`
+    };
+  }
+
+  const explicitRuntime = String(input.targetRuntime || input.target_runtime || input.runtime || "").trim();
+  const candidates = explicitRuntime
+    ? [normalizeRuntime(explicitRuntime)]
+    : ROUTE_SHELL_PRIMARY_RUNTIME_ORDER;
+  for (const runtime of candidates) {
+    if (runtime === "openclaw_route_shell") continue;
+    const target = await findActiveRuntimeAgent(paths, runtime, routeAgentId);
+    if (target) return { ok: true, routeAgentId, routeShell, target };
+  }
+
+  return {
+    ok: false,
+    status: "route_failed",
+    routeAgentId,
+    routeShell,
+    reason: explicitRuntime
+      ? `active ${normalizeRuntime(explicitRuntime)} primary runtime not found for ${routeAgentId}`
+      : `active primary runtime not found for ${routeAgentId}; checked ${ROUTE_SHELL_PRIMARY_RUNTIME_ORDER.join(", ")}`
+  };
+}
+
+function routeShellSourceMessageId(input = {}) {
+  return String(
+    input.sourceMessageId ||
+    input.source_message_id ||
+    input.providerMessageId ||
+    input.provider_message_id ||
+    input.messageId ||
+    input.message_id ||
+    ""
+  ).trim();
+}
+
+function routeShellAckText(result) {
+  if (!result.ok) {
+    const rawReason = String(result.reason || "unknown").replace(/\s+/g, " ").trim();
+    const lowered = rawReason.toLowerCase();
+    const reason = lowered.includes("database is locked")
+      ? "sqlite database is locked after 5000ms busy timeout"
+      : (lowered.includes("unique constraint failed") ? "sqlite unique constraint raced with an existing idempotency row" : rawReason);
+    return [
+      "ROUTE_FAILED",
+      `timestamp: ${result.createdAt}`,
+      `route_shell: openclaw_route_shell:${result.routeAgentId || ""}`,
+      `reason: ${reason.length > 360 ? `${reason.slice(0, 360)}...` : reason}`
+    ].join("\n");
+  }
+  return [
+    "ROUTE_QUEUED",
+    `timestamp: ${result.createdAt}`,
+    `route_shell: openclaw_route_shell:${result.routeAgentId}`,
+    `target: ${result.targetRuntime}:${result.targetAgentId}`,
+    `dispatch_id: ${result.dispatchId}`,
+    `workflow_id: ${result.workflowId}`,
+    `trace_id: ${result.traceId}`,
+    `status: ${result.status}`
+  ].join("\n");
+}
+
+export async function routeShellIngest(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const createdAt = nowIso();
+  const text = String(input.text || input.prompt || input.content || input.message || "").trim();
+  if (!text) throw new Error("text is required for route_shell.ingest");
+
+  const resolved = await resolveRouteShellTarget(paths, input);
+  if (!resolved.ok) {
+    const result = { ...resolved, ok: false, createdAt, dbFile: paths.dbFile };
+    return { ...result, ackText: routeShellAckText(result) };
+  }
+
+  const sourceMessageId = routeShellSourceMessageId(input);
+  const sourceSystem = String(input.sourceSystem || input.source_system || input.channel || "openclaw_route_shell").trim();
+  const sourceRuntime = normalizeRuntime(input.sourceRuntime || input.source_runtime || "openclaw_route_shell");
+  const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id || `route-shell-${resolved.routeAgentId}-${sourceMessageId ? cleanFileSegment(sourceMessageId) : Date.now().toString(36)}`);
+  const workflowId = String(input.workflowId || input.workflow_id || meetingId).trim();
+  const traceId = String(input.traceId || input.trace_id || (sourceMessageId ? `route-shell:${resolved.routeAgentId}:${cleanFileSegment(sourceMessageId)}` : safeId("route_trace"))).trim();
+  const idempotencyKey = String(input.idempotencyKey || input.idempotency_key || (sourceMessageId ? `route-shell:${resolved.routeAgentId}:${sourceSystem}:${sourceMessageId}` : "")).trim();
+  const payload = {
+    routeShell: {
+      routeAgentId: resolved.routeAgentId,
+      sourceRuntime,
+      sourceSystem,
+      sourceMessageId,
+      sourceChatId: String(input.chatId || input.chat_id || input.conversationId || input.conversation_id || "").trim(),
+      senderId: String(input.senderId || input.sender_id || input.from || "").trim(),
+      receivedAt: input.receivedAt || input.received_at || createdAt
+    },
+    originalPayload: parseJsonValue(input.payload, input.payload || {})
+  };
+
+  if (idempotencyKey) {
+    const existingRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM mixed_meeting_dispatches
+WHERE idempotency_key=${sqlValue(idempotencyKey)}
+LIMIT 1;`, { json: true });
+    const existing = existingRows[0];
+    if (existing) {
+      const result = {
+        ok: true,
+        status: existing.status,
+        createdAt,
+        routeAgentId: resolved.routeAgentId,
+        routeRuntime: "openclaw_route_shell",
+        targetRuntime: existing.runtime,
+        targetAgentId: existing.agent_id,
+        meetingId: existing.meeting_id,
+        workflowId: existing.workflow_id || workflowId,
+        traceId: existing.trace_id || traceId,
+        idempotencyKey,
+        dispatchId: existing.dispatch_id,
+        deduped: true,
+        ingressMessageId: "",
+        drainResult: null,
+        dbFile: paths.dbFile
+      };
+      return { ...result, ackText: routeShellAckText(result) };
+    }
+  }
+
+  let ingress = null;
+  if (boolOption(input.recordIngress ?? input.record_ingress, true)) {
+    try {
+      ingress = await meetingIngest(rootDir, {
+        meetingId,
+        runtime: sourceRuntime,
+        agentId: resolved.routeAgentId,
+        text,
+        messageId: sourceMessageId || undefined,
+        messageType: "route_shell_ingress",
+        phase: "route_shell",
+        payload
+      });
+    } catch (error) {
+      if (sourceMessageId && isSqliteConstraintError(error)) {
+        ingress = { messageId: sourceMessageId, deduped: true };
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  const dispatch = await meetingDispatch(rootDir, {
+    meetingId,
+    workflowId,
+    traceId,
+    idempotencyKey,
+    runtime: resolved.target.runtime,
+    agentId: resolved.target.agent_id,
+    dispatchType: input.dispatchType || input.dispatch_type || "route_shell_forward",
+    prompt: text,
+    priority: input.priority || "normal",
+    createdBy: `openclaw_route_shell:${resolved.routeAgentId}`,
+    maxAttempts: input.maxAttempts || input.max_attempts || 1,
+    payload
+  });
+
+  let drainResult = null;
+  if (boolOption(input.drainNow ?? input.drain_now, false) && dispatch.status === "queued") {
+    drainResult = await runtimeBridgeDrain(rootDir, {
+      ...input,
+      runtime: dispatch.runtime,
+      dispatchId: dispatch.dispatchId,
+      limit: 1,
+      timeoutSeconds: input.timeoutSeconds || input.timeout_seconds || 45,
+      dryRun: false
+    });
+  }
+
+  const result = {
+    ok: true,
+    status: dispatch.status,
+    createdAt,
+    routeAgentId: resolved.routeAgentId,
+    routeRuntime: "openclaw_route_shell",
+    targetRuntime: dispatch.runtime,
+    targetAgentId: dispatch.agentId,
+    meetingId,
+    workflowId,
+    traceId,
+    idempotencyKey,
+    dispatchId: dispatch.dispatchId,
+    deduped: Boolean(dispatch.deduped),
+    ingressMessageId: ingress?.messageId || "",
+    drainResult,
+    dbFile: paths.dbFile
+  };
+  return { ...result, ackText: routeShellAckText(result) };
 }
 
 export async function meetingIngest(rootDir, input) {
@@ -6817,6 +7058,10 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "runtime.agent":
     case "runtime.agent.upsert":
       return runtimeAgentUpsert(rootDir, input);
+    case "route_shell.ingest":
+    case "route-shell.ingest":
+    case "route_shell.route":
+      return routeShellIngest(rootDir, input);
     case "meeting.runtime_participant":
     case "runtime.participant":
       return meetingRuntimeParticipant(rootDir, input);

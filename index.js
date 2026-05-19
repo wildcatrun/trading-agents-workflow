@@ -1,5 +1,6 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,7 @@ import { runAction } from "./src/core.js";
 
 const PLUGIN_ID = "trading-agents-workflow";
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_ROUTE_SHELL_AGENT_IDS = ["cat_body", "cat_ears", "cat_eyes", "cat_heart", "cat_nose", "cat_penclaw"];
 let cachedOpenClawConfigPath;
 let cachedPluginConfigFromFile;
 
@@ -64,6 +66,25 @@ function resolveRoot(api) {
   return configured || process.env.TRADING_AGENTS_WORKFLOW_ROOT || process.env.CAT_MEETING_GOVERNANCE_ROOT;
 }
 
+function boolConfig(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const text = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(text)) return true;
+  if (["0", "false", "no", "n", "off"].includes(text)) return false;
+  return Boolean(value);
+}
+
+function configList(value, fallback = []) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return fallback;
+}
+
+function normalizeAgentId(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
 const toolParameters = {
   type: "object",
   additionalProperties: true,
@@ -115,6 +136,7 @@ const toolParameters = {
         "context.checkpoint",
         "protocol.record",
         "runtime.agent.upsert",
+        "route_shell.ingest",
         "runtime.bridge",
         "runtime.bridge.drain",
         "meeting.runtime_participant",
@@ -352,6 +374,14 @@ const toolParameters = {
     acpAgent: { type: "string" },
     sessionMode: { type: "string" },
     sessionKey: { type: "string" },
+    routeAgentId: { type: "string" },
+    sourceMessageId: { type: "string" },
+    sourceSystem: { type: "string" },
+    sourceRuntime: { type: "string" },
+    targetRuntime: { type: "string" },
+    drainNow: { type: "boolean" },
+    recordIngress: { type: "boolean" },
+    requireRouteShell: { type: "boolean" },
     chair: { type: "boolean" },
     decider: { type: "boolean" },
     secretary: { type: "boolean" }
@@ -970,6 +1000,36 @@ function registerCli(api) {
           displayName: options.name,
           role: options.role,
           endpointRef: options.endpoint
+        }), null, 2));
+      });
+
+    command.command("route-shell-ingest")
+      .requiredOption("--agent <agentId>", "OpenClaw route-shell agent id")
+      .requiredOption("--text <text>", "Raw message to route")
+      .option("--message-id <messageId>", "Provider/source message id")
+      .option("--chat-id <chatId>", "Source chat/conversation id")
+      .option("--sender-id <senderId>", "Source sender id")
+      .option("--source <sourceSystem>", "Source system", "cli")
+      .option("--target-runtime <runtime>", "Override target primary runtime")
+      .option("--priority <priority>", "flash, steer, high, normal, low", "normal")
+      .option("--drain-now <trueOrFalse>", "Drain the created dispatch immediately", "false")
+      .option("--timeout-seconds <seconds>", "Runtime drain timeout", "45")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "route_shell.ingest",
+          workflowRootDir: options.workflowRoot,
+          routeAgentId: options.agent,
+          text: options.text,
+          sourceMessageId: options.messageId,
+          chatId: options.chatId,
+          senderId: options.senderId,
+          sourceSystem: options.source,
+          targetRuntime: options.targetRuntime,
+          priority: options.priority,
+          drainNow: options.drainNow === "true",
+          timeoutSeconds: Number(options.timeoutSeconds)
         }), null, 2));
       });
 
@@ -1733,6 +1793,182 @@ function registerControlLoop(api) {
   console.error(`[trading-agents-workflow] control loop enabled tickMs=${config.tickMs} workerMode=${config.workerMode} jobLimit=${config.jobLimit}`);
 }
 
+function routeShellConfig(api) {
+  const runtimeConfig = pluginConfig(api);
+  const configured = objectConfig(runtimeConfig.routeShell || runtimeConfig.route_shell);
+  const envEnabled = process.env.TRADING_AGENTS_WORKFLOW_ROUTE_SHELL_AUTO || process.env.TRADING_AGENTS_WORKFLOW_ROUTE_SHELL;
+  return {
+    enabled: configured.enabled === true || boolConfig(envEnabled, false),
+    agentIds: new Set(configList(configured.agentIds || configured.agent_ids, DEFAULT_ROUTE_SHELL_AGENT_IDS).map(normalizeAgentId)),
+    channels: new Set(configList(configured.channels, ["telegram"]).map((item) => item.toLowerCase())),
+    targetRuntime: String(configured.targetRuntime || configured.target_runtime || "").trim(),
+    priority: String(configured.priority || "normal").trim() || "normal",
+    drainNow: boolConfig(configured.drainNow ?? configured.drain_now, false),
+    timeoutSeconds: Number.isFinite(Number(configured.timeoutSeconds ?? configured.timeout_seconds))
+      ? Number(configured.timeoutSeconds ?? configured.timeout_seconds)
+      : 45,
+    ack: configured.ack !== false,
+    requireRouteShell: configured.requireRouteShell !== false && configured.require_route_shell !== false,
+    requireProviderMessageId: configured.requireProviderMessageId === true || configured.require_provider_message_id === true,
+    blockOnFailure: configured.blockOnFailure !== false && configured.block_on_failure !== false
+  };
+}
+
+function routeShellChannel(event = {}, ctx = {}) {
+  return String(event.channel || ctx.channelId || "").trim().toLowerCase();
+}
+
+function routeShellAgentFromSessionKey(sessionKey) {
+  const raw = String(sessionKey || "").trim().toLowerCase();
+  const match = raw.match(/^agent:([^:]+):/);
+  return match ? normalizeAgentId(match[1]) : "";
+}
+
+function routeShellProviderMessageId(event = {}, ctx = {}) {
+  for (const source of [event, ctx]) {
+    for (const key of ["messageId", "message_id", "providerMessageId", "provider_message_id"]) {
+      const value = source?.[key];
+      const text = String(value || "").trim();
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+function routeShellSyntheticMessageId(event = {}, ctx = {}) {
+  const timestamp = String(event.timestamp || ctx.timestamp || "").trim();
+  const sessionKey = String(event.sessionKey || ctx.sessionKey || "").trim();
+  const content = String(event.body || event.content || "").trim();
+  if (!timestamp || !sessionKey || !content) return "";
+  const hash = createHash("sha256")
+    .update([
+      routeShellChannel(event, ctx),
+      sessionKey,
+      String(ctx.conversationId || "").trim(),
+      String(event.senderId || ctx.senderId || "").trim(),
+      timestamp,
+      content
+    ].join("\n"))
+    .digest("hex")
+    .slice(0, 24);
+  return `synthetic:${hash}`;
+}
+
+function routeShellFailureText(routeAgentId, reason) {
+  return [
+    "ROUTE_FAILED",
+    `timestamp: ${new Date().toISOString()}`,
+    `route_shell: openclaw_route_shell:${routeAgentId || ""}`,
+    `reason: ${compactRouteShellReason(reason)}`
+  ].join("\n");
+}
+
+function compactRouteShellReason(reason) {
+  const text = String(reason || "unknown").replace(/\s+/g, " ").trim() || "unknown";
+  const lowered = text.toLowerCase();
+  if (lowered.includes("database is locked")) return "sqlite database is locked after 5000ms busy timeout";
+  if (lowered.includes("unique constraint failed")) return "sqlite unique constraint raced with an existing idempotency row";
+  return text.length > 360 ? `${text.slice(0, 360)}...` : text;
+}
+
+function routeShellInflightMap() {
+  const key = "__tradingAgentsWorkflowRouteShellInflight";
+  if (!globalThis[key]) globalThis[key] = new Map();
+  return globalThis[key];
+}
+
+function routeShellEventTarget(config, event = {}, ctx = {}) {
+  const channel = routeShellChannel(event, ctx);
+  if (config.channels.size > 0 && !config.channels.has("*") && !config.channels.has(channel)) return null;
+  const sessionKey = String(event.sessionKey || ctx.sessionKey || "").trim();
+  const routeAgentId = routeShellAgentFromSessionKey(sessionKey);
+  if (!routeAgentId || !config.agentIds.has(routeAgentId)) return null;
+  return { channel, sessionKey, routeAgentId };
+}
+
+function registerRouteShellBeforeDispatch(api) {
+  const config = routeShellConfig(api);
+  if (!config.enabled) return;
+  if (typeof api.on !== "function") {
+    console.error("[trading-agents-workflow] route-shell auto-forward disabled: typed plugin hooks are unavailable");
+    return;
+  }
+  api.on("before_dispatch", async (event = {}, ctx = {}) => {
+    const target = routeShellEventTarget(config, event, ctx);
+    if (!target) return undefined;
+
+    const text = String(event.body || event.content || "").trim();
+    if (!text) {
+      return { handled: true, text: config.ack ? routeShellFailureText(target.routeAgentId, "empty route-shell inbound text") : undefined };
+    }
+
+    const providerMessageId = routeShellProviderMessageId(event, ctx);
+    if (config.requireProviderMessageId && !providerMessageId) {
+      return {
+        handled: true,
+        text: config.ack
+          ? routeShellFailureText(target.routeAgentId, "provider message id is required for strict route-shell idempotency but before_dispatch did not expose one")
+          : undefined
+      };
+    }
+    const syntheticMessageId = providerMessageId ? "" : routeShellSyntheticMessageId(event, ctx);
+    const sourceMessageId = providerMessageId || syntheticMessageId;
+
+    const runRoute = async () => {
+      const result = await runAction(resolveRoot(api), {
+        action: "route_shell.ingest",
+        routeAgentId: target.routeAgentId,
+        text,
+        sourceMessageId,
+        sourceSystem: `gateway:${target.channel || "unknown"}:before_dispatch`,
+        sourceRuntime: "openclaw_route_shell",
+        targetRuntime: config.targetRuntime || undefined,
+        priority: config.priority,
+        drainNow: config.drainNow,
+        timeoutSeconds: config.timeoutSeconds,
+        requireRouteShell: config.requireRouteShell,
+        chatId: ctx.conversationId,
+        senderId: event.senderId || ctx.senderId,
+        channelId: target.channel,
+        sessionKey: target.sessionKey,
+        payload: {
+          providerMessageId,
+          syntheticMessageId,
+          idempotencySource: providerMessageId ? "provider_message_id" : (syntheticMessageId ? "synthetic_before_dispatch_fingerprint" : "none"),
+          beforeDispatch: {
+            channel: target.channel,
+            accountId: ctx.accountId,
+            conversationId: ctx.conversationId,
+            sessionKey: target.sessionKey,
+            senderId: event.senderId || ctx.senderId,
+            timestamp: event.timestamp
+          }
+        }
+      });
+      return { handled: true, text: config.ack ? result.ackText || JSON.stringify(result) : undefined };
+    };
+
+    const inFlightKey = sourceMessageId ? `${target.routeAgentId}:${target.channel}:${sourceMessageId}` : "";
+    const inFlight = routeShellInflightMap();
+    if (inFlightKey && inFlight.has(inFlightKey)) return inFlight.get(inFlightKey);
+    const promise = runRoute().catch((error) => {
+      const message = compactRouteShellReason(error instanceof Error ? error.message : String(error));
+      console.error(`[trading-agents-workflow] route-shell before_dispatch failed for ${target.routeAgentId}: ${message}`);
+      return config.blockOnFailure
+        ? { handled: true, text: config.ack ? routeShellFailureText(target.routeAgentId, message) : undefined }
+        : undefined;
+    });
+    if (!inFlightKey) return promise;
+    inFlight.set(inFlightKey, promise);
+    try {
+      return await promise;
+    } finally {
+      if (inFlight.get(inFlightKey) === promise) inFlight.delete(inFlightKey);
+    }
+  }, { priority: 1000 });
+  console.error(`[trading-agents-workflow] route-shell auto-forward enabled agents=${[...config.agentIds].join(",")} channels=${[...config.channels].join(",")}`);
+}
+
 function normalizeHumanGateWebAppRoutePath(value) {
   const raw = String(value || "/plugins/trading-agents-workflow/human-gate").trim();
   if (!raw) return "/plugins/trading-agents-workflow/human-gate";
@@ -2054,6 +2290,24 @@ export default definePluginEntry({
           allowedTelegramUserIds: { type: "array", items: { type: "string" } }
         }
       },
+      routeShell: {
+        type: "object",
+        additionalProperties: false,
+        description: "Optional pre-agent physical route-shell forwarding. When enabled, before_dispatch handles configured OpenClaw route-shell agents and queues work to their primary runtime instead of running the route-shell agent model.",
+        properties: {
+          enabled: { type: "boolean" },
+          agentIds: { type: "array", items: { type: "string" } },
+          channels: { type: "array", items: { type: "string" } },
+          targetRuntime: { type: "string" },
+          priority: { type: "string" },
+          drainNow: { type: "boolean" },
+          timeoutSeconds: { type: "number" },
+          ack: { type: "boolean" },
+          requireRouteShell: { type: "boolean" },
+          requireProviderMessageId: { type: "boolean" },
+          blockOnFailure: { type: "boolean" }
+        }
+      },
       controlLoop: {
         type: "object",
         additionalProperties: false,
@@ -2096,6 +2350,7 @@ export default definePluginEntry({
     });
     registerCli(api);
     registerControlLoop(api);
+    registerRouteShellBeforeDispatch(api);
     registerHumanGateWebAppRoutes(api);
     registerHumanGateButtons(api);
     registerHumanGateFeedbackCommand(api);

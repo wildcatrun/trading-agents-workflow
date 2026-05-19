@@ -44,6 +44,52 @@
           }
         }
       },
+      "routeShell": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Optional pre-agent physical route-shell forwarding. When enabled, before_dispatch handles configured OpenClaw route-shell agents and queues work to their primary runtime instead of running the route-shell agent model.",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "agentIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "targetRuntime": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string"
+          },
+          "drainNow": {
+            "type": "boolean"
+          },
+          "timeoutSeconds": {
+            "type": "number"
+          },
+          "ack": {
+            "type": "boolean"
+          },
+          "requireRouteShell": {
+            "type": "boolean"
+          },
+          "requireProviderMessageId": {
+            "type": "boolean"
+          },
+          "blockOnFailure": {
+            "type": "boolean"
+          }
+        }
+      },
       "controlLoop": {
         "type": "object",
         "additionalProperties": false,

@@ -66,6 +66,49 @@ Runtime meanings:
 
 The current active registry has six `hermes_acp` primary agents, six `openclaw_route_shell` aliases, and seven `openclaw` primary agents. All IM-facing messages and workflow records must carry ISO timestamps.
 
+## Route-Shell Physical Forwarding
+
+Route-shell forwarding must be a Gateway pre-dispatch routing action, not an agent prompt convention. When `routeShell.enabled=true`, the plugin registers a `before_dispatch` hook. If an inbound Telegram message is already targeted at a configured `openclaw_route_shell` agent session, the hook:
+
+- extracts the route-shell agent id from the OpenClaw session key, for example `agent:cat_ears:telegram:...`;
+- records a `route_shell_ingress` message with timestamp and source metadata;
+- creates a durable `route_shell_forward` dispatch to the same agent's active primary runtime, preferring `hermes_acp`;
+- returns `handled=true` so OpenClaw does not run the route-shell agent model;
+- replies with `ROUTE_QUEUED` or `ROUTE_FAILED`.
+
+This is fail-closed by default. If the route-shell registry row or primary runtime row is missing, the hook handles the message and returns `ROUTE_FAILED`; it does not fall back to the OpenClaw route-shell agent. `drainNow` defaults to `false` because Gateway dispatch should not synchronously run Hermes work. The 10s control loop should drain the queued runtime dispatch.
+
+The hook also applies in-process single-flight by route-shell agent, channel, and source message id. Concurrent provider retries for the same Telegram message wait on the same routing promise instead of creating a thundering herd against SQLite. SQLite unique idempotency still remains the durable backstop across process restarts.
+
+Configuration example:
+
+```json
+{
+  "routeShell": {
+    "enabled": true,
+    "agentIds": ["cat_body", "cat_ears", "cat_eyes", "cat_heart", "cat_nose", "cat_penclaw"],
+    "channels": ["telegram"],
+    "priority": "normal",
+    "drainNow": false,
+    "ack": true,
+    "blockOnFailure": true
+  }
+}
+```
+
+For strict idempotency, set `requireProviderMessageId=true` after OpenClaw exposes provider message ids to `before_dispatch`. Until then the hook uses the provider id when present, otherwise a synthetic fingerprint from channel, session, conversation, sender, timestamp, and content. The synthetic fallback prevents common provider retries from duplicating dispatches, but provider message ids are the preferred long-term route key for trading-grade determinism.
+
+Manual recovery or smoke test:
+
+```bash
+node bin/cat-meeting-governance.mjs route-shell-ingest \
+  --agent cat_ears \
+  --text "check route shell" \
+  --message-id smoke-telegram-message-1 \
+  --source telegram \
+  --root "$ROOT"
+```
+
 ## Stability Governance
 
 `trading-agents-workflow` is the cat-system workflow stability control surface. It does not replace OpenClaw Gateway; it records and governs the workflow state that Gateway routes.

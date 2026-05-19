@@ -1211,6 +1211,8 @@ export async function runAction(rootDir, input = {}) {
     action.startsWith("trading_core.") ||
     action.startsWith("execution.") ||
     action.startsWith("runtime.") ||
+    action.startsWith("route_shell.") ||
+    action.startsWith("route-shell.") ||
     action.startsWith("side_effect.") ||
     action.startsWith("incident.") ||
     action === "telegram.live" ||
