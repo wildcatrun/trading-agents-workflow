@@ -32,6 +32,30 @@ const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_r
 const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = "8390724843";
 const CONTROL_LOOP_WORKFLOW_STATUSES = new Set(["active", "waiting_human", "blocked"]);
 const CONTROL_LOOP_ACTIVE_JOB_STATUSES = new Set(["queued", "running", "retry_scheduled"]);
+const HUMAN_GATE_TEXT_POLICY_VERSION = "human_gate_abc_details_v1";
+const HUMAN_GATE_PLAN_COLOR_MARKERS = {
+  A: "🟦",
+  B: "🟩",
+  C: "🟧",
+  D: "🟪",
+  E: "🟫",
+  F: "⬜"
+};
+const HUMAN_GATE_CONTROL_COLOR_MARKERS = {
+  approve: "✅",
+  approve_option: "🔷",
+  reject: "🟪",
+  rejected: "🟪",
+  pause: "🟨",
+  paused: "🟨",
+  terminate: "🟥",
+  terminated: "🟥"
+};
+const HUMAN_GATE_COLOR_MARKER_SET = new Set([
+  ...Object.values(HUMAN_GATE_PLAN_COLOR_MARKERS),
+  ...Object.values(HUMAN_GATE_CONTROL_COLOR_MARKERS)
+]);
+const HUMAN_GATE_REDACTED_DETAIL_KEY = /callback|token|secret|password|api[_-]?key|access[_-]?key|refresh/i;
 
 function nowIso() {
   return new Date().toISOString();
@@ -2776,6 +2800,8 @@ LIMIT ${limit};`, { json: true });
     const gateType = String(body.gateType || body.gate_type || payload.gateType || payload.gate_type || "workflow_continuation").trim();
     const summary = String(body.summary || payload.summary || `Human Gate required: ${row.object_id}`).trim();
     const existing = outboxByGate.get(row.object_id);
+    const existingPayload = parseJsonValue(existing?.payload_json, {});
+    const textPolicyRefresh = Boolean(existing && existingPayload.textPolicyVersion !== HUMAN_GATE_TEXT_POLICY_VERSION);
     const buttonSet = await ensureHumanGateButtonSet(paths, row, payload, body, workflowId, meetingId);
     if (!buttonSet.audit?.ok) {
       const revision = await dispatchHumanGatePlanRevision(rootDir, paths, row, workflowId, meetingId, summary, buttonSet.audit);
@@ -2806,6 +2832,7 @@ WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
       targetRef,
       buttons,
       presentation,
+      textPolicyVersion: HUMAN_GATE_TEXT_POLICY_VERSION,
       ensuredBy: "workflow.control_loop.tick"
     };
     if (buttonSet.refreshed) outboxPayload.buttonPolicyRefresh = { reason: buttonSet.reason, refreshedAt: nowIso() };
@@ -2822,7 +2849,7 @@ WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
       continue;
     }
     if (existing?.status === "sent" && String(existing.updated_at || existing.created_at || "") >= resendCutoff) {
-      if (!buttonSet.refreshed) {
+      if (!buttonSet.refreshed && !textPolicyRefresh) {
         results.push({ humanGateId: row.object_id, workflowId, status: "outbox_sent", outboxId: existing.outbox_id, resendAfterMs: resendSentAfterMs });
         continue;
       }
@@ -2848,8 +2875,9 @@ WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
           previousOutboxStatus: "sent",
           previousUpdatedAt: existing.updated_at || "",
           previousDelivery: previousPayload.delivery || null,
+          previousTextPolicyVersion: previousPayload.textPolicyVersion || "",
           resendAfterMs: resendSentAfterMs,
-          reason: buttonSet.refreshed ? "button_policy_refreshed" : "sent_without_callback",
+          reason: buttonSet.refreshed ? "button_policy_refreshed" : textPolicyRefresh ? "message_text_policy_refreshed" : "sent_without_callback",
           requeuedAt: nowIso()
         }
       };
@@ -2862,7 +2890,7 @@ SET status='queued',
     payload_json=${sqlValue(JSON.stringify(resendPayload))},
     updated_at=${sqlValue(nowIso())}
 WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
-      results.push({ humanGateId: row.object_id, workflowId, status: buttonSet.refreshed ? "requeued_sent_outbox_buttons" : "requeued_stale_sent_outbox", outboxId: existing.outbox_id, buttons: buttons.length, resendAfterMs: resendSentAfterMs });
+      results.push({ humanGateId: row.object_id, workflowId, status: buttonSet.refreshed ? "requeued_sent_outbox_buttons" : textPolicyRefresh ? "requeued_sent_outbox_text_policy" : "requeued_stale_sent_outbox", outboxId: existing.outbox_id, buttons: buttons.length, resendAfterMs: resendSentAfterMs });
       continue;
     }
 
@@ -4547,10 +4575,101 @@ VALUES (${sqlValue(buttonId)}, ${sqlValue(callbackToken)}, ${sqlValue(humanGateI
       artifactRef: option.artifactRef,
       summary: option.summary,
       prompt: option.prompt,
+      payload: option.payload || {},
       callbackData: `tawhg:${callbackToken}`
     });
   }
   return buttons;
+}
+
+function humanGateButtonIsControl(button = {}) {
+  const status = humanGateButtonStatus(button);
+  const role = humanGateButtonRole(button);
+  return status !== "approved" || ["reject", "pause", "terminate"].includes(role);
+}
+
+function humanGateButtonColorMarker(button = {}, index = 0) {
+  const status = humanGateButtonStatus(button);
+  const role = humanGateButtonRole(button);
+  if (!humanGateButtonIsControl(button)) {
+    const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
+    const key = humanGatePlanKey(button, fallback);
+    return HUMAN_GATE_PLAN_COLOR_MARKERS[key] || HUMAN_GATE_CONTROL_COLOR_MARKERS.approve_option;
+  }
+  return HUMAN_GATE_CONTROL_COLOR_MARKERS[role] || HUMAN_GATE_CONTROL_COLOR_MARKERS[status] || "⬜";
+}
+
+function humanGateButtonColorName(button = {}, index = 0) {
+  const status = humanGateButtonStatus(button);
+  const role = humanGateButtonRole(button);
+  if (!humanGateButtonIsControl(button)) {
+    const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
+    return `plan_${humanGatePlanKey(button, fallback).toLowerCase()}`;
+  }
+  return role || status || "secondary";
+}
+
+function humanGateButtonDisplayLabel(button = {}, index = 0) {
+  const label = String(button.label || button.title || button.text || `Option ${index + 1}`).trim();
+  const first = String(label.split(/\s+/)[0] || "").trim();
+  if (HUMAN_GATE_COLOR_MARKER_SET.has(first)) return label;
+  return `${humanGateButtonColorMarker(button, index)} ${label}`;
+}
+
+function humanGateSafeDetailString(value, max = 520, depth = 0) {
+  if (value === null || value === undefined || value === "") return "";
+  const parsed = parseJsonValue(value, value);
+  if (Array.isArray(parsed)) {
+    return compactText(parsed.map((item) => humanGateSafeDetailString(item, 180, depth + 1)).filter(Boolean).join("; "), max);
+  }
+  if (parsed && typeof parsed === "object") {
+    if (depth > 3) return compactText("[nested detail omitted]", max);
+    const parts = [];
+    for (const [key, item] of Object.entries(parsed)) {
+      if (HUMAN_GATE_REDACTED_DETAIL_KEY.test(key)) continue;
+      const text = humanGateSafeDetailString(item, 180, depth + 1);
+      if (text) parts.push(`${key}: ${text}`);
+    }
+    return compactText(parts.join("; "), max);
+  }
+  return compactText(parsed, max);
+}
+
+function humanGatePayloadSources(button = {}) {
+  const payload = parseJsonValue(button.payload, button.payload || {});
+  const nestedPayload = parseJsonValue(payload.payload, payload.payload || {});
+  const raw = parseJsonValue(payload.raw, payload.raw || {});
+  const details = parseJsonValue(payload.details, payload.details || {});
+  return [button, payload, nestedPayload, raw, details].filter((source) => source && typeof source === "object");
+}
+
+function firstHumanGateDetail(button = {}, keys = [], max = 520) {
+  for (const source of humanGatePayloadSources(button)) {
+    for (const key of keys) {
+      if (source[key] === undefined || source[key] === null || source[key] === "") continue;
+      const text = humanGateSafeDetailString(source[key], max);
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+function humanGateButtonDetailLines(button = {}, index = 0) {
+  const displayLabel = humanGateButtonDisplayLabel(button, index);
+  const lines = [displayLabel];
+  const summary = firstHumanGateDetail(button, ["summary", "description", "text", "content"], 700);
+  const prompt = firstHumanGateDetail(button, ["prompt", "nextAction", "next_action", "nextStep", "next_step", "execution", "action"], 520);
+  const boundary = firstHumanGateDetail(button, ["boundary", "executionBoundary", "execution_boundary", "scope", "constraints", "stopCondition", "stop_condition"], 520);
+  const evidence = firstHumanGateDetail(button, ["evidence", "evidenceRefs", "evidence_refs", "receipts", "receipt", "readiness", "runtimeDispatch", "runtime_dispatch", "outboxDelivery", "outbox_delivery"], 620);
+  const rollback = firstHumanGateDetail(button, ["rollback", "rollbackPlan", "rollback_plan", "rollbackBoundary", "rollback_boundary", "recovery", "restore", "fallback"], 520);
+  const artifact = firstHumanGateDetail(button, ["artifactRef", "artifact_ref", "artifact", "artifactRefs", "artifact_refs", "path"], 420) || humanGateSafeDetailString(button.artifactRef, 420);
+  if (summary) lines.push(`  内容：${summary}`);
+  if (prompt) lines.push(`  下一步/执行边界：${prompt}`);
+  if (boundary) lines.push(`  约束边界：${boundary}`);
+  if (evidence) lines.push(`  证据/回执：${evidence}`);
+  if (rollback) lines.push(`  回滚/停止：${rollback}`);
+  if (artifact) lines.push(`  artifact：${artifact}`);
+  return lines;
 }
 
 function humanGateButtonPresentation(input = {}, buttons = []) {
@@ -4559,15 +4678,18 @@ function humanGateButtonPresentation(input = {}, buttons = []) {
   return {
     title: input.title || "Human Gate 确认",
     tone: "warning",
+    policyVersion: HUMAN_GATE_TEXT_POLICY_VERSION,
     blocks: [
       text ? { type: "text", text } : null,
       { type: "context", text: "请点击按钮确认。按钮会写入 Human Gate decision 并恢复 workflow；不要靠自然语言猜测选项。" },
       {
         type: "buttons",
-        buttons: buttons.map((button) => ({
-          label: button.label,
+        buttons: buttons.map((button, index) => ({
+          label: humanGateButtonDisplayLabel(button, index),
           value: button.callbackData,
-          style: button.style
+          style: button.style,
+          color: humanGateButtonColorName(button, index),
+          colorMarker: humanGateButtonColorMarker(button, index)
         }))
       }
     ].filter(Boolean)
@@ -4577,14 +4699,19 @@ function humanGateButtonPresentation(input = {}, buttons = []) {
 function humanGateButtonFallbackText(input = {}, buttons = []) {
   const text = String(input.text || input.summary || "").trim();
   if (!buttons.length) return text;
+  const planButtons = buttons.filter((button) => !humanGateButtonIsControl(button));
+  const controlButtons = buttons.filter((button) => humanGateButtonIsControl(button));
   const lines = [
     text,
     "",
-    "Human Gate 请点击一个按钮：",
-    ...buttons.map((button) => `- [${button.label}] callback=${button.callbackData}`),
+    "Human Gate 决策材料：",
+    ...planButtons.flatMap((button, index) => humanGateButtonDetailLines(button, index)),
+    controlButtons.length ? "" : null,
+    controlButtons.length ? "工作流控制：": null,
+    ...controlButtons.flatMap((button, index) => humanGateButtonDetailLines(button, planButtons.length + index)),
     "",
-    "系统应使用按钮 callback 推进 workflow，不应根据自然语言猜测闪电猫意图。"
-  ].filter((line) => line !== "");
+    "请只点击下方按钮确认选择；系统使用按钮 callback 推进 workflow，不应根据自然语言猜测闪电猫意图。"
+  ].filter((line) => line !== "" && line !== null);
   return lines.join("\n");
 }
 
@@ -4643,7 +4770,7 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
     targetRef,
     messageType: "human_gate_request",
     text,
-    payload: { humanGateId: gate.objectId, gateType, workflowId, eventId, account: deliveryAccount, requester, targetKind, targetRef, buttons, presentation }
+    payload: { humanGateId: gate.objectId, gateType, workflowId, eventId, account: deliveryAccount, requester, targetKind, targetRef, buttons, presentation, textPolicyVersion: HUMAN_GATE_TEXT_POLICY_VERSION }
   });
   let delivery = null;
   const shouldDeliver = boolOption(input.autoDeliver ?? input.auto_deliver ?? input.deliver, false);
