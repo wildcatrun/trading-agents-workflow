@@ -18,6 +18,82 @@
       "rootDir": {
         "type": "string",
         "description": "Optional workflow root. Defaults to /home/flashcat/.openclaw/shared/trading-agents-workflow."
+      },
+      "controlLoop": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Optional internal workflow reconciler loop. It seeds and claims durable queue jobs for mechanical workflow advancement, runtime drain, Human Gate request delivery, and outbox delivery; it does not make trading decisions.",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "tickMs": {
+            "type": "number"
+          },
+          "startupTick": {
+            "type": "boolean"
+          },
+          "startupDelayMs": {
+            "type": "number"
+          },
+          "tickBudgetMs": {
+            "type": "number"
+          },
+          "maxWorkflows": {
+            "type": "number"
+          },
+          "runtimeLimit": {
+            "type": "number"
+          },
+          "outboxLimit": {
+            "type": "number"
+          },
+          "jobLimit": {
+            "type": "number"
+          },
+          "jobLeaseMs": {
+            "type": "number"
+          },
+          "timeoutSeconds": {
+            "type": "number"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "workerMode": {
+            "type": "string"
+          },
+          "runtimes": {
+            "type": "string"
+          },
+          "reportRuntime": {
+            "type": "string"
+          },
+          "reportAgent": {
+            "type": "string"
+          },
+          "drain": {
+            "type": "boolean"
+          },
+          "autoDispatch": {
+            "type": "boolean"
+          },
+          "drainQueued": {
+            "type": "boolean"
+          },
+          "deliverOutbox": {
+            "type": "boolean"
+          },
+          "autoReport": {
+            "type": "boolean"
+          },
+          "ensureHumanGateRequests": {
+            "type": "boolean"
+          },
+          "createHumanGateInbox": {
+            "type": "boolean"
+          }
+        }
       }
     }
   },

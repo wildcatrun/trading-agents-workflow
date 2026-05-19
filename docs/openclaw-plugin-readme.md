@@ -335,6 +335,35 @@ CLI example:
 node bin/cat-meeting-governance.mjs workflow-supervise --workflow demo-initiative --meeting demo-initiative --auto-dispatch --root "$ROOT"
 ```
 
+Use `workflow.control_loop.tick` as the plugin-internal 10s reconciler tick. The tick period is a scheduling cadence, not a promise that all workflow work finishes inside 10 seconds. Each tick records readiness, seeds durable `control_loop_jobs`, claims a bounded number of jobs, executes those jobs, and leaves unfinished work queued for later ticks. Queue jobs cover workflow supervision, stale dispatch reconciliation, runtime drain, pending Human Gate request/button/outbox ensure, Telegram outbox delivery, and Human Gate inbox batch creation. Phase progress is written to `bridge/control-loop-events.jsonl`; tick summaries go to `bridge/control-loop.jsonl`. A file lease at `bridge/control-loop-lease.json` prevents overlapping ticks, while each queue job has its own DB lease, retry, and attempt state.
+
+The OpenClaw plugin can run this loop when `controlLoop.enabled=true` in plugin config or `TRADING_AGENTS_WORKFLOW_CONTROL_LOOP=1` is set. The recommended tick period is `10000` ms. Startup does not run an immediate tick by default; set `controlLoop.startupTick=true` only after Gateway startup load is known to be safe. The default `controlLoop.workerMode` is `process`, so the plugin launches a bounded Node worker process for each tick instead of running jobs inside the Gateway event loop. Defaults are conservative: `jobLimit=4`, `runtimeLimit=1`, `timeoutSeconds=45`, `tickBudgetMs=60000`, and `autoReport=false`. Runtime drain defaults to `hermes_acp`; add `openclaw` only as an explicit, reviewed exception because it calls back into the Gateway process.
+
+Timeouts are layered. `tickMs` is only cadence. `timeoutSeconds` bounds runtime dispatch work. `tickBudgetMs` is the per-worker budget. `jobLeaseMs` is the queue lease and is automatically raised to at least `max(tickBudgetMs + 30000, (timeoutSeconds + 30) * 1000)`, so a long but valid job should not be re-claimed while its worker can still be alive. If a worker crashes or is killed, the job becomes claimable again only after its lease expires.
+
+Stale dispatch reconciliation is mechanical: a `sent` dispatch older than the safe window is synced to a terminal runtime receipt when one exists; otherwise it is marked `failed/runtime_stale` or requeued only if `max_attempts` still allows retry. This prevents readiness from staying critical on dead `sent` rows without pretending the underlying runtime work succeeded.
+
+Pending Human Gate requests are also re-ensured mechanically. If a pending Human Gate already has a `sent` Telegram outbox but no button callback arrives after the resend window, the same outbox is requeued for delivery and the previous delivery receipt is retained in payload history. The Human Gate record and button ids are not recreated, so Flashcat still acts on one durable decision object.
+
+The queue reserves a `flash` priority above `steer` for future trading-execution workflows. This is only a scheduling inlet for later real-trading rules; it does not execute trades, bypass risk controls, or weaken Human Gate. Flash-lane work must still use structured workflow state, idempotency, expiry, receipts, and button-first Human Gate.
+
+Cat Claw `cat_claw` is an OpenClaw secretary/Human Gate agent, not a Hermes profile. The control loop may drain migrated professional agents through `hermes_acp`, ensure that already-pending Human Gate records have buttons and outbox delivery, and deliver queued Human Gate requests. It must not create or execute Cat Claw long semantic closeout reports unless `autoReport=true` is explicitly set for a reviewed recovery run. Cat Claw closeout reports use `reportRuntime=openclaw` and `reportAgent=cat_claw`. Do not dispatch Cat Claw to `hermes_acp` unless a real Hermes profile has been created and registered.
+
+- Cat-brain `main` 30min heartbeat checks institutional compliance and evidence completeness.
+- Cat Claw `cat_claw` 30min heartbeat audits whether Human Gate delivery, buttons, callback, and resume closed correctly.
+- The 10s loop is the timely queue driver for structured workflow state; 30min heartbeat is not the primary Human Gate trigger.
+
+CLI example:
+
+```bash
+node bin/cat-meeting-governance.mjs workflow-control-loop-tick \
+  --tick-ms 10000 \
+  --max-workflows 2 \
+  --runtime hermes_acp \
+  --limit 1 \
+  --root "$ROOT"
+```
+
 When a `workflow_secretary_report` or `human_gate_report` runtime message is acked but does not prove IM delivery, `meeting.ingest` automatically creates a private Telegram outbox item for Flashcat. `runtime-bridge` auto-delivers that report outbox by default and returns `reportDelivery` with the Telegram receipts. This keeps Cat Claw closeout inside the plugin body instead of relying on Codex to manually send queued reports.
 
 Manual delivery remains available as a recovery command:
@@ -373,7 +402,9 @@ node bin/cat-meeting-governance.mjs human-gate-console \
 
 `human_gate.request` must create a deliverable request, not a targetless queue item. If no meeting live channel is configured, it falls back to Flashcat's private Telegram chat `8390724843` through the `cat_claw` account. It honors explicit `target`, `targetRef`, `chatId`, or the first `notifyTargets` entry before falling back. The returned `targetRef`, `deliveryAccount`, `telegramOutbox.status`, and optional `delivery.status` are part of the contract; Cat Claw must not treat a request as delivered until a receipt exists or the direct Telegram reply itself is the acknowledged delivery path.
 
-When the request has mutually exclusive choices, Cat Claw should provide `buttons`. The plugin stores each button in `human_gate_buttons`, renders the same choices in the Human Gate console, sends Telegram inline buttons through OpenClaw `presentation`, and handles the `tawhg:<token>` callback directly. A button callback records the selected decision, clears/supersedes sibling buttons, appends a meeting resume event, and dispatches `human_gate_resume` to cat-brain `main`. Agents must not infer Flashcat's intent from natural-language replies when a button request is active.
+Every Human Gate package submitted to Flashcat must contain at least three independently approvable alternatives: plan A, plan B, and plan C. Cat-brain `main` owns generating the plan content and must self-check that the alternatives are present, mutually exclusive enough to choose between, evidence-backed, and executable before handing the package to Cat Claw. Cat Claw audits this structure; it does not invent missing plan content. If a pending Human Gate lacks A/B/C alternatives, the plugin blocks Telegram delivery and dispatches the evidence package back to `main` for revision.
+
+Cat Claw should provide the approved alternatives as `buttons`, `options`, `alternatives`, or `plans`. The plugin stores each button in `human_gate_buttons`, renders the same choices in the Human Gate console, sends Telegram inline buttons through OpenClaw `presentation`, and handles the `tawhg:<token>` callback directly. The plugin appends control buttons for "退回补证/修改", "暂停工作流", and "终止工作流". "终止工作流" means Flashcat considers the work complete and reviewed, so the workflow is archived with a checkpoint and closeout dispatches to `main` and `cat_claw`; it remains resumable later by workflow id/checkpoint. Agents must not infer Flashcat's intent from natural-language replies when a button request is active.
 
 CLI example:
 

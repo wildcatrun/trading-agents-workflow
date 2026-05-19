@@ -1,5 +1,14 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { runAction } from "./src/core.js";
+
+const PLUGIN_ID = "trading-agents-workflow";
+const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
+let cachedOpenClawConfigPath;
+let cachedPluginConfigFromFile;
 
 function jsonText(value) {
   return {
@@ -12,8 +21,46 @@ function jsonText(value) {
   };
 }
 
+function objectConfig(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function openClawConfigPath() {
+  if (process.env.OPENCLAW_CONFIG) return process.env.OPENCLAW_CONFIG;
+  const marker = `${path.sep}.openclaw${path.sep}`;
+  const markerIndex = PLUGIN_DIR.indexOf(marker);
+  if (markerIndex >= 0) {
+    return path.join(PLUGIN_DIR.slice(0, markerIndex + marker.length - 1), "openclaw.json");
+  }
+  const home = process.env.OPENCLAW_HOME || (process.env.HOME ? path.join(process.env.HOME, ".openclaw") : "");
+  return home ? path.join(home, "openclaw.json") : undefined;
+}
+
+function readPluginConfigFromOpenClawFile() {
+  const configPath = openClawConfigPath();
+  if (!configPath) return {};
+  if (cachedOpenClawConfigPath === configPath && cachedPluginConfigFromFile) return cachedPluginConfigFromFile;
+  cachedOpenClawConfigPath = configPath;
+  cachedPluginConfigFromFile = {};
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+    cachedPluginConfigFromFile = objectConfig(parsed.plugins?.entries?.[PLUGIN_ID]?.config);
+  } catch {
+    cachedPluginConfigFromFile = {};
+  }
+  return cachedPluginConfigFromFile;
+}
+
+function pluginConfig(api) {
+  const direct = objectConfig(api?.pluginConfig);
+  if (Object.keys(direct).length > 0) return direct;
+  const apiConfig = objectConfig(api?.config);
+  if (apiConfig.rootDir || apiConfig.controlLoop) return apiConfig;
+  return readPluginConfigFromOpenClawFile();
+}
+
 function resolveRoot(api) {
-  const configured = api.pluginConfig && typeof api.pluginConfig.rootDir === "string" ? api.pluginConfig.rootDir : undefined;
+  const configured = typeof pluginConfig(api).rootDir === "string" ? pluginConfig(api).rootDir : undefined;
   return configured || process.env.TRADING_AGENTS_WORKFLOW_ROOT || process.env.CAT_MEETING_GOVERNANCE_ROOT;
 }
 
@@ -57,6 +104,10 @@ const toolParameters = {
         "workflow.task.list",
         "workflow.tasks",
         "workflow.advance",
+        "workflow.supervise",
+        "workflow.control_loop.tick",
+        "workflow.loop.tick",
+        "workflow.reconciler.tick",
         "workflow.checkpoint",
         "workflow.context_checkpoint",
         "context.checkpoint",
@@ -68,6 +119,9 @@ const toolParameters = {
         "telegram.live",
         "meeting.dispatch",
         "meeting.ingest",
+        "workflow.dispatch.reconcile",
+        "dispatch.reconcile",
+        "stale_dispatch.reconcile",
         "human_gate.request",
         "human_gate.button_callback",
         "human_gate.callback",
@@ -184,6 +238,29 @@ const toolParameters = {
     receiptRequired: { type: "boolean" },
     autoDispatch: { type: "boolean" },
     goalComplete: { type: "boolean" },
+    drain: { type: "boolean" },
+    drainQueued: { type: "boolean" },
+    deliverOutbox: { type: "boolean" },
+    autoReport: { type: "boolean" },
+    ensureHumanGateRequests: { type: "boolean" },
+    dryRun: { type: "boolean" },
+    createHumanGateInbox: { type: "boolean" },
+    maxCycles: { type: "number" },
+    maxWorkflows: { type: "number" },
+    runtimeLimit: { type: "number" },
+    outboxLimit: { type: "number" },
+    jobLimit: { type: "number" },
+    jobLeaseMs: { type: "number" },
+    tickMs: { type: "number" },
+    leaseMs: { type: "number" },
+    owner: { type: "string" },
+    reportRuntime: { type: "string" },
+    reportAgent: { type: "string" },
+    workflowStatuses: { type: "array", items: { type: "string" } },
+    flashLane: { type: "boolean" },
+    tradingExecution: { type: "boolean" },
+    staleDispatchAfterMs: { type: "number" },
+    dispatchReconcileLimit: { type: "number" },
     limit: { type: "number" },
     checkpointId: { type: "string" },
     nextActions: { type: "array", items: { type: "string" } },
@@ -383,7 +460,7 @@ function registerCli(api) {
       .argument("<meetingId>")
       .requiredOption("--gate <gateType>", "Human Gate type")
       .requiredOption("--text <text>", "Decision/request text")
-      .option("--status <status>", "pending, approved, rejected", "pending")
+      .option("--status <status>", "pending, approved, rejected, paused, terminated", "pending")
       .option("--from <name>", "Human actor", "闪电猫")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
@@ -598,6 +675,8 @@ function registerCli(api) {
       .option("--acceptance-criteria <criteria>", "Acceptance criteria")
       .option("--stop-condition <condition>", "Stop condition")
       .option("--phase <phase>", "Current phase", "planning")
+      .option("--flash-lane <trueOrFalse>", "Reserve flash-lane scheduling priority for future trading execution workflows", "false")
+      .option("--trading-execution <trueOrFalse>", "Mark this workflow as trading-execution class", "false")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
@@ -612,7 +691,9 @@ function registerCli(api) {
           objective: options.objective,
           acceptanceCriteria: options.acceptanceCriteria || options.acceptance,
           stopCondition: options.stopCondition,
-          phase: options.phase
+          phase: options.phase,
+          flashLane: options.flashLane === "true",
+          tradingExecution: options.tradingExecution === "true"
         }), null, 2));
       });
 
@@ -705,6 +786,92 @@ function registerCli(api) {
           meetingId: options.meeting,
           autoDispatch: Boolean(options.autoDispatch),
           goalComplete: Boolean(options.goalComplete)
+        }), null, 2));
+      });
+
+    command.command("workflow-supervise")
+      .requiredOption("--workflow <workflowId>", "Workflow id")
+      .option("--meeting <meetingId>", "Meeting id for generated dispatches")
+      .option("--auto-dispatch <trueOrFalse>", "Create dispatches for ready tasks", "true")
+      .option("--drain <trueOrFalse>", "Drain runtime bridge queues created by this cycle", "false")
+      .option("--max-cycles <count>", "Supervisor cycles", "1")
+      .option("--limit <limit>", "Runtime drain limit", "5")
+      .option("--timeout-seconds <seconds>", "Runtime dispatch timeout", "120")
+      .option("--auto-report <trueOrFalse>", "Create Cat Claw report dispatch when required", "true")
+      .option("--report-runtime <runtime>", "Cat Claw report runtime", "openclaw")
+      .option("--report-agent <agent>", "Cat Claw report agent", "cat_claw")
+      .option("--summary <summary>", "Checkpoint summary")
+      .option("--text <text>", "Flashcat context")
+      .option("--next-action <action>", "Next action; repeatable", (value, previous) => [...previous, value], [])
+      .option("--dry-run <trueOrFalse>", "Do not drain runtime or deliver outbox", "false")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.supervise",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          autoDispatch: options.autoDispatch !== "false",
+          drain: options.drain === "true",
+          maxCycles: Number(options.maxCycles),
+          runtimeLimit: Number(options.limit),
+          timeoutSeconds: Number(options.timeoutSeconds),
+          autoReport: options.autoReport !== "false",
+          reportRuntime: options.reportRuntime,
+          reportAgent: options.reportAgent,
+          summary: options.summary,
+          text: options.text,
+          nextActions: options.nextAction || [],
+          dryRun: options.dryRun === "true"
+        }), null, 2));
+      });
+
+    command.command("workflow-control-loop-tick")
+      .option("--tick-ms <ms>", "Control-loop tick period metadata", "10000")
+      .option("--max-workflows <count>", "Max workflows to supervise", "2")
+      .option("--limit <limit>", "Runtime drain limit", "1")
+      .option("--job-limit <limit>", "Control-loop jobs to claim per tick", "4")
+      .option("--job-lease-ms <ms>", "Control-loop job lease", "120000")
+      .option("--timeout-seconds <seconds>", "Runtime dispatch timeout", "45")
+      .option("--tick-budget-ms <ms>", "Soft per-tick budget", "60000")
+      .option("--runtime <runtimeList>", "Comma-separated runtimes to drain", "hermes_acp")
+      .option("--report-runtime <runtime>", "Cat Claw report runtime", "openclaw")
+      .option("--report-agent <agent>", "Cat Claw report agent", "cat_claw")
+      .option("--drain <trueOrFalse>", "Drain runtime bridge queues", "true")
+      .option("--auto-dispatch <trueOrFalse>", "Create dispatches for ready workflow tasks", "true")
+      .option("--drain-queued <trueOrFalse>", "Drain queued runtime dispatches after workflow supervision", "true")
+      .option("--deliver-outbox <trueOrFalse>", "Deliver valid queued Telegram outbox rows", "true")
+      .option("--auto-report <trueOrFalse>", "Create Cat Claw report dispatch when required", "false")
+      .option("--ensure-human-gate-requests <trueOrFalse>", "Ensure pending Human Gate records have buttons and outbox", "true")
+      .option("--create-human-gate-inbox <trueOrFalse>", "Create Human Gate inbox when no recent batch exists", "true")
+      .option("--dry-run <trueOrFalse>", "Do not drain runtime or deliver outbox", "false")
+      .option("--owner <owner>", "Lease owner", "openclaw-plugin")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.control_loop.tick",
+          workflowRootDir: options.workflowRoot,
+          tickMs: Number(options.tickMs),
+          maxWorkflows: Number(options.maxWorkflows),
+          runtimeLimit: Number(options.limit),
+          jobLimit: Number(options.jobLimit),
+          jobLeaseMs: Number(options.jobLeaseMs),
+          timeoutSeconds: Number(options.timeoutSeconds),
+          tickBudgetMs: Number(options.tickBudgetMs),
+          runtimes: options.runtime,
+          reportRuntime: options.reportRuntime,
+          reportAgent: options.reportAgent,
+          drain: options.drain !== "false",
+          autoDispatch: options.autoDispatch !== "false",
+          drainQueued: options.drainQueued !== "false",
+          deliverOutbox: options.deliverOutbox !== "false",
+          autoReport: options.autoReport === "true",
+          ensureHumanGateRequests: options.ensureHumanGateRequests !== "false",
+          createHumanGateInbox: options.createHumanGateInbox !== "false",
+          dryRun: options.dryRun === "true",
+          owner: options.owner
         }), null, 2));
       });
 
@@ -978,16 +1145,21 @@ function registerCli(api) {
       .option("--status <status>", "queued, sent, failed", "queued")
       .option("--limit <limit>", "Limit", "20")
       .option("--mark <outboxId>", "Mark outbox item as sent")
+      .option("--deliver", "Deliver queued outbox rows")
+      .option("--account <accountId>", "Telegram account", "cat_claw")
+      .option("--target <chatId>", "Explicit target override")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
         console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
           action: "telegram.outbox",
           workflowRootDir: options.workflowRoot,
-          operation: options.mark ? "mark" : "list",
+          operation: options.mark ? "mark" : options.deliver ? "deliver" : "list",
           outboxId: options.mark,
           status: options.status,
-          limit: Number(options.limit)
+          limit: Number(options.limit),
+          account: options.account,
+          target: options.target
         }), null, 2));
       });
 
@@ -1049,7 +1221,7 @@ function registerCli(api) {
       .option("--human-gate-id <humanGateId>", "Human Gate id")
       .option("--parent <parentObjectId>", "Parent protocol object id")
       .option("--gate <gateType>", "Gate type", "high_risk_trade_execution")
-      .option("--status <status>", "pending, approved, rejected, expired", "pending")
+      .option("--status <status>", "pending, approved, rejected, paused, terminated, expired", "pending")
       .option("--text <text>", "Human Gate summary")
       .option("--actor <actor>", "Human actor", "flashcat")
       .option("--assurance <assurance>", "Auth assurance")
@@ -1311,6 +1483,177 @@ function registerCli(api) {
   });
 }
 
+function controlLoopConfig(api) {
+  const runtimeConfig = pluginConfig(api);
+  const configured = objectConfig(runtimeConfig.controlLoop);
+  const envEnabled = process.env.TRADING_AGENTS_WORKFLOW_CONTROL_LOOP;
+  const enabled = configured.enabled === true || ["1", "true", "yes", "on"].includes(String(envEnabled || "").trim().toLowerCase());
+  const numberValue = (value, fallback, min, max) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.max(min, Math.min(max, number));
+  };
+  const tickBudgetMs = numberValue(configured.tickBudgetMs, 60_000, 5_000, 30 * 60_000);
+  const timeoutSeconds = numberValue(configured.timeoutSeconds, 45, 5, 900);
+  const requestedJobLeaseMs = numberValue(configured.jobLeaseMs, 120_000, 10_000, 60 * 60_000);
+  const minSafeJobLeaseMs = Math.max(tickBudgetMs + 30_000, (timeoutSeconds + 30) * 1000);
+  const jobLeaseMs = Math.max(requestedJobLeaseMs, minSafeJobLeaseMs);
+  return {
+    enabled,
+    tickMs: numberValue(configured.tickMs ?? process.env.TRADING_AGENTS_WORKFLOW_CONTROL_LOOP_TICK_MS, 10_000, 5_000, 300_000),
+    startupTick: configured.startupTick === true,
+    startupDelayMs: numberValue(configured.startupDelayMs, 10_000, 0, 300_000),
+    tickBudgetMs,
+    maxWorkflows: numberValue(configured.maxWorkflows, 2, 1, 20),
+    runtimeLimit: numberValue(configured.runtimeLimit, 1, 1, 20),
+    outboxLimit: numberValue(configured.outboxLimit, 2, 1, 20),
+    jobLimit: numberValue(configured.jobLimit, 4, 1, 20),
+    jobLeaseMs,
+    timeoutSeconds,
+    owner: String(configured.owner || "openclaw-plugin").trim() || "openclaw-plugin",
+    workerMode: String(configured.workerMode || "process").trim() || "process",
+    runtimes: String(configured.runtimes || "hermes_acp").trim() || "hermes_acp",
+    reportRuntime: String(configured.reportRuntime || "openclaw").trim() || "openclaw",
+    reportAgent: String(configured.reportAgent || "cat_claw").trim() || "cat_claw",
+    drain: configured.drain !== false,
+    autoDispatch: configured.autoDispatch !== false,
+    drainQueued: configured.drainQueued !== false,
+    deliverOutbox: configured.deliverOutbox !== false,
+    autoReport: configured.autoReport === true,
+    ensureHumanGateRequests: configured.ensureHumanGateRequests !== false,
+    createHumanGateInbox: configured.createHumanGateInbox !== false
+  };
+}
+
+function boolArg(value) {
+  return value ? "true" : "false";
+}
+
+function controlLoopWorkerArgs(config, root, reason) {
+  const script = path.join(PLUGIN_DIR, "bin", "cat-meeting-governance.mjs");
+  const args = [
+    script,
+    "workflow-control-loop-tick",
+    "--tick-ms", String(config.tickMs),
+    "--max-workflows", String(config.maxWorkflows),
+    "--limit", String(config.runtimeLimit),
+    "--job-limit", String(config.jobLimit),
+    "--job-lease-ms", String(config.jobLeaseMs),
+    "--outbox-limit", String(config.outboxLimit),
+    "--timeout-seconds", String(config.timeoutSeconds),
+    "--tick-budget-ms", String(config.tickBudgetMs),
+    "--runtime", config.runtimes,
+    "--report-runtime", config.reportRuntime,
+    "--report-agent", config.reportAgent,
+    "--owner", config.owner,
+    "--drain", boolArg(config.drain),
+    "--auto-dispatch", boolArg(config.autoDispatch),
+    "--drain-queued", boolArg(config.drainQueued),
+    "--deliver-outbox", boolArg(config.deliverOutbox),
+    "--auto-report", boolArg(config.autoReport),
+    "--ensure-human-gate-requests", boolArg(config.ensureHumanGateRequests),
+    "--create-human-gate-inbox", boolArg(config.createHumanGateInbox)
+  ];
+  if (root) args.splice(2, 0, "--root", root);
+  if (reason) args.push("--reason", reason);
+  return args;
+}
+
+function runControlLoopWorker(api, config, reason) {
+  if (config.workerMode === "inline") {
+    return runAction(resolveRoot(api), {
+      action: "workflow.control_loop.tick",
+      tickMs: config.tickMs,
+      maxWorkflows: config.maxWorkflows,
+      runtimeLimit: config.runtimeLimit,
+      outboxLimit: config.outboxLimit,
+      jobLimit: config.jobLimit,
+      jobLeaseMs: config.jobLeaseMs,
+      timeoutSeconds: config.timeoutSeconds,
+      tickBudgetMs: config.tickBudgetMs,
+      owner: config.owner,
+      runtimes: config.runtimes,
+      reportRuntime: config.reportRuntime,
+      reportAgent: config.reportAgent,
+      drain: config.drain,
+      autoDispatch: config.autoDispatch,
+      drainQueued: config.drainQueued,
+      deliverOutbox: config.deliverOutbox,
+      autoReport: config.autoReport,
+      ensureHumanGateRequests: config.ensureHumanGateRequests,
+      createHumanGateInbox: config.createHumanGateInbox,
+      payload: { reason }
+    });
+  }
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, controlLoopWorkerArgs(config, resolveRoot(api), reason), {
+      cwd: PLUGIN_DIR,
+      env: {
+        ...process.env,
+        TRADING_AGENTS_WORKFLOW_CONTROL_LOOP_WORKER: "1"
+      },
+      stdio: ["ignore", "ignore", "pipe"]
+    });
+    let stderr = "";
+    const killAfterMs = Math.max(config.tickBudgetMs + 15_000, (config.timeoutSeconds + 15) * 1000);
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+    }, killAfterMs);
+    if (typeof timer.unref === "function") timer.unref();
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+      if (stderr.length > 4000) stderr = stderr.slice(-4000);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      console.error(`[trading-agents-workflow] control loop worker failed to start: ${error.message}`);
+      resolve();
+    });
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      if (code !== 0 || signal) {
+        const suffix = stderr.trim() ? `: ${stderr.trim().slice(-1000)}` : "";
+        console.error(`[trading-agents-workflow] control loop worker exited code=${code ?? ""} signal=${signal || ""}${suffix}`);
+      }
+      resolve();
+    });
+  });
+}
+
+function registerControlLoop(api) {
+  const config = controlLoopConfig(api);
+  if (!config.enabled) return;
+  const singletonKey = "__tradingAgentsWorkflowControlLoop";
+  if (globalThis[singletonKey]?.stop) globalThis[singletonKey].stop("replaced");
+  const state = { running: false, stopped: false, timer: null, startupTimer: null };
+  globalThis[singletonKey] = state;
+  const runTick = async (reason) => {
+    if (state.running || state.stopped) return;
+    state.running = true;
+    try {
+      await runControlLoopWorker(api, config, reason);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[trading-agents-workflow] control loop tick failed: ${message}`);
+    } finally {
+      state.running = false;
+    }
+  };
+  state.timer = setInterval(() => runTick("interval"), config.tickMs);
+  if (config.startupTick) {
+    state.startupTimer = setTimeout(() => runTick("startup"), config.startupDelayMs);
+  }
+  const stop = () => {
+    state.stopped = true;
+    if (state.timer) clearInterval(state.timer);
+    if (state.startupTimer) clearTimeout(state.startupTimer);
+  };
+  state.stop = stop;
+  if (typeof api.onDispose === "function") api.onDispose(stop);
+  else if (typeof api.onShutdown === "function") api.onShutdown(stop);
+  console.error(`[trading-agents-workflow] control loop enabled tickMs=${config.tickMs} workerMode=${config.workerMode} jobLimit=${config.jobLimit}`);
+}
+
 function registerHumanGateButtons(api) {
   if (typeof api.registerInteractiveHandler !== "function") return;
   api.registerInteractiveHandler({
@@ -1332,7 +1675,7 @@ function registerHumanGateButtons(api) {
           callbackData: ctx.callback?.data
         }
       });
-      if (result.status === "approved" || result.status === "rejected") {
+      if (["approved", "rejected", "paused", "terminated"].includes(result.status)) {
         await ctx.respond?.clearButtons?.();
       }
       if (result.replyText) {
@@ -1344,7 +1687,7 @@ function registerHumanGateButtons(api) {
 }
 
 export default definePluginEntry({
-  id: "trading-agents-workflow",
+  id: PLUGIN_ID,
   name: "Trading Agents Workflow",
   description: "OpenClaw native trading agents workflow, meeting governance, and SQLite tracking layer.",
   contracts: {
@@ -1357,6 +1700,36 @@ export default definePluginEntry({
       rootDir: {
         type: "string",
         description: "Optional workflow root. Defaults to /home/flashcat/.openclaw/shared/trading-agents-workflow."
+      },
+      controlLoop: {
+        type: "object",
+        additionalProperties: false,
+        description: "Optional internal workflow reconciler loop. It seeds and claims durable queue jobs for mechanical workflow advancement, runtime drain, Human Gate request delivery, and outbox delivery; it does not make trading decisions.",
+        properties: {
+          enabled: { type: "boolean" },
+          tickMs: { type: "number" },
+          startupTick: { type: "boolean" },
+          startupDelayMs: { type: "number" },
+          tickBudgetMs: { type: "number" },
+          maxWorkflows: { type: "number" },
+          runtimeLimit: { type: "number" },
+          outboxLimit: { type: "number" },
+          jobLimit: { type: "number" },
+          jobLeaseMs: { type: "number" },
+          timeoutSeconds: { type: "number" },
+          owner: { type: "string" },
+          workerMode: { type: "string" },
+          runtimes: { type: "string" },
+          reportRuntime: { type: "string" },
+          reportAgent: { type: "string" },
+          drain: { type: "boolean" },
+          autoDispatch: { type: "boolean" },
+          drainQueued: { type: "boolean" },
+          deliverOutbox: { type: "boolean" },
+          autoReport: { type: "boolean" },
+          ensureHumanGateRequests: { type: "boolean" },
+          createHumanGateInbox: { type: "boolean" }
+        }
       }
     }
   },
@@ -1369,6 +1742,7 @@ export default definePluginEntry({
       execute
     });
     registerCli(api);
+    registerControlLoop(api);
     registerHumanGateButtons(api);
   }
 });

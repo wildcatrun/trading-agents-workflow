@@ -7,13 +7,14 @@ function usage() {
   trading-agents-workflow workflow-status [--asset TYPE --symbol SYMBOL] [--root DIR]
   trading-agents-workflow workflow-readiness [--active-checks] [--root DIR]
   trading-agents-workflow workflow-topology [--root DIR]
-  trading-agents-workflow workflow-run --workflow ID [--objective TEXT] [--acceptance-criteria TEXT] [--stop-condition TEXT] [--phase PHASE] [--root DIR]
+  trading-agents-workflow workflow-run --workflow ID [--objective TEXT] [--acceptance-criteria TEXT] [--stop-condition TEXT] [--phase PHASE] [--flash-lane true|false] [--root DIR]
   trading-agents-workflow workflow-swarm --workflow ID --objective TEXT [--target TEXT] [--worker runtime:agent] [--reducer runtime:agent] [--fanout-limit N] [--root DIR]
   trading-agents-workflow workflow-task --workflow ID [--task ID] [--owner AGENT] [--runtime RUNTIME] [--agent AGENT] [--after TASK_IDS] [--expected-artifact PATH] [--root DIR]
   trading-agents-workflow workflow-task-update --task ID [--status STATUS] [--artifact PATH] [--blocked-reason TEXT] [--root DIR]
   trading-agents-workflow workflow-tasks [--workflow ID] [--status STATUS] [--owner AGENT] [--limit N] [--root DIR]
   trading-agents-workflow workflow-advance --workflow ID [--meeting ID] [--auto-dispatch] [--goal-complete] [--root DIR]
   trading-agents-workflow workflow-supervise --workflow ID [--meeting ID] [--auto-dispatch] [--drain] [--max-cycles N] [--auto-report false] [--openclaw-bin PATH] [--root DIR]
+  trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermes_acp] [--limit N] [--job-limit N] [--tick-budget-ms N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--root DIR]
   trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
   trading-agents-workflow runtime-agent --runtime RUNTIME --agent AGENT [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
@@ -21,17 +22,18 @@ function usage() {
   trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--root DIR]
   trading-agents-workflow meeting-ingest --meeting ID --runtime RUNTIME --agent AGENT --text TEXT [--type TYPE] [--phase PHASE] [--root DIR]
   trading-agents-workflow runtime-bridge [--runtime openclaw|hermes|hermes_acp] [--dispatch ID] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--openclaw-bin PATH] [--dry-run] [--report-delivery false] [--root DIR]
+  trading-agents-workflow dispatch-reconcile [--limit N] [--stale-after-ms N] [--timeout-seconds N] [--root DIR]
   trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--button JSON_OR_LABEL] [--from AGENT] [--target CHAT_ID] [--channel CHANNEL_ID] [--deliver true|false] [--root DIR]
   trading-agents-workflow human-gate-inbox [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
   trading-agents-workflow human-gate-console [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
   trading-agents-workflow human-gate-callback --token TOKEN [--actor flashcat] [--runtime openclaw] [--agent main] [--root DIR]
-  trading-agents-workflow human-gate-resume --workflow ID [--meeting ID] [--status approved|rejected] [--text TEXT] [--human-gate-id ID] [--root DIR]
+  trading-agents-workflow human-gate-resume --workflow ID [--meeting ID] [--status approved|rejected|paused|terminated] [--text TEXT] [--human-gate-id ID] [--root DIR]
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
   trading-agents-workflow telegram-outbox [--status queued|sent|failed] [--limit N] [--mark OUTBOX_ID] [--deliver] [--account cat_claw] [--target CHAT_ID] [--root DIR]
   trading-agents-workflow trade-proposal --asset TYPE --symbol SYMBOL [--summary TEXT] [--side SIDE] [--quantity N] [--order-type TYPE] [--proposal-id ID] [--payload JSON] [--root DIR]
   trading-agents-workflow risk-decision --proposal ID [--status approved|rejected|pending] [--summary TEXT] [--reviewer AGENT] [--risk-decision-id ID] [--root DIR]
-  trading-agents-workflow human-gate-workflow [--human-gate-id ID] [--parent ID] [--gate TYPE] [--status approved|rejected|pending] [--text TEXT] [--assurance mtls] [--root DIR]
+  trading-agents-workflow human-gate-workflow [--human-gate-id ID] [--parent ID] [--gate TYPE] [--status approved|rejected|paused|terminated|pending] [--text TEXT] [--assurance mtls] [--root DIR]
   trading-agents-workflow trade-intent --asset TYPE --symbol SYMBOL --side SIDE --proposal ID --risk ID --human-gate ID [--intent-id ID] [--quantity N] [--order-type TYPE] [--actor flashcat] [--assurance mtls] [--cert FINGERPRINT] [--source codex_mtls] [--idempotency-key KEY] [--root DIR]
   trading-agents-workflow trading-core-receipt --intent ID [--status accepted|submitted|filled|rejected] [--ref REF] [--receipt-id ID] [--summary TEXT] [--root DIR]
   trading-agents-workflow side-effect --type TYPE [--status planned|started|committed|failed|uncertain|rolled_back] [--trace-id ID] [--idempotency-key KEY] [--payload JSON] [--root DIR]
@@ -107,7 +109,9 @@ function toAction({ command, positional, options }) {
           objective: options.objective,
           acceptanceCriteria: options["acceptance-criteria"] || options.acceptance,
           stopCondition: options["stop-condition"],
-          phase: options.phase
+          phase: options.phase,
+          flashLane: options["flash-lane"] === "true",
+          tradingExecution: options["trading-execution"] === "true"
         }
       };
     case "workflow-swarm":
@@ -203,6 +207,34 @@ function toAction({ command, positional, options }) {
           dryRun: options["dry-run"] === "true"
         }
       };
+    case "workflow-control-loop-tick":
+      return {
+        root,
+        input: {
+          action: "workflow.control_loop.tick",
+          tickMs: options["tick-ms"],
+          maxWorkflows: options["max-workflows"],
+          runtimeLimit: options.limit,
+          jobLimit: options["job-limit"],
+          jobLeaseMs: options["job-lease-ms"],
+          outboxLimit: options["outbox-limit"],
+          timeoutSeconds: options["timeout-seconds"],
+          tickBudgetMs: options["tick-budget-ms"],
+          runtimes: options.runtime,
+          reportRuntime: options["report-runtime"],
+          reportAgent: options["report-agent"],
+          drain: options.drain !== "false",
+          autoDispatch: options["auto-dispatch"] !== "false",
+          drainQueued: options["drain-queued"] !== "false",
+          deliverOutbox: options["deliver-outbox"] !== "false",
+          autoReport: options["auto-report"] === "true",
+          ensureHumanGateRequests: options["ensure-human-gate-requests"] !== "false",
+          createHumanGateInbox: options["create-human-gate-inbox"] !== "false",
+          dryRun: options["dry-run"] === "true",
+          owner: options.owner,
+          payload: options.reason ? { reason: options.reason } : undefined
+        }
+      };
     case "workflow-checkpoint":
       return {
         root,
@@ -229,6 +261,8 @@ function toAction({ command, positional, options }) {
       return { root, input: { action: "meeting.ingest", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, text: options.text, messageType: options.type, phase: options.phase } };
     case "runtime-bridge":
       return { root, input: { action: "runtime.bridge.drain", runtime: options.runtime, dispatchId: options.dispatch || options["dispatch-id"], limit: options.limit, timeoutSeconds: options["timeout-seconds"], sessionMode: options["session-mode"], acpBackend: options["acp-backend"], acpAgent: options["acp-agent"], sessionKey: options["session-key"], dryRun: options["dry-run"] === "true", hermesBin: options["hermes-bin"], openclawBin: options["openclaw-bin"], reportDelivery: options["report-delivery"] } };
+    case "dispatch-reconcile":
+      return { root, input: { action: "workflow.dispatch.reconcile", limit: options.limit, staleDispatchAfterMs: options["stale-after-ms"], timeoutSeconds: options["timeout-seconds"] } };
     case "human-gate-request":
       return { root, input: { action: "human_gate.request", meetingId: options.meeting, text: options.text, gateType: options.gate, buttons: listOption(options.button), from: options.from, target: options.target, channelId: options.channel, autoDeliver: options.deliver === "true", account: options.account } };
     case "human-gate-inbox":

@@ -16,20 +16,22 @@ const RADAR_ZONES = new Set(["bright", "dark", "overheated", "dead_water", "watc
 const GATE_STATUSES = new Set(["pending", "approved", "rejected", "waived"]);
 const PROTOCOL_OBJECT_TYPES = new Set(["research_signal", "evidence_pack", "research_memo", "trade_proposal", "risk_decision", "human_gate_record", "simulation_request", "simulation_result", "executable_trade_intent", "trading_core_receipt", "execution_audit_summary", "generic"]);
 const RISK_DECISION_STATUSES = new Set(["pending", "approved", "rejected", "revise_required"]);
-const HUMAN_GATE_STATUSES = new Set(["pending", "approved", "rejected", "expired"]);
+const HUMAN_GATE_STATUSES = new Set(["pending", "approved", "rejected", "paused", "terminated", "expired"]);
 const TRADE_SIDES = new Set(["buy", "sell", "short", "cover", "reduce", "close"]);
 const ORDER_TYPES = new Set(["market", "limit", "stop", "stop_limit", "twap", "vwap"]);
 const RECEIPT_STATUSES = new Set(["accepted", "rejected", "submitted", "filled", "partial", "cancelled", "failed"]);
 const RUNTIMES = new Set(["openclaw", "openclaw_route_shell", "hermes", "hermes_acp", "telegram", "local_codex", "codex", "claude_code", "claude-code", "opencode", "trading_sim", "trading_core", "system", "other"]);
 const DISPATCH_STATUSES = new Set(["queued", "sent", "acked", "failed", "cancelled"]);
-const WORKFLOW_RUN_STATUSES = new Set(["active", "waiting_human", "blocked", "completed", "stopped", "cancelled"]);
+const WORKFLOW_RUN_STATUSES = new Set(["active", "waiting_human", "blocked", "paused", "completed", "stopped", "cancelled"]);
 const WORKFLOW_TASK_STATUSES = new Set(["pending", "in_progress", "done", "blocked", "failed", "cancelled"]);
-const WORKFLOW_TASK_PRIORITIES = new Set(["steer", "high", "normal", "low"]);
+const WORKFLOW_TASK_PRIORITIES = new Set(["flash", "steer", "high", "normal", "low"]);
 const INCIDENT_STATUSES = new Set(["active", "mitigating", "monitoring", "resolved", "cancelled"]);
 const INCIDENT_MODES = new Set(["normal", "degraded", "critical-only", "paper-only", "frozen"]);
 const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout", "acp_unavailable", "transient_runtime"]);
 const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_report"]);
 const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = "8390724843";
+const CONTROL_LOOP_WORKFLOW_STATUSES = new Set(["active", "waiting_human", "blocked"]);
+const CONTROL_LOOP_ACTIVE_JOB_STATUSES = new Set(["queued", "running", "retry_scheduled"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -839,6 +841,29 @@ CREATE TABLE IF NOT EXISTS readiness_snapshots (
   findings_json TEXT NOT NULL,
   payload_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS control_loop_jobs (
+  job_id TEXT PRIMARY KEY,
+  job_type TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'normal',
+  status TEXT NOT NULL DEFAULT 'queued',
+  workflow_id TEXT,
+  runtime TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  attempt INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 20,
+  next_run_at TEXT,
+  lease_owner TEXT,
+  lease_until TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_control_loop_jobs_status ON control_loop_jobs(status, next_run_at, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_control_loop_jobs_workflow ON control_loop_jobs(workflow_id, status, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_control_loop_jobs_active_dedupe ON control_loop_jobs(dedupe_key) WHERE status IN ('queued','running','retry_scheduled');
 INSERT INTO schema_meta(key, value, updated_at)
 VALUES ('workflow_schema_version', ${sqlValue(WORKFLOW_SCHEMA_VERSION)}, ${sqlValue(nowIso())})
 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
@@ -882,6 +907,29 @@ CREATE INDEX IF NOT EXISTS idx_mixed_dispatches_retry ON mixed_meeting_dispatche
 CREATE INDEX IF NOT EXISTS idx_side_effects_idempotency ON side_effect_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE INDEX IF NOT EXISTS idx_incident_states_status ON incident_states(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_readiness_snapshots_checked ON readiness_snapshots(checked_at DESC);
+CREATE TABLE IF NOT EXISTS control_loop_jobs (
+  job_id TEXT PRIMARY KEY,
+  job_type TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'normal',
+  status TEXT NOT NULL DEFAULT 'queued',
+  workflow_id TEXT,
+  runtime TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  attempt INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 20,
+  next_run_at TEXT,
+  lease_owner TEXT,
+  lease_until TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_control_loop_jobs_status ON control_loop_jobs(status, next_run_at, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_control_loop_jobs_workflow ON control_loop_jobs(workflow_id, status, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_control_loop_jobs_active_dedupe ON control_loop_jobs(dedupe_key) WHERE status IN ('queued','running','retry_scheduled');
 CREATE TABLE IF NOT EXISTS human_gate_buttons (
   button_id TEXT PRIMARY KEY,
   callback_token TEXT NOT NULL UNIQUE,
@@ -1199,7 +1247,8 @@ UNION ALL SELECT 'runtime_agents', COUNT(*) FROM runtime_agents
 UNION ALL SELECT 'mixed_meeting_participants', COUNT(*) FROM mixed_meeting_participants
 UNION ALL SELECT 'mixed_meeting_messages', COUNT(*) FROM mixed_meeting_messages
 UNION ALL SELECT 'mixed_meeting_dispatches', COUNT(*) FROM mixed_meeting_dispatches
-UNION ALL SELECT 'telegram_outbox', COUNT(*) FROM telegram_outbox;`, { json: true });
+UNION ALL SELECT 'telegram_outbox', COUNT(*) FROM telegram_outbox
+UNION ALL SELECT 'control_loop_jobs', COUNT(*) FROM control_loop_jobs;`, { json: true });
   const readiness = await workflowReadinessSnapshot(paths, input);
   const result = {
     schemaVersion: WORKFLOW_SCHEMA_VERSION,
@@ -1224,7 +1273,11 @@ export async function workflowRunUpsert(rootDir, input = {}) {
   const statusRaw = String(input.status || "active").trim();
   const status = WORKFLOW_RUN_STATUSES.has(statusRaw) ? statusRaw : "active";
   const workflowType = String(input.workflowType || input.workflow_type || input.type || "initiative").trim();
-  const payload = parseJsonValue(input.payload, input.payload || {});
+  const payload = {
+    ...parseJsonValue(input.payload, input.payload || {}),
+    flashLane: boolOption(input.flashLane ?? input.flash_lane, false),
+    tradingExecution: boolOption(input.tradingExecution ?? input.trading_execution, false)
+  };
   await sqlite(paths.dbFile, `
 INSERT INTO workflow_runs(workflow_id, workflow_type, status, instrument_id, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
 VALUES (${sqlValue(workflowId)}, ${sqlValue(workflowType)}, ${sqlValue(status)}, ${sqlValue(input.instrumentId || input.instrument_id || null)}, ${sqlValue(input.ownerAgent || input.owner_agent || "main")}, ${sqlValue(input.summary || input.text || "")}, ${sqlValue(input.objective || input.goal || "")}, ${sqlValue(input.acceptanceCriteria || input.acceptance_criteria || "")}, ${sqlValue(input.stopCondition || input.stop_condition || "")}, ${sqlValue(input.phase || input.currentPhase || input.current_phase || "")}, ${sqlValue(input.currentDecision || input.current_decision || "")}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
@@ -1314,7 +1367,7 @@ export async function workflowTaskList(rootDir, input = {}) {
   const rows = await sqlite(paths.dbFile, `
 SELECT * FROM workflow_tasks
 ${where}
-ORDER BY workflow_id, CASE priority WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, created_at
+ORDER BY workflow_id, CASE priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, created_at
 LIMIT ${limit};`, { json: true });
   return { count: rows.length, tasks: rows, dbFile: paths.dbFile };
 }
@@ -1481,7 +1534,7 @@ export async function workflowSwarmPlan(rootDir, input = {}) {
       runtime: reducer.runtime,
       agentId: reducer.agentId,
       taskType: "swarm_reduce",
-      priority: "high",
+      priority: boolOption(input.flashLane ?? input.flash_lane, false) ? "flash" : "high",
       dependsOn: dependencyIds,
       summary: `${objective} / reduce shard outputs`,
       prompt: renderSwarmReducerPrompt(input, shards.slice(0, fanoutLimit), [...created, ...skipped]),
@@ -1687,6 +1740,7 @@ export async function workflowSupervisor(rootDir, input = {}) {
   const runtimeLimit = Math.max(1, Math.min(20, Number(input.limit || input.runtimeLimit || input.runtime_limit || 5)));
   const timeoutSeconds = Math.max(5, Math.min(900, Number(input.timeoutSeconds || input.timeout_seconds || 120)));
   const dryRun = boolOption(input.dryRun ?? input.dry_run, false);
+  const writeCheckpoint = !dryRun && boolOption(input.checkpoint ?? input.writeCheckpoint ?? input.write_checkpoint, true);
   const cycles = [];
   let finalAdvance = null;
   for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
@@ -1723,24 +1777,28 @@ export async function workflowSupervisor(rootDir, input = {}) {
     autoDispatch: false,
     syncDispatches: true
   });
-  const checkpoint = await workflowCheckpoint(rootDir, {
-    ...input,
-    workflowRootDir: paths.root,
-    workflowId,
-    summary: input.summary || `Supervisor checkpoint at ${startedAt}; decision=${finalAdvance.decision}`,
-    nextActions: input.nextActions || input.next_actions || []
-  });
+  const checkpoint = writeCheckpoint
+    ? await workflowCheckpoint(rootDir, {
+      ...input,
+      workflowRootDir: paths.root,
+      workflowId,
+      summary: input.summary || `Supervisor checkpoint at ${startedAt}; decision=${finalAdvance.decision}`,
+      nextActions: input.nextActions || input.next_actions || []
+    })
+    : null;
   let catClawReport = null;
   let catClawReportDrain = null;
   if (autoReport && ["cat_claw_summary_required", "blocked", "human_gate_pending"].includes(finalAdvance.decision)) {
     const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
     const workflow = workflowRows[0] || { workflow_id: workflowId };
+    const reportStateKey = [finalAdvance.decision, workflow.status || "", workflow.current_phase || ""].filter(Boolean).join(":") || "latest";
+    const reportIdempotencyKey = input.reportIdempotencyKey || input.report_idempotency_key || `workflow:${workflowId}:cat_claw_report:${checkpoint?.checkpointId || reportStateKey}`;
     catClawReport = await meetingDispatch(rootDir, {
       workflowRootDir: paths.root,
       meetingId,
       workflowId,
       traceId: `${workflowId}:cat_claw_report:${Date.now()}`,
-      idempotencyKey: `workflow:${workflowId}:cat_claw_report:${finalAdvance.decision}:${checkpoint.checkpointId}`,
+      idempotencyKey: reportIdempotencyKey,
       runtime: reportRuntime,
       agentId: reportAgent,
       dispatchType: finalAdvance.decision === "human_gate_pending" ? "human_gate_report" : "workflow_secretary_report",
@@ -1750,7 +1808,7 @@ export async function workflowSupervisor(rootDir, input = {}) {
       payload: {
         workflowId,
         meetingId,
-        checkpointId: checkpoint.checkpointId,
+        checkpointId: checkpoint?.checkpointId || "",
         decision: finalAdvance.decision,
         reportTarget: "telegram:8390724843"
       }
@@ -1836,7 +1894,7 @@ export async function workflowCheckpoint(rootDir, input = {}) {
   const tasks = await sqlite(paths.dbFile, `
 SELECT * FROM workflow_tasks
 WHERE workflow_id=${sqlValue(workflowId)}
-ORDER BY CASE priority WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, created_at;`, { json: true });
+ORDER BY CASE priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, created_at;`, { json: true });
   const activeTasks = tasks.filter((task) => ["pending", "in_progress"].includes(task.status));
   const blockedTasks = tasks.filter((task) => ["blocked", "failed"].includes(task.status));
   const doneTasks = tasks.filter((task) => task.status === "done");
@@ -2238,13 +2296,15 @@ function humanGateRiskTier(input = {}) {
 
 function humanGateDefaultAction(riskTier, input = {}) {
   const text = [input.sourceType, input.gateType, input.summary, input.title].join(" ").toLowerCase();
-  if (riskTier === "P0" || riskTier === "P1") return "individual_review_required";
+  if (riskTier === "P0") return "flash_lane_individual_review_required";
+  if (riskTier === "P1") return "individual_review_required";
   if (/reject|blocked|failed|failure|异常|失败|阻塞/.test(text)) return "ask_revision";
   if (riskTier === "P2") return "review_then_batch";
   return "batch_approve_allowed";
 }
 
 function humanGateActionHint(item) {
+  if (item.defaultAction === "flash_lane_individual_review_required") return "flash-lane single approve/reject/revise only";
   if (item.riskTier === "P0" || item.riskTier === "P1") return "single approve/reject/revise only";
   if (item.defaultAction === "ask_revision") return "ask responsible agent for revision";
   if (item.defaultAction === "review_then_batch") return "eligible for batch after quick review";
@@ -2318,6 +2378,272 @@ function humanGateButtonFromRow(row, rootDir = "") {
   };
 }
 
+function humanGateBody(payload = {}) {
+  return parseJsonValue(payload.payload, payload.payload || {});
+}
+
+function humanGateWorkflowId(row, payload = {}, body = {}) {
+  return String(body.workflowId || body.workflow_id || payload.workflowId || payload.workflow_id || row.parent_object_id || row.object_id || "").trim();
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function buttonArrayFromRaw(raw) {
+  const parsed = parseJsonValue(raw, raw);
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === "object") {
+    return Object.entries(parsed).map(([key, value]) => value && typeof value === "object" ? { optionKey: key, ...value } : { optionKey: key, label: String(value || key).trim() });
+  }
+  return null;
+}
+
+function humanGateButtonSource(payload = {}, body = {}) {
+  const raw = firstDefined(
+    body.buttons,
+    body.buttonOptions,
+    body.button_options,
+    body.choices,
+    body.raw?.buttons,
+    body.raw?.buttonOptions,
+    body.raw?.button_options,
+    body.raw?.choices,
+    payload.buttons,
+    payload.buttonOptions,
+    payload.button_options,
+    payload.choices
+  );
+  const parsed = buttonArrayFromRaw(raw);
+  return parsed && parsed.length ? parsed : null;
+}
+
+function humanGateAlternativeSource(payload = {}, body = {}) {
+  const raw = firstDefined(
+    body.alternatives,
+    body.plans,
+    body.planOptions,
+    body.plan_options,
+    body.options,
+    body.raw?.alternatives,
+    body.raw?.plans,
+    body.raw?.planOptions,
+    body.raw?.plan_options,
+    body.raw?.options,
+    payload.alternatives,
+    payload.plans,
+    payload.planOptions,
+    payload.plan_options,
+    payload.options
+  );
+  const parsed = buttonArrayFromRaw(raw);
+  return parsed && parsed.length ? parsed : null;
+}
+
+function humanGateArtifactRef(row, payload = {}, body = {}) {
+  return String(body.artifactRef || body.artifact_ref || body.resumePointer || body.resume_pointer || body.raw?.artifactRef || body.raw?.artifact_ref || row.path || "").trim();
+}
+
+function humanGateSummary(payload = {}, body = {}) {
+  return String(body.summary || payload.summary || "").trim();
+}
+
+function optionKeyLabel(value, index) {
+  const raw = String(value.optionKey || value.option_key || value.key || value.id || value.name || "").trim();
+  if (raw) return raw.toUpperCase();
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  return index < alphabet.length ? alphabet[index] : String(index + 1);
+}
+
+function humanGateAlternativeButtons(row, payload = {}, body = {}) {
+  const alternatives = humanGateAlternativeSource(payload, body);
+  if (!alternatives) return null;
+  const artifactRef = humanGateArtifactRef(row, payload, body);
+  return alternatives.map((rawItem, index) => {
+    const value = rawItem && typeof rawItem === "object" ? rawItem : { title: String(rawItem || "").trim() };
+    const key = optionKeyLabel(value, index);
+    const title = compactText(firstText(value.title, value.label, value.summary, value.description, value.text, value.name, `方案 ${key}`), 36);
+    return {
+      label: `批准方案 ${key}${title ? `：${title}` : ""}`,
+      decisionStatus: "approved",
+      role: "approve_option",
+      style: "success",
+      artifactRef: String(value.artifactRef || value.artifact_ref || artifactRef).trim(),
+      summary: String(value.summary || value.description || value.text || title || `批准方案 ${key}`).trim(),
+      prompt: String(value.prompt || value.nextAction || value.next_action || `按方案 ${key} 继续推进 workflow。`).trim(),
+      payload: { ...value, optionKey: key, optionIndex: index }
+    };
+  });
+}
+
+function humanGateControlButtons(row, payload = {}, body = {}, options = {}) {
+  const summary = humanGateSummary(payload, body);
+  const artifactRef = humanGateArtifactRef(row, payload, body);
+  const controls = [];
+  if (options.includeApprove) {
+    controls.push({
+      label: "批准并继续",
+      decisionStatus: "approved",
+      role: "approve",
+      style: "success",
+      artifactRef,
+      summary: summary || "批准本次 Human Gate，继续推进工作流。",
+      prompt: "从本次已批准的 Human Gate 边界继续推进工作流。"
+    });
+  }
+  controls.push(
+    {
+      label: "退回补证/修改",
+      decisionStatus: "rejected",
+      role: "reject",
+      style: "danger",
+      artifactRef,
+      summary: summary || "退回本次 Human Gate，要求补齐证据包或修改方案后再次提交。",
+      prompt: "补齐证据包或修改方案；如仍需闪电猫确认，重新提交 Human Gate。"
+    },
+    {
+      label: "暂停工作流",
+      decisionStatus: "paused",
+      role: "pause",
+      style: "secondary",
+      artifactRef,
+      summary: "暂停该 workflow，不继续自动推进，等待新的明确指令或 Human Gate。",
+      prompt: "暂停该 workflow；不要继续自动推进。"
+    },
+    {
+      label: "终止工作流",
+      decisionStatus: "terminated",
+      role: "terminate",
+      style: "danger",
+      artifactRef,
+      summary: "闪电猫确认成果已完成且复核满足要求，进入猫爪/猫之脑正式收口并结束该 workflow。",
+      prompt: "进入工作流收口：猫爪整理最终汇报，猫之脑关闭任务和证据状态，结束该 workflow。"
+    }
+  );
+  return controls;
+}
+
+function rawHumanGateButtonObject(rawItem) {
+  if (typeof rawItem === "string") {
+    const parsed = parseJsonValue(rawItem, rawItem);
+    return parsed && typeof parsed === "object" ? parsed : { label: String(parsed || rawItem || "").trim() };
+  }
+  return rawItem && typeof rawItem === "object" ? { ...rawItem } : { label: String(rawItem || "").trim() };
+}
+
+function humanGatePlanKey(value = {}, fallback = "") {
+  const raw = String(value.optionKey || value.option_key || value.key || value.payload?.optionKey || value.payload?.option_key || "").trim();
+  if (raw) return raw.toUpperCase();
+  const label = String(value.label || value.title || value.text || "").trim();
+  const match = label.match(/(?:方案\s*)?([A-Z])(?:\s|:|：|\.|、|$)/i);
+  return match ? match[1].toUpperCase() : fallback;
+}
+
+function normalizeRawHumanGateButtonSpecs(specs = [], row = {}, payload = {}, body = {}) {
+  const result = [];
+  let nextPlanIndex = 0;
+  for (const rawItem of specs) {
+    const value = rawHumanGateButtonObject(rawItem);
+    const roleRaw = humanGateButtonRole(value);
+    const status = normalizeHumanGateDecisionStatus(humanGateButtonStatus(value), humanGateDecisionStatusFromRole(roleRaw, "approved"));
+    const role = roleRaw || defaultHumanGateButtonRole(status);
+    const isControl = status !== "approved" || ["reject", "pause", "terminate"].includes(role);
+    if (!isControl) {
+      const defaultKey = nextPlanIndex < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[nextPlanIndex] : String(nextPlanIndex + 1);
+      const key = humanGatePlanKey(value, defaultKey);
+      nextPlanIndex += 1;
+      const title = compactText(firstText(value.title, value.label, value.summary, value.description, value.text, value.name, `方案 ${key}`), 36);
+      result.push({
+        ...value,
+        label: String(value.label || "").startsWith(`批准方案 ${key}`) ? value.label : `批准方案 ${key}${title ? `：${title.replace(/^(?:批准)?方案\s*[A-Z]\s*[:：]?\s*/i, "").replace(/^[A-Z]\s*[:：]\s*/i, "")}` : ""}`,
+        decisionStatus: "approved",
+        role: role === "approve" ? "approve_option" : role,
+        style: value.style || "success",
+        payload: { ...parseJsonValue(value.payload, value.payload || {}), optionKey: key, optionIndex: nextPlanIndex - 1 }
+      });
+    } else {
+      result.push({ ...value, decisionStatus: status, role, style: value.style || defaultHumanGateButtonStyle(status) });
+    }
+  }
+  return result;
+}
+
+function humanGateButtonStatus(value = {}) {
+  return String(value.decisionStatus || value.decision_status || value.status || "").trim();
+}
+
+function humanGateButtonRole(value = {}) {
+  return String(value.role || value.buttonRole || value.button_role || "").trim();
+}
+
+function hasHumanGateButton(buttons = [], statuses = [], roles = []) {
+  const statusSet = new Set(statuses);
+  const roleSet = new Set(roles);
+  return buttons.some((button) => {
+    const status = humanGateButtonStatus(button);
+    const role = humanGateButtonRole(button);
+    return (status && statusSet.has(status)) || (role && roleSet.has(role));
+  });
+}
+
+function withHumanGateControlButtons(buttons = [], row = {}, payload = {}, body = {}) {
+  const result = [...buttons];
+  const controls = humanGateControlButtons(row, payload, body, { includeApprove: false });
+  for (const control of controls) {
+    const status = humanGateButtonStatus(control);
+    const role = humanGateButtonRole(control);
+    if (!hasHumanGateButton(result, [status], [role])) result.push(control);
+  }
+  return result;
+}
+
+function humanGateButtonSpecs(row, payload = {}, body = {}) {
+  const explicit = humanGateButtonSource(payload, body);
+  if (explicit) return withHumanGateControlButtons(normalizeRawHumanGateButtonSpecs(explicit, row, payload, body), row, payload, body);
+  const alternatives = humanGateAlternativeButtons(row, payload, body);
+  if (alternatives) return withHumanGateControlButtons(normalizeRawHumanGateButtonSpecs(alternatives, row, payload, body), row, payload, body);
+  return defaultHumanGateButtons(row, payload, body);
+}
+
+function humanGatePlanOptionButtons(buttons = []) {
+  return buttons.filter((button) => {
+    const status = humanGateButtonStatus(button);
+    const role = humanGateButtonRole(button);
+    return status === "approved" && !["reject", "pause", "terminate"].includes(role);
+  });
+}
+
+function auditHumanGatePlanOptions(buttons = []) {
+  const planButtons = humanGatePlanOptionButtons(buttons);
+  const keys = new Set(planButtons.map((button, index) => humanGatePlanKey(button, index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1))).filter(Boolean));
+  const missing = ["A", "B", "C"].filter((key) => !keys.has(key));
+  const ok = planButtons.length >= 3 && missing.length === 0;
+  return {
+    ok,
+    planCount: planButtons.length,
+    requiredPlanCount: 3,
+    requiredKeys: ["A", "B", "C"],
+    missingKeys: missing,
+    reason: ok ? "" : "human_gate_requires_at_least_abc_alternatives"
+  };
+}
+
+function humanGateButtonShape(value = {}) {
+  return [humanGateButtonStatus(value), humanGateButtonRole(value), String(value.label || value.title || value.text || "").trim()].join("\u0000");
+}
+
+function humanGateButtonsRequireRefresh(existingButtons = [], desiredSpecs = []) {
+  if (!existingButtons.length) return true;
+  if (existingButtons.some((button) => ["Approve and continue", "Reject and revise"].includes(String(button.label || "").trim()))) return true;
+  const desiredButtons = humanGateButtonOptions({ buttons: desiredSpecs, addDefaultControls: false });
+  const existingShapes = new Set(existingButtons.map(humanGateButtonShape));
+  return desiredButtons.some((button) => !existingShapes.has(humanGateButtonShape(button)));
+}
+
+function defaultHumanGateButtons(row, payload = {}, body = {}) {
+  return [];
+}
+
 async function humanGateButtonsByGate(paths, gateIds = []) {
   const ids = [...new Set(gateIds.map((id) => String(id || "").trim()).filter(Boolean))];
   if (!ids.length) return new Map();
@@ -2334,6 +2660,224 @@ ORDER BY created_at ASC;`, { json: true });
     grouped.set(button.humanGateId, list);
   }
   return grouped;
+}
+
+async function ensureHumanGateButtonSet(paths, row, payload = {}, body = {}, workflowId = "", meetingId = "") {
+  const desiredSpecs = humanGateButtonSpecs(row, payload, body);
+  const audit = auditHumanGatePlanOptions(desiredSpecs);
+  if (!audit.ok) {
+    const refreshedAt = nowIso();
+    await sqlite(paths.dbFile, `
+UPDATE human_gate_buttons
+SET status='superseded', updated_at=${sqlValue(refreshedAt)}
+WHERE human_gate_id=${sqlValue(row.object_id)} AND status='active';`);
+    return { buttons: [], refreshed: true, reason: audit.reason, audit };
+  }
+  let buttons = (await sqlite(paths.dbFile, `
+SELECT *
+FROM human_gate_buttons
+WHERE human_gate_id=${sqlValue(row.object_id)} AND status='active'
+ORDER BY created_at ASC;`, { json: true })).map((buttonRow) => humanGateButtonFromRow(buttonRow, paths.root));
+  if (!buttons.length) {
+    buttons = await createHumanGateButtons(paths, {
+      workflowId,
+      meetingId,
+      humanGateId: row.object_id,
+      createdBy: "cat_claw",
+      buttons: desiredSpecs
+    });
+    return { buttons, refreshed: true, reason: "created", audit };
+  }
+  if (!humanGateButtonsRequireRefresh(buttons, desiredSpecs)) return { buttons, refreshed: false, reason: "", audit };
+  const refreshedAt = nowIso();
+  await sqlite(paths.dbFile, `
+UPDATE human_gate_buttons
+SET status='superseded', updated_at=${sqlValue(refreshedAt)}
+WHERE human_gate_id=${sqlValue(row.object_id)} AND status='active';`);
+  buttons = await createHumanGateButtons(paths, {
+    workflowId,
+    meetingId,
+    humanGateId: row.object_id,
+    createdBy: "cat_claw",
+    buttons: desiredSpecs
+  });
+  return { buttons, refreshed: true, reason: "refreshed_button_policy", audit };
+}
+
+async function dispatchHumanGatePlanRevision(rootDir, paths, row, workflowId, meetingId, summary, audit) {
+  const createdAt = nowIso();
+  const eventId = safeId("control");
+  await sqlite(paths.dbFile, `
+INSERT INTO meeting_control_events(event_id, meeting_id, event_type, status, summary, payload_json, created_by, created_at)
+VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId || workflowId || row.object_id)}, 'human_gate_audit_failed', 'blocked', ${sqlValue("Human Gate evidence package lacks at least A/B/C alternatives")}, ${sqlValue(JSON.stringify({ humanGateId: row.object_id, workflowId, audit }))}, 'cat_claw', ${sqlValue(createdAt)});`);
+  const dispatch = await meetingDispatch(rootDir, {
+    workflowRootDir: paths.root,
+    meetingId: meetingId || workflowId || row.object_id,
+    workflowId,
+    traceId: `${workflowId || row.object_id}:human_gate_abc_audit:${row.object_id}`,
+    idempotencyKey: `workflow:${workflowId || row.object_id}:human_gate_abc_audit:${row.object_id}`,
+    runtime: "openclaw",
+    agentId: "main",
+    dispatchType: "human_gate_evidence_revision",
+    priority: "steer",
+    createdBy: "cat_claw",
+    prompt: [
+      "猫爪 Human Gate 证据包审计未通过。",
+      `Human Gate ID: ${row.object_id}`,
+      `Workflow ID: ${workflowId || ""}`,
+      `摘要: ${summary || ""}`,
+      "",
+      "硬性要求：提交给闪电猫的 Human Gate 汇报必须包含至少 A/B/C 三个以上可独立批准的备选方案。",
+      "猫爪只审计是否满足该结构，不生成方案内容。请猫之脑 main 补齐备选方案内容，并在再次交给猫爪前自检：方案 A、方案 B、方案 C 都存在、互斥、可执行、有证据和回滚边界。",
+      "补齐后再由猫爪复核并提交 button-first Human Gate。"
+    ].filter(Boolean).join("\n"),
+    payload: {
+      workflowId,
+      meetingId,
+      humanGateId: row.object_id,
+      audit,
+      source: "cat_claw.human_gate_abc_audit"
+    }
+  });
+  return { eventId, dispatch };
+}
+
+async function ensurePendingHumanGateRequests(rootDir, paths, input = {}) {
+  const limit = Math.max(1, Math.min(20, Number(input.humanGateRequestLimit || input.human_gate_request_limit || 5)));
+  const targetRef = String(input.target || input.targetRef || input.target_ref || DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID).trim();
+  const account = String(input.account || "cat_claw").trim();
+  const resendSentAfterMs = Math.max(5 * 60_000, Math.min(24 * 3600_000, Number(input.humanGateResendAfterMs || input.human_gate_resend_after_ms || 30 * 60_000)));
+  const resendCutoff = new Date(Date.now() - resendSentAfterMs).toISOString();
+  const existingRows = await sqlite(paths.dbFile, `
+SELECT outbox_id, status, payload_json, created_at, updated_at
+FROM telegram_outbox
+WHERE message_type='human_gate_request'
+ORDER BY created_at DESC
+LIMIT 500;`, { json: true });
+  const outboxByGate = new Map();
+  for (const row of existingRows) {
+    const payload = parseJsonValue(row.payload_json, {});
+    const humanGateId = String(payload.humanGateId || payload.human_gate_id || "").trim();
+    if (humanGateId && !outboxByGate.has(humanGateId)) outboxByGate.set(humanGateId, row);
+  }
+
+  const rows = await sqlite(paths.dbFile, `
+SELECT object_id, status, source_agent, parent_object_id, path, payload_json, created_at
+FROM protocol_objects
+WHERE object_type='human_gate_record' AND status='pending'
+ORDER BY created_at ASC
+LIMIT ${limit};`, { json: true });
+  const results = [];
+  for (const row of rows) {
+    const payload = parseJsonValue(row.payload_json, {});
+    const body = humanGateBody(payload);
+    const workflowId = humanGateWorkflowId(row, payload, body);
+    const meetingId = String(body.meetingId || body.meeting_id || workflowId || row.object_id).trim();
+    const gateType = String(body.gateType || body.gate_type || payload.gateType || payload.gate_type || "workflow_continuation").trim();
+    const summary = String(body.summary || payload.summary || `Human Gate required: ${row.object_id}`).trim();
+    const existing = outboxByGate.get(row.object_id);
+    const buttonSet = await ensureHumanGateButtonSet(paths, row, payload, body, workflowId, meetingId);
+    if (!buttonSet.audit?.ok) {
+      const revision = await dispatchHumanGatePlanRevision(rootDir, paths, row, workflowId, meetingId, summary, buttonSet.audit);
+      if (existing?.status === "queued") {
+        await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='cancelled',
+    payload_json=${sqlValue(JSON.stringify({ ...parseJsonValue(existing.payload_json, {}), cancelledAt: nowIso(), cancelledReason: buttonSet.audit.reason }))},
+    updated_at=${sqlValue(nowIso())}
+WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
+      }
+      results.push({ humanGateId: row.object_id, workflowId, status: "blocked_missing_abc_options", audit: buttonSet.audit, revisionDispatch: revision.dispatch, outboxId: existing?.outbox_id || "" });
+      continue;
+    }
+    const { buttons } = buttonSet;
+
+    const presentationInput = { title: "Human Gate 确认", text: summary };
+    const presentation = humanGateButtonPresentation(presentationInput, buttons);
+    const text = humanGateButtonFallbackText(presentationInput, buttons);
+    const outboxPayload = {
+      humanGateId: row.object_id,
+      gateType,
+      workflowId,
+      eventId: "",
+      account,
+      requester: "cat_claw",
+      targetKind: targetRef.startsWith("-") ? "channel" : "private",
+      targetRef,
+      buttons,
+      presentation,
+      ensuredBy: "workflow.control_loop.tick"
+    };
+    if (buttonSet.refreshed) outboxPayload.buttonPolicyRefresh = { reason: buttonSet.reason, refreshedAt: nowIso() };
+    if (existing?.status === "queued") {
+      await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET target_kind=${sqlValue(outboxPayload.targetKind)},
+    target_ref=${sqlValue(targetRef)},
+    text=${sqlValue(text)},
+    payload_json=${sqlValue(JSON.stringify(outboxPayload))},
+    updated_at=${sqlValue(nowIso())}
+WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
+      results.push({ humanGateId: row.object_id, workflowId, status: buttonSet.refreshed ? "updated_queued_outbox_buttons" : `outbox_${existing.status}`, outboxId: existing.outbox_id, buttons: buttons.length });
+      continue;
+    }
+    if (existing?.status === "sent" && String(existing.updated_at || existing.created_at || "") >= resendCutoff) {
+      if (!buttonSet.refreshed) {
+        results.push({ humanGateId: row.object_id, workflowId, status: "outbox_sent", outboxId: existing.outbox_id, resendAfterMs: resendSentAfterMs });
+        continue;
+      }
+    }
+    if (existing?.status === "failed") {
+      await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='queued',
+    target_kind=${sqlValue(outboxPayload.targetKind)},
+    target_ref=${sqlValue(targetRef)},
+    text=${sqlValue(text)},
+    payload_json=${sqlValue(JSON.stringify(outboxPayload))},
+    updated_at=${sqlValue(nowIso())}
+WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
+      results.push({ humanGateId: row.object_id, workflowId, status: "requeued_failed_outbox", outboxId: existing.outbox_id, buttons: buttons.length });
+      continue;
+    }
+    if (existing?.status === "sent") {
+      const previousPayload = parseJsonValue(existing.payload_json, {});
+      const resendPayload = {
+        ...outboxPayload,
+        resend: {
+          previousOutboxStatus: "sent",
+          previousUpdatedAt: existing.updated_at || "",
+          previousDelivery: previousPayload.delivery || null,
+          resendAfterMs: resendSentAfterMs,
+          reason: buttonSet.refreshed ? "button_policy_refreshed" : "sent_without_callback",
+          requeuedAt: nowIso()
+        }
+      };
+      await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='queued',
+    target_kind=${sqlValue(outboxPayload.targetKind)},
+    target_ref=${sqlValue(targetRef)},
+    text=${sqlValue(text)},
+    payload_json=${sqlValue(JSON.stringify(resendPayload))},
+    updated_at=${sqlValue(nowIso())}
+WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
+      results.push({ humanGateId: row.object_id, workflowId, status: buttonSet.refreshed ? "requeued_sent_outbox_buttons" : "requeued_stale_sent_outbox", outboxId: existing.outbox_id, buttons: buttons.length, resendAfterMs: resendSentAfterMs });
+      continue;
+    }
+
+    const outbox = await enqueueTelegramOutbox(paths, {
+      outboxId: `hgate-${cleanFileSegment(row.object_id)}`,
+      meetingId,
+      targetKind: outboxPayload.targetKind,
+      targetRef,
+      messageType: "human_gate_request",
+      text,
+      payload: outboxPayload
+    });
+    results.push({ humanGateId: row.object_id, workflowId, status: outbox.status, outboxId: outbox.outboxId, buttons: buttons.length });
+  }
+  return { status: "ok", count: results.length, results };
 }
 
 async function collectHumanGateInboxItems(paths, input = {}) {
@@ -2515,7 +3059,8 @@ function renderHumanGateInboxHtml(batch) {
     .choice { appearance: none; border: 1px solid #bcccdc; background: #f8fafc; color: #1f2933; border-radius: 5px; padding: 7px 9px; font-size: 12px; font-weight: 650; text-align: left; cursor: pointer; }
     .choice-approved { border-color: #15803d; background: #f0fdf4; color: #14532d; }
     .choice-rejected { border-color: #b91c1c; background: #fef2f2; color: #7f1d1d; }
-    .choice-pending, .choice-expired { border-color: #64748b; background: #f8fafc; color: #334155; }
+    .choice-paused, .choice-pending, .choice-expired { border-color: #64748b; background: #f8fafc; color: #334155; }
+    .choice-terminated { border-color: #7f1d1d; background: #fee2e2; color: #7f1d1d; }
     .choice-meta { display: flex; flex-direction: column; gap: 4px; color: #52606d; }
     .choice-meta code { white-space: normal; overflow-wrap: anywhere; }
     .copied { outline: 2px solid #0f766e; }
@@ -2704,7 +3249,19 @@ function telegramChunks(text, limit = 3500) {
 async function deliverTelegramOutboxRow(paths, row, input = {}) {
   const payload = parseJsonValue(row.payload_json, {});
   const account = String(input.account || payload.account || "cat_claw").trim();
-  const target = String(input.target || row.target_ref || DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID).trim();
+  const explicitTarget = String(input.target || "").trim();
+  const rowTarget = String(row.target_ref || "").trim();
+  if (!explicitTarget && !rowTarget) {
+    const failedAt = nowIso();
+    const error = "telegram_outbox target_ref is required unless an explicit target override is provided";
+    const updatedPayload = { ...payload, delivery: { channel: "telegram", account, failedAt, error } };
+    await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='failed', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(failedAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)};`);
+    return { outboxId: row.outbox_id, status: "failed", account, error };
+  }
+  const target = explicitTarget || rowTarget;
   const openclawBin = String(input.openclawBin || input.openclaw_bin || "openclaw").trim();
   const timeoutSeconds = Math.max(5, Math.min(120, Number(input.timeoutSeconds || input.timeout_seconds || 30)));
   const chunks = telegramChunks(row.text);
@@ -2902,7 +3459,7 @@ export async function workflowHumanGateRecord(rootDir, input) {
       actor: input.actor || input.from || "flashcat",
       assurance: input.assurance || input.authAssurance || "",
       expiresAt: input.expiresAt || input.expires_at || "",
-      decisionAt: ["approved", "rejected", "expired"].includes(status) ? nowIso() : "",
+      decisionAt: ["approved", "rejected", "paused", "terminated", "expired"].includes(status) ? nowIso() : "",
       resumePointer: input.resumePointer || input.resume_pointer || input.dispatchId || input.dispatch_id || "",
       workflowId: input.workflowId || input.workflow_id || "",
       traceId: input.traceId || input.trace_id || "",
@@ -3811,7 +4368,9 @@ LEFT JOIN runtime_agents a ON a.agent_key=d.agent_key
 WHERE d.status='queued' AND d.runtime=${sqlValue(runtime)}
   ${dispatchFilter}
   AND (d.next_retry_at IS NULL OR d.next_retry_at='' OR d.next_retry_at <= ${sqlValue(nowIso())})
-ORDER BY d.created_at
+ORDER BY
+  CASE d.priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+  d.created_at
 LIMIT ${limit};`, { json: true });
   if (dryRun) return { runtime, dryRun: true, count: rows.length, dispatches: rows.map((row) => ({ dispatchId: row.dispatch_id, meetingId: row.meeting_id, workflowId: row.workflow_id, traceId: row.trace_id, agentId: row.agent_id, attempt: row.attempt, maxAttempts: row.max_attempts, endpointRef: row.endpoint_ref })) };
   const results = [];
@@ -3830,29 +4389,133 @@ LIMIT ${limit};`, { json: true });
   return { runtime, count: rows.length, results, dbFile: paths.dbFile };
 }
 
+export async function staleDispatchReconcile(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const timeoutSeconds = controlLoopTimeoutSeconds(input);
+  const staleAfterMs = Math.max(5 * 60_000, Number(input.staleDispatchAfterMs || input.stale_dispatch_after_ms || Math.max(30 * 60_000, (timeoutSeconds + 60) * 1000)));
+  const cutoff = new Date(Date.now() - staleAfterMs).toISOString();
+  const limit = Math.max(1, Math.min(100, Number(input.limit || input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20)));
+  const rows = await sqlite(paths.dbFile, `
+SELECT d.*,
+  (SELECT rr.status FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_status,
+  (SELECT rr.completed_at FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_completed_at,
+  (SELECT rr.message_id FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_message_id,
+  (SELECT rr.failure_type FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_failure_type,
+  (SELECT rr.error FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_error
+FROM mixed_meeting_dispatches d
+WHERE d.status='sent'
+  AND d.updated_at < ${sqlValue(cutoff)}
+ORDER BY d.updated_at
+LIMIT ${limit};`, { json: true });
+  const results = [];
+  for (const row of rows) {
+    const terminalStatus = String(row.terminal_status || "").trim();
+    if (terminalStatus === "acked") {
+      await updateDispatch(paths, row.dispatch_id, "acked", {
+        adapter: "stale_dispatch_reconcile",
+        completedAt: row.terminal_completed_at || nowIso(),
+        messageId: row.terminal_message_id || "",
+        reconciledFrom: row.status
+      });
+      results.push({ dispatchId: row.dispatch_id, status: "acked", reason: "terminal_runtime_receipt" });
+      continue;
+    }
+    if (terminalStatus === "failed" || terminalStatus === "retry_scheduled") {
+      const shouldRetry = terminalStatus === "retry_scheduled" && Number(row.attempt || 0) < Number(row.max_attempts || 1);
+      await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", {
+        adapter: "stale_dispatch_reconcile",
+        failedAt: row.terminal_completed_at || nowIso(),
+        failureType: row.terminal_failure_type || "runtime_stale",
+        error: row.terminal_error || "stale sent dispatch reconciled from terminal runtime receipt",
+        nextRetryAt: shouldRetry ? nextRetryAt(Number(row.attempt || 0) || 1) : ""
+      });
+      results.push({ dispatchId: row.dispatch_id, status: shouldRetry ? "queued" : "failed", reason: "terminal_runtime_receipt" });
+      continue;
+    }
+    const attempt = Number(row.attempt || 0);
+    const maxAttempts = Number(row.max_attempts || 1);
+    const retry = attempt < maxAttempts;
+    const completedAt = nowIso();
+    const error = `stale sent dispatch exceeded ${Math.round(staleAfterMs / 1000)}s without terminal runtime receipt`;
+    await updateDispatch(paths, row.dispatch_id, retry ? "queued" : "failed", {
+      adapter: "stale_dispatch_reconcile",
+      failedAt: completedAt,
+      failureType: "runtime_stale",
+      error,
+      nextRetryAt: retry ? nextRetryAt(Math.max(1, attempt)) : ""
+    });
+    await recordRuntimeRun(paths, row, {
+      runtimeRunId: safeId(retry ? "runtime_run_retry" : "runtime_run_failed"),
+      adapter: "stale_dispatch_reconcile",
+      status: retry ? "retry_scheduled" : "failed",
+      failureType: "runtime_stale",
+      startedAt: row.sent_at || row.updated_at || row.created_at,
+      completedAt,
+      attempt,
+      error,
+      payload: { staleAfterMs, retry }
+    });
+    results.push({ dispatchId: row.dispatch_id, status: retry ? "queued" : "failed", reason: "missing_terminal_runtime_receipt" });
+  }
+  return { operation: "stale_dispatch_reconcile", cutoff, staleAfterMs, count: rows.length, results, dbFile: paths.dbFile };
+}
+
+function normalizeHumanGateDecisionStatus(value, fallback = "approved") {
+  const raw = String(value || "").trim();
+  if (["pause", "paused"].includes(raw)) return "paused";
+  if (["terminate", "terminated", "stop", "stopped"].includes(raw)) return "terminated";
+  if (HUMAN_GATE_STATUSES.has(raw)) return raw;
+  return fallback;
+}
+
+function humanGateDecisionStatusFromRole(role, fallback = "approved") {
+  const text = String(role || "").trim();
+  if (text === "reject") return "rejected";
+  if (text === "pause") return "paused";
+  if (text === "terminate") return "terminated";
+  if (text === "approve" || text === "approve_option") return "approved";
+  return fallback;
+}
+
+function defaultHumanGateButtonRole(decisionStatus) {
+  if (decisionStatus === "rejected") return "reject";
+  if (decisionStatus === "paused") return "pause";
+  if (decisionStatus === "terminated") return "terminate";
+  return "approve";
+}
+
+function defaultHumanGateButtonStyle(decisionStatus) {
+  if (decisionStatus === "approved") return "success";
+  if (decisionStatus === "rejected" || decisionStatus === "terminated") return "danger";
+  return "secondary";
+}
+
 function humanGateButtonOptions(input = {}) {
   const raw = input.buttons ?? input.options ?? input.choices;
-  const parsed = parseJsonValue(raw, raw);
-  const values = Array.isArray(parsed) ? parsed : [];
-  return values.map((rawItem, index) => {
+  const values = normalizeRawHumanGateButtonSpecs(buttonArrayFromRaw(raw) || [], {}, input, input);
+  const options = values.map((rawItem, index) => {
     const item = typeof rawItem === "string" ? parseJsonValue(rawItem, rawItem) : rawItem;
     const value = item && typeof item === "object" ? item : { label: String(item || "").trim() };
     const label = String(value.label || value.title || value.text || value.name || `Option ${index + 1}`).trim();
     if (!label) return null;
-    const statusRaw = String(value.status || value.decisionStatus || value.decision_status || "approved").trim();
-    const decisionStatus = HUMAN_GATE_STATUSES.has(statusRaw) ? statusRaw : "approved";
-    const role = String(value.role || value.buttonRole || value.button_role || (decisionStatus === "rejected" ? "reject" : "approve")).trim();
+    const roleRaw = String(value.role || value.buttonRole || value.button_role || "").trim();
+    const statusRaw = String(value.status || value.decisionStatus || value.decision_status || "").trim();
+    const decisionStatus = normalizeHumanGateDecisionStatus(statusRaw, humanGateDecisionStatusFromRole(roleRaw, "approved"));
+    const role = roleRaw || defaultHumanGateButtonRole(decisionStatus);
     return {
       label,
       decisionStatus,
       role,
-      style: value.style || (decisionStatus === "approved" ? "success" : decisionStatus === "rejected" ? "danger" : "secondary"),
+      style: value.style || defaultHumanGateButtonStyle(decisionStatus),
       artifactRef: String(value.artifactRef || value.artifact_ref || value.path || "").trim(),
       summary: String(value.summary || value.description || value.text || label).trim(),
       prompt: String(value.prompt || value.nextAction || value.next_action || "").trim(),
       payload: value
     };
   }).filter(Boolean);
+  const addDefaultControls = input.addDefaultControls !== false && input.appendDefaultControls !== false && input.noDefaultControls !== true && input.no_default_controls !== true;
+  if (!addDefaultControls || !options.length || !auditHumanGatePlanOptions(options).ok) return options;
+  return withHumanGateControlButtons(options, {}, input, input);
 }
 
 async function createHumanGateButtons(paths, input = {}) {
@@ -3862,7 +4525,8 @@ async function createHumanGateButtons(paths, input = {}) {
   const meetingId = String(input.meetingId || input.meeting_id || workflowId).trim();
   const createdBy = String(input.createdBy || input.created_by || input.from || "cat_claw").trim();
   const createdAt = nowIso();
-  const options = humanGateButtonOptions(input);
+  let options = humanGateButtonOptions(input);
+  if (!options.length) return [];
   const buttons = [];
   for (const [index, option] of options.entries()) {
     const callbackToken = textHash(`${humanGateId}:${index}:${option.label}:${createdAt}`).slice(0, 24);
@@ -3893,7 +4557,7 @@ function humanGateButtonPresentation(input = {}, buttons = []) {
   if (!buttons.length) return null;
   const text = String(input.text || input.summary || "").trim();
   return {
-    title: input.title || "Human Gate",
+    title: input.title || "Human Gate 确认",
     tone: "warning",
     blocks: [
       text ? { type: "text", text } : null,
@@ -3916,7 +4580,7 @@ function humanGateButtonFallbackText(input = {}, buttons = []) {
   const lines = [
     text,
     "",
-    "Human Gate 请选择按钮：",
+    "Human Gate 请点击一个按钮：",
     ...buttons.map((button) => `- [${button.label}] callback=${button.callbackData}`),
     "",
     "系统应使用按钮 callback 推进 workflow，不应根据自然语言猜测闪电猫意图。"
@@ -3930,6 +4594,16 @@ export async function humanGateRequest(rootDir, input) {
   const requester = normalizeRequester(input.from || input.sourceAgent || input.source_agent || input.ownerAgent || input.owner_agent, "cat_claw");
   const workflowId = firstText(input.workflowId, input.workflow_id, input.parentObjectId, input.parent_object_id, meetingId);
   const gateType = firstText(input.gateType, input.gate_type, "workflow_continuation");
+  const requestPayload = parseJsonValue(input.payload, input.payload || {});
+  const buttonSpecs = humanGateButtonSpecs(
+    { object_id: input.humanGateId || input.human_gate_id || "", path: "" },
+    { ...input, payload: requestPayload },
+    { ...input, raw: requestPayload }
+  );
+  const buttonAudit = auditHumanGatePlanOptions(buttonSpecs);
+  if (!buttonAudit.ok) {
+    throw new Error(`Human Gate request blocked: ${buttonAudit.reason}; cat-brain main must provide at least plan A, plan B, and plan C before cat_claw submits to Flashcat`);
+  }
   const gate = await workflowHumanGateRecord(rootDir, {
     ...input,
     workflowId,
@@ -3942,6 +4616,8 @@ export async function humanGateRequest(rootDir, input) {
   });
   const buttons = await createHumanGateButtons(paths, {
     ...input,
+    buttons: buttonSpecs,
+    addDefaultControls: false,
     workflowId,
     meetingId,
     humanGateId: gate.objectId,
@@ -3978,6 +4654,69 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
   return { meetingId, workflowId, humanGateId: gate.objectId, gateType, eventId, buttons, presentation, targetKind, targetRef, deliveryAccount, telegramOutbox, deliveryRequired: telegramOutbox.status === "queued" && !delivery, delivery, status: "pending", dbFile: paths.dbFile };
 }
 
+async function applyHumanGateWorkflowDecision(paths, button, selectedAt) {
+  const workflowId = String(button.workflow_id || "").trim();
+  if (!workflowId) return null;
+  const decisionStatus = normalizeHumanGateDecisionStatus(button.decision_status, "");
+  const role = String(button.button_role || "").trim();
+  if (decisionStatus === "approved" || decisionStatus === "rejected") {
+    await sqlite(paths.dbFile, `
+UPDATE workflow_runs
+SET status='active', current_decision=${sqlValue(`human_gate_${decisionStatus}`)}, updated_at=${sqlValue(selectedAt)}
+WHERE workflow_id=${sqlValue(workflowId)} AND status IN ('active','waiting_human','blocked','paused');`);
+    return { workflowId, workflowStatus: "active", currentDecision: `human_gate_${decisionStatus}` };
+  }
+  if (decisionStatus === "paused" || role === "pause") {
+    await sqlite(paths.dbFile, `
+UPDATE workflow_runs
+SET status='paused', current_decision='human_gate_paused', updated_at=${sqlValue(selectedAt)}
+WHERE workflow_id=${sqlValue(workflowId)};`);
+    await sqlite(paths.dbFile, `
+UPDATE control_loop_jobs
+SET status='cancelled', updated_at=${sqlValue(selectedAt)}, result_json=${sqlValue(JSON.stringify({ cancelledBy: "human_gate_pause", selectedAt }))}
+WHERE workflow_id=${sqlValue(workflowId)} AND status IN ('queued','running','retry_scheduled');`);
+    return { workflowId, workflowStatus: "paused", currentDecision: "human_gate_paused" };
+  }
+  if (decisionStatus === "terminated" || role === "terminate") {
+    const workflowRows = await sqlite(paths.dbFile, `SELECT payload_json FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
+    const existingPayload = parseJsonValue(workflowRows[0]?.payload_json, {});
+    const archivePayload = {
+      ...existingPayload,
+      archivedWorkflow: {
+      humanGateId: button.human_gate_id,
+      buttonId: button.button_id,
+      buttonLabel: button.label,
+      selectedAt,
+      archiveReason: "flashcat_completed_and_closed",
+      resumeAllowed: true,
+      resumeAction: "human_gate.resume or workflow.run status=active with the archived workflow_id"
+      }
+    };
+    await sqlite(paths.dbFile, `
+UPDATE workflow_runs
+SET status='stopped',
+    current_decision='human_gate_archived_complete',
+    current_phase='archived',
+    payload_json=${sqlValue(JSON.stringify(archivePayload))},
+    updated_at=${sqlValue(selectedAt)}
+WHERE workflow_id=${sqlValue(workflowId)};`);
+    await sqlite(paths.dbFile, `
+UPDATE workflow_tasks
+SET status='cancelled', blocked_reason='terminated by Human Gate button', completed_at=COALESCE(NULLIF(completed_at,''), ${sqlValue(selectedAt)}), updated_at=${sqlValue(selectedAt)}
+WHERE workflow_id=${sqlValue(workflowId)} AND status IN ('pending','in_progress','blocked');`);
+    await sqlite(paths.dbFile, `
+UPDATE mixed_meeting_dispatches
+SET status='cancelled', failure_type='workflow_terminated', last_error='cancelled by Human Gate terminate button', completed_at=COALESCE(NULLIF(completed_at,''), ${sqlValue(selectedAt)}), updated_at=${sqlValue(selectedAt)}
+WHERE workflow_id=${sqlValue(workflowId)} AND status='queued';`);
+    await sqlite(paths.dbFile, `
+UPDATE control_loop_jobs
+SET status='cancelled', updated_at=${sqlValue(selectedAt)}, result_json=${sqlValue(JSON.stringify({ cancelledBy: "human_gate_terminate", selectedAt }))}
+WHERE workflow_id=${sqlValue(workflowId)} AND status IN ('queued','running','retry_scheduled');`);
+    return { workflowId, workflowStatus: "stopped", currentDecision: "human_gate_archived_complete", archived: true, resumeAllowed: true };
+  }
+  return { workflowId, workflowStatus: "", currentDecision: "" };
+}
+
 export async function humanGateButtonCallback(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const rawToken = String(input.token || input.callbackToken || input.callback_token || input.payload || "").trim();
@@ -4004,6 +4743,7 @@ WHERE human_gate_id=${sqlValue(button.human_gate_id)} AND status='active';`);
 UPDATE protocol_objects
 SET status=${sqlValue(button.decision_status)}, updated_at=${sqlValue(selectedAt)}
 WHERE object_id=${sqlValue(button.human_gate_id)} AND object_type='human_gate_record';`);
+  const workflowDecision = await applyHumanGateWorkflowDecision(paths, button, selectedAt);
   const resume = await meetingResume(rootDir, {
     workflowRootDir: paths.root,
     meetingId: button.meeting_id || button.workflow_id,
@@ -4016,10 +4756,14 @@ WHERE object_id=${sqlValue(button.human_gate_id)} AND object_type='human_gate_re
       buttonId: button.button_id,
       callbackToken: token,
       status: button.decision_status,
-      source: "human_gate.button_callback"
+      role: button.button_role || "",
+      source: "human_gate.button_callback",
+      workflowDecision
     }
   });
   let dispatch = null;
+  let archiveCheckpoint = null;
+  const closeoutDispatches = [];
   if (["approved", "rejected"].includes(button.decision_status)) {
     const nextAction = button.decision_status === "approved"
       ? "Continue the next workflow round under the selected Human Gate button boundary."
@@ -4057,6 +4801,7 @@ WHERE object_id=${sqlValue(button.human_gate_id)} AND object_type='human_gate_re
         buttonId: button.button_id,
         buttonLabel: button.label,
         status: button.decision_status,
+        role: button.button_role || "",
         artifactRef: button.artifact_ref || "",
         summary: button.summary || "",
         selectedAt,
@@ -4066,6 +4811,73 @@ WHERE object_id=${sqlValue(button.human_gate_id)} AND object_type='human_gate_re
       }
     });
   }
+  if (workflowDecision?.archived) {
+    archiveCheckpoint = await workflowCheckpoint(rootDir, {
+      workflowRootDir: paths.root,
+      workflowId: button.workflow_id,
+      summary: `Flashcat selected Human Gate closeout button: ${button.label}. Archive the workflow as completed/closed while preserving resume state.`,
+      nextActions: [
+        "cat_brain main closes workflow state, confirms no pending unsafe side effects remain, and records resume boundary.",
+        "cat_claw prepares final Chinese closeout report with archive id, checkpoint id, and resume instructions."
+      ],
+      createdBy: "cat_claw"
+    });
+    closeoutDispatches.push(await meetingDispatch(rootDir, {
+      workflowRootDir: paths.root,
+      meetingId: button.meeting_id || button.workflow_id,
+      workflowId: button.workflow_id,
+      traceId: `${button.workflow_id}:human_gate_archive_main:${token}`,
+      idempotencyKey: `workflow:${button.workflow_id}:human_gate_archive_main:${button.button_id}`,
+      runtime: "openclaw",
+      agentId: "main",
+      dispatchType: "workflow_archive_closeout",
+      priority: "steer",
+      createdBy: actor,
+      prompt: [
+        "闪电猫点击了 Human Gate 终止/收口按钮。",
+        "语义：闪电猫认为本段工作成果已完成且复核满足要求，需要归档并结束该 workflow；这不是删除，也不是不可恢复。",
+        `Workflow ID: ${button.workflow_id}`,
+        `Human Gate ID: ${button.human_gate_id}`,
+        `Checkpoint ID: ${archiveCheckpoint?.checkpointId || ""}`,
+        "",
+        "请猫之脑 main 完成必要收口：确认任务状态、证据包、receipt、outbox、side-effect ledger 和恢复边界；如果未来闪电猫要求 resume，应从该 checkpoint/workflow_id 继续。"
+      ].join("\n"),
+      payload: {
+        workflowId: button.workflow_id,
+        humanGateId: button.human_gate_id,
+        checkpointId: archiveCheckpoint?.checkpointId || "",
+        archived: true,
+        resumeAllowed: true
+      }
+    }));
+    closeoutDispatches.push(await meetingDispatch(rootDir, {
+      workflowRootDir: paths.root,
+      meetingId: button.meeting_id || button.workflow_id,
+      workflowId: button.workflow_id,
+      traceId: `${button.workflow_id}:human_gate_archive_cat_claw:${token}`,
+      idempotencyKey: `workflow:${button.workflow_id}:human_gate_archive_cat_claw:${button.button_id}`,
+      runtime: "openclaw",
+      agentId: "cat_claw",
+      dispatchType: "workflow_archive_closeout_report",
+      priority: "steer",
+      createdBy: actor,
+      prompt: [
+        "闪电猫点击了 Human Gate 终止/收口按钮。",
+        "请猫爪以中文准备最终收口汇报，包含：工作流已归档、最终成果摘要、证据/receipt 指针、checkpoint id、未来 resume 方法和仍需注意的边界。",
+        `Workflow ID: ${button.workflow_id}`,
+        `Human Gate ID: ${button.human_gate_id}`,
+        `Checkpoint ID: ${archiveCheckpoint?.checkpointId || ""}`,
+        "不要生成新的方案；只做秘书收口和恢复指针说明。"
+      ].join("\n"),
+      payload: {
+        workflowId: button.workflow_id,
+        humanGateId: button.human_gate_id,
+        checkpointId: archiveCheckpoint?.checkpointId || "",
+        archived: true,
+        resumeAllowed: true
+      }
+    }));
+  }
   return {
     handled: true,
     status: button.decision_status,
@@ -4074,8 +4886,11 @@ WHERE object_id=${sqlValue(button.human_gate_id)} AND object_type='human_gate_re
     humanGateId: button.human_gate_id,
     buttonId: button.button_id,
     label: button.label,
+    workflowDecision,
+    archiveCheckpoint,
     resume,
     dispatch,
+    closeoutDispatches,
     replyText: `已记录 Human Gate 选择：${button.label}`,
     dbFile: paths.dbFile
   };
@@ -4221,6 +5036,499 @@ LIMIT ${limit};`, { json: true });
   return { status, count: rows.length, rows, dbFile: paths.dbFile };
 }
 
+async function acquireControlLoopLease(paths, input = {}) {
+  const owner = String(input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}`).trim();
+  const leaseMs = Math.max(10_000, Math.min(600_000, Number(input.leaseMs || input.lease_ms || 120_000)));
+  const now = Date.now();
+  const leaseFile = path.join(paths.bridgeDir, "control-loop-lease.json");
+  const lockDir = path.join(paths.bridgeDir, "control-loop.lock");
+  const current = await readOptionalJson(leaseFile);
+  const lockedUntil = Date.parse(current?.lockedUntil || "");
+  if (current?.owner && Number.isFinite(lockedUntil) && lockedUntil > now) {
+    return { acquired: false, owner: current.owner, lockedUntil: current.lockedUntil, leaseFile: relativeTo(paths.root, leaseFile) };
+  }
+  await fs.mkdir(paths.bridgeDir, { recursive: true });
+  try {
+    await fs.mkdir(lockDir);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    const latest = await readOptionalJson(leaseFile);
+    const latestLockedUntil = Date.parse(latest?.lockedUntil || "");
+    if (latest?.owner && Number.isFinite(latestLockedUntil) && latestLockedUntil > now) {
+      return { acquired: false, owner: latest.owner, lockedUntil: latest.lockedUntil, leaseFile: relativeTo(paths.root, leaseFile) };
+    }
+    await fs.rm(lockDir, { recursive: true, force: true });
+    try {
+      await fs.mkdir(lockDir);
+    } catch (retryError) {
+      if (retryError?.code === "EEXIST") {
+        return { acquired: false, owner: latest?.owner || "unknown", lockedUntil: latest?.lockedUntil || "", leaseFile: relativeTo(paths.root, leaseFile) };
+      }
+      throw retryError;
+    }
+  }
+  const lease = {
+    acquired: true,
+    owner,
+    acquiredAt: nowIso(),
+    lockedUntil: new Date(now + leaseMs).toISOString(),
+    leaseMs
+  };
+  await fs.writeFile(leaseFile, `${JSON.stringify(lease, null, 2)}\n`, "utf8");
+  return { ...lease, leaseFile: relativeTo(paths.root, leaseFile), lockDir: relativeTo(paths.root, lockDir) };
+}
+
+async function releaseControlLoopLease(paths, lease, result = {}) {
+  if (!lease?.acquired) return;
+  const leaseFile = path.join(paths.bridgeDir, "control-loop-lease.json");
+  const lockDir = path.join(paths.bridgeDir, "control-loop.lock");
+  const current = await readOptionalJson(leaseFile);
+  if (current?.owner !== lease.owner || current?.acquiredAt !== lease.acquiredAt) return;
+  await fs.writeFile(leaseFile, `${JSON.stringify({
+    owner: lease.owner,
+    status: result.status || "idle",
+    acquiredAt: lease.acquiredAt,
+    releasedAt: nowIso(),
+    lockedUntil: nowIso(),
+    lastTickId: result.tickId || "",
+    lastError: result.error || ""
+  }, null, 2)}\n`, "utf8");
+  await fs.rm(lockDir, { recursive: true, force: true });
+}
+
+function sqlStringList(values) {
+  return values.map((value) => sqlValue(value)).join(", ");
+}
+
+function controlLoopStatuses(input = {}) {
+  const requested = toList(input.workflowStatuses || input.workflow_statuses || input.statuses);
+  const statuses = requested.length ? requested : [...CONTROL_LOOP_WORKFLOW_STATUSES];
+  const valid = statuses.filter((status) => WORKFLOW_RUN_STATUSES.has(status));
+  return valid.length ? valid : [...CONTROL_LOOP_WORKFLOW_STATUSES];
+}
+
+async function appendControlLoopEvent(paths, tickId, phase, data = {}) {
+  await appendJsonl(path.join(paths.bridgeDir, "control-loop-events.jsonl"), {
+    ts: nowIso(),
+    tickId,
+    phase,
+    ...data
+  });
+}
+
+function controlLoopPriorityRank(priority) {
+  const value = String(priority || "normal").trim();
+  if (value === "flash") return -1;
+  if (value === "steer") return 0;
+  if (value === "high") return 1;
+  if (value === "normal") return 2;
+  if (value === "low") return 3;
+  return 4;
+}
+
+function controlLoopTickBudgetMs(input = {}) {
+  return Math.max(5_000, Math.min(30 * 60_000, Number(input.tickBudgetMs || input.tick_budget_ms || 60_000)));
+}
+
+function controlLoopTimeoutSeconds(input = {}) {
+  return Math.max(5, Math.min(900, Number(input.timeoutSeconds || input.timeout_seconds || 45)));
+}
+
+function controlLoopJobLeaseMs(input = {}) {
+  const requested = Math.max(10_000, Math.min(60 * 60_000, Number(input.jobLeaseMs || input.job_lease_ms || 120_000)));
+  const minSafe = Math.max(controlLoopTickBudgetMs(input) + 30_000, (controlLoopTimeoutSeconds(input) + 30) * 1000);
+  return Math.max(requested, minSafe);
+}
+
+async function enqueueControlLoopJob(paths, input = {}) {
+  const jobType = String(input.jobType || input.job_type || "").trim();
+  if (!jobType) throw new Error("control loop jobType is required");
+  const dedupeKey = String(input.dedupeKey || input.dedupe_key || jobType).trim();
+  const activeStatuses = [...CONTROL_LOOP_ACTIVE_JOB_STATUSES].map(sqlValue).join(",");
+  const existing = await sqlite(paths.dbFile, `
+SELECT job_id, job_type, status, attempt, next_run_at
+FROM control_loop_jobs
+WHERE dedupe_key=${sqlValue(dedupeKey)} AND status IN (${activeStatuses})
+LIMIT 1;`, { json: true });
+  if (existing[0]) return { jobId: existing[0].job_id, jobType, dedupeKey, status: existing[0].status, deduped: true };
+  const jobId = input.jobId || input.job_id || safeId("ctljob");
+  const createdAt = nowIso();
+  const payload = parseJsonValue(input.payload, input.payload || {});
+  await sqlite(paths.dbFile, `
+INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, created_at, updated_at)
+VALUES (${sqlValue(jobId)}, ${sqlValue(jobType)}, ${sqlValue(dedupeKey)}, ${sqlValue(input.priority || "normal")}, 'queued', ${sqlValue(input.workflowId || input.workflow_id || "")}, ${sqlValue(input.runtime || "")}, ${sqlValue(JSON.stringify(payload))}, '{}', 0, ${sqlValue(Number(input.maxAttempts || input.max_attempts || 20))}, ${sqlValue(input.nextRunAt || input.next_run_at || createdAt)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
+  return { jobId, jobType, dedupeKey, status: "queued", deduped: false };
+}
+
+async function seedControlLoopJobs(paths, input = {}) {
+  const seeded = [];
+  const maxWorkflows = Math.max(1, Math.min(100, Number(input.maxWorkflowSeed || input.max_workflow_seed || input.maxWorkflows || input.max_workflows || 20)));
+  const runtimeLimit = Math.max(1, Math.min(20, Number(input.runtimeLimit || input.runtime_limit || input.limit || 1)));
+  const outboxLimit = Math.max(1, Math.min(20, Number(input.outboxLimit || input.outbox_limit || 5)));
+  const timeoutSeconds = controlLoopTimeoutSeconds(input);
+  const autoDispatch = boolOption(input.autoDispatch ?? input.auto_dispatch, true);
+  const autoReport = boolOption(input.autoReport ?? input.auto_report, false);
+  const drainQueued = boolOption(input.drainQueued ?? input.drain_queued, true);
+  const deliverOutbox = boolOption(input.deliverOutbox ?? input.deliver_outbox, true);
+  const ensureHumanGateRequests = boolOption(input.ensureHumanGateRequests ?? input.ensure_human_gate_requests, true);
+  const createHumanGateInbox = boolOption(input.createHumanGateInbox ?? input.create_human_gate_inbox, true);
+  const reportRuntime = normalizeRuntime(input.reportRuntime || input.report_runtime || "openclaw");
+  const reportAgent = normalizeAgentId(input.reportAgent || input.report_agent || "cat_claw");
+  const staleDispatchAfterMs = Math.max(5 * 60_000, Number(input.staleDispatchAfterMs || input.stale_dispatch_after_ms || Math.max(30 * 60_000, (timeoutSeconds + 60) * 1000)));
+  const staleDispatchCutoff = new Date(Date.now() - staleDispatchAfterMs).toISOString();
+  const dispatchReconcileLimit = Math.max(1, Math.min(100, Number(input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20)));
+  const statuses = controlLoopStatuses(input);
+
+  const workflowRows = await sqlite(paths.dbFile, `
+SELECT workflow_id, status, current_decision, payload_json, updated_at
+FROM workflow_runs
+WHERE status IN (${sqlStringList(statuses)})
+ORDER BY
+  CASE status WHEN 'waiting_human' THEN 0 WHEN 'blocked' THEN 1 ELSE 2 END,
+  updated_at
+LIMIT ${maxWorkflows};`, { json: true });
+  for (const row of workflowRows) {
+    const payload = parseJsonValue(row.payload_json, {});
+    const flashLane = boolOption(payload.flashLane ?? payload.flash_lane ?? payload.tradingExecution ?? payload.trading_execution, false);
+    seeded.push(await enqueueControlLoopJob(paths, {
+      jobType: "workflow_supervise",
+      dedupeKey: `workflow_supervise:${row.workflow_id}`,
+      priority: flashLane ? "flash" : row.status === "waiting_human" ? "steer" : row.status === "blocked" ? "high" : "normal",
+      workflowId: row.workflow_id,
+      payload: {
+        workflowId: row.workflow_id,
+        meetingId: row.workflow_id,
+        flashLane,
+        autoDispatch,
+        autoReport,
+        reportRuntime,
+        reportAgent,
+        runtimeLimit,
+        timeoutSeconds,
+        maxCycles: input.maxCycles || input.max_cycles || 1
+      }
+    }));
+  }
+
+  const staleDispatchRows = await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM mixed_meeting_dispatches
+WHERE status='sent' AND updated_at < ${sqlValue(staleDispatchCutoff)};`, { json: true });
+  if (Number(staleDispatchRows[0]?.count || 0) > 0) {
+    seeded.push(await enqueueControlLoopJob(paths, {
+      jobType: "stale_dispatch_reconcile",
+      dedupeKey: "stale_dispatch_reconcile",
+      priority: "high",
+      payload: { limit: dispatchReconcileLimit, staleDispatchAfterMs }
+    }));
+  }
+
+  if (drainQueued) {
+    const runtimes = toList(input.runtimes || input.runtime || "hermes_acp").filter((runtime) => RUNTIMES.has(normalizeRuntime(runtime))).map(normalizeRuntime);
+    for (const runtime of runtimes) {
+      const rows = await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM mixed_meeting_dispatches
+WHERE status='queued' AND runtime=${sqlValue(runtime)}
+  AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())});`, { json: true });
+      if (Number(rows[0]?.count || 0) <= 0) continue;
+      const hasFlash = Number((await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM mixed_meeting_dispatches
+WHERE status='queued' AND runtime=${sqlValue(runtime)} AND priority='flash'
+  AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())});`, { json: true }))[0]?.count || 0) > 0;
+      seeded.push(await enqueueControlLoopJob(paths, {
+        jobType: "runtime_drain",
+        dedupeKey: `runtime_drain:${runtime}`,
+        priority: hasFlash ? "flash" : "high",
+        runtime,
+        payload: { runtime, limit: runtimeLimit, timeoutSeconds }
+      }));
+    }
+  }
+
+  if (ensureHumanGateRequests) {
+    const rows = await sqlite(paths.dbFile, `SELECT COUNT(*) AS count FROM protocol_objects WHERE object_type='human_gate_record' AND status='pending';`, { json: true });
+    if (Number(rows[0]?.count || 0) > 0) {
+      const flashRows = await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM protocol_objects
+WHERE object_type='human_gate_record' AND status='pending'
+  AND (
+    payload_json LIKE ${sqlValue('%"flashLane":true%')}
+    OR payload_json LIKE ${sqlValue('%"flash_lane":true%')}
+    OR payload_json LIKE ${sqlValue('%live_trade%')}
+    OR payload_json LIKE ${sqlValue('%real_trade%')}
+    OR payload_json LIKE ${sqlValue('%真实交易%')}
+    OR payload_json LIKE ${sqlValue('%实盘%')}
+  );`, { json: true });
+      seeded.push(await enqueueControlLoopJob(paths, {
+        jobType: "human_gate_request_ensure",
+        dedupeKey: "human_gate_request_ensure",
+        priority: Number(flashRows[0]?.count || 0) > 0 ? "flash" : "steer",
+        payload: { limit: input.humanGateRequestLimit || input.human_gate_request_limit || 5 }
+      }));
+    }
+  }
+
+  if (deliverOutbox) {
+    const rows = await sqlite(paths.dbFile, `SELECT COUNT(*) AS count FROM telegram_outbox WHERE status='queued';`, { json: true });
+    if (Number(rows[0]?.count || 0) > 0) {
+      seeded.push(await enqueueControlLoopJob(paths, {
+        jobType: "telegram_outbox_deliver",
+        dedupeKey: "telegram_outbox_deliver",
+        priority: "high",
+        payload: { limit: outboxLimit }
+      }));
+    }
+  }
+
+  if (createHumanGateInbox) {
+    const recentCutoff = new Date(Date.now() - Math.max(60_000, Math.min(24 * 3600_000, Number(input.humanGateInboxIntervalMs || input.human_gate_inbox_interval_ms || 30 * 60_000)))).toISOString();
+    const recent = await sqlite(paths.dbFile, `SELECT batch_id FROM human_gate_batches WHERE created_at >= ${sqlValue(recentCutoff)} LIMIT 1;`, { json: true });
+    const pending = await sqlite(paths.dbFile, `
+SELECT
+  (SELECT COUNT(*) FROM protocol_objects WHERE object_type='human_gate_record' AND status='pending') +
+  (SELECT COUNT(*) FROM review_gates WHERE status='pending' OR (human_gate_required=1 AND status NOT IN ('approved','rejected','waived','expired','cancelled','done'))) +
+  (SELECT COUNT(*) FROM workflow_tasks WHERE human_gate_required=1 AND status NOT IN ('done','failed','cancelled')) +
+  (SELECT COUNT(*) FROM telegram_outbox WHERE status IN ('queued','failed') AND message_type IN ('workflow_secretary_report','human_gate_report','human_gate_request')) AS count;`, { json: true });
+    if (!recent[0] && Number(pending[0]?.count || 0) > 0) {
+      seeded.push(await enqueueControlLoopJob(paths, {
+        jobType: "human_gate_inbox",
+        dedupeKey: "human_gate_inbox",
+        priority: "normal",
+        payload: { limit: input.humanGateInboxLimit || input.human_gate_inbox_limit || 100 }
+      }));
+    }
+  }
+
+  return seeded;
+}
+
+async function claimControlLoopJobs(paths, input = {}) {
+  const owner = String(input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}`).trim();
+  const limit = Math.max(1, Math.min(20, Number(input.jobLimit || input.job_limit || 4)));
+  const leaseMs = controlLoopJobLeaseMs(input);
+  const now = nowIso();
+  const leaseUntil = new Date(Date.now() + leaseMs).toISOString();
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM control_loop_jobs
+WHERE (
+    status IN ('queued','retry_scheduled')
+    AND (next_run_at IS NULL OR next_run_at='' OR next_run_at <= ${sqlValue(now)})
+  )
+  OR (status='running' AND lease_until <= ${sqlValue(now)})
+ORDER BY
+  CASE priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+  created_at
+LIMIT ${limit};`, { json: true });
+  const claimed = [];
+  for (const row of rows) {
+    await sqlite(paths.dbFile, `
+UPDATE control_loop_jobs
+SET status='running',
+    attempt=attempt+1,
+    lease_owner=${sqlValue(owner)},
+    lease_until=${sqlValue(leaseUntil)},
+    updated_at=${sqlValue(now)}
+WHERE job_id=${sqlValue(row.job_id)}
+  AND (
+    status IN ('queued','retry_scheduled')
+    OR (status='running' AND lease_until <= ${sqlValue(now)})
+  );`);
+    const latest = await sqlite(paths.dbFile, `SELECT * FROM control_loop_jobs WHERE job_id=${sqlValue(row.job_id)} AND status='running' AND lease_owner=${sqlValue(owner)} LIMIT 1;`, { json: true });
+    if (latest[0]) claimed.push(latest[0]);
+  }
+  return claimed;
+}
+
+async function completeControlLoopJob(paths, job, result = {}) {
+  await sqlite(paths.dbFile, `
+UPDATE control_loop_jobs
+SET status='done',
+    result_json=${sqlValue(JSON.stringify(result))},
+    lease_owner='',
+    lease_until='',
+    completed_at=${sqlValue(nowIso())},
+    updated_at=${sqlValue(nowIso())}
+WHERE job_id=${sqlValue(job.job_id)};`);
+}
+
+async function failControlLoopJob(paths, job, error) {
+  const message = String(error?.message || error).slice(0, 1000);
+  const attempt = Number(job.attempt || 0);
+  const maxAttempts = Number(job.max_attempts || 20);
+  const retry = attempt < maxAttempts;
+  const delayMs = Math.min(5 * 60_000, 5_000 * Math.max(1, attempt));
+  const nextRunAt = retry ? new Date(Date.now() + delayMs).toISOString() : "";
+  await sqlite(paths.dbFile, `
+UPDATE control_loop_jobs
+SET status=${sqlValue(retry ? "retry_scheduled" : "failed")},
+    last_error=${sqlValue(message)},
+    next_run_at=${sqlValue(nextRunAt)},
+    lease_owner='',
+    lease_until='',
+    updated_at=${sqlValue(nowIso())}
+WHERE job_id=${sqlValue(job.job_id)};`);
+  return { status: retry ? "retry_scheduled" : "failed", error: message, nextRunAt };
+}
+
+async function runControlLoopJob(rootDir, paths, job, input = {}) {
+  const payload = parseJsonValue(job.payload_json, {});
+  if (job.job_type === "workflow_supervise") {
+    const workflowId = job.workflow_id || payload.workflowId || payload.workflow_id;
+    const supervised = await workflowSupervisor(rootDir, {
+      ...input,
+      ...payload,
+      workflowRootDir: paths.root,
+      workflowId,
+      meetingId: payload.meetingId || payload.meeting_id || workflowId,
+      drain: false,
+      checkpoint: false,
+      dryRun: false
+    });
+    return {
+      workflowId,
+      decision: supervised.finalAdvance?.decision || "",
+      dispatched: supervised.dispatched?.length || 0,
+      catClawReportDispatchId: supervised.catClawReport?.dispatchId || ""
+    };
+  }
+  if (job.job_type === "runtime_drain") {
+    return runtimeBridgeDrain(rootDir, {
+      ...input,
+      workflowRootDir: paths.root,
+      runtime: payload.runtime || job.runtime,
+      limit: payload.limit || input.runtimeLimit || input.runtime_limit || 1,
+      timeoutSeconds: payload.timeoutSeconds || payload.timeout_seconds || input.timeoutSeconds || input.timeout_seconds || 45,
+      dryRun: false
+    });
+  }
+  if (job.job_type === "stale_dispatch_reconcile") {
+    return staleDispatchReconcile(rootDir, {
+      ...input,
+      workflowRootDir: paths.root,
+      limit: payload.limit || input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20,
+      staleDispatchAfterMs: payload.staleDispatchAfterMs || payload.stale_dispatch_after_ms || input.staleDispatchAfterMs || input.stale_dispatch_after_ms
+    });
+  }
+  if (job.job_type === "human_gate_request_ensure") {
+    return ensurePendingHumanGateRequests(rootDir, paths, { ...input, ...payload });
+  }
+  if (job.job_type === "telegram_outbox_deliver") {
+    return telegramOutbox(rootDir, {
+      ...input,
+      workflowRootDir: paths.root,
+      operation: "deliver",
+      status: "queued",
+      limit: payload.limit || input.outboxLimit || input.outbox_limit || 5,
+      account: input.account || "cat_claw"
+    });
+  }
+  if (job.job_type === "human_gate_inbox") {
+    return humanGateInbox(rootDir, {
+      ...input,
+      ...payload,
+      workflowRootDir: paths.root,
+      target: input.target || DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
+      from: input.from || "cat_claw"
+    });
+  }
+  throw new Error(`unknown control loop job type: ${job.job_type}`);
+}
+
+export async function workflowControlLoopTick(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const tickId = input.tickId || input.tick_id || safeId("workflow_tick");
+  const startedAt = nowIso();
+  const lease = await acquireControlLoopLease(paths, input);
+  if (!lease.acquired) {
+    return { tickId, status: "skipped_lease_held", startedAt, lease, dbFile: paths.dbFile };
+  }
+
+  const result = {
+    tickId,
+    status: "running",
+    startedAt,
+    lease,
+    readinessBefore: null,
+    readinessAfter: null,
+    seededJobs: [],
+    claimedJobs: [],
+    jobResults: [],
+    dbFile: paths.dbFile
+  };
+
+  try {
+    const tickBudgetMs = controlLoopTickBudgetMs(input);
+    const timeoutSeconds = controlLoopTimeoutSeconds(input);
+    const jobLeaseMs = controlLoopJobLeaseMs(input);
+    const dryRun = boolOption(input.dryRun ?? input.dry_run, false);
+    const jobLimit = Math.max(1, Math.min(20, Number(input.jobLimit || input.job_limit || input.maxJobs || input.max_jobs || 4)));
+    const startedAtMs = Date.now();
+    const withinBudget = () => Date.now() - startedAtMs < tickBudgetMs;
+
+    await appendControlLoopEvent(paths, tickId, "started", { lease, tickBudgetMs, timeoutSeconds, jobLeaseMs, jobLimit, dryRun });
+    await appendControlLoopEvent(paths, tickId, "readiness_before_started");
+    result.readinessBefore = await workflowReadinessSnapshot(paths, { ...input, activeChecks: false });
+    await appendControlLoopEvent(paths, tickId, "readiness_before_completed", { status: result.readinessBefore?.status || "" });
+
+    if (!dryRun) {
+      await appendControlLoopEvent(paths, tickId, "job_seed_started");
+      result.seededJobs = await seedControlLoopJobs(paths, input);
+      await appendControlLoopEvent(paths, tickId, "job_seed_completed", { count: result.seededJobs.length });
+
+      for (let index = 0; index < jobLimit && withinBudget(); index += 1) {
+        const [job] = await claimControlLoopJobs(paths, { ...input, jobLimit: 1, jobLeaseMs, tickBudgetMs, timeoutSeconds });
+        if (!job) break;
+        const jobSummary = {
+          jobId: job.job_id,
+          jobType: job.job_type,
+          dedupeKey: job.dedupe_key,
+          priority: job.priority,
+          workflowId: job.workflow_id || "",
+          runtime: job.runtime || "",
+          attempt: job.attempt
+        };
+        result.claimedJobs.push(jobSummary);
+        await appendControlLoopEvent(paths, tickId, "job_started", jobSummary);
+        try {
+          const jobResult = await runControlLoopJob(rootDir, paths, job, input);
+          await completeControlLoopJob(paths, job, jobResult);
+          result.jobResults.push({ ...jobSummary, status: "done", result: jobResult });
+          await appendControlLoopEvent(paths, tickId, "job_completed", { ...jobSummary, status: "done" });
+        } catch (error) {
+          const failed = await failControlLoopJob(paths, job, error);
+          result.jobResults.push({ ...jobSummary, ...failed });
+          await appendControlLoopEvent(paths, tickId, "job_failed", { ...jobSummary, ...failed });
+        }
+      }
+    } else {
+      result.seededJobs = [];
+      result.jobResults.push({ status: "dry_run", summary: "control loop queue was not mutated" });
+    }
+
+    await appendControlLoopEvent(paths, tickId, "readiness_after_started");
+    result.readinessAfter = await workflowReadinessSnapshot(paths, { ...input, activeChecks: false });
+    await appendControlLoopEvent(paths, tickId, "readiness_after_completed", { status: result.readinessAfter?.status || "" });
+    result.status = "ok";
+    result.completedAt = nowIso();
+    await appendJsonl(path.join(paths.bridgeDir, "control-loop.jsonl"), result);
+    await appendControlLoopEvent(paths, tickId, "completed", { status: result.status });
+    return result;
+  } catch (error) {
+    result.status = "failed";
+    result.error = String(error?.message || error).slice(0, 2000);
+    result.completedAt = nowIso();
+    await appendJsonl(path.join(paths.bridgeDir, "control-loop.jsonl"), result);
+    await appendControlLoopEvent(paths, tickId, "failed", { error: result.error });
+    return result;
+  } finally {
+    await releaseControlLoopLease(paths, lease, result);
+  }
+}
+
 export async function cat_clawAudit(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const staleDays = Number(input.staleDays || input.stale_days || 30);
@@ -4297,6 +5605,10 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.supervise":
     case "workflow.supervisor":
       return workflowSupervisor(rootDir, input);
+    case "workflow.control_loop.tick":
+    case "workflow.loop.tick":
+    case "workflow.reconciler.tick":
+      return workflowControlLoopTick(rootDir, input);
     case "workflow.checkpoint":
     case "workflow.context_checkpoint":
     case "context.checkpoint":
@@ -4314,6 +5626,10 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return meetingDispatch(rootDir, input);
     case "meeting.ingest":
       return meetingIngest(rootDir, input);
+    case "workflow.dispatch.reconcile":
+    case "dispatch.reconcile":
+    case "stale_dispatch.reconcile":
+      return staleDispatchReconcile(rootDir, input);
     case "runtime.bridge":
     case "runtime.bridge.drain":
       return runtimeBridgeDrain(rootDir, input);
