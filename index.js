@@ -1651,7 +1651,7 @@ function controlLoopConfig(api) {
     timeoutSeconds,
     owner: String(configured.owner || "openclaw-plugin").trim() || "openclaw-plugin",
     workerMode: String(configured.workerMode || "process").trim() || "process",
-    runtimes: String(configured.runtimes || "hermes_acp").trim() || "hermes_acp",
+    runtimes: String(configured.runtimes || "openclaw_route_shell,hermes_acp").trim() || "openclaw_route_shell,hermes_acp",
     reportRuntime: String(configured.reportRuntime || "openclaw").trim() || "openclaw",
     reportAgent: String(configured.reportAgent || "cat_claw").trim() || "cat_claw",
     drain: configured.drain !== false,

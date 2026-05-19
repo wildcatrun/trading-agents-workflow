@@ -4547,10 +4547,34 @@ export async function meetingDispatch(rootDir, input) {
   const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
   const runtime = normalizeRuntime(input.runtime);
   const agentId = normalizeAgentId(input.agentId || input.agent_id || input.target || "main");
-  const agent = await ensureRuntimeAgent(paths, { runtime, agentId, displayName: input.displayName || input.display_name || "", preserveExisting: true });
   const workflowId = String(input.workflowId || input.workflow_id || meetingId).trim();
   const traceId = String(input.traceId || input.trace_id || safeId("trace")).trim();
   const idempotencyKey = String(input.idempotencyKey || input.idempotency_key || "").trim();
+  if (runtime === "openclaw_route_shell") {
+    return routeShellIngest(rootDir, {
+      ...input,
+      runtime: undefined,
+      meetingId,
+      workflowId,
+      traceId,
+      idempotencyKey,
+      routeAgentId: agentId,
+      text: input.prompt || input.text || "",
+      sourceSystem: input.sourceSystem || input.source_system || input.source || "workflow_dispatch",
+      sourceRuntime: "openclaw_route_shell",
+      dispatchType: input.dispatchType || input.dispatch_type || "route_shell_forward",
+      payload: {
+        originalDispatchRequest: {
+          runtime,
+          agentId,
+          dispatchType: input.dispatchType || input.dispatch_type || "",
+          createdBy: input.createdBy || input.created_by || input.chair || "",
+          payload: parseJsonValue(input.payload, input.payload || {})
+        }
+      }
+    });
+  }
+  const agent = await ensureRuntimeAgent(paths, { runtime, agentId, displayName: input.displayName || input.display_name || "", preserveExisting: true });
   if (idempotencyKey) {
     const existing = await sqlite(paths.dbFile, `SELECT * FROM mixed_meeting_dispatches WHERE idempotency_key=${sqlValue(idempotencyKey)} LIMIT 1;`, { json: true });
     if (existing[0]) {
@@ -4745,6 +4769,8 @@ LIMIT 1;`, { json: true });
         routeRuntime: "openclaw_route_shell",
         targetRuntime: existing.runtime,
         targetAgentId: existing.agent_id,
+        runtime: existing.runtime,
+        agentId: existing.agent_id,
         meetingId: existing.meeting_id,
         workflowId: existing.workflow_id || workflowId,
         traceId: existing.trace_id || traceId,
@@ -4816,6 +4842,8 @@ LIMIT 1;`, { json: true });
     routeRuntime: "openclaw_route_shell",
     targetRuntime: dispatch.runtime,
     targetAgentId: dispatch.agentId,
+    runtime: dispatch.runtime,
+    agentId: dispatch.agentId,
     meetingId,
     workflowId,
     traceId,
@@ -5373,6 +5401,72 @@ async function runOpenClawDispatch(paths, row, input = {}) {
   }
 }
 
+async function redirectQueuedRouteShellDispatch(paths, row, input = {}) {
+  const payload = parseJsonValue(row.payload_json, {});
+  const result = await routeShellIngest(paths.root, {
+    ...input,
+    runtime: undefined,
+    meetingId: row.meeting_id,
+    workflowId: row.workflow_id || payload.workflowId || row.meeting_id,
+    traceId: row.trace_id || payload.traceId || safeId("route_trace"),
+    idempotencyKey: `route-shell-forward:${row.dispatch_id}`,
+    routeAgentId: row.agent_id,
+    text: row.prompt || payload.prompt || "",
+    sourceMessageId: `dispatch-${row.dispatch_id}`,
+    sourceSystem: "runtime_bridge:openclaw_route_shell",
+    sourceRuntime: "openclaw_route_shell",
+    dispatchType: row.dispatch_type || payload.dispatchType || "route_shell_forward",
+    priority: row.priority || "normal",
+    maxAttempts: row.max_attempts || 1,
+    recordIngress: true,
+    payload: {
+      redirectedFromDispatch: {
+        dispatchId: row.dispatch_id,
+        runtime: row.runtime,
+        agentId: row.agent_id,
+        dispatchType: row.dispatch_type,
+        idempotencyKey: row.idempotency_key,
+        createdAt: row.created_at
+      },
+      originalPayload: payload
+    }
+  });
+  if (result.ok) {
+    await updateDispatch(paths, row.dispatch_id, "cancelled", {
+      adapter: "route_shell_redirect",
+      completedAt: nowIso(),
+      redirectedToDispatchId: result.dispatchId,
+      redirectedToRuntime: result.targetRuntime,
+      redirectedToAgentId: result.targetAgentId
+    });
+    return {
+      dispatchId: row.dispatch_id,
+      runtime: row.runtime,
+      agentId: row.agent_id,
+      status: "redirected",
+      redirectedToDispatchId: result.dispatchId,
+      redirectedToRuntime: result.targetRuntime,
+      redirectedToAgentId: result.targetAgentId,
+      targetStatus: result.status,
+      deduped: result.deduped
+    };
+  }
+  await updateDispatch(paths, row.dispatch_id, "failed", {
+    adapter: "route_shell_redirect",
+    failedAt: nowIso(),
+    failureType: "route_shell_target_unavailable",
+    error: result.reason || "route-shell redirect failed"
+  });
+  return {
+    dispatchId: row.dispatch_id,
+    runtime: row.runtime,
+    agentId: row.agent_id,
+    status: "failed",
+    failureType: "route_shell_target_unavailable",
+    error: result.reason || "route-shell redirect failed"
+  };
+}
+
 export async function runtimeBridgeDrain(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const runtime = normalizeRuntime(input.runtime || "hermes");
@@ -5394,7 +5488,9 @@ LIMIT ${limit};`, { json: true });
   if (dryRun) return { runtime, dryRun: true, count: rows.length, dispatches: rows.map((row) => ({ dispatchId: row.dispatch_id, meetingId: row.meeting_id, workflowId: row.workflow_id, traceId: row.trace_id, agentId: row.agent_id, attempt: row.attempt, maxAttempts: row.max_attempts, endpointRef: row.endpoint_ref })) };
   const results = [];
   for (const row of rows) {
-    if (runtime === "hermes_acp") {
+    if (runtime === "openclaw_route_shell") {
+      results.push(await redirectQueuedRouteShellDispatch(paths, row, input));
+    } else if (runtime === "hermes_acp") {
       results.push(await runHermesAcpDispatch(paths, row, input));
     } else if (runtime === "hermes") {
       results.push(await runHermesDispatch(paths, row, input));

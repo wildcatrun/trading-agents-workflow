@@ -80,6 +80,8 @@ This is fail-closed by default. If the route-shell registry row or primary runti
 
 The hook also applies in-process single-flight by route-shell agent, channel, and source message id. Concurrent provider retries for the same Telegram message wait on the same routing promise instead of creating a thundering herd against SQLite. SQLite unique idempotency still remains the durable backstop across process restarts.
 
+The same rule applies to workflow and scripted dispatches. Calls to `meeting.dispatch` or workflow advancement that request `runtime=openclaw_route_shell` are rewritten at creation time into a dispatch for the agent's active primary runtime, normally `hermes_acp`. The route-shell dispatch is not inserted as executable work. If an older queued `openclaw_route_shell` dispatch already exists, `runtime.bridge.drain runtime=openclaw_route_shell` redirects it to the primary runtime and marks the original row as redirected/cancelled for audit. Route-shell is therefore an IM/Gateway identity and audit anchor, not an execution target.
+
 Configuration example:
 
 ```json
@@ -387,7 +389,7 @@ node bin/cat-meeting-governance.mjs workflow-supervise-preview --workflow demo-i
 
 Use `workflow.control_loop.tick` as the plugin-internal 10s reconciler tick. The tick period is a scheduling cadence, not a promise that all workflow work finishes inside 10 seconds. Each tick records readiness, seeds durable `control_loop_jobs`, claims a bounded number of jobs, executes those jobs, and leaves unfinished work queued for later ticks. Queue jobs cover workflow supervision, stale dispatch reconciliation, runtime drain, pending Human Gate request/button/outbox ensure, Telegram outbox delivery, and Human Gate inbox batch creation. Phase progress is written to `bridge/control-loop-events.jsonl`; tick summaries go to `bridge/control-loop.jsonl`. A file lease at `bridge/control-loop-lease.json` prevents overlapping ticks, while each queue job has its own DB lease, retry, and attempt state.
 
-The OpenClaw plugin can run this loop when `controlLoop.enabled=true` in plugin config or `TRADING_AGENTS_WORKFLOW_CONTROL_LOOP=1` is set. The recommended tick period is `10000` ms. Startup does not run an immediate tick by default; set `controlLoop.startupTick=true` only after Gateway startup load is known to be safe. The default `controlLoop.workerMode` is `process`, so the plugin launches a bounded Node worker process for each tick instead of running jobs inside the Gateway event loop. Defaults are conservative: `jobLimit=4`, `runtimeLimit=1`, `timeoutSeconds=45`, `tickBudgetMs=60000`, and `autoReport=false`. Runtime drain defaults to `hermes_acp`; add `openclaw` only as an explicit, reviewed exception because it calls back into the Gateway process.
+The OpenClaw plugin can run this loop when `controlLoop.enabled=true` in plugin config or `TRADING_AGENTS_WORKFLOW_CONTROL_LOOP=1` is set. The recommended tick period is `10000` ms. Startup does not run an immediate tick by default; set `controlLoop.startupTick=true` only after Gateway startup load is known to be safe. The default `controlLoop.workerMode` is `process`, so the plugin launches a bounded Node worker process for each tick instead of running jobs inside the Gateway event loop. Defaults are conservative: `jobLimit=4`, `runtimeLimit=1`, `timeoutSeconds=45`, `tickBudgetMs=60000`, and `autoReport=false`. Runtime drain defaults to `openclaw_route_shell,hermes_acp`: route-shell rows are redirected to primary runtime, while professional work is drained through Hermes ACP. Add `openclaw` only as an explicit, reviewed exception because it calls back into the Gateway process.
 
 Timeouts are layered. `tickMs` is only cadence. `timeoutSeconds` bounds runtime dispatch work. `tickBudgetMs` is the per-worker budget. `jobLeaseMs` is the queue lease and is automatically raised to at least `max(tickBudgetMs + 30000, (timeoutSeconds + 30) * 1000)`, so a long but valid job should not be re-claimed while its worker can still be alive. If a worker crashes or is killed, the job becomes claimable again only after its lease expires.
 
@@ -409,7 +411,7 @@ CLI example:
 node bin/cat-meeting-governance.mjs workflow-control-loop-tick \
   --tick-ms 10000 \
   --max-workflows 2 \
-  --runtime hermes_acp \
+  --runtime openclaw_route_shell,hermes_acp \
   --limit 1 \
   --root "$ROOT"
 ```
