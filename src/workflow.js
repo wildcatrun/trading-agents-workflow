@@ -5350,7 +5350,7 @@ VALUES (${sqlValue(runtimeRunId)}, ${sqlValue(row.dispatch_id)}, ${sqlValue(row.
 }
 
 async function runHermesDispatch(paths, row, input = {}) {
-  const adapter = String(input.adapterName || input.adapter_name || "hermes").trim() || "hermes";
+  const adapter = String(input.adapterName || input.adapter_name || "cli").trim() || "cli";
   const hermesBin = resolveHome(input.hermesBin || input.hermes_bin || process.env.HERMES_BIN || "/home/flashcat/hermes-agent/venv/bin/hermes");
   const proxyEnv = {
     HTTP_PROXY: input.httpProxy || input.http_proxy || process.env.HTTP_PROXY || "http://127.0.0.1:7890",
@@ -5490,29 +5490,39 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
   const timeoutSeconds = Math.max(30, Math.min(3600, Number(input.timeoutSeconds || input.timeout_seconds || 900)));
   const sessionKey = cleanFileSegment(input.sessionKey || input.session_key || `workflow-${row.meeting_id}-${row.agent_id}`);
   const prompt = buildRuntimeBridgePrompt(row);
+  const startedAt = nowIso();
+  const attempt = Number(row.attempt || 0) + 1;
   let backend;
   try {
     backend = await resolveAcpBackend(backendId);
   } catch (error) {
-    const fallbackDisabled = String(input.acpCliFallback ?? input.acp_cli_fallback ?? "true").trim() === "false";
-    if (fallbackDisabled) throw error;
+    const failedAt = nowIso();
+    const message = error instanceof Error ? error.message : String(error);
+    const failureType = "acp_unavailable";
+    const shouldRetry = attempt < Number(row.max_attempts || 1);
+    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
+    const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, retry: shouldRetry, failClosed: true } });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
-      ts: nowIso(),
-      event: "runtime_dispatch_fallback",
+      ts: failedAt,
+      event: "runtime_dispatch_failed",
       dispatchId: row.dispatch_id,
       meetingId: row.meeting_id,
       runtime: row.runtime,
       agentId: row.agent_id,
       adapter: "acp",
-      fallbackAdapter: "acp_cli_fallback",
       backend: backendId,
       acpAgent,
-      reason: error instanceof Error ? error.message : String(error)
+      sessionMode,
+      sessionKey,
+      failureType,
+      retryScheduled: shouldRetry,
+      error: message.slice(0, 2000),
+      failedAt,
+      attempt,
+      runtimeRunId
     });
-    return runHermesDispatch(paths, row, { ...input, adapterName: "acp_cli_fallback", timeoutSeconds });
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "acp", backend: backendId, acpAgent, sessionKey, failureType, retryScheduled: shouldRetry, error: message };
   }
-  const startedAt = nowIso();
-  const attempt = Number(row.attempt || 0) + 1;
   await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "acp", backend: backendId, acpAgent, sessionMode, sessionKey, startedAt, attempt });
   const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "started", startedAt, attempt, payload: { sessionMode } });
   await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
@@ -5839,7 +5849,7 @@ LIMIT ${limit};`, { json: true });
       if (adapter === "acp") {
         results.push(await runHermesAcpDispatch(paths, row, input));
       } else if (adapter === "cli") {
-        results.push(await runHermesDispatch(paths, row, input));
+        results.push(await runHermesDispatch(paths, row, { ...input, adapterName: "cli" }));
       } else {
         await updateDispatch(paths, row.dispatch_id, "failed", { adapter, failedAt: nowIso(), error: `hermers adapter not implemented: ${adapter}` });
         results.push({ dispatchId: row.dispatch_id, runtime, agentId: row.agent_id, status: "failed", error: `hermers adapter not implemented: ${adapter}` });

@@ -54,6 +54,8 @@ Agent registration must describe both execution and communication. `agent_id` is
 
 Hermers is the platform. ACP is an adapter/mechanism for Hermers agent instances. Do not define a separate platform for ACP.
 
+ACP is not a fallback path. `workflow_ingress_adapter=acp` must use the ACP backend and fail closed when that backend is unavailable. Hermers CLI execution is a separate explicit fallback adapter, `workflow_ingress_adapter=cli`, and must not be reported as ACP success.
+
 The three supported ingress classes are:
 
 - OpenClaw Gateway IM plus OpenClaw execution.

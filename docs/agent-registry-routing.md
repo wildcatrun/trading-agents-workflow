@@ -21,6 +21,8 @@ Every registered agent instance must declare these fields:
 
 Hermers is the platform. ACP is an adapter/mechanism used by Hermers instances to receive workflow dispatches and Gateway-forwarded information. `hermers + acp` is valid; `hermers_acp` is not a platform.
 
+`workflow_ingress_adapter=acp` must use the ACP backend. If the ACP backend is unavailable, dispatch fails closed with `failure_type=acp_unavailable`; it must not silently run the Hermers CLI path. The Hermers CLI path is a separate explicit adapter, `workflow_ingress_adapter=cli`, for reviewed fallback or recovery use only.
+
 ## Ingress Classes
 
 Class A: IM ingress is OpenClaw Gateway and execution is OpenClaw.
@@ -43,6 +45,7 @@ All message and workflow entry points must resolve the target agent through the 
 - Workflow dispatch and scripted dispatch route by the registered `platform` and `workflow_ingress_adapter`.
 - OpenClaw route-shell rows may acknowledge route status or route failure, but must not run professional work.
 - Missing registry rows, missing workflow ingress adapters, disabled instances, or policy blocks fail closed.
+- ACP backend unavailability fails the ACP dispatch; CLI execution is not an implicit ACP fallback.
 - External IM ownership is not a failure condition. A class C agent is reachable through its registered workflow adapter even though its IM ingress is outside OpenClaw Gateway.
 - Agent migration is a registry update, not a rewrite of Telegram hooks, cron jobs, or workflow dispatch logic.
 
