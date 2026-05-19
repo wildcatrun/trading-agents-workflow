@@ -104,7 +104,9 @@ const toolParameters = {
         "workflow.task.list",
         "workflow.tasks",
         "workflow.advance",
+        "workflow.advance.preview",
         "workflow.supervise",
+        "workflow.supervise.preview",
         "workflow.control_loop.tick",
         "workflow.loop.tick",
         "workflow.reconciler.tick",
@@ -797,6 +799,24 @@ function registerCli(api) {
         }), null, 2));
       });
 
+    command.command("workflow-advance-preview")
+      .requiredOption("--workflow <workflowId>", "Workflow id")
+      .option("--meeting <meetingId>", "Meeting id for generated dispatches")
+      .option("--auto-dispatch <trueOrFalse>", "Include would-dispatch rows for ready tasks", "false")
+      .option("--goal-complete", "Preview workflow completed when all tasks are done")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.advance.preview",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          autoDispatch: options.autoDispatch === "true",
+          goalComplete: Boolean(options.goalComplete)
+        }), null, 2));
+      });
+
     command.command("workflow-supervise")
       .requiredOption("--workflow <workflowId>", "Workflow id")
       .option("--meeting <meetingId>", "Meeting id for generated dispatches")
@@ -832,6 +852,32 @@ function registerCli(api) {
           text: options.text,
           nextActions: options.nextAction || [],
           dryRun: options.dryRun === "true"
+        }), null, 2));
+      });
+
+    command.command("workflow-supervise-preview")
+      .requiredOption("--workflow <workflowId>", "Workflow id")
+      .option("--meeting <meetingId>", "Meeting id for generated dispatches")
+      .option("--auto-dispatch <trueOrFalse>", "Include would-dispatch rows for ready tasks", "true")
+      .option("--drain <trueOrFalse>", "Preview runtime drain queues created by this cycle", "false")
+      .option("--max-cycles <count>", "Supervisor cycles", "1")
+      .option("--auto-report <trueOrFalse>", "Preview Cat Claw report dispatch when required", "true")
+      .option("--report-runtime <runtime>", "Cat Claw report runtime", "openclaw")
+      .option("--report-agent <agent>", "Cat Claw report agent", "cat_claw")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.supervise.preview",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          autoDispatch: options.autoDispatch !== "false",
+          drain: options.drain === "true",
+          maxCycles: Number(options.maxCycles),
+          autoReport: options.autoReport !== "false",
+          reportRuntime: options.reportRuntime,
+          reportAgent: options.reportAgent
         }), null, 2));
       });
 

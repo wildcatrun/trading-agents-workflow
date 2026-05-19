@@ -11,7 +11,8 @@
     "./workflow": "./src/workflow.js"
   },
   "bin": {
-    "trading-agents-workflow": "./bin/cat-meeting-governance.mjs"
+    "trading-agents-workflow": "./bin/cat-meeting-governance.mjs",
+    "trading-agents-workflow-console": "./bin/workflow-console.mjs"
   },
   "openclaw": {
     "extensions": [
@@ -26,7 +27,7 @@
     "openclaw": ">=2026.5.7"
   },
   "scripts": {
-    "check": "node --check index.js && node --check src/core.js && node --check src/workflow.js && node --check bin/cat-meeting-governance.mjs",
+    "check": "node --check index.js && node --check src/core.js && node --check src/workflow.js && node --check src/console/sqlite.js && node --check src/console/read-model.js && node --check src/console/action-gateway.js && node --check src/console/server.js && node --check bin/cat-meeting-governance.mjs && node --check bin/workflow-console.mjs",
     "smoke": "node bin/cat-meeting-governance.mjs status --root ./.tmp-smoke"
   }
 }

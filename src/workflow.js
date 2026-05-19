@@ -1859,7 +1859,7 @@ export async function workflowSwarmPlan(rootDir, input = {}) {
   };
 }
 
-async function syncWorkflowTasksFromDispatches(paths, workflowId) {
+async function workflowTaskSyncPlanFromDispatches(paths, workflowId) {
   const dispatches = await sqlite(paths.dbFile, `
 SELECT dispatch_id, meeting_id, workflow_id, status, runtime, agent_id, failure_type, last_error, payload_json, updated_at, completed_at, acked_at
 FROM mixed_meeting_dispatches
@@ -1882,24 +1882,41 @@ ORDER BY updated_at;`, { json: true });
     const blockedReason = dispatch.status === "failed"
       ? `${dispatch.failure_type || "runtime_failed"}: ${String(dispatch.last_error || "").slice(0, 300)}`
       : task.blocked_reason || "";
-    await sqlite(paths.dbFile, `
-UPDATE workflow_tasks
-SET status=${sqlValue(status)},
-    actual_artifact_ref=${sqlValue(artifactRef)},
-    blocked_reason=${sqlValue(blockedReason)},
-    completed_at=${sqlValue(completedAt)},
-    updated_at=${sqlValue(nowIso())}
-WHERE task_id=${sqlValue(taskId)} AND workflow_id=${sqlValue(workflowId)};`);
     updates.push({
       taskId,
       dispatchId: dispatch.dispatch_id,
       status,
       runtime: dispatch.runtime,
       agentId: dispatch.agent_id,
-      failureType: dispatch.failure_type || ""
+      failureType: dispatch.failure_type || "",
+      actualArtifactRef: artifactRef,
+      blockedReason,
+      completedAt
     });
   }
   return updates;
+}
+
+async function syncWorkflowTasksFromDispatches(paths, workflowId) {
+  const updates = await workflowTaskSyncPlanFromDispatches(paths, workflowId);
+  for (const update of updates) {
+    await sqlite(paths.dbFile, `
+UPDATE workflow_tasks
+SET status=${sqlValue(update.status)},
+    actual_artifact_ref=${sqlValue(update.actualArtifactRef || "")},
+    blocked_reason=${sqlValue(update.blockedReason || "")},
+    completed_at=${sqlValue(update.completedAt || nowIso())},
+    updated_at=${sqlValue(nowIso())}
+WHERE task_id=${sqlValue(update.taskId)} AND workflow_id=${sqlValue(workflowId)};`);
+  }
+  return updates.map((update) => ({
+    taskId: update.taskId,
+    dispatchId: update.dispatchId,
+    status: update.status,
+    runtime: update.runtime,
+    agentId: update.agentId,
+    failureType: update.failureType || ""
+  }));
 }
 
 async function pendingHumanGateCount(paths, workflowId) {
@@ -1917,17 +1934,8 @@ SELECT (
   return Number(rows[0]?.count || 0);
 }
 
-export async function workflowAdvance(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
-  if (!workflowId) throw new Error("workflowId is required");
-  const checkedAt = nowIso();
-  const syncedTasks = boolOption(input.syncDispatches ?? input.sync_dispatches, true) ? await syncWorkflowTasksFromDispatches(paths, workflowId) : [];
-  const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
-  if (!workflowRows[0]) throw new Error(`workflow not found: ${workflowId}`);
-  const tasks = await sqlite(paths.dbFile, `SELECT * FROM workflow_tasks WHERE workflow_id=${sqlValue(workflowId)} ORDER BY created_at;`, { json: true });
+function workflowAdvanceAnalysis(tasks, workflowHumanGates, input = {}) {
   const statusByTask = Object.fromEntries(tasks.map((task) => [task.task_id, task.status]));
-  const workflowHumanGates = await pendingHumanGateCount(paths, workflowId);
   const blocked = tasks.filter((task) => task.status === "blocked" || task.status === "failed");
   const inProgress = tasks.filter((task) => task.status === "in_progress");
   const pending = tasks.filter((task) => task.status === "pending");
@@ -1946,10 +1954,111 @@ export async function workflowAdvance(rootDir, input = {}) {
   else if (tasks.every((task) => task.status === "done")) decision = input.goalComplete || input.goal_complete ? "completed" : "cat_claw_summary_required";
   else if (blocked.length) decision = "blocked";
   else decision = "waiting_dependencies";
+  return { decision, blocked, inProgress, pending, taskHumanGates, pendingHumanGates, readyTasks, workflowHumanGates };
+}
 
+function applyWorkflowTaskSyncPlan(tasks, syncPlan = []) {
+  if (!syncPlan.length) return tasks;
+  const planByTask = new Map(syncPlan.map((item) => [item.taskId, item]));
+  return tasks.map((task) => {
+    const update = planByTask.get(task.task_id);
+    if (!update) return task;
+    return {
+      ...task,
+      status: update.status,
+      actual_artifact_ref: update.actualArtifactRef || task.actual_artifact_ref || "",
+      blocked_reason: update.blockedReason || task.blocked_reason || "",
+      completed_at: update.completedAt || task.completed_at || ""
+    };
+  });
+}
+
+function workflowStatusAfterAdvance(workflowStatus, decision) {
+  if (decision === "completed") return "completed";
+  if (decision === "human_gate_pending") return "waiting_human";
+  if (decision === "blocked") return "blocked";
+  return workflowStatus;
+}
+
+function workflowAdvanceSummary(tasks, analysis, dispatchedCount = 0) {
+  return {
+    total: tasks.length,
+    pending: Math.max(0, analysis.pending.length - dispatchedCount),
+    ready: Math.max(0, analysis.readyTasks.length - dispatchedCount),
+    inProgress: analysis.inProgress.length + dispatchedCount,
+    done: tasks.filter((task) => task.status === "done").length,
+    blocked: analysis.blocked.length,
+    pendingHumanGates: analysis.pendingHumanGates,
+    workflowHumanGates: analysis.workflowHumanGates,
+    taskHumanGates: analysis.taskHumanGates.length
+  };
+}
+
+export async function workflowAdvancePreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const checkedAt = nowIso();
+  const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
+  if (!workflowRows[0]) throw new Error(`workflow not found: ${workflowId}`);
+  const workflow = workflowRows[0];
+  const tasks = await sqlite(paths.dbFile, `SELECT * FROM workflow_tasks WHERE workflow_id=${sqlValue(workflowId)} ORDER BY created_at;`, { json: true });
+  const syncDispatches = boolOption(input.syncDispatches ?? input.sync_dispatches, true);
+  const syncPlan = syncDispatches ? await workflowTaskSyncPlanFromDispatches(paths, workflowId) : [];
+  const previewTasks = applyWorkflowTaskSyncPlan(tasks, syncPlan);
+  const workflowHumanGates = await pendingHumanGateCount(paths, workflowId);
+  const analysis = workflowAdvanceAnalysis(previewTasks, workflowHumanGates, input);
+  const wouldDispatch = boolOption(input.autoDispatch ?? input.auto_dispatch, false) && analysis.decision === "dispatch_ready"
+    ? analysis.readyTasks
+        .filter((task) => task.runtime && task.agent_id)
+        .map((task) => ({
+          taskId: task.task_id,
+          runtime: task.runtime,
+          agentId: task.agent_id,
+          dispatchType: task.task_type || "workflow_task",
+          priority: task.priority === "steer" ? "steer" : "normal",
+          traceId: input.traceId || input.trace_id || `${workflowId}:${task.task_id}`,
+          idempotencyKey: `workflow_task:${task.task_id}:dispatch`
+        }))
+    : [];
+  const nextStatus = workflowStatusAfterAdvance(workflow.status, analysis.decision);
+  return {
+    workflowId,
+    action: "workflow.advance.preview",
+    preview: true,
+    readOnly: true,
+    checkedAt,
+    decision: analysis.decision,
+    wouldUpdateWorkflow: {
+      currentDecision: analysis.decision,
+      status: nextStatus,
+      updatedAt: checkedAt
+    },
+    summary: workflowAdvanceSummary(previewTasks, analysis, wouldDispatch.length),
+    readyTasks: analysis.readyTasks,
+    blockedTasks: analysis.blocked,
+    wouldDispatch,
+    wouldSyncTasks: syncPlan,
+    syncDispatches,
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowAdvance(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const checkedAt = nowIso();
+  const syncedTasks = boolOption(input.syncDispatches ?? input.sync_dispatches, true) ? await syncWorkflowTasksFromDispatches(paths, workflowId) : [];
+  const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
+  if (!workflowRows[0]) throw new Error(`workflow not found: ${workflowId}`);
+  const tasks = await sqlite(paths.dbFile, `SELECT * FROM workflow_tasks WHERE workflow_id=${sqlValue(workflowId)} ORDER BY created_at;`, { json: true });
+  const workflowHumanGates = await pendingHumanGateCount(paths, workflowId);
+  const analysis = workflowAdvanceAnalysis(tasks, workflowHumanGates, input);
+  let { decision } = analysis;
   const dispatched = [];
-  if (Boolean(input.autoDispatch || input.auto_dispatch) && decision === "dispatch_ready") {
-    for (const task of readyTasks) {
+  if (boolOption(input.autoDispatch ?? input.auto_dispatch, false) && decision === "dispatch_ready") {
+    for (const task of analysis.readyTasks) {
       if (!task.runtime || !task.agent_id) continue;
       const dispatch = await meetingDispatch(rootDir, {
         workflowRootDir: input.workflowRootDir || input.workflow_root,
@@ -1974,20 +2083,10 @@ export async function workflowAdvance(rootDir, input = {}) {
   await sqlite(paths.dbFile, `
 UPDATE workflow_runs
 SET current_decision=${sqlValue(decision)}, updated_at=${sqlValue(checkedAt)},
-    status=${sqlValue(decision === "completed" ? "completed" : decision === "human_gate_pending" ? "waiting_human" : decision === "blocked" ? "blocked" : workflowRows[0].status)}
+    status=${sqlValue(workflowStatusAfterAdvance(workflowRows[0].status, decision))}
 WHERE workflow_id=${sqlValue(workflowId)};`);
-  const summary = {
-    total: tasks.length,
-    pending: Math.max(0, pending.length - dispatched.length),
-    ready: Math.max(0, readyTasks.length - dispatched.length),
-    inProgress: inProgress.length + dispatched.length,
-    done: tasks.filter((task) => task.status === "done").length,
-    blocked: blocked.length,
-    pendingHumanGates,
-    workflowHumanGates,
-    taskHumanGates: taskHumanGates.length
-  };
-  return { workflowId, decision, checkedAt, summary, readyTasks, blockedTasks: blocked, dispatched, syncedTasks, dbFile: paths.dbFile };
+  const summary = workflowAdvanceSummary(tasks, analysis, dispatched.length);
+  return { workflowId, decision, checkedAt, summary, readyTasks: analysis.readyTasks, blockedTasks: analysis.blocked, dispatched, syncedTasks, dbFile: paths.dbFile };
 }
 
 function supervisorReportPrompt(workflow, advanceResult, checkpointResult, input = {}) {
@@ -2129,6 +2228,57 @@ export async function workflowSupervisor(rootDir, input = {}) {
     catClawReport,
     catClawReportDrain,
     dryRun,
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowSupervisorPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const meetingId = String(input.meetingId || input.meeting_id || workflowId).trim();
+  const startedAt = nowIso();
+  const maxCycles = Math.max(1, Math.min(5, Number(input.maxCycles || input.max_cycles || 1)));
+  const autoDispatch = boolOption(input.autoDispatch ?? input.auto_dispatch, true);
+  const drain = boolOption(input.drain, false);
+  const autoReport = boolOption(input.autoReport ?? input.auto_report, true);
+  const reportRuntime = normalizeRuntime(input.reportRuntime || input.report_runtime || "openclaw");
+  const reportAgent = normalizeAgentId(input.reportAgent || input.report_agent || "cat_claw");
+  const checkpoint = boolOption(input.checkpoint ?? input.writeCheckpoint ?? input.write_checkpoint, true);
+  const advance = await workflowAdvancePreview(rootDir, {
+    ...input,
+    workflowRootDir: paths.root,
+    workflowId,
+    meetingId,
+    autoDispatch,
+    syncDispatches: true
+  });
+  const wouldDrainRuntimes = drain && advance.wouldDispatch.length
+    ? [...new Set(advance.wouldDispatch.map((item) => item.runtime).filter(Boolean))]
+    : [];
+  const wouldReport = autoReport && ["cat_claw_summary_required", "blocked", "human_gate_pending"].includes(advance.decision);
+  return {
+    workflowId,
+    meetingId,
+    action: "workflow.supervise.preview",
+    preview: true,
+    readOnly: true,
+    startedAt,
+    completedAt: nowIso(),
+    maxCycles,
+    advance,
+    wouldDrainRuntimes,
+    wouldCheckpoint: checkpoint,
+    wouldCatClawReport: wouldReport ? {
+      runtime: reportRuntime,
+      agentId: reportAgent,
+      dispatchType: advance.decision === "human_gate_pending" ? "human_gate_report" : "workflow_secretary_report",
+      priority: "high"
+    } : null,
+    limitations: [
+      "Preview is read-only and does not model later cycles after wouldDispatch tasks run.",
+      "Runtime drain, checkpoint creation, Telegram outbox delivery, and Cat Claw report dispatch are not executed."
+    ],
     dbFile: paths.dbFile
   };
 }
@@ -6646,9 +6796,16 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return workflowTaskList(rootDir, input);
     case "workflow.advance":
       return workflowAdvance(rootDir, input);
+    case "workflow.advance.preview":
+    case "workflow.preview.advance":
+      return workflowAdvancePreview(rootDir, input);
     case "workflow.supervise":
     case "workflow.supervisor":
       return workflowSupervisor(rootDir, input);
+    case "workflow.supervise.preview":
+    case "workflow.supervisor.preview":
+    case "workflow.preview.supervise":
+      return workflowSupervisorPreview(rootDir, input);
     case "workflow.control_loop.tick":
     case "workflow.loop.tick":
     case "workflow.reconciler.tick":

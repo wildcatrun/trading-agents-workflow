@@ -238,7 +238,9 @@ Workflow and tracking:
 - `workflow.task.list`
 - `workflow.tasks`
 - `workflow.advance`
+- `workflow.advance.preview`
 - `workflow.supervise`
+- `workflow.supervise.preview`
 - `workflow.checkpoint`
 - `workflow.context_checkpoint`
 - `context.checkpoint`
@@ -319,6 +321,8 @@ Use `workflow.advance` after a discussion, dispatch batch, receipt collection cy
 
 With `autoDispatch=true`, `workflow.advance` records `meeting.dispatch` rows for ready tasks and moves them to `in_progress`. It does not bypass Gateway, runtime registry, receipt tracking, or Human Gate review.
 
+Use `workflow.advance.preview` when a UI, console, or operator needs the same next-decision calculation without mutating state. Preview is read-only: it does not sync task rows from terminal dispatches, update `workflow_runs`, create dispatches, move tasks to `in_progress`, write checkpoints, or send outbox messages. When dispatch sync is enabled, it returns `wouldSyncTasks`; when `autoDispatch=true`, it returns `wouldDispatch`.
+
 Use `workflow.supervise` as the normal wanman-style control loop for durable initiatives. One supervisor cycle does the operational work that `workflow.advance` alone cannot:
 
 - sync completed or failed runtime dispatches back into `workflow_tasks`
@@ -329,10 +333,13 @@ Use `workflow.supervise` as the normal wanman-style control loop for durable ini
 
 `workflow.supervise` keeps Flashcat in the observer/approval role. Cat-brain `main` still owns decomposition and orchestration; `cat_claw` still owns formal reporting and Human Gate intake. The supervisor does not make trading decisions, bypass Gateway, bypass Human Gate, or execute trades.
 
+Use `workflow.supervise.preview` for console planning. It wraps `workflow.advance.preview` and reports whether a real supervise cycle would checkpoint, drain runtimes, or create a Cat Claw report dispatch, but it does not execute any of those writes. It is the safe action for web-console "preview advance/supervise" buttons.
+
 CLI example:
 
 ```bash
 node bin/cat-meeting-governance.mjs workflow-supervise --workflow demo-initiative --meeting demo-initiative --auto-dispatch --root "$ROOT"
+node bin/cat-meeting-governance.mjs workflow-supervise-preview --workflow demo-initiative --meeting demo-initiative --root "$ROOT"
 ```
 
 Use `workflow.control_loop.tick` as the plugin-internal 10s reconciler tick. The tick period is a scheduling cadence, not a promise that all workflow work finishes inside 10 seconds. Each tick records readiness, seeds durable `control_loop_jobs`, claims a bounded number of jobs, executes those jobs, and leaves unfinished work queued for later ticks. Queue jobs cover workflow supervision, stale dispatch reconciliation, runtime drain, pending Human Gate request/button/outbox ensure, Telegram outbox delivery, and Human Gate inbox batch creation. Phase progress is written to `bridge/control-loop-events.jsonl`; tick summaries go to `bridge/control-loop.jsonl`. A file lease at `bridge/control-loop-lease.json` prevents overlapping ticks, while each queue job has its own DB lease, retry, and attempt state.

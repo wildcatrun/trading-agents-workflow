@@ -13,7 +13,9 @@ function usage() {
   trading-agents-workflow workflow-task-update --task ID [--status STATUS] [--artifact PATH] [--blocked-reason TEXT] [--root DIR]
   trading-agents-workflow workflow-tasks [--workflow ID] [--status STATUS] [--owner AGENT] [--limit N] [--root DIR]
   trading-agents-workflow workflow-advance --workflow ID [--meeting ID] [--auto-dispatch] [--goal-complete] [--root DIR]
+  trading-agents-workflow workflow-advance-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--goal-complete] [--root DIR]
   trading-agents-workflow workflow-supervise --workflow ID [--meeting ID] [--auto-dispatch] [--drain] [--max-cycles N] [--auto-report false] [--openclaw-bin PATH] [--root DIR]
+  trading-agents-workflow workflow-supervise-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--drain true|false] [--max-cycles N] [--auto-report true|false] [--root DIR]
   trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermes_acp] [--limit N] [--job-limit N] [--tick-budget-ms N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--root DIR]
   trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
   trading-agents-workflow runtime-agent --runtime RUNTIME --agent AGENT [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
@@ -186,6 +188,17 @@ function toAction({ command, positional, options }) {
           goalComplete: options["goal-complete"] === "true"
         }
       };
+    case "workflow-advance-preview":
+      return {
+        root,
+        input: {
+          action: "workflow.advance.preview",
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          autoDispatch: options["auto-dispatch"] === "true",
+          goalComplete: options["goal-complete"] === "true"
+        }
+      };
     case "workflow-supervise":
       return {
         root,
@@ -206,6 +219,21 @@ function toAction({ command, positional, options }) {
           text: options.text,
           nextActions: listOption(options["next-action"]),
           dryRun: options["dry-run"] === "true"
+        }
+      };
+    case "workflow-supervise-preview":
+      return {
+        root,
+        input: {
+          action: "workflow.supervise.preview",
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          autoDispatch: options["auto-dispatch"] !== "false",
+          drain: options.drain === "true",
+          maxCycles: options["max-cycles"],
+          autoReport: options["auto-report"] !== "false",
+          reportRuntime: options["report-runtime"],
+          reportAgent: options["report-agent"]
         }
       };
     case "workflow-control-loop-tick":
