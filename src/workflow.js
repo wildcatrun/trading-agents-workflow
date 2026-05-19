@@ -5024,14 +5024,16 @@ function humanGateFeedbackText(input = {}) {
 }
 
 function humanGateFeedbackRequiredReply(button = {}) {
+  const callbackToken = String(button.callback_token || button.callbackToken || "").trim();
+  const tokenText = callbackToken ? `tawhg:${callbackToken}` : "<Human Gate token>";
   return [
     `已记录 Human Gate 按钮选择：${button.label || ""}`,
     "请继续发送闪电猫原话/审核意见，Human Gate 才会正式完成。",
     "",
-    "Telegram 当前不能从 inline button 直接弹出可输入文本框；请在本聊天发送：",
-    "/hgate 这里写闪电猫原话或审核意见",
+    "Telegram 当前不能从普通 inline callback button 直接弹出可输入文本框；请在本聊天发送带 token 的反馈：",
+    `/hgate ${tokenText} 这里写闪电猫原话或审核意见`,
     "",
-    "这段原话会保存为“闪电猫原话”，并作为下一轮 workflow 校准方向和边界的依据。"
+    "这段原话会按 token 绑定到本按钮、本事项和本 workflow，保存为“闪电猫原话”，并作为下一轮 workflow 校准方向和边界的依据。"
   ].join("\n");
 }
 
@@ -5063,40 +5065,17 @@ async function findPendingHumanGateFeedbackButton(paths, input = {}) {
     const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} AND status='feedback_pending' LIMIT 1;`, { json: true });
     if (rows[0]) return rows[0];
   }
-  const actor = String(input.actor || input.senderId || input.sender_id || input.from || "flashcat").trim();
-  const callbackChatId = String(input.callbackChatId || input.callback_chat_id || input.chatId || input.chat_id || "").trim();
-  if (callbackChatId) {
-    const rows = await sqlite(paths.dbFile, `
-SELECT *
-FROM human_gate_buttons
-WHERE status='feedback_pending' AND callback_chat_id=${sqlValue(callbackChatId)}
-ORDER BY selected_at DESC, updated_at DESC
-LIMIT 1;`, { json: true });
-    if (rows[0]) return rows[0];
-  }
-  const rows = await sqlite(paths.dbFile, `
-SELECT *
-FROM human_gate_buttons
-WHERE status='feedback_pending'
-  AND (${sqlValue(actor)}='' OR selected_by=${sqlValue(actor)} OR selected_by='flashcat')
-ORDER BY selected_at DESC, updated_at DESC
-LIMIT 1;`, { json: true });
-  if (rows[0]) return rows[0];
-  const latestRows = await sqlite(paths.dbFile, `
-SELECT *
-FROM human_gate_buttons
-WHERE status='feedback_pending'
-ORDER BY selected_at DESC, updated_at DESC
-LIMIT 1;`, { json: true });
-  return latestRows[0] || null;
+  return null;
 }
 
 export async function humanGateFeedback(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const feedbackText = humanGateFeedbackText(input);
-  if (!feedbackText) return { handled: true, status: "feedback_required", replyText: "请在 /hgate 后输入闪电猫原话或审核意见。" };
+  const rawToken = String(input.token || input.callbackToken || input.callback_token || input.payload || "").trim();
+  if (!rawToken) return { handled: true, status: "token_required", replyText: "请使用按钮提示中的完整格式提交：/hgate tawhg:<token> 闪电猫原话或审核意见。裸 /hgate 不会被接受，避免多个 Human Gate 并发时错配。" };
+  if (!feedbackText) return { handled: true, status: "feedback_required", replyText: "请在 token 后输入闪电猫原话或审核意见，例如：/hgate tawhg:<token> 这里写审核意见。" };
   const button = await findPendingHumanGateFeedbackButton(paths, input);
-  if (!button) return { handled: true, status: "not_found", replyText: "没有找到等待闪电猫原话的 Human Gate 选择；请先点击 Human Gate 按钮。" };
+  if (!button) return { handled: true, status: "not_found", replyText: "没有找到与该 token 对应、且正在等待闪电猫原话的 Human Gate 选择；请确认先点击了对应按钮，并使用按钮提示里的 token。" };
   return humanGateButtonCallback(rootDir, {
     ...input,
     token: button.callback_token,

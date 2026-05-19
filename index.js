@@ -1745,11 +1745,18 @@ function registerHumanGateFeedbackCommand(api) {
     description: "提交当前等待中的 Human Gate 闪电猫原话或审核意见。",
     channels: ["telegram"],
     handler: async (args = "", ctx = {}) => {
-      const text = String(args || ctx.args || ctx.text || "").trim();
+      const rawArgs = String(args || ctx.args || ctx.text || "").trim();
+      const parts = rawArgs.split(/\s+/).filter(Boolean);
+      const tokenCandidate = parts[0] || "";
+      const token = tokenCandidate.startsWith("tawhg:")
+        ? tokenCandidate.slice("tawhg:".length)
+        : (/^[A-Za-z0-9._:-]{12,}$/.test(tokenCandidate) ? tokenCandidate : "");
+      const text = token ? rawArgs.slice(tokenCandidate.length).trim() : rawArgs;
       const actor = commandContextField(ctx, ["senderId", "sender.id", "from.id"]) || "flashcat";
       const callbackChatId = commandContextField(ctx, ["chatId", "message.chat.id", "from.chatId", "to"]);
       const result = await runAction(resolveRoot(api), {
         action: "human_gate.feedback",
+        token,
         text,
         actor,
         senderId: actor,
