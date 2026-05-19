@@ -46,6 +46,24 @@ Meeting action items are not enough by themselves for durable workflow operation
 
 The only valid Cat Claw agent id is `cat_claw`. The retired id `catclaw` must not appear in active registry rows, task owners, dispatch targets, prompts, or delivery accounts. Plugin entry points reject it rather than accepting it as an alias.
 
+## Agent Registry Routing Policy
+
+Agent registration must describe both execution and communication. `agent_id` is identity only; it is not proof that an agent runs in OpenClaw, Hermers, or any future platform.
+
+`runtime_agents` must record `platform`, `execution_adapter`, `im_ingress_owner`, `im_ingress_adapter`, `workflow_ingress_adapter`, `can_receive_dispatch`, `can_start_workflow`, and `gateway_proxy_allowed`. Workflow dispatch, route-shell forwarding, cron migration, and scripted ingress must resolve these fields before creating work.
+
+Hermers is the platform. ACP is an adapter/mechanism for Hermers agent instances. Do not define a separate platform for ACP.
+
+The three supported ingress classes are:
+
+- OpenClaw Gateway IM plus OpenClaw execution.
+- OpenClaw Gateway IM plus route-shell ingress to a non-OpenClaw execution platform.
+- External IM plus external execution, still governed through `trading-agents-workflow` workflow adapters.
+
+External IM ownership is not a failure condition. A registered external agent can receive information and workflow dispatch through its registered workflow adapter, and it can start workflow records if `can_start_workflow=1`.
+
+The durable architecture note is `docs/agent-registry-routing.md`.
+
 ## Stability Governance Addendum
 
 Cat-system stability is judged by workflow evidence, not by process liveness or

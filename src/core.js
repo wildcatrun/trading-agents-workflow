@@ -166,8 +166,6 @@ function actionItemTaskStatus(value) {
 }
 
 function defaultRuntimeForAgent(agentId) {
-  if (["cat_body", "cat_ears", "cat_eyes", "cat_heart", "cat_nose", "cat_penclaw"].includes(agentId)) return "hermes_acp";
-  if (["main", "cat_claw"].includes(agentId)) return "openclaw";
   return "";
 }
 

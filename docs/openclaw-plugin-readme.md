@@ -6,8 +6,8 @@ Target architecture:
 
 - OpenClaw Gateway remains the information-flow and workflow hub.
 - `trading-agents-workflow` is the cat-system trading workflow scheduler.
-- Hermes is the agent runtime container.
-- ACP is the standard invocation channel for Hermes agents.
+- Hermers is an agent platform/runtime container.
+- ACP is an invocation adapter used by Hermers agent instances.
 
 v0.6 upgrades the old meeting-only plugin into a unified trading workflow substrate:
 
@@ -17,8 +17,8 @@ v0.6 upgrades the old meeting-only plugin into a unified trading workflow substr
 - Cat Claw secretary audit for stale thesis, missing three-face inputs, and pending gates
 - Protocol objects for research signals, evidence packs, trade proposals, risk decisions, Human Gate records, executable intents, and trading_core receipts
 - mTLS-gated executable trade intents for the local Codex path
-- Mixed-runtime meeting bridge for OpenClaw and Hermes agents in one logical room
-- `hermes_acp` runtime bridge for invoking Hermes profile agents through OpenClaw ACPX
+- Mixed-platform meeting bridge for OpenClaw, Hermers, and external agents in one logical room
+- Hermers platform bridge for invoking registered ACP agent instances through OpenClaw ACPX
 - Telegram live outbox and Human Gate request loop for Flashcat confirmation
 - Stability governance fields for durable dispatches, trace correlation, idempotency, retry taxonomy, readiness snapshots, side-effect ledger, runtime run records, and incident state documents
 - Workflow task pool for long-running initiatives, task dependencies, expected artifacts, and supervisor-style advance decisions
@@ -26,7 +26,7 @@ v0.6 upgrades the old meeting-only plugin into a unified trading workflow substr
 - Human Gate Inbox batches that collect pending approvals, delivery failures, and review gates into HTML/JSON tables for Flashcat
 - Meeting action items mirrored into `workflow_tasks` by default, so Cat Claw's secretary list is visible to the durable workflow supervisor and not trapped in JSONL-only minutes
 
-This is not an independent agent runtime, not a Gateway replacement, not a Hermes runtime, and not a live trading executor. It does not call trading_core or Telegram directly; it records reviewed intents, dispatch queues, transcripts, Telegram outbox entries, and later records trading_core receipts.
+This is not an independent agent runtime, not a Gateway replacement, not a Hermers runtime, and not a live trading executor. It does not call trading_core or Telegram directly; it records reviewed intents, dispatch queues, transcripts, Telegram outbox entries, and later records trading_core receipts.
 
 ## Meeting Role Contract
 
@@ -42,45 +42,52 @@ Local Mac Codex is Flashcat's control panel and outbound operator surface. It ca
 
 Agent-to-Flashcat return traffic must not target local Mac Codex. Reports, alerts, confirmation requests, Human Gate requests, task results, receipts, and trading-related messages must leave through governed IM exits such as Telegram, WeCom, or OpenClaw IM. The local Codex-to-node path is one-way for control-plane operations; it is not an inbox for cat-system callbacks.
 
-## Hermes ACP Runtime
+## Agent Registry Routing
 
-Use `runtime: "hermes_acp"` for migrated cat agents. Runtime agent endpoints can point at Hermes profiles; the bridge converts them into ACP command targets for the Gateway-loaded ACPX backend:
+Every cat-system agent instance must be registered in `runtime_agents`; the registry is the workflow scheduler's source of truth for platform, execution adapter, IM ingress, workflow ingress, readiness, audit, and rollback decisions. The formal routing contract is maintained in [agent-registry-routing.md](agent-registry-routing.md).
+
+`agent_id` is a stable cat-system identity. It is not an execution location. The registry must declare:
+
+- `platform`: actual execution platform, for example `openclaw`, `hermers`, or another registered platform.
+- `execution_adapter`: execution mechanism, for example `native`, `acp`, `api`, `webhook`, `queue`, or `route_shell`.
+- `im_ingress_owner`: IM owner, for example `openclaw_gateway`, `external_platform`, or `none`.
+- `im_ingress_adapter`: IM entry mechanism, for example `openclaw_native`, `openclaw_route_shell`, `platform_im`, or `custom`.
+- `workflow_ingress_adapter`: workflow dispatch mechanism, for example `openclaw_native`, `acp`, `api`, `webhook`, `queue`, or `route_shell`.
+- `can_receive_dispatch`, `can_start_workflow`, and `gateway_proxy_allowed`: policy gates that must be checked before dispatch.
+
+Hermers is the platform. ACP is the adapter/mechanism. A migrated professional cat agent should be registered as `platform=hermers` and `workflow_ingress_adapter=acp`, not as a separate platform.
+
+Example Hermers ACP instance with OpenClaw Gateway route-shell IM ingress:
 
 ```text
-runtime=hermes_acp agent=cat_body endpointRef=hermes-profile:catbody
-runtime=hermes_acp agent=cat_heart endpointRef=hermes-profile:catheart
+platform=hermers agent=cat_body executionAdapter=acp imIngressOwner=openclaw_gateway imIngressAdapter=openclaw_route_shell workflowIngressAdapter=acp endpointRef=hermers-profile:catbody
+platform=hermers agent=cat_heart executionAdapter=acp imIngressOwner=openclaw_gateway imIngressAdapter=openclaw_route_shell workflowIngressAdapter=acp endpointRef=hermers-profile:catheart
 ```
 
-The bridge drains queued workflow dispatches by calling the Gateway-loaded ACP backend, default `acpx`, with persistent ACP sessions. Every dispatch, runtime run, ingest, and transcript entry carries an ISO timestamp. Dispatches can also carry `workflow_id`, `trace_id`, `idempotency_key`, `attempt`, `max_attempts`, `failure_type`, `sent_at`, `acked_at`, and `completed_at` so long-running agent work can be resumed and audited. The old `runtime: "hermes"` CLI adapter remains for rollback only; it is not the target production path.
+The bridge drains queued workflow dispatches for `platform=hermers` by calling the Gateway-loaded ACP backend, default `acpx`, with persistent ACP sessions. Every dispatch, runtime run, ingest, and transcript entry carries an ISO timestamp. Dispatches can also carry `workflow_id`, `trace_id`, `idempotency_key`, `attempt`, `max_attempts`, `failure_type`, `sent_at`, `acked_at`, and `completed_at` so long-running agent work can be resumed and audited.
 
-## Runtime Registry
+Ingress classes:
 
-Every cat-system agent must be registered in `runtime_agents`; the table is the workflow scheduler's source of truth for routing, readiness, audit, and rollback decisions.
-
-Runtime meanings:
-
-- `hermes_acp`: primary execution runtime for migrated Hermes agents.
-- `openclaw_route_shell`: OpenClaw Gateway/IM route shell for a migrated agent. This is not a second execution body; it may register/dispatch work, answer route status, or report route failure, but professional work must be routed to the primary runtime.
-- `openclaw`: current primary runtime for cat-system agents that have not migrated to Hermes yet, such as `main`, `cat_claw`, `cat_voice`, `cat_tail`, `cat_swordclaw`, `cat_shieldclaw`, and `cat_gunclaw`.
-- `hermes`: legacy Hermes CLI rollback anchor only.
-
-The current active registry has six `hermes_acp` primary agents, six `openclaw_route_shell` aliases, and seven `openclaw` primary agents. All IM-facing messages and workflow records must carry ISO timestamps.
+- A: IM ingress is OpenClaw Gateway and execution is OpenClaw: `platform=openclaw`, `execution_adapter=native`, `im_ingress_adapter=openclaw_native`.
+- B: IM ingress is OpenClaw Gateway and execution is outside OpenClaw: true platform plus `im_ingress_adapter=openclaw_route_shell`; the shell is an ingress/audit anchor, not an executor.
+- C: IM ingress and execution are outside OpenClaw Gateway: register the external platform and its workflow adapter; cross-agent communication still goes through `trading-agents-workflow`.
 
 ## Route-Shell Physical Forwarding
 
 Route-shell forwarding must be a Gateway pre-dispatch routing action, not an agent prompt convention. When `routeShell.enabled=true`, the plugin registers a `before_dispatch` hook. If any inbound Gateway message is already targeted at a configured `openclaw_route_shell` agent session, the hook:
 
 - extracts the route-shell agent id from the OpenClaw session key, for example `agent:cat_ears:telegram:...`;
+- resolves the target through `runtime_agents` by `agent_id`, `platform`, `im_ingress_owner`, `im_ingress_adapter`, and `workflow_ingress_adapter`;
 - records a `route_shell_ingress` message with timestamp and source metadata;
-- creates a durable `route_shell_forward` dispatch to the same agent's active primary runtime, preferring `hermes_acp`;
+- creates a durable `route_shell_forward` dispatch to the same agent's registered target platform and workflow ingress adapter;
 - returns `handled=true` so OpenClaw does not run the route-shell agent model;
 - replies with `ROUTE_QUEUED` or `ROUTE_FAILED`.
 
-This is fail-closed by default. If the route-shell registry row or primary runtime row is missing, the hook handles the message and returns `ROUTE_FAILED`; it does not fall back to the OpenClaw route-shell agent. `drainNow` defaults to `false` because Gateway dispatch should not synchronously run Hermes work. The 10s control loop should drain the queued runtime dispatch.
+This is fail-closed by default. If the registered Gateway ingress row or dispatch-capable target row is missing, the hook handles the message and returns `ROUTE_FAILED`; it does not fall back to the OpenClaw route-shell agent. `drainNow` defaults to `false` because Gateway dispatch should not synchronously run external platform work. The 10s control loop should drain the queued dispatch.
 
 The hook also applies in-process single-flight by route-shell agent, channel, and source message id. Concurrent provider retries for the same Telegram message wait on the same routing promise instead of creating a thundering herd against SQLite. SQLite unique idempotency still remains the durable backstop across process restarts.
 
-The same rule applies to workflow and scripted dispatches. Calls to `meeting.dispatch` or workflow advancement that request `runtime=openclaw_route_shell` are rewritten at creation time into a dispatch for the agent's active primary runtime, normally `hermes_acp`. The route-shell dispatch is not inserted as executable work. If an older queued `openclaw_route_shell` dispatch already exists, `runtime.bridge.drain runtime=openclaw_route_shell` redirects it to the primary runtime and marks the original row as redirected/cancelled for audit. Route-shell is therefore an IM/Gateway identity and audit anchor, not an execution target.
+The same rule applies to workflow and scripted dispatches. Calls to `meeting.dispatch` or workflow advancement that request `runtime=openclaw_route_shell` are rewritten at creation time into a dispatch for the agent's registered target platform and workflow ingress adapter. The route-shell dispatch is not inserted as executable work. If an older queued `openclaw_route_shell` dispatch already exists, `runtime.bridge.drain runtime=openclaw_route_shell` redirects it to the registered target and marks the original row as redirected/cancelled for audit. Route-shell is therefore an IM/Gateway identity and audit anchor, not an execution target.
 
 Configuration example:
 
@@ -88,7 +95,7 @@ Configuration example:
 {
   "routeShell": {
     "enabled": true,
-    "agentIds": ["cat_body", "cat_ears", "cat_eyes", "cat_heart", "cat_nose", "cat_penclaw"],
+    "agentIds": ["*"],
     "channels": ["*"],
     "priority": "normal",
     "drainNow": false,
@@ -120,9 +127,9 @@ Minimum operational contracts:
 - `meeting.dispatch` should receive a stable `traceId` and, for dedupe-sensitive work, an `idempotencyKey`.
 - Runtime bridge failures are classified into failure types such as `runtime_timeout`, `acp_unavailable`, `auth_unavailable`, `schema_validation`, `guardrail_block`, `stale_input`, and `transient_runtime`.
 - Only transient runtime/provider classes are eligible for automatic retry, bounded by `maxAttempts` and `next_retry_at`.
-- `runtime_runs` is the queryable ledger for Hermes/ACP turns; `runtime_runs.jsonl` remains a compatibility audit stream.
+- `runtime_runs` is the queryable ledger for Hermers/ACP turns; `runtime_runs.jsonl` remains a compatibility audit stream.
 - `workflow.readiness` records a readiness snapshot across orchestration, runtime, communication, data, and Human Gate planes. Process liveness is not treated as trading readiness.
-- `workflow.readiness` is passive by default. With `activeChecks=true`, it also probes OpenClaw Gateway health, Hermes profile `acp --check`, and the ACP backend without running a model turn.
+- `workflow.readiness` is passive by default. With `activeChecks=true`, it also probes OpenClaw Gateway health, Hermers profile `acp --check`, and the ACP backend without running a model turn.
 - `side_effect.record` exists for file writes, memory writes, external notification, trading-core handoff, or any action that must not be blindly retried.
 - `incident.state` records active incident state with affected planes, current mode, timeline, mitigation, rollback options, and exit criteria; it writes both JSON and Markdown artifacts under `bridge/incidents/`.
 
@@ -330,7 +337,7 @@ Use `workflow.swarm.plan` when a goal benefits from Kimi-style swarm execution: 
 Important boundaries:
 
 - Shards are durable `workflow_tasks`, not unmanaged sub-agent sessions.
-- Worker assignment must still use registered runtimes and agent ids.
+- Worker assignment must still use registered platforms, workflow ingress adapters, and agent ids.
 - The reducer task synthesizes evidence, gaps, disagreement, and next action; it does not bypass Cat Heart, Cat Claw, or Human Gate.
 - Fan-out is capped by `fanoutLimit` and defaults to the explicit shard count, not unbounded spawning.
 
@@ -343,16 +350,16 @@ node bin/cat-meeting-governance.mjs workflow-swarm \
   --target "基本面制度" \
   --target "消息面制度" \
   --target "情绪与散户活跃度" \
-  --worker hermes_acp:cat_eyes \
-  --worker hermes_acp:cat_ears \
-  --worker hermes_acp:cat_nose \
+  --worker hermers:cat_eyes \
+  --worker hermers:cat_ears \
+  --worker hermers:cat_nose \
   --reducer openclaw:main \
   --root "$ROOT"
 ```
 
-Use `workflow.task.create` to turn the next phase into concrete tasks. Each task should name the owner agent, execution runtime, priority, dependencies, expected artifact, receipt requirement, and whether a Human Gate is required before the task can be treated as complete.
+Use `workflow.task.create` to turn the next phase into concrete tasks. Each task should name the owner agent, registered platform or target agent, priority, dependencies, expected artifact, receipt requirement, and whether a Human Gate is required before the task can be treated as complete.
 
-`meeting.action_item` also mirrors new or updated action items into `workflow_tasks` by default. This keeps the meeting secretary surface and the durable workflow task board aligned. The only valid Cat Claw id is `cat_claw`; the retired id `catclaw` is rejected instead of silently normalized. Comma-separated owners are split into separate workflow tasks; common migrated research/engineering agents default to `hermes_acp`, while `main` and `cat_claw` default to `openclaw`. Set `promoteToWorkflowTask=false` only for purely clerical notes that should stay out of workflow execution.
+`meeting.action_item` also mirrors new or updated action items into `workflow_tasks` by default. This keeps the meeting secretary surface and the durable workflow task board aligned. The only valid Cat Claw id is `cat_claw`; the retired id `catclaw` is rejected instead of silently normalized. Comma-separated owners are split into separate workflow tasks; their platform is resolved from the registry when dispatch is created. Set `promoteToWorkflowTask=false` only for purely clerical notes that should stay out of workflow execution.
 
 Use `workflow.advance` after a discussion, dispatch batch, receipt collection cycle, or artifact review. It returns a structured decision:
 
@@ -389,7 +396,7 @@ node bin/cat-meeting-governance.mjs workflow-supervise-preview --workflow demo-i
 
 Use `workflow.control_loop.tick` as the plugin-internal 10s reconciler tick. The tick period is a scheduling cadence, not a promise that all workflow work finishes inside 10 seconds. Each tick records readiness, seeds durable `control_loop_jobs`, claims a bounded number of jobs, executes those jobs, and leaves unfinished work queued for later ticks. Queue jobs cover workflow supervision, stale dispatch reconciliation, runtime drain, pending Human Gate request/button/outbox ensure, Telegram outbox delivery, and Human Gate inbox batch creation. Phase progress is written to `bridge/control-loop-events.jsonl`; tick summaries go to `bridge/control-loop.jsonl`. A file lease at `bridge/control-loop-lease.json` prevents overlapping ticks, while each queue job has its own DB lease, retry, and attempt state.
 
-The OpenClaw plugin can run this loop when `controlLoop.enabled=true` in plugin config or `TRADING_AGENTS_WORKFLOW_CONTROL_LOOP=1` is set. The recommended tick period is `10000` ms. Startup does not run an immediate tick by default; set `controlLoop.startupTick=true` only after Gateway startup load is known to be safe. The default `controlLoop.workerMode` is `process`, so the plugin launches a bounded Node worker process for each tick instead of running jobs inside the Gateway event loop. Defaults are conservative: `jobLimit=4`, `runtimeLimit=1`, `timeoutSeconds=45`, `tickBudgetMs=60000`, and `autoReport=false`. Runtime drain defaults to `openclaw_route_shell,hermes_acp`: route-shell rows are redirected to primary runtime, while professional work is drained through Hermes ACP. Add `openclaw` only as an explicit, reviewed exception because it calls back into the Gateway process.
+The OpenClaw plugin can run this loop when `controlLoop.enabled=true` in plugin config or `TRADING_AGENTS_WORKFLOW_CONTROL_LOOP=1` is set. The recommended tick period is `10000` ms. Startup does not run an immediate tick by default; set `controlLoop.startupTick=true` only after Gateway startup load is known to be safe. The default `controlLoop.workerMode` is `process`, so the plugin launches a bounded Node worker process for each tick instead of running jobs inside the Gateway event loop. Defaults are conservative: `jobLimit=4`, `runtimeLimit=1`, `timeoutSeconds=45`, `tickBudgetMs=60000`, and `autoReport=false`. Runtime drain defaults to `openclaw_route_shell,hermers`: route-shell rows are redirected by registry, while professional work registered on Hermers drains through ACP. Add `openclaw` only as an explicit, reviewed exception because it calls back into the Gateway process.
 
 Timeouts are layered. `tickMs` is only cadence. `timeoutSeconds` bounds runtime dispatch work. `tickBudgetMs` is the per-worker budget. `jobLeaseMs` is the queue lease and is automatically raised to at least `max(tickBudgetMs + 30000, (timeoutSeconds + 30) * 1000)`, so a long but valid job should not be re-claimed while its worker can still be alive. If a worker crashes or is killed, the job becomes claimable again only after its lease expires.
 
@@ -399,7 +406,7 @@ Pending Human Gate requests are also re-ensured mechanically. If a pending Human
 
 The queue reserves a `flash` priority above `steer` for future trading-execution workflows. This is only a scheduling inlet for later real-trading rules; it does not execute trades, bypass risk controls, or weaken Human Gate. Flash-lane work must still use structured workflow state, idempotency, expiry, receipts, and button-first Human Gate.
 
-Cat Claw `cat_claw` is an OpenClaw secretary/Human Gate agent, not a Hermes profile. The control loop may drain migrated professional agents through `hermes_acp`, ensure that already-pending Human Gate records have buttons and outbox delivery, and deliver queued Human Gate requests. It must not create or execute Cat Claw long semantic closeout reports unless `autoReport=true` is explicitly set for a reviewed recovery run. Cat Claw closeout reports use `reportRuntime=openclaw` and `reportAgent=cat_claw`. Do not dispatch Cat Claw to `hermes_acp` unless a real Hermes profile has been created and registered.
+Cat Claw `cat_claw` is an OpenClaw secretary/Human Gate agent, not a Hermers profile. The control loop may drain migrated professional agents through `platform=hermers` plus `workflow_ingress_adapter=acp`, ensure that already-pending Human Gate records have buttons and outbox delivery, and deliver queued Human Gate requests. It must not create or execute Cat Claw long semantic closeout reports unless `autoReport=true` is explicitly set for a reviewed recovery run. Cat Claw closeout reports use `reportRuntime=openclaw` and `reportAgent=cat_claw`. Do not dispatch Cat Claw to Hermers unless a real Hermers profile has been created and registered.
 
 - Cat-brain `main` 30min heartbeat checks institutional compliance and evidence completeness.
 - Cat Claw `cat_claw` 30min heartbeat audits whether Human Gate delivery, buttons, callback, and resume closed correctly.
@@ -411,7 +418,7 @@ CLI example:
 node bin/cat-meeting-governance.mjs workflow-control-loop-tick \
   --tick-ms 10000 \
   --max-workflows 2 \
-  --runtime openclaw_route_shell,hermes_acp \
+  --runtime openclaw_route_shell,hermers \
   --limit 1 \
   --root "$ROOT"
 ```
@@ -549,7 +556,7 @@ node bin/cat-meeting-governance.mjs workflow-readiness --active-checks --root "$
 Incident state:
 
 ```bash
-node bin/cat-meeting-governance.mjs incident-state --incident incident-demo --status active --mode degraded --plane runtime --summary "Hermes ACP checks degraded" --exit-criteria "all active checks ready for 30m" --root "$ROOT"
+node bin/cat-meeting-governance.mjs incident-state --incident incident-demo --status active --mode degraded --plane runtime --summary "Hermers ACP checks degraded" --exit-criteria "all active checks ready for 30m" --root "$ROOT"
 ```
 
 Meeting module:

@@ -16,15 +16,15 @@ function usage() {
   trading-agents-workflow workflow-advance-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--goal-complete] [--root DIR]
   trading-agents-workflow workflow-supervise --workflow ID [--meeting ID] [--auto-dispatch] [--drain] [--max-cycles N] [--auto-report false] [--openclaw-bin PATH] [--root DIR]
   trading-agents-workflow workflow-supervise-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--drain true|false] [--max-cycles N] [--auto-report true|false] [--root DIR]
-  trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermes_acp] [--limit N] [--job-limit N] [--tick-budget-ms N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--root DIR]
+  trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermers] [--limit N] [--job-limit N] [--tick-budget-ms N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--root DIR]
   trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
-  trading-agents-workflow runtime-agent --runtime RUNTIME --agent AGENT [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
-  trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--chat-id ID] [--sender-id ID] [--target-runtime RUNTIME] [--drain-now true|false] [--root DIR]
+  trading-agents-workflow runtime-agent --platform PLATFORM --agent AGENT [--execution-adapter ADAPTER] [--im-ingress-owner OWNER] [--im-ingress-adapter ADAPTER] [--workflow-ingress-adapter ADAPTER] [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
+  trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--chat-id ID] [--sender-id ID] [--target-platform PLATFORM] [--target-adapter ADAPTER] [--drain-now true|false] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
   trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--root DIR]
   trading-agents-workflow meeting-ingest --meeting ID --runtime RUNTIME --agent AGENT --text TEXT [--type TYPE] [--phase PHASE] [--root DIR]
-  trading-agents-workflow runtime-bridge [--runtime openclaw|hermes|hermes_acp] [--dispatch ID] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--openclaw-bin PATH] [--dry-run] [--report-delivery false] [--root DIR]
+  trading-agents-workflow runtime-bridge [--runtime openclaw|hermers|openclaw_route_shell] [--dispatch ID] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--openclaw-bin PATH] [--dry-run] [--report-delivery false] [--root DIR]
   trading-agents-workflow dispatch-reconcile [--limit N] [--stale-after-ms N] [--timeout-seconds N] [--root DIR]
   trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--button JSON_OR_LABEL] [--from AGENT] [--target CHAT_ID] [--channel CHANNEL_ID] [--deliver true|false] [--root DIR]
   trading-agents-workflow human-gate-inbox [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
@@ -280,7 +280,24 @@ function toAction({ command, positional, options }) {
         }
       };
     case "runtime-agent":
-      return { root, input: { action: "runtime.agent.upsert", runtime: options.runtime, agentId: options.agent, displayName: options.name, role: options.role, endpointRef: options.endpoint } };
+      return {
+        root,
+        input: {
+          action: "runtime.agent.upsert",
+          platform: options.platform,
+          agentId: options.agent,
+          displayName: options.name,
+          role: options.role,
+          executionAdapter: options["execution-adapter"],
+          imIngressOwner: options["im-ingress-owner"],
+          imIngressAdapter: options["im-ingress-adapter"],
+          workflowIngressAdapter: options["workflow-ingress-adapter"],
+          canReceiveDispatch: options["can-receive-dispatch"] !== "false",
+          canStartWorkflow: options["can-start-workflow"] !== "false",
+          gatewayProxyAllowed: options["gateway-proxy-allowed"] !== "false",
+          endpointRef: options.endpoint
+        }
+      };
     case "route-shell-ingest":
       return {
         root,
@@ -292,7 +309,8 @@ function toAction({ command, positional, options }) {
           chatId: options["chat-id"],
           senderId: options["sender-id"],
           sourceSystem: options.source || "cli",
-          targetRuntime: options["target-runtime"],
+          targetPlatform: options["target-platform"],
+          targetAdapter: options["target-adapter"],
           priority: options.priority,
           drainNow: options["drain-now"] === "true",
           timeoutSeconds: options["timeout-seconds"]

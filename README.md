@@ -8,7 +8,9 @@ Runtime SQLite databases and backup databases are intentionally excluded from Gi
 
 ## Workflow Progression
 
-`trading-agents-workflow` is evolving from meeting capture into the durable task board for cat-system work. A long-running goal should be represented as a `workflow_run` with objective, acceptance criteria, stop condition, current phase, and current decision. Concrete work belongs in `workflow_tasks`, where each task has an owner agent, runtime, status, priority, dependency list, expected artifact, receipt requirement, and optional Human Gate requirement.
+`trading-agents-workflow` is evolving from meeting capture into the durable task board for cat-system work. A long-running goal should be represented as a `workflow_run` with objective, acceptance criteria, stop condition, current phase, and current decision. Concrete work belongs in `workflow_tasks`, where each task has an owner agent, registered platform, status, priority, dependency list, expected artifact, receipt requirement, and optional Human Gate requirement.
+
+Agent routing is registry-driven. `runtime_agents` records `platform`, `execution_adapter`, `im_ingress_owner`, `im_ingress_adapter`, and `workflow_ingress_adapter`; `agent_id` is identity only, not an execution location. Hermers is a platform and ACP is an adapter/mechanism, so a migrated instance is registered as `platform=hermers` plus `workflow_ingress_adapter=acp`.
 
 `workflow.advance` is the first supervisor loop. It inspects tasks, dependencies, receipts, artifacts, and Human Gate state, then decides whether to plan, dispatch ready work, keep collecting receipts, ask `cat_claw` for a summary package, mark the run blocked, or complete it.
 
@@ -70,7 +72,7 @@ such as `tools.profile="coding"`.
 After source, load-path, or tool-policy changes, run `openclaw config validate`
 and reload or restart the actual Gateway. A route-shell smoke test should confirm
 that `trading_agents_workflow` appears in the agent tool list before relying on
-Hermes ACP dispatch.
+Hermers ACP dispatch.
 
 ## Layout
 
@@ -81,6 +83,7 @@ Hermes ACP dispatch.
 - `radar/` - workflow protocol documentation.
 - `templates/` - workflow report and review templates.
 - `docs/governance-records.md` - policy for recording workflow incidents, fixes, delivery failures, and Human Gate packages inside this plugin.
+- `docs/agent-registry-routing.md` - routing contract for platform, adapter, IM ingress, workflow ingress, and route-shell behavior.
 - `docs/tracking-schema.sql` - schema export for `tracking.db`.
 - `scripts/trading_agents_workflow_mcp.py` - local Codex MCP server.
 - `skills/trading-agents-workflow/` - Codex skill instructions for this integration.

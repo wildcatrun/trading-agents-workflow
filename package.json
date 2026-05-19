@@ -2,7 +2,7 @@
   "name": "@flashcat/trading-agents-workflow",
   "version": "0.6.0",
   "type": "module",
-  "description": "OpenClaw native trading agents workflow layer with mixed-runtime meetings, SQLite state, Telegram outbox, protocol objects, mTLS-gated trade intents, and trading_core receipts.",
+  "description": "OpenClaw native trading agents workflow layer with registry-driven platform routing, SQLite state, Telegram outbox, protocol objects, mTLS-gated trade intents, and trading_core receipts.",
   "license": "UNLICENSED",
   "main": "./index.js",
   "exports": {

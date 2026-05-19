@@ -624,12 +624,13 @@ LIMIT 80;`)
   }
 
   async runtimeAgents() {
-    const rows = await sqlite(this.paths.dbFile, "SELECT * FROM runtime_agents ORDER BY runtime, agent_id;");
+    const rows = await sqlite(this.paths.dbFile, "SELECT * FROM runtime_agents ORDER BY platform, agent_id;");
     return {
       warnings: [
         "main is Cat Brain id.",
-        "cat_claw is OpenClaw secretary/Human Gate entrance, not a Hermes profile.",
-        "openclaw_route_shell is a route shell, not a second executor."
+        "cat_claw is OpenClaw secretary/Human Gate entrance, not a Hermers profile.",
+        "openclaw_route_shell is a route shell, not a second executor.",
+        "platform and workflow_ingress_adapter are the routing source of truth; ACP is an adapter, not a platform."
       ],
       count: rows.length,
       agents: rows.map((row) => ({

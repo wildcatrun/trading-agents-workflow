@@ -47,7 +47,7 @@
       "routeShell": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Optional pre-agent physical route-shell forwarding for Gateway message sources. When enabled, before_dispatch handles configured OpenClaw route-shell agents and queues work to their primary runtime instead of running the route-shell agent model.",
+        "description": "Optional pre-agent physical route-shell forwarding for Gateway message sources. When enabled, before_dispatch handles configured OpenClaw route-shell agents and queues work by registered platform plus workflow ingress adapter instead of running the route-shell agent model.",
         "properties": {
           "enabled": {
             "type": "boolean"
@@ -64,7 +64,10 @@
               "type": "string"
             }
           },
-          "targetRuntime": {
+          "targetPlatform": {
+            "type": "string"
+          },
+          "targetAdapter": {
             "type": "string"
           },
           "priority": {

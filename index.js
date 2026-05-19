@@ -8,7 +8,6 @@ import { runAction } from "./src/core.js";
 
 const PLUGIN_ID = "trading-agents-workflow";
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_ROUTE_SHELL_AGENT_IDS = ["cat_body", "cat_ears", "cat_eyes", "cat_heart", "cat_nose", "cat_penclaw"];
 let cachedOpenClawConfigPath;
 let cachedPluginConfigFromFile;
 
@@ -378,7 +377,8 @@ const toolParameters = {
     sourceMessageId: { type: "string" },
     sourceSystem: { type: "string" },
     sourceRuntime: { type: "string" },
-    targetRuntime: { type: "string" },
+    targetPlatform: { type: "string" },
+    targetAdapter: { type: "string" },
     drainNow: { type: "boolean" },
     recordIngress: { type: "boolean" },
     requireRouteShell: { type: "boolean" },
@@ -919,7 +919,7 @@ function registerCli(api) {
       .option("--job-lease-ms <ms>", "Control-loop job lease", "120000")
       .option("--timeout-seconds <seconds>", "Runtime dispatch timeout", "45")
       .option("--tick-budget-ms <ms>", "Soft per-tick budget", "60000")
-      .option("--runtime <runtimeList>", "Comma-separated runtimes to drain", "hermes_acp")
+      .option("--runtime <runtimeList>", "Comma-separated platforms to drain", "hermers")
       .option("--report-runtime <runtime>", "Cat Claw report runtime", "openclaw")
       .option("--report-agent <agent>", "Cat Claw report agent", "cat_claw")
       .option("--drain <trueOrFalse>", "Drain runtime bridge queues", "true")
@@ -984,10 +984,17 @@ function registerCli(api) {
       });
 
     command.command("runtime-agent")
-      .requiredOption("--runtime <runtime>", "openclaw, hermes, telegram, local_codex")
+      .requiredOption("--platform <platform>", "openclaw, hermers, or another registered platform")
       .requiredOption("--agent <agentId>", "Agent id")
       .option("--name <displayName>", "Display name")
       .option("--role <role>", "Agent role")
+      .option("--execution-adapter <adapter>", "native, acp, api, webhook, queue, route_shell")
+      .option("--im-ingress-owner <owner>", "openclaw_gateway, external_platform, none")
+      .option("--im-ingress-adapter <adapter>", "openclaw_native, openclaw_route_shell, platform_im, custom")
+      .option("--workflow-ingress-adapter <adapter>", "openclaw_native, acp, api, webhook, queue, route_shell")
+      .option("--can-receive-dispatch <trueOrFalse>", "Whether workflow dispatches may target this instance", "true")
+      .option("--can-start-workflow <trueOrFalse>", "Whether this instance may start workflow records", "true")
+      .option("--gateway-proxy-allowed <trueOrFalse>", "Whether OpenClaw Gateway may proxy messages for this instance", "true")
       .option("--endpoint <endpointRef>", "Endpoint reference")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
@@ -995,10 +1002,17 @@ function registerCli(api) {
         console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
           action: "runtime.agent.upsert",
           workflowRootDir: options.workflowRoot,
-          runtime: options.runtime,
+          platform: options.platform,
           agentId: options.agent,
           displayName: options.name,
           role: options.role,
+          executionAdapter: options.executionAdapter,
+          imIngressOwner: options.imIngressOwner,
+          imIngressAdapter: options.imIngressAdapter,
+          workflowIngressAdapter: options.workflowIngressAdapter,
+          canReceiveDispatch: options.canReceiveDispatch !== "false",
+          canStartWorkflow: options.canStartWorkflow !== "false",
+          gatewayProxyAllowed: options.gatewayProxyAllowed !== "false",
           endpointRef: options.endpoint
         }), null, 2));
       });
@@ -1010,7 +1024,8 @@ function registerCli(api) {
       .option("--chat-id <chatId>", "Source chat/conversation id")
       .option("--sender-id <senderId>", "Source sender id")
       .option("--source <sourceSystem>", "Source system", "cli")
-      .option("--target-runtime <runtime>", "Override target primary runtime")
+      .option("--target-platform <platform>", "Override target platform")
+      .option("--target-adapter <adapter>", "Override target workflow ingress adapter")
       .option("--priority <priority>", "flash, steer, high, normal, low", "normal")
       .option("--drain-now <trueOrFalse>", "Drain the created dispatch immediately", "false")
       .option("--timeout-seconds <seconds>", "Runtime drain timeout", "45")
@@ -1026,7 +1041,8 @@ function registerCli(api) {
           chatId: options.chatId,
           senderId: options.senderId,
           sourceSystem: options.source,
-          targetRuntime: options.targetRuntime,
+          targetPlatform: options.targetPlatform,
+          targetAdapter: options.targetAdapter,
           priority: options.priority,
           drainNow: options.drainNow === "true",
           timeoutSeconds: Number(options.timeoutSeconds)
@@ -1651,7 +1667,7 @@ function controlLoopConfig(api) {
     timeoutSeconds,
     owner: String(configured.owner || "openclaw-plugin").trim() || "openclaw-plugin",
     workerMode: String(configured.workerMode || "process").trim() || "process",
-    runtimes: String(configured.runtimes || "openclaw_route_shell,hermes_acp").trim() || "openclaw_route_shell,hermes_acp",
+    runtimes: String(configured.runtimes || "openclaw_route_shell,hermers").trim() || "openclaw_route_shell,hermers",
     reportRuntime: String(configured.reportRuntime || "openclaw").trim() || "openclaw",
     reportAgent: String(configured.reportAgent || "cat_claw").trim() || "cat_claw",
     drain: configured.drain !== false,
@@ -1799,9 +1815,10 @@ function routeShellConfig(api) {
   const envEnabled = process.env.TRADING_AGENTS_WORKFLOW_ROUTE_SHELL_AUTO || process.env.TRADING_AGENTS_WORKFLOW_ROUTE_SHELL;
   return {
     enabled: configured.enabled === true || boolConfig(envEnabled, false),
-    agentIds: new Set(configList(configured.agentIds || configured.agent_ids, DEFAULT_ROUTE_SHELL_AGENT_IDS).map(normalizeAgentId)),
+    agentIds: new Set(configList(configured.agentIds || configured.agent_ids, ["*"]).map((item) => item === "*" ? "*" : normalizeAgentId(item))),
     channels: new Set(configList(configured.channels, ["*"]).map((item) => item.toLowerCase())),
-    targetRuntime: String(configured.targetRuntime || configured.target_runtime || "").trim(),
+    targetPlatform: String(configured.targetPlatform || configured.target_platform || "").trim(),
+    targetAdapter: String(configured.targetAdapter || configured.target_adapter || configured.workflowIngressAdapter || configured.workflow_ingress_adapter || "").trim(),
     priority: String(configured.priority || "normal").trim() || "normal",
     drainNow: boolConfig(configured.drainNow ?? configured.drain_now, false),
     timeoutSeconds: Number.isFinite(Number(configured.timeoutSeconds ?? configured.timeout_seconds))
@@ -1882,7 +1899,8 @@ function routeShellEventTarget(config, event = {}, ctx = {}) {
   if (config.channels.size > 0 && !config.channels.has("*") && !config.channels.has(channel)) return null;
   const sessionKey = String(event.sessionKey || ctx.sessionKey || "").trim();
   const routeAgentId = routeShellAgentFromSessionKey(sessionKey);
-  if (!routeAgentId || !config.agentIds.has(routeAgentId)) return null;
+  if (!routeAgentId) return null;
+  if (config.agentIds.size > 0 && !config.agentIds.has("*") && !config.agentIds.has(routeAgentId)) return null;
   return { channel, sessionKey, routeAgentId };
 }
 
@@ -1922,11 +1940,13 @@ function registerRouteShellBeforeDispatch(api) {
         sourceMessageId,
         sourceSystem: `gateway:${target.channel || "unknown"}:before_dispatch`,
         sourceRuntime: "openclaw_route_shell",
-        targetRuntime: config.targetRuntime || undefined,
+        targetPlatform: config.targetPlatform || undefined,
+        targetAdapter: config.targetAdapter || undefined,
         priority: config.priority,
         drainNow: config.drainNow,
         timeoutSeconds: config.timeoutSeconds,
         requireRouteShell: config.requireRouteShell,
+        passThroughOnNotRouteShell: config.agentIds.has("*"),
         chatId: ctx.conversationId,
         senderId: event.senderId || ctx.senderId,
         channelId: target.channel,
@@ -1945,6 +1965,8 @@ function registerRouteShellBeforeDispatch(api) {
           }
         }
       });
+      if (result?.passThrough || result?.status === "not_route_shell") return undefined;
+      if (!result?.ok && !config.blockOnFailure) return undefined;
       return { handled: true, text: config.ack ? result.ackText || JSON.stringify(result) : undefined };
     };
 
@@ -2293,12 +2315,13 @@ export default definePluginEntry({
       routeShell: {
         type: "object",
         additionalProperties: false,
-        description: "Optional pre-agent physical route-shell forwarding for Gateway message sources. When enabled, before_dispatch handles configured OpenClaw route-shell agents and queues work to their primary runtime instead of running the route-shell agent model.",
+        description: "Optional pre-agent physical route-shell forwarding for Gateway message sources. When enabled, before_dispatch handles configured OpenClaw route-shell agents and queues work by registered platform plus workflow ingress adapter instead of running the route-shell agent model.",
         properties: {
           enabled: { type: "boolean" },
           agentIds: { type: "array", items: { type: "string" } },
           channels: { type: "array", items: { type: "string" } },
-          targetRuntime: { type: "string" },
+          targetPlatform: { type: "string" },
+          targetAdapter: { type: "string" },
           priority: { type: "string" },
           drainNow: { type: "boolean" },
           timeoutSeconds: { type: "number" },

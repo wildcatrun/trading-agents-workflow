@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 8;
+export const WORKFLOW_SCHEMA_VERSION = 9;
 export const DEFAULT_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
@@ -23,7 +23,7 @@ const HUMAN_GATE_STATUSES = new Set(["pending", "approved", "rejected", "paused"
 const TRADE_SIDES = new Set(["buy", "sell", "short", "cover", "reduce", "close"]);
 const ORDER_TYPES = new Set(["market", "limit", "stop", "stop_limit", "twap", "vwap"]);
 const RECEIPT_STATUSES = new Set(["accepted", "rejected", "submitted", "filled", "partial", "cancelled", "failed"]);
-const RUNTIMES = new Set(["openclaw", "openclaw_route_shell", "hermes", "hermes_acp", "telegram", "local_codex", "codex", "claude_code", "claude-code", "opencode", "trading_sim", "trading_core", "system", "other"]);
+const RUNTIMES = new Set(["openclaw", "openclaw_route_shell", "hermers", "telegram", "local_codex", "codex", "claude_code", "claude-code", "opencode", "trading_sim", "trading_core", "system", "other"]);
 const DISPATCH_STATUSES = new Set(["queued", "sent", "acked", "failed", "cancelled"]);
 const WORKFLOW_RUN_STATUSES = new Set(["active", "waiting_human", "blocked", "paused", "completed", "stopped", "cancelled"]);
 const WORKFLOW_TASK_STATUSES = new Set(["pending", "in_progress", "done", "blocked", "failed", "cancelled"]);
@@ -37,7 +37,7 @@ const CONTROL_LOOP_WORKFLOW_STATUSES = new Set(["active", "waiting_human", "bloc
 const CONTROL_LOOP_ACTIVE_JOB_STATUSES = new Set(["queued", "running", "retry_scheduled"]);
 const HUMAN_GATE_TEXT_POLICY_VERSION = "human_gate_chinese_feedback_style_v1";
 const HUMAN_GATE_WEB_APP_ROUTE_PATH = "/plugins/trading-agents-workflow/human-gate";
-const ROUTE_SHELL_PRIMARY_RUNTIME_ORDER = ["hermes_acp", "hermes"];
+const ROUTE_SHELL_TARGET_PLATFORM_ORDER = ["hermers", "openclaw", "other"];
 const TELEGRAM_BUTTON_STYLES = new Set(["danger", "success", "primary"]);
 const HUMAN_GATE_PLAN_STYLE = "success";
 const HUMAN_GATE_CONTROL_STYLES = {
@@ -521,8 +521,99 @@ function textHash(value) {
 }
 
 function normalizeRuntime(value) {
-  const runtime = String(value || "openclaw").trim().toLowerCase();
+  const raw = String(value || "openclaw").trim().toLowerCase();
+  const runtime = raw === "hermes" || raw === "hermes_acp" ? "hermers" : raw;
   return RUNTIMES.has(runtime) ? runtime : "other";
+}
+
+function normalizeRegistryToken(value, fallback = "") {
+  return String(value || fallback || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, "_")
+    .slice(0, 96);
+}
+
+function normalizeAgentPlatform(value, runtime = "") {
+  const explicit = normalizeRegistryToken(value);
+  if (explicit) {
+    if (explicit === "hermes" || explicit === "hermes_acp") return "hermers";
+    return explicit;
+  }
+  if (!String(runtime || "").trim()) return "";
+  const normalizedRuntime = normalizeRuntime(runtime);
+  if (normalizedRuntime === "openclaw_route_shell") return "openclaw";
+  if (normalizedRuntime === "hermers") return "hermers";
+  if (normalizedRuntime === "openclaw") return "openclaw";
+  return normalizedRuntime || "other";
+}
+
+function normalizeExecutionAdapter(value, platform = "", runtime = "") {
+  const explicit = normalizeRegistryToken(value);
+  if (explicit) return explicit === "hermes_acp" ? "acp" : explicit;
+  if (!String(platform || "").trim() && !String(runtime || "").trim()) return "";
+  const normalizedRuntime = normalizeRuntime(runtime);
+  if (normalizedRuntime === "openclaw_route_shell") return "route_shell";
+  if (normalizedRuntime === "openclaw") return "native";
+  if (normalizeAgentPlatform(platform, runtime) === "hermers") return "acp";
+  return "adapter";
+}
+
+function normalizeImIngressOwner(value, platform = "", runtime = "") {
+  const explicit = normalizeRegistryToken(value);
+  if (explicit) return explicit;
+  if (!String(platform || "").trim() && !String(runtime || "").trim()) return "";
+  const normalizedRuntime = normalizeRuntime(runtime);
+  if (normalizedRuntime === "openclaw" || normalizedRuntime === "openclaw_route_shell") return "openclaw_gateway";
+  if (normalizeAgentPlatform(platform, runtime) === "openclaw") return "openclaw_gateway";
+  return "external_platform";
+}
+
+function normalizeImIngressAdapter(value, owner = "", runtime = "") {
+  const explicit = normalizeRegistryToken(value);
+  if (explicit) return explicit;
+  if (!String(owner || "").trim() && !String(runtime || "").trim()) return "";
+  const normalizedRuntime = normalizeRuntime(runtime);
+  if (normalizedRuntime === "openclaw_route_shell") return "openclaw_route_shell";
+  if (normalizedRuntime === "openclaw") return "openclaw_native";
+  if (normalizeRegistryToken(owner) === "openclaw_gateway") return "openclaw_route_shell";
+  return "platform_im";
+}
+
+function normalizeWorkflowIngressAdapter(value, platform = "", runtime = "") {
+  const explicit = normalizeRegistryToken(value);
+  if (explicit) return explicit === "hermes_acp" ? "acp" : explicit;
+  if (!String(platform || "").trim() && !String(runtime || "").trim()) return "";
+  const normalizedRuntime = normalizeRuntime(runtime);
+  if (normalizedRuntime === "openclaw_route_shell") return "route_shell";
+  if (normalizedRuntime === "openclaw") return "openclaw_native";
+  if (normalizeAgentPlatform(platform, runtime) === "hermers") return "acp";
+  return "adapter";
+}
+
+function boolInt(value, fallback = true) {
+  if (value === undefined || value === null || value === "") return fallback ? 1 : 0;
+  if (typeof value === "boolean") return value ? 1 : 0;
+  const text = String(value).trim().toLowerCase();
+  if (["0", "false", "no", "off"].includes(text)) return 0;
+  if (["1", "true", "yes", "on"].includes(text)) return 1;
+  return fallback ? 1 : 0;
+}
+
+function registrySnapshot(row = {}) {
+  return {
+    agentKey: row.agent_key || "",
+    agentId: row.agent_id || "",
+    platform: row.platform || normalizeAgentPlatform("", row.runtime),
+    executionAdapter: row.execution_adapter || normalizeExecutionAdapter("", row.platform, row.runtime),
+    imIngressOwner: row.im_ingress_owner || normalizeImIngressOwner("", row.platform, row.runtime),
+    imIngressAdapter: row.im_ingress_adapter || normalizeImIngressAdapter("", row.im_ingress_owner, row.runtime),
+    workflowIngressAdapter: row.workflow_ingress_adapter || normalizeWorkflowIngressAdapter("", row.platform, row.runtime),
+    canReceiveDispatch: Number(row.can_receive_dispatch ?? 1) !== 0,
+    canStartWorkflow: Number(row.can_start_workflow ?? 1) !== 0,
+    gatewayProxyAllowed: Number(row.gateway_proxy_allowed ?? 1) !== 0,
+    endpointRef: row.endpoint_ref || ""
+  };
 }
 
 function normalizeAgentId(value) {
@@ -915,6 +1006,15 @@ CREATE TABLE IF NOT EXISTS runtime_agents (
   display_name TEXT,
   role TEXT,
   status TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT '',
+  execution_adapter TEXT NOT NULL DEFAULT '',
+  im_ingress_owner TEXT NOT NULL DEFAULT '',
+  im_ingress_adapter TEXT NOT NULL DEFAULT '',
+  workflow_ingress_adapter TEXT NOT NULL DEFAULT '',
+  can_receive_dispatch INTEGER NOT NULL DEFAULT 1,
+  can_start_workflow INTEGER NOT NULL DEFAULT 1,
+  gateway_proxy_allowed INTEGER NOT NULL DEFAULT 1,
+  routing_policy_json TEXT NOT NULL DEFAULT '{}',
   endpoint_ref TEXT,
   capabilities_json TEXT NOT NULL DEFAULT '{}',
   metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -1176,6 +1276,114 @@ async function migrateDatabase(dbFile) {
     ["decision_at", "TEXT"],
     ["approver", "TEXT"]
   ]);
+  await ensureColumns(dbFile, "runtime_agents", [
+    ["platform", "TEXT NOT NULL DEFAULT ''"],
+    ["execution_adapter", "TEXT NOT NULL DEFAULT ''"],
+    ["im_ingress_owner", "TEXT NOT NULL DEFAULT ''"],
+    ["im_ingress_adapter", "TEXT NOT NULL DEFAULT ''"],
+    ["workflow_ingress_adapter", "TEXT NOT NULL DEFAULT ''"],
+    ["can_receive_dispatch", "INTEGER NOT NULL DEFAULT 1"],
+    ["can_start_workflow", "INTEGER NOT NULL DEFAULT 1"],
+    ["gateway_proxy_allowed", "INTEGER NOT NULL DEFAULT 1"],
+    ["routing_policy_json", "TEXT NOT NULL DEFAULT '{}'"]
+  ]);
+  await sqlite(dbFile, `
+UPDATE runtime_agents
+SET
+  platform=CASE
+    WHEN platform IS NOT NULL AND platform != '' THEN platform
+    WHEN runtime IN ('hermes','hermes_acp','hermers') THEN 'hermers'
+    WHEN runtime IN ('openclaw','openclaw_route_shell') THEN 'openclaw'
+    ELSE runtime
+  END,
+  execution_adapter=CASE
+    WHEN execution_adapter IS NOT NULL AND execution_adapter != '' THEN execution_adapter
+    WHEN runtime='openclaw_route_shell' THEN 'route_shell'
+    WHEN runtime='openclaw' THEN 'native'
+    WHEN runtime IN ('hermes','hermes_acp','hermers') THEN 'acp'
+    ELSE 'adapter'
+  END,
+  im_ingress_owner=CASE
+    WHEN im_ingress_owner IS NOT NULL AND im_ingress_owner != '' THEN im_ingress_owner
+    WHEN runtime IN ('openclaw','openclaw_route_shell') THEN 'openclaw_gateway'
+    ELSE 'external_platform'
+  END,
+  im_ingress_adapter=CASE
+    WHEN im_ingress_adapter IS NOT NULL AND im_ingress_adapter != '' THEN im_ingress_adapter
+    WHEN runtime='openclaw_route_shell' THEN 'openclaw_route_shell'
+    WHEN runtime='openclaw' THEN 'openclaw_native'
+    ELSE 'platform_im'
+  END,
+  workflow_ingress_adapter=CASE
+    WHEN workflow_ingress_adapter IS NOT NULL AND workflow_ingress_adapter != '' THEN workflow_ingress_adapter
+    WHEN runtime='openclaw_route_shell' THEN 'route_shell'
+    WHEN runtime='openclaw' THEN 'openclaw_native'
+    WHEN runtime IN ('hermes','hermes_acp','hermers') THEN 'acp'
+    ELSE 'adapter'
+  END
+WHERE platform='' OR execution_adapter='' OR im_ingress_owner='' OR im_ingress_adapter='' OR workflow_ingress_adapter='';
+INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, routing_policy_json, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
+SELECT
+  'hermers:' || agent_id,
+  'hermers',
+  agent_id,
+  display_name,
+  role,
+  status,
+  'hermers',
+  CASE WHEN execution_adapter != '' THEN execution_adapter ELSE 'acp' END,
+  CASE
+    WHEN EXISTS (SELECT 1 FROM runtime_agents r2 WHERE r2.agent_id=runtime_agents.agent_id AND r2.runtime='openclaw_route_shell') THEN 'openclaw_gateway'
+    WHEN im_ingress_owner != '' THEN im_ingress_owner
+    ELSE 'external_platform'
+  END,
+  CASE
+    WHEN EXISTS (SELECT 1 FROM runtime_agents r2 WHERE r2.agent_id=runtime_agents.agent_id AND r2.runtime='openclaw_route_shell') THEN 'openclaw_route_shell'
+    WHEN im_ingress_adapter != '' THEN im_ingress_adapter
+    ELSE 'platform_im'
+  END,
+  CASE WHEN workflow_ingress_adapter != '' THEN workflow_ingress_adapter ELSE 'acp' END,
+  can_receive_dispatch,
+  can_start_workflow,
+  gateway_proxy_allowed,
+  routing_policy_json,
+  endpoint_ref,
+  capabilities_json,
+  metadata_json,
+  created_at,
+  updated_at
+FROM runtime_agents
+WHERE runtime IN ('hermes','hermes_acp')
+ON CONFLICT(agent_key) DO UPDATE SET
+  display_name=excluded.display_name,
+  role=excluded.role,
+  status=excluded.status,
+  platform=excluded.platform,
+  execution_adapter=excluded.execution_adapter,
+  im_ingress_owner=excluded.im_ingress_owner,
+  im_ingress_adapter=excluded.im_ingress_adapter,
+  workflow_ingress_adapter=excluded.workflow_ingress_adapter,
+  can_receive_dispatch=excluded.can_receive_dispatch,
+  can_start_workflow=excluded.can_start_workflow,
+  gateway_proxy_allowed=excluded.gateway_proxy_allowed,
+  routing_policy_json=excluded.routing_policy_json,
+  endpoint_ref=excluded.endpoint_ref,
+  capabilities_json=excluded.capabilities_json,
+  metadata_json=excluded.metadata_json,
+  updated_at=excluded.updated_at;
+UPDATE mixed_meeting_dispatches SET runtime='hermers' WHERE runtime IN ('hermes','hermes_acp');
+UPDATE mixed_meeting_messages SET runtime='hermers' WHERE runtime IN ('hermes','hermes_acp');
+INSERT OR IGNORE INTO mixed_meeting_participants(meeting_id, agent_key, runtime, agent_id, participant_role, chair, decider, secretary, live_mode, status, metadata_json, created_at, updated_at)
+SELECT meeting_id, 'hermers:' || agent_id, 'hermers', agent_id, participant_role, chair, decider, secretary, live_mode, status, metadata_json, created_at, updated_at
+FROM mixed_meeting_participants
+WHERE runtime IN ('hermes','hermes_acp');
+DELETE FROM mixed_meeting_participants WHERE runtime IN ('hermes','hermes_acp');
+UPDATE workflow_tasks SET runtime='hermers' WHERE runtime IN ('hermes','hermes_acp');
+UPDATE runtime_runs SET runtime='hermers' WHERE runtime IN ('hermes','hermes_acp');
+UPDATE mixed_meeting_dispatches SET agent_key='hermers:' || agent_id WHERE agent_key IN (SELECT agent_key FROM runtime_agents WHERE runtime IN ('hermes','hermes_acp'));
+UPDATE mixed_meeting_messages SET agent_key='hermers:' || agent_id WHERE agent_key IN (SELECT agent_key FROM runtime_agents WHERE runtime IN ('hermes','hermes_acp'));
+DELETE FROM runtime_agents WHERE runtime IN ('hermes','hermes_acp');
+`);
   await ensureColumns(dbFile, "mixed_meeting_dispatches", [
     ["workflow_id", "TEXT"],
     ["trace_id", "TEXT"],
@@ -1422,13 +1630,13 @@ async function activeReadinessChecks(paths, input, findings) {
   if (!checks.openclawGateway.ok) findings.push({ severity: "warning", key: "openclaw_gateway_health_failed", plane: "control", error: checks.openclawGateway.error });
 
   const hermesBin = resolveHome(input.hermesBin || input.hermes_bin || process.env.HERMES_BIN || "/home/flashcat/hermes-agent/venv/bin/hermes");
-  const hermesRows = await sqlite(paths.dbFile, `
-SELECT runtime, agent_id, endpoint_ref
+  const hermersRows = await sqlite(paths.dbFile, `
+SELECT runtime, agent_id, endpoint_ref, platform, execution_adapter, workflow_ingress_adapter
 FROM runtime_agents
-WHERE runtime='hermes_acp' AND status='active'
+WHERE platform='hermers' AND workflow_ingress_adapter='acp' AND status='active'
 ORDER BY agent_id;`, { json: true });
-  checks.hermesProfiles = [];
-  for (const row of hermesRows) {
+  checks.hermersProfiles = [];
+  for (const row of hermersRows) {
     const profile = hermesProfileFromEndpoint(row.endpoint_ref, row.agent_id);
     const result = await commandProbe(hermesBin, ["-p", profile, "acp", "--check"], {
       cwd: "/home/flashcat/hermes-agent",
@@ -1436,8 +1644,8 @@ ORDER BY agent_id;`, { json: true });
       env: proxyEnv,
       maxText: 1000
     });
-    checks.hermesProfiles.push({ agentId: row.agent_id, profile, ...result });
-    if (!result.ok) findings.push({ severity: "warning", key: "hermes_acp_check_failed", plane: "runtime", agentId: row.agent_id, profile, error: result.error });
+    checks.hermersProfiles.push({ agentId: row.agent_id, profile, ...result });
+    if (!result.ok) findings.push({ severity: "warning", key: "hermers_acp_check_failed", plane: "runtime", agentId: row.agent_id, profile, error: result.error });
   }
 
   const backendId = String(input.acpBackend || input.acp_backend || process.env.TRADING_AGENTS_ACP_BACKEND || "acpx").trim();
@@ -1464,11 +1672,11 @@ SELECT
 FROM mixed_meeting_dispatches;`, { json: true });
   const runtimeRows = await sqlite(paths.dbFile, `
 SELECT
-  runtime,
+  platform,
   SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active,
   COUNT(*) AS total
 FROM runtime_agents
-GROUP BY runtime;`, { json: true });
+GROUP BY platform;`, { json: true });
   const outboxRows = await sqlite(paths.dbFile, `
 SELECT
   SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued,
@@ -1509,7 +1717,7 @@ WHERE started_at >= ${sqlValue(new Date(Date.now() - 6 * 3600000).toISOString())
   const planes = {
     control: active ? { openclawGateway: active.openclawGateway } : {},
     orchestration: { dispatch },
-    runtime: { runtimes: runtimeRows, recentRuntime, hermesProfiles: active?.hermesProfiles || [], acpBackend: active?.acpBackend || null },
+    runtime: { runtimes: runtimeRows, recentRuntime, hermersProfiles: active?.hermersProfiles || [], acpBackend: active?.acpBackend || null },
     communication: { telegramOutbox: outbox },
     data: { trackingFreshness: dataFreshness },
     humanGate: humanGate
@@ -1613,8 +1821,15 @@ export async function workflowTaskCreate(rootDir, input = {}) {
   const priorityRaw = String(input.priority || "normal").trim();
   const priority = WORKFLOW_TASK_PRIORITIES.has(priorityRaw) ? priorityRaw : "normal";
   const ownerAgent = normalizeAgentId(input.ownerAgent || input.owner_agent || input.agentId || input.agent_id || "main");
-  const runtime = String(input.runtime || "").trim();
   const agentId = normalizeAgentId(input.agentId || input.agent_id || ownerAgent);
+  let runtime = String(input.runtime || input.platform || "").trim();
+  if (!runtime) {
+    try {
+      runtime = (await resolveRegisteredDispatchTarget(paths, { agentId })).registry.platform;
+    } catch {
+      runtime = "";
+    }
+  }
   const dependsOn = toList(input.dependsOn || input.depends_on || input.after);
   const payload = parseJsonValue(input.payload, input.payload || {});
   await sqlite(paths.dbFile, `
@@ -2625,9 +2840,9 @@ VALUES (${sqlValue(gateId)}, ${sqlValue(instrument?.instrumentId || null)}, ${sq
 export async function workflowTopology(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const registeredAgents = await sqlite(paths.dbFile, `
-SELECT runtime, agent_id, display_name, role, status, endpoint_ref
+SELECT runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, endpoint_ref
 FROM runtime_agents
-ORDER BY runtime, agent_id;`, { json: true });
+ORDER BY platform, agent_id;`, { json: true });
   const activeAgentIds = [
     ...new Set(
       registeredAgents
@@ -2637,12 +2852,21 @@ ORDER BY runtime, agent_id;`, { json: true });
     )
   ];
   const runtimeRegistry = registeredAgents.reduce((acc, row) => {
-    if (!acc[row.runtime]) acc[row.runtime] = [];
-    acc[row.runtime].push({
+    const snap = registrySnapshot(row);
+    if (!acc[snap.platform]) acc[snap.platform] = [];
+    acc[snap.platform].push({
       agentId: row.agent_id,
       displayName: row.display_name,
       role: row.role,
       status: row.status,
+      platform: snap.platform,
+      executionAdapter: snap.executionAdapter,
+      imIngressOwner: snap.imIngressOwner,
+      imIngressAdapter: snap.imIngressAdapter,
+      workflowIngressAdapter: snap.workflowIngressAdapter,
+      canReceiveDispatch: snap.canReceiveDispatch,
+      canStartWorkflow: snap.canStartWorkflow,
+      gatewayProxyAllowed: snap.gatewayProxyAllowed,
       endpointRef: row.endpoint_ref
     });
     return acc;
@@ -2660,8 +2884,8 @@ ORDER BY runtime, agent_id;`, { json: true });
         boundary: "Server A is the only side allowed to hold broker/exchange credentials and live position/order state."
       },
       serverB: {
-        role: "openclaw_hermes_workflow_plane",
-        services: ["openclaw", "hermes_agents", "trading-agents-workflow"],
+        role: "openclaw_hermers_workflow_plane",
+        services: ["openclaw", "hermers_agents", "trading-agents-workflow"],
         agents: activeAgentIds,
         stores: ["meetings", "research", "protocol_objects", "human_gate", "audit"],
         boundary: "Server B produces reviewed intents only; it must not store exchange API keys or live account state."
@@ -4112,35 +4336,64 @@ LIMIT 1;`, { json: true });
 }
 
 async function ensureRuntimeAgent(paths, input) {
-  const runtime = normalizeRuntime(input.runtime);
+  const runtime = normalizeRuntime(input.platform || input.runtime);
   const agentId = normalizeAgentId(input.agentId || input.agent_id);
   const agentKey = runtimeAgentKey(runtime, agentId);
   const createdAt = nowIso();
   const displayName = String(input.displayName || input.display_name || "").trim();
   const role = String(input.role || "").trim();
   const endpointRef = String(input.endpointRef || input.endpoint_ref || "").trim();
+  const platform = normalizeAgentPlatform(input.platform || input.runtimePlatform || input.runtime_platform, runtime);
+  const executionAdapter = normalizeExecutionAdapter(input.executionAdapter || input.execution_adapter, platform, runtime);
+  const imIngressOwner = normalizeImIngressOwner(input.imIngressOwner || input.im_ingress_owner, platform, runtime);
+  const imIngressAdapter = normalizeImIngressAdapter(input.imIngressAdapter || input.im_ingress_adapter, imIngressOwner, runtime);
+  const workflowIngressAdapter = normalizeWorkflowIngressAdapter(input.workflowIngressAdapter || input.workflow_ingress_adapter, platform, runtime);
+  const canReceiveDispatch = boolInt(input.canReceiveDispatch ?? input.can_receive_dispatch, workflowIngressAdapter !== "none");
+  const canStartWorkflow = boolInt(input.canStartWorkflow ?? input.can_start_workflow, true);
+  const gatewayProxyAllowed = boolInt(input.gatewayProxyAllowed ?? input.gateway_proxy_allowed, imIngressOwner === "openclaw_gateway");
+  const routingPolicy = parseJsonValue(input.routingPolicy || input.routing_policy, input.routingPolicy || input.routing_policy || {});
+  const capabilitiesJson = JSON.stringify(parseJsonValue(input.capabilities, input.capabilities || {}));
+  const metadataJson = JSON.stringify(parseJsonValue(input.metadata, input.metadata || {}));
   const preserveExisting = Boolean(input.preserveExisting || input.preserve_existing);
   const conflictUpdate = preserveExisting ? `
   display_name=CASE WHEN ${sqlValue(displayName)} != '' THEN excluded.display_name ELSE runtime_agents.display_name END,
   role=CASE WHEN ${sqlValue(role)} != '' THEN excluded.role ELSE runtime_agents.role END,
   status=excluded.status,
+  platform=CASE WHEN ${sqlValue(platform)} != '' THEN excluded.platform ELSE runtime_agents.platform END,
+  execution_adapter=CASE WHEN ${sqlValue(executionAdapter)} != '' THEN excluded.execution_adapter ELSE runtime_agents.execution_adapter END,
+  im_ingress_owner=CASE WHEN ${sqlValue(imIngressOwner)} != '' THEN excluded.im_ingress_owner ELSE runtime_agents.im_ingress_owner END,
+  im_ingress_adapter=CASE WHEN ${sqlValue(imIngressAdapter)} != '' THEN excluded.im_ingress_adapter ELSE runtime_agents.im_ingress_adapter END,
+  workflow_ingress_adapter=CASE WHEN ${sqlValue(workflowIngressAdapter)} != '' THEN excluded.workflow_ingress_adapter ELSE runtime_agents.workflow_ingress_adapter END,
+  can_receive_dispatch=excluded.can_receive_dispatch,
+  can_start_workflow=excluded.can_start_workflow,
+  gateway_proxy_allowed=excluded.gateway_proxy_allowed,
+  routing_policy_json=CASE WHEN ${sqlValue(JSON.stringify(routingPolicy))} != '{}' THEN excluded.routing_policy_json ELSE runtime_agents.routing_policy_json END,
   endpoint_ref=CASE WHEN ${sqlValue(endpointRef)} != '' THEN excluded.endpoint_ref ELSE runtime_agents.endpoint_ref END,
-  capabilities_json=CASE WHEN ${sqlValue(JSON.stringify(parseJsonValue(input.capabilities, input.capabilities || {})))} != '{}' THEN excluded.capabilities_json ELSE runtime_agents.capabilities_json END,
-  metadata_json=CASE WHEN ${sqlValue(JSON.stringify(parseJsonValue(input.metadata, input.metadata || {})))} != '{}' THEN excluded.metadata_json ELSE runtime_agents.metadata_json END,
+  capabilities_json=CASE WHEN ${sqlValue(capabilitiesJson)} != '{}' THEN excluded.capabilities_json ELSE runtime_agents.capabilities_json END,
+  metadata_json=CASE WHEN ${sqlValue(metadataJson)} != '{}' THEN excluded.metadata_json ELSE runtime_agents.metadata_json END,
   updated_at=excluded.updated_at;` : `
   display_name=excluded.display_name,
   role=excluded.role,
   status=excluded.status,
+  platform=excluded.platform,
+  execution_adapter=excluded.execution_adapter,
+  im_ingress_owner=excluded.im_ingress_owner,
+  im_ingress_adapter=excluded.im_ingress_adapter,
+  workflow_ingress_adapter=excluded.workflow_ingress_adapter,
+  can_receive_dispatch=excluded.can_receive_dispatch,
+  can_start_workflow=excluded.can_start_workflow,
+  gateway_proxy_allowed=excluded.gateway_proxy_allowed,
+  routing_policy_json=excluded.routing_policy_json,
   endpoint_ref=excluded.endpoint_ref,
   capabilities_json=excluded.capabilities_json,
   metadata_json=excluded.metadata_json,
   updated_at=excluded.updated_at;`;
   await sqlite(paths.dbFile, `
-INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
-VALUES (${sqlValue(agentKey)}, ${sqlValue(runtime)}, ${sqlValue(agentId)}, ${sqlValue(displayName || agentId)}, ${sqlValue(role)}, ${sqlValue(input.status || "active")}, ${sqlValue(endpointRef)}, ${sqlValue(JSON.stringify(parseJsonValue(input.capabilities, input.capabilities || {})))}, ${sqlValue(JSON.stringify(parseJsonValue(input.metadata, input.metadata || {})))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, routing_policy_json, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
+VALUES (${sqlValue(agentKey)}, ${sqlValue(runtime)}, ${sqlValue(agentId)}, ${sqlValue(displayName || agentId)}, ${sqlValue(role)}, ${sqlValue(input.status || "active")}, ${sqlValue(platform)}, ${sqlValue(executionAdapter)}, ${sqlValue(imIngressOwner)}, ${sqlValue(imIngressAdapter)}, ${sqlValue(workflowIngressAdapter)}, ${sqlValue(canReceiveDispatch)}, ${sqlValue(canStartWorkflow)}, ${sqlValue(gatewayProxyAllowed)}, ${sqlValue(JSON.stringify(routingPolicy))}, ${sqlValue(endpointRef)}, ${sqlValue(capabilitiesJson)}, ${sqlValue(metadataJson)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
 ON CONFLICT(agent_key) DO UPDATE SET
 ${conflictUpdate}`);
-  return { agentKey, runtime, agentId };
+  return { agentKey, runtime, agentId, platform, executionAdapter, imIngressOwner, imIngressAdapter, workflowIngressAdapter, canReceiveDispatch: Boolean(canReceiveDispatch), canStartWorkflow: Boolean(canStartWorkflow), gatewayProxyAllowed: Boolean(gatewayProxyAllowed) };
 }
 
 export async function protocolRecord(rootDir, input) {
@@ -4189,7 +4442,7 @@ export async function tradeProposal(rootDir, input) {
     objectType: "trade_proposal",
     objectId: input.proposalId || input.proposal_id || input.objectId || input.object_id,
     status: input.status || "proposed",
-    sourceSystem: input.sourceSystem || input.source_system || "openclaw_hermes",
+    sourceSystem: input.sourceSystem || input.source_system || "openclaw_hermers",
     sourceAgent: input.sourceAgent || input.source_agent || input.createdBy || input.from || "cat_heart",
     payload: {
       thesisId: input.thesisId || input.thesis_id || "",
@@ -4545,11 +4798,12 @@ async function telegramLinkFor(paths, meetingId) {
 export async function meetingDispatch(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
-  const runtime = normalizeRuntime(input.runtime);
   const agentId = normalizeAgentId(input.agentId || input.agent_id || input.target || "main");
   const workflowId = String(input.workflowId || input.workflow_id || meetingId).trim();
   const traceId = String(input.traceId || input.trace_id || safeId("trace")).trim();
   const idempotencyKey = String(input.idempotencyKey || input.idempotency_key || "").trim();
+  const requestedRuntime = String(input.runtime || "").trim();
+  const runtime = requestedRuntime ? normalizeRuntime(requestedRuntime) : "";
   if (runtime === "openclaw_route_shell") {
     return routeShellIngest(rootDir, {
       ...input,
@@ -4574,7 +4828,23 @@ export async function meetingDispatch(rootDir, input) {
       }
     });
   }
-  const agent = await ensureRuntimeAgent(paths, { runtime, agentId, displayName: input.displayName || input.display_name || "", preserveExisting: true });
+  const resolvedTarget = runtime
+    ? await resolveRegisteredDispatchTarget(paths, { ...input, runtime, agentId })
+    : await resolveRegisteredDispatchTarget(paths, { ...input, agentId });
+  const targetRegistry = resolvedTarget.registry;
+  const dispatchRuntime = targetRegistry.platform || runtime;
+  const agent = await ensureRuntimeAgent(paths, {
+    runtime: dispatchRuntime,
+    platform: targetRegistry.platform,
+    agentId,
+    displayName: input.displayName || input.display_name || "",
+    executionAdapter: targetRegistry.executionAdapter,
+    imIngressOwner: targetRegistry.imIngressOwner,
+    imIngressAdapter: targetRegistry.imIngressAdapter,
+    workflowIngressAdapter: targetRegistry.workflowIngressAdapter,
+    endpointRef: targetRegistry.endpointRef,
+    preserveExisting: true
+  });
   if (idempotencyKey) {
     const existing = await sqlite(paths.dbFile, `SELECT * FROM mixed_meeting_dispatches WHERE idempotency_key=${sqlValue(idempotencyKey)} LIMIT 1;`, { json: true });
     if (existing[0]) {
@@ -4601,7 +4871,7 @@ export async function meetingDispatch(rootDir, input) {
     traceId,
     idempotencyKey,
     dispatchId,
-    runtime,
+    runtime: dispatchRuntime,
     agentId,
     dispatchType: input.dispatchType || input.dispatch_type || "discussion_turn",
     prompt: input.prompt || input.text || "",
@@ -4614,7 +4884,7 @@ export async function meetingDispatch(rootDir, input) {
   try {
     await sqlite(paths.dbFile, `
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
-VALUES (${sqlValue(dispatchId)}, ${sqlValue(meetingId)}, ${sqlValue(workflowId)}, ${sqlValue(traceId)}, ${sqlValue(idempotencyKey)}, ${sqlValue(runtime)}, ${sqlValue(agentId)}, ${sqlValue(agent.agentKey)}, ${sqlValue(payload.dispatchType)}, ${sqlValue(status)}, ${sqlValue(input.priority || "normal")}, 0, ${sqlValue(maxAttempts)}, ${sqlValue(payload.prompt)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(payload.chair)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
+VALUES (${sqlValue(dispatchId)}, ${sqlValue(meetingId)}, ${sqlValue(workflowId)}, ${sqlValue(traceId)}, ${sqlValue(idempotencyKey)}, ${sqlValue(dispatchRuntime)}, ${sqlValue(agentId)}, ${sqlValue(agent.agentKey)}, ${sqlValue(payload.dispatchType)}, ${sqlValue(status)}, ${sqlValue(input.priority || "normal")}, 0, ${sqlValue(maxAttempts)}, ${sqlValue(payload.prompt)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(payload.chair)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
   } catch (error) {
     if (idempotencyKey && isSqliteConstraintError(error)) {
       const existing = await sqlite(paths.dbFile, `SELECT * FROM mixed_meeting_dispatches WHERE idempotency_key=${sqlValue(idempotencyKey)} LIMIT 1;`, { json: true });
@@ -4635,7 +4905,7 @@ VALUES (${sqlValue(dispatchId)}, ${sqlValue(meetingId)}, ${sqlValue(workflowId)}
     throw error;
   }
   const relPath = await writeJsonArtifact(paths.root, path.join(paths.dispatchesDir, status), dispatchId, payload);
-  return { meetingId, workflowId, traceId, idempotencyKey, dispatchId, runtime, agentId, status, relativePath: relPath, dbFile: paths.dbFile };
+  return { meetingId, workflowId, traceId, idempotencyKey, dispatchId, runtime: dispatchRuntime, platform: targetRegistry.platform, workflowIngressAdapter: targetRegistry.workflowIngressAdapter, agentId, status, relativePath: relPath, dbFile: paths.dbFile };
 }
 
 async function findActiveRuntimeAgent(paths, runtime, agentId) {
@@ -4649,37 +4919,96 @@ LIMIT 1;`, { json: true });
   return rows[0] || null;
 }
 
+async function findActiveRegisteredAgentInstances(paths, agentId) {
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM runtime_agents
+WHERE agent_id=${sqlValue(normalizeAgentId(agentId))}
+  AND status='active'
+ORDER BY
+  CASE platform WHEN 'hermers' THEN 0 WHEN 'openclaw' THEN 1 ELSE 2 END,
+  updated_at DESC;`, { json: true });
+  return rows;
+}
+
+function isRouteShellIngress(row) {
+  const snap = registrySnapshot(row);
+  return snap.imIngressOwner === "openclaw_gateway" && snap.imIngressAdapter === "openclaw_route_shell";
+}
+
+function isRouteShellOnlyRow(row) {
+  const snap = registrySnapshot(row);
+  return row.runtime === "openclaw_route_shell" || snap.executionAdapter === "route_shell" || snap.workflowIngressAdapter === "route_shell";
+}
+
+function canRouteToRegisteredInstance(row) {
+  const snap = registrySnapshot(row);
+  return snap.canReceiveDispatch && snap.workflowIngressAdapter && snap.workflowIngressAdapter !== "route_shell" && snap.workflowIngressAdapter !== "none";
+}
+
+function sortRegisteredTargets(left, right) {
+  const a = registrySnapshot(left);
+  const b = registrySnapshot(right);
+  const aIndex = ROUTE_SHELL_TARGET_PLATFORM_ORDER.indexOf(a.platform);
+  const bIndex = ROUTE_SHELL_TARGET_PLATFORM_ORDER.indexOf(b.platform);
+  return (aIndex >= 0 ? aIndex : 99) - (bIndex >= 0 ? bIndex : 99);
+}
+
+async function resolveRegisteredDispatchTarget(paths, input = {}) {
+  const agentId = normalizeAgentId(input.agentId || input.agent_id || input.target || "main");
+  const explicitPlatform = normalizeAgentPlatform(input.platform || input.runtime || "");
+  const explicitAdapter = normalizeWorkflowIngressAdapter(input.workflowIngressAdapter || input.workflow_ingress_adapter || input.targetAdapter || input.target_adapter || "");
+  const instances = await findActiveRegisteredAgentInstances(paths, agentId);
+  const candidates = instances
+    .filter(canRouteToRegisteredInstance)
+    .filter((row) => !explicitPlatform || registrySnapshot(row).platform === explicitPlatform || normalizeRuntime(row.runtime) === explicitPlatform)
+    .filter((row) => !explicitAdapter || registrySnapshot(row).workflowIngressAdapter === explicitAdapter)
+    .sort(sortRegisteredTargets);
+  const target = candidates[0];
+  if (!target) {
+    const filterText = explicitPlatform || explicitAdapter
+      ? `; requested platform=${explicitPlatform || "*"} adapter=${explicitAdapter || "*"}`
+      : "";
+    throw new Error(`active dispatch-capable registry row not found for ${agentId}${filterText}`);
+  }
+  return { agentId, target, registry: registrySnapshot(target) };
+}
+
 async function resolveRouteShellTarget(paths, input = {}) {
   const routeAgentId = normalizeAgentId(input.routeAgentId || input.route_agent_id || input.agentId || input.agent_id || input.target || "");
   const requireRouteShell = boolOption(input.requireRouteShell ?? input.require_route_shell, true);
-  const routeShell = await findActiveRuntimeAgent(paths, "openclaw_route_shell", routeAgentId);
-  if (requireRouteShell && !routeShell) {
+  const instances = await findActiveRegisteredAgentInstances(paths, routeAgentId);
+  const gatewayIngress = instances.find(isRouteShellIngress) || null;
+  if (requireRouteShell && !gatewayIngress) {
+    const passThrough = boolOption(input.passThroughOnNotRouteShell ?? input.pass_through_on_not_route_shell, false);
     return {
       ok: false,
-      status: "route_failed",
+      status: passThrough ? "not_route_shell" : "route_failed",
+      passThrough,
       routeAgentId,
-      reason: `active openclaw_route_shell registry row not found for ${routeAgentId}`
+      reason: `active registry row with imIngressOwner=openclaw_gateway and imIngressAdapter=openclaw_route_shell not found for ${routeAgentId}`
     };
   }
 
-  const explicitRuntime = String(input.targetRuntime || input.target_runtime || input.runtime || "").trim();
-  const candidates = explicitRuntime
-    ? [normalizeRuntime(explicitRuntime)]
-    : ROUTE_SHELL_PRIMARY_RUNTIME_ORDER;
-  for (const runtime of candidates) {
-    if (runtime === "openclaw_route_shell") continue;
-    const target = await findActiveRuntimeAgent(paths, runtime, routeAgentId);
-    if (target) return { ok: true, routeAgentId, routeShell, target };
-  }
+  const explicitPlatform = normalizeAgentPlatform(input.targetPlatform || input.target_platform || input.runtime || "");
+  const explicitAdapter = normalizeWorkflowIngressAdapter(input.workflowIngressAdapter || input.workflow_ingress_adapter || input.targetAdapter || input.target_adapter || "");
+  const candidates = instances
+    .filter((row) => !isRouteShellOnlyRow(row))
+    .filter(canRouteToRegisteredInstance)
+    .filter((row) => !explicitPlatform || registrySnapshot(row).platform === explicitPlatform)
+    .filter((row) => !explicitAdapter || registrySnapshot(row).workflowIngressAdapter === explicitAdapter)
+    .sort(sortRegisteredTargets);
+  const target = candidates[0];
+  if (target) return { ok: true, routeAgentId, gatewayIngress, target };
 
   return {
     ok: false,
     status: "route_failed",
     routeAgentId,
-    routeShell,
-    reason: explicitRuntime
-      ? `active ${normalizeRuntime(explicitRuntime)} primary runtime not found for ${routeAgentId}`
-      : `active primary runtime not found for ${routeAgentId}; checked ${ROUTE_SHELL_PRIMARY_RUNTIME_ORDER.join(", ")}`
+    gatewayIngress,
+    reason: explicitPlatform || explicitAdapter
+      ? `active registered target not found for ${routeAgentId}; requested platform=${explicitPlatform || "*"} adapter=${explicitAdapter || "*"}`
+      : `active registered target not found for ${routeAgentId}; checked platforms ${ROUTE_SHELL_TARGET_PLATFORM_ORDER.join(", ")}`
   };
 }
 
@@ -4713,7 +5042,8 @@ function routeShellAckText(result) {
     "ROUTE_QUEUED",
     `timestamp: ${result.createdAt}`,
     `route_shell: openclaw_route_shell:${result.routeAgentId}`,
-    `target: ${result.targetRuntime}:${result.targetAgentId}`,
+    `target_platform: ${result.targetPlatform}:${result.targetAgentId}`,
+    `workflow_ingress_adapter: ${result.workflowIngressAdapter || ""}`,
     `dispatch_id: ${result.dispatchId}`,
     `workflow_id: ${result.workflowId}`,
     `trace_id: ${result.traceId}`,
@@ -4736,6 +5066,7 @@ export async function routeShellIngest(rootDir, input = {}) {
   const sourceMessageId = routeShellSourceMessageId(input);
   const sourceSystem = String(input.sourceSystem || input.source_system || input.channel || "openclaw_route_shell").trim();
   const sourceRuntime = normalizeRuntime(input.sourceRuntime || input.source_runtime || "openclaw_route_shell");
+  const targetRegistry = registrySnapshot(resolved.target);
   const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id || `route-shell-${resolved.routeAgentId}-${sourceMessageId ? cleanFileSegment(sourceMessageId) : Date.now().toString(36)}`);
   const workflowId = String(input.workflowId || input.workflow_id || meetingId).trim();
   const traceId = String(input.traceId || input.trace_id || (sourceMessageId ? `route-shell:${resolved.routeAgentId}:${cleanFileSegment(sourceMessageId)}` : safeId("route_trace"))).trim();
@@ -4748,7 +5079,8 @@ export async function routeShellIngest(rootDir, input = {}) {
       sourceMessageId,
       sourceChatId: String(input.chatId || input.chat_id || input.conversationId || input.conversation_id || "").trim(),
       senderId: String(input.senderId || input.sender_id || input.from || "").trim(),
-      receivedAt: input.receivedAt || input.received_at || createdAt
+      receivedAt: input.receivedAt || input.received_at || createdAt,
+      target: targetRegistry
     },
     originalPayload: parseJsonValue(input.payload, input.payload || {})
   };
@@ -4767,8 +5099,10 @@ LIMIT 1;`, { json: true });
         createdAt,
         routeAgentId: resolved.routeAgentId,
         routeRuntime: "openclaw_route_shell",
-        targetRuntime: existing.runtime,
+        targetPlatform: targetRegistry.platform,
         targetAgentId: existing.agent_id,
+        executionAdapter: targetRegistry.executionAdapter,
+        workflowIngressAdapter: targetRegistry.workflowIngressAdapter,
         runtime: existing.runtime,
         agentId: existing.agent_id,
         meetingId: existing.meeting_id,
@@ -4812,8 +5146,13 @@ LIMIT 1;`, { json: true });
     workflowId,
     traceId,
     idempotencyKey,
-    runtime: resolved.target.runtime,
+    runtime: targetRegistry.platform,
     agentId: resolved.target.agent_id,
+    platform: targetRegistry.platform,
+    executionAdapter: targetRegistry.executionAdapter,
+    imIngressOwner: targetRegistry.imIngressOwner,
+    imIngressAdapter: targetRegistry.imIngressAdapter,
+    workflowIngressAdapter: targetRegistry.workflowIngressAdapter,
     dispatchType: input.dispatchType || input.dispatch_type || "route_shell_forward",
     prompt: text,
     priority: input.priority || "normal",
@@ -4840,8 +5179,10 @@ LIMIT 1;`, { json: true });
     createdAt,
     routeAgentId: resolved.routeAgentId,
     routeRuntime: "openclaw_route_shell",
-    targetRuntime: dispatch.runtime,
+    targetPlatform: targetRegistry.platform,
     targetAgentId: dispatch.agentId,
+    executionAdapter: targetRegistry.executionAdapter,
+    workflowIngressAdapter: targetRegistry.workflowIngressAdapter,
     runtime: dispatch.runtime,
     agentId: dispatch.agentId,
     meetingId,
@@ -4918,6 +5259,7 @@ VALUES (${sqlValue(messageId)}, ${sqlValue(meetingId)}, ${sqlValue(runtime)}, ${
 
 function hermesProfileFromEndpoint(endpointRef, agentId) {
   const endpoint = String(endpointRef || "").trim();
+  if (endpoint.startsWith("hermers-profile:")) return endpoint.slice("hermers-profile:".length).trim();
   if (endpoint.startsWith("hermes-profile:")) return endpoint.slice("hermes-profile:".length).trim();
   if (endpoint.startsWith("profile:")) return endpoint.slice("profile:".length).trim();
   return String(agentId || "").replace(/_/g, "").trim();
@@ -4931,7 +5273,7 @@ function buildRuntimeBridgePrompt(row) {
   return [
     "You are being invoked by trading-agents-workflow through the OpenClaw gateway control plane.",
     "Treat this as one assigned collaboration turn in a mixed-runtime trading_agents workflow.",
-    "OpenClaw Gateway is the information/workflow hub; trading-agents-workflow is the trading workflow scheduler; Hermes is the agent runtime container; ACP is the standard Hermes invocation channel.",
+    "OpenClaw Gateway is the information/workflow hub; trading-agents-workflow is the trading workflow scheduler; Hermers is the agent platform; ACP is the Hermers workflow ingress adapter.",
     "",
     `Invocation timestamp: ${invocationTs}`,
     `Meeting ID: ${row.meeting_id}`,
@@ -5161,18 +5503,18 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       meetingId: row.meeting_id,
       runtime: row.runtime,
       agentId: row.agent_id,
-      adapter: "hermes_acp",
-      fallbackAdapter: "hermes_acp_cli_fallback",
+      adapter: "acp",
+      fallbackAdapter: "acp_cli_fallback",
       backend: backendId,
       acpAgent,
       reason: error instanceof Error ? error.message : String(error)
     });
-    return runHermesDispatch(paths, row, { ...input, adapterName: "hermes_acp_cli_fallback", timeoutSeconds });
+    return runHermesDispatch(paths, row, { ...input, adapterName: "acp_cli_fallback", timeoutSeconds });
   }
   const startedAt = nowIso();
   const attempt = Number(row.attempt || 0) + 1;
-  await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "hermes_acp", backend: backendId, acpAgent, sessionMode, sessionKey, startedAt, attempt });
-  const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "hermes_acp", backend: backendId, acpAgent, sessionKey, status: "started", startedAt, attempt, payload: { sessionMode } });
+  await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "acp", backend: backendId, acpAgent, sessionMode, sessionKey, startedAt, attempt });
+  const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "started", startedAt, attempt, payload: { sessionMode } });
   await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
     ts: startedAt,
     event: "runtime_dispatch_started",
@@ -5180,7 +5522,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     meetingId: row.meeting_id,
     runtime: row.runtime,
     agentId: row.agent_id,
-    adapter: "hermes_acp",
+    adapter: "acp",
     backend: backendId,
     acpAgent,
     sessionMode,
@@ -5232,7 +5574,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       phase: "runtime_bridge_acp",
       payload: {
         dispatchId: row.dispatch_id,
-        adapter: "hermes_acp",
+        adapter: "acp",
         backend: backendId,
         acpAgent,
         sessionMode,
@@ -5242,8 +5584,8 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       }
     });
     const reportDelivery = await autoDeliverReportOutbox(paths, ingest, input);
-    await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "hermes_acp", backend: backendId, acpAgent, completedAt, messageId: ingest.messageId, attempt });
-    await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter: "hermes_acp", backend: backendId, acpAgent, sessionKey, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { sessionMode, events: acpEvents.slice(-20) } });
+    await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "acp", backend: backendId, acpAgent, completedAt, messageId: ingest.messageId, attempt });
+    await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { sessionMode, events: acpEvents.slice(-20) } });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: completedAt,
       event: "runtime_dispatch_acked",
@@ -5251,7 +5593,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       meetingId: row.meeting_id,
       runtime: row.runtime,
       agentId: row.agent_id,
-      adapter: "hermes_acp",
+      adapter: "acp",
       backend: backendId,
       acpAgent,
       sessionMode,
@@ -5262,14 +5604,14 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       runtimeRunId
     });
     if (sessionMode === "oneshot") await backend.runtime.close({ handle, reason: "trading-agents-workflow oneshot completed", discardPersistentState: true }).catch(() => {});
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "hermes_acp", backend: backendId, acpAgent, sessionKey, messageId: ingest.messageId, reportDelivery };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "acp", backend: backendId, acpAgent, sessionKey, messageId: ingest.messageId, reportDelivery };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
     const failureType = classifyRuntimeError(error);
     const shouldRetry = AUTO_RETRY_FAILURE_TYPES.has(failureType) && attempt < Number(row.max_attempts || 1);
-    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "hermes_acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
-    await recordRuntimeRun(paths, row, { adapter: "hermes_acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, retry: shouldRetry } });
+    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
+    await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, retry: shouldRetry } });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: failedAt,
       event: "runtime_dispatch_failed",
@@ -5277,7 +5619,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       meetingId: row.meeting_id,
       runtime: row.runtime,
       agentId: row.agent_id,
-      adapter: "hermes_acp",
+      adapter: "acp",
       backend: backendId,
       acpAgent,
       sessionMode,
@@ -5289,7 +5631,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       attempt,
       runtimeRunId
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "hermes_acp", backend: backendId, acpAgent, sessionKey, failureType, retryScheduled: shouldRetry, error: message };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "acp", backend: backendId, acpAgent, sessionKey, failureType, retryScheduled: shouldRetry, error: message };
   } finally {
     if (timeout) clearTimeout(timeout);
   }
@@ -5436,7 +5778,8 @@ async function redirectQueuedRouteShellDispatch(paths, row, input = {}) {
       adapter: "route_shell_redirect",
       completedAt: nowIso(),
       redirectedToDispatchId: result.dispatchId,
-      redirectedToRuntime: result.targetRuntime,
+      redirectedToPlatform: result.targetPlatform,
+      redirectedToAdapter: result.workflowIngressAdapter,
       redirectedToAgentId: result.targetAgentId
     });
     return {
@@ -5445,7 +5788,8 @@ async function redirectQueuedRouteShellDispatch(paths, row, input = {}) {
       agentId: row.agent_id,
       status: "redirected",
       redirectedToDispatchId: result.dispatchId,
-      redirectedToRuntime: result.targetRuntime,
+      redirectedToPlatform: result.targetPlatform,
+      redirectedToAdapter: result.workflowIngressAdapter,
       redirectedToAgentId: result.targetAgentId,
       targetStatus: result.status,
       deduped: result.deduped
@@ -5469,13 +5813,13 @@ async function redirectQueuedRouteShellDispatch(paths, row, input = {}) {
 
 export async function runtimeBridgeDrain(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
-  const runtime = normalizeRuntime(input.runtime || "hermes");
+  const runtime = normalizeRuntime(input.runtime || "hermers");
   const limit = Math.max(1, Math.min(20, Number(input.limit || 1)));
   const dryRun = Boolean(input.dryRun || input.dry_run);
   const dispatchId = String(input.dispatchId || input.dispatch_id || "").trim();
   const dispatchFilter = dispatchId ? `AND d.dispatch_id=${sqlValue(dispatchId)}` : "";
   const rows = await sqlite(paths.dbFile, `
-SELECT d.*, a.display_name, a.role, a.endpoint_ref
+SELECT d.*, a.display_name, a.role, a.endpoint_ref, a.platform, a.execution_adapter, a.im_ingress_owner, a.im_ingress_adapter, a.workflow_ingress_adapter
 FROM mixed_meeting_dispatches d
 LEFT JOIN runtime_agents a ON a.agent_key=d.agent_key
 WHERE d.status='queued' AND d.runtime=${sqlValue(runtime)}
@@ -5490,10 +5834,16 @@ LIMIT ${limit};`, { json: true });
   for (const row of rows) {
     if (runtime === "openclaw_route_shell") {
       results.push(await redirectQueuedRouteShellDispatch(paths, row, input));
-    } else if (runtime === "hermes_acp") {
-      results.push(await runHermesAcpDispatch(paths, row, input));
-    } else if (runtime === "hermes") {
-      results.push(await runHermesDispatch(paths, row, input));
+    } else if (runtime === "hermers") {
+      const adapter = normalizeWorkflowIngressAdapter(row.workflow_ingress_adapter || row.execution_adapter || "acp", row.platform || "hermers", runtime);
+      if (adapter === "acp") {
+        results.push(await runHermesAcpDispatch(paths, row, input));
+      } else if (adapter === "cli") {
+        results.push(await runHermesDispatch(paths, row, input));
+      } else {
+        await updateDispatch(paths, row.dispatch_id, "failed", { adapter, failedAt: nowIso(), error: `hermers adapter not implemented: ${adapter}` });
+        results.push({ dispatchId: row.dispatch_id, runtime, agentId: row.agent_id, status: "failed", error: `hermers adapter not implemented: ${adapter}` });
+      }
     } else if (runtime === "openclaw") {
       results.push(await runOpenClawDispatch(paths, row, input));
     } else {
@@ -6755,7 +7105,7 @@ WHERE status='sent' AND updated_at < ${sqlValue(staleDispatchCutoff)};`, { json:
   }
 
   if (drainQueued) {
-    const runtimes = toList(input.runtimes || input.runtime || "hermes_acp").filter((runtime) => RUNTIMES.has(normalizeRuntime(runtime))).map(normalizeRuntime);
+    const runtimes = toList(input.runtimes || input.runtime || "hermers").filter((runtime) => RUNTIMES.has(normalizeRuntime(runtime))).map(normalizeRuntime);
     for (const runtime of runtimes) {
       const rows = await sqlite(paths.dbFile, `
 SELECT COUNT(*) AS count
