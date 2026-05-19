@@ -1222,6 +1222,8 @@ export async function runAction(rootDir, input = {}) {
     action === "meeting.resume" ||
     action === "meeting.disperse" ||
     action === "human_gate.request" ||
+    action === "human_gate.web_app_review" ||
+    action === "human_gate.web_app_submit" ||
     action === "human_gate.button_callback" ||
     action === "human_gate.callback" ||
     action === "human_gate.feedback" ||

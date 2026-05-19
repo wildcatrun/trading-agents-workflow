@@ -19,6 +19,31 @@
         "type": "string",
         "description": "Optional workflow root. Defaults to /home/flashcat/.openclaw/shared/trading-agents-workflow."
       },
+      "humanGate": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Human Gate Telegram Web App review form settings.",
+        "properties": {
+          "webAppBaseUrl": {
+            "type": "string"
+          },
+          "webAppRoutePath": {
+            "type": "string"
+          },
+          "verifyTelegramInitData": {
+            "type": "string"
+          },
+          "webAppInitDataMaxAgeSeconds": {
+            "type": "number"
+          },
+          "allowedTelegramUserIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "controlLoop": {
         "type": "object",
         "additionalProperties": false,

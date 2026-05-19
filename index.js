@@ -123,6 +123,8 @@ const toolParameters = {
         "dispatch.reconcile",
         "stale_dispatch.reconcile",
         "human_gate.request",
+        "human_gate.web_app_review",
+        "human_gate.web_app_submit",
         "human_gate.button_callback",
         "human_gate.callback",
         "human_gate.feedback",
@@ -336,6 +338,10 @@ const toolParameters = {
     callbackToken: { type: "string" },
     callbackChatId: { type: "string" },
     callbackMessageId: { type: "string" },
+    initData: { type: "string" },
+    webAppBaseUrl: { type: "string" },
+    webAppRoutePath: { type: "string" },
+    flashcatOriginalWords: { type: "string" },
     targets: { type: "array", items: { type: "string" } },
     limit: { type: "number" },
     timeoutSeconds: { type: "number" },
@@ -1681,6 +1687,202 @@ function registerControlLoop(api) {
   console.error(`[trading-agents-workflow] control loop enabled tickMs=${config.tickMs} workerMode=${config.workerMode} jobLimit=${config.jobLimit}`);
 }
 
+function normalizeHumanGateWebAppRoutePath(value) {
+  const raw = String(value || "/plugins/trading-agents-workflow/human-gate").trim();
+  if (!raw) return "/plugins/trading-agents-workflow/human-gate";
+  return raw.startsWith("/") ? raw.replace(/\/+$/g, "") || "/" : `/${raw.replace(/\/+$/g, "")}`;
+}
+
+function humanGateWebAppRoutePath(api) {
+  const cfg = pluginConfig(api);
+  const humanGate = objectConfig(cfg.humanGate || cfg.human_gate);
+  return normalizeHumanGateWebAppRoutePath(
+    process.env.TRADING_AGENTS_WORKFLOW_HG_WEBAPP_ROUTE ||
+    process.env.TRADING_AGENTS_WORKFLOW_WEB_APP_ROUTE ||
+    humanGate.webAppRoutePath ||
+    humanGate.web_app_route_path ||
+    cfg.humanGateWebAppRoutePath ||
+    cfg.human_gate_web_app_route_path
+  );
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function sendHttp(res, statusCode, contentType, body) {
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", contentType);
+  res.end(body);
+}
+
+function sendJson(res, statusCode, payload) {
+  sendHttp(res, statusCode, "application/json; charset=utf-8", JSON.stringify(payload));
+}
+
+function readRequestBody(req, maxBytes = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new Error("request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+function parseWebAppSubmitBody(rawBody, contentType = "") {
+  if (contentType.includes("application/json")) {
+    try {
+      const parsed = JSON.parse(rawBody || "{}");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return Object.fromEntries(new URLSearchParams(rawBody || ""));
+}
+
+function renderHumanGateWebAppReview(routePath, review) {
+  const button = review.button || {};
+  const humanGate = review.humanGate || {};
+  const ready = review.canSubmit;
+  const statusText = ready ? "等待闪电猫发送原话" : `当前状态：${review.status || "unknown"}`;
+  const style = button.style || "primary";
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Human Gate 审核</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #16202a; }
+    body { margin: 0; }
+    main { max-width: 760px; margin: 0 auto; padding: 18px 16px 28px; }
+    h1 { font-size: 21px; margin: 0 0 6px; }
+    .meta { color: #52606d; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+    .panel { background: #fff; border: 1px solid #d9e2ec; border-radius: 8px; padding: 14px; margin-top: 12px; }
+    .label { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+    .row { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; padding: 6px 0; border-top: 1px solid #eef2f7; }
+    .row:first-of-type { border-top: 0; }
+    .key { color: #52606d; }
+    .value { overflow-wrap: anywhere; white-space: pre-wrap; }
+    textarea { width: 100%; min-height: 150px; box-sizing: border-box; resize: vertical; border: 1px solid #bcccdc; border-radius: 8px; padding: 11px; font: inherit; line-height: 1.45; }
+    button { width: 100%; min-height: 46px; border: 0; border-radius: 8px; color: #fff; font-size: 16px; font-weight: 700; margin-top: 10px; }
+    button.success { background: #15803d; }
+    button.danger { background: #b91c1c; }
+    button.primary { background: #2563eb; }
+    button:disabled { background: #94a3b8; }
+    .status { margin-top: 10px; font-size: 14px; color: #334e68; min-height: 20px; }
+    .error { color: #b91c1c; }
+    .ok { color: #15803d; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Human Gate 审核</h1>
+  <div class="meta">${escapeHtml(statusText)}</div>
+  <section class="panel">
+    <div class="label">${escapeHtml(button.displayLabel || button.label || "Human Gate 选项")}</div>
+    <div class="row"><div class="key">决定</div><div class="value">${escapeHtml(button.decisionStatus || "-")}</div></div>
+    <div class="row"><div class="key">工作流</div><div class="value">${escapeHtml(review.workflowId || "-")}</div></div>
+    <div class="row"><div class="key">事项</div><div class="value">${escapeHtml(review.humanGateId || "-")}</div></div>
+    ${button.summary ? `<div class="row"><div class="key">内容</div><div class="value">${escapeHtml(button.summary)}</div></div>` : ""}
+    ${button.prompt ? `<div class="row"><div class="key">边界</div><div class="value">${escapeHtml(button.prompt)}</div></div>` : ""}
+    ${humanGate.summary ? `<div class="row"><div class="key">摘要</div><div class="value">${escapeHtml(humanGate.summary)}</div></div>` : ""}
+    ${button.artifactRef || humanGate.artifactRef ? `<div class="row"><div class="key">记录</div><div class="value">${escapeHtml(button.artifactRef || humanGate.artifactRef)}</div></div>` : ""}
+  </section>
+  <form id="hgate-form" class="panel" action="${escapeHtml(routePath)}/submit" method="post">
+    <input type="hidden" name="token" value="${escapeHtml(review.token || "")}">
+    <input type="hidden" name="initData" value="">
+    <textarea name="text" placeholder="闪电猫原话或审核意见" ${ready ? "required" : "disabled"}></textarea>
+    <button class="${escapeHtml(style)}" type="submit" ${ready ? "" : "disabled"}>发送并完成 Human Gate</button>
+    <div id="status" class="status"></div>
+  </form>
+</main>
+<script>
+  const tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    document.querySelector('input[name="initData"]').value = tg.initData || "";
+  }
+  const form = document.getElementById("hgate-form");
+  const statusEl = document.getElementById("status");
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = form.querySelector("button");
+    button.disabled = true;
+    statusEl.className = "status";
+    statusEl.textContent = "正在发送...";
+    try {
+      const body = new URLSearchParams(new FormData(form));
+      const response = await fetch(form.action, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+      const result = await response.json();
+      if (!response.ok || !["approved","rejected","paused","terminated"].includes(result.status)) throw new Error(result.replyText || result.error || "提交失败");
+      statusEl.className = "status ok";
+      statusEl.textContent = result.replyText || "Human Gate 已完成。";
+      if (tg) setTimeout(() => tg.close(), 900);
+    } catch (error) {
+      button.disabled = false;
+      statusEl.className = "status error";
+      statusEl.textContent = error && error.message ? error.message : String(error);
+    }
+  });
+</script>
+</body>
+</html>`;
+}
+
+function registerHumanGateWebAppRoutes(api) {
+  if (typeof api.registerHttpRoute !== "function") return;
+  const routePath = humanGateWebAppRoutePath(api);
+  api.registerHttpRoute({
+    path: routePath,
+    match: "prefix",
+    auth: "plugin",
+    replaceExisting: true,
+    handler: async (req, res) => {
+      const url = new URL(req.url || "/", "http://localhost");
+      const pathname = url.pathname.replace(/\/+$/g, "") || "/";
+      const root = resolveRoot(api);
+      if (req.method === "GET" && pathname === `${routePath}/review`) {
+        const review = await runAction(root, { action: "human_gate.web_app_review", token: url.searchParams.get("token") || "" });
+        if (review.status === "not_found") return sendHttp(res, 404, "text/plain; charset=utf-8", review.replyText || "Human Gate not found");
+        return sendHttp(res, 200, "text/html; charset=utf-8", renderHumanGateWebAppReview(routePath, review));
+      }
+      if (req.method === "POST" && pathname === `${routePath}/submit`) {
+        const rawBody = await readRequestBody(req);
+        const body = parseWebAppSubmitBody(rawBody, String(req.headers["content-type"] || ""));
+        const result = await runAction(root, {
+          action: "human_gate.web_app_submit",
+          token: body.token,
+          text: body.text,
+          initData: body.initData,
+          sourceSystem: "telegram_web_app"
+        });
+        const ok = ["approved", "rejected", "paused", "terminated"].includes(result.status);
+        return sendJson(res, ok ? 200 : 400, result);
+      }
+      res.setHeader("Allow", "GET, POST");
+      return sendHttp(res, 404, "text/plain; charset=utf-8", "Not Found");
+    }
+  });
+  console.error(`[trading-agents-workflow] Human Gate Web App route registered at ${routePath}`);
+}
+
 function registerHumanGateButtons(api) {
   if (typeof api.registerInteractiveHandler !== "function") return;
   api.registerInteractiveHandler({
@@ -1794,6 +1996,18 @@ export default definePluginEntry({
         type: "string",
         description: "Optional workflow root. Defaults to /home/flashcat/.openclaw/shared/trading-agents-workflow."
       },
+      humanGate: {
+        type: "object",
+        additionalProperties: false,
+        description: "Human Gate Telegram Web App review form settings.",
+        properties: {
+          webAppBaseUrl: { type: "string" },
+          webAppRoutePath: { type: "string" },
+          verifyTelegramInitData: { type: "string" },
+          webAppInitDataMaxAgeSeconds: { type: "number" },
+          allowedTelegramUserIds: { type: "array", items: { type: "string" } }
+        }
+      },
       controlLoop: {
         type: "object",
         additionalProperties: false,
@@ -1836,6 +2050,7 @@ export default definePluginEntry({
     });
     registerCli(api);
     registerControlLoop(api);
+    registerHumanGateWebAppRoutes(api);
     registerHumanGateButtons(api);
     registerHumanGateFeedbackCommand(api);
   }

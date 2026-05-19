@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -33,6 +33,7 @@ const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = "8390724843";
 const CONTROL_LOOP_WORKFLOW_STATUSES = new Set(["active", "waiting_human", "blocked"]);
 const CONTROL_LOOP_ACTIVE_JOB_STATUSES = new Set(["queued", "running", "retry_scheduled"]);
 const HUMAN_GATE_TEXT_POLICY_VERSION = "human_gate_chinese_feedback_style_v1";
+const HUMAN_GATE_WEB_APP_ROUTE_PATH = "/plugins/trading-agents-workflow/human-gate";
 const TELEGRAM_BUTTON_STYLES = new Set(["danger", "success", "primary"]);
 const HUMAN_GATE_PLAN_STYLE = "success";
 const HUMAN_GATE_CONTROL_STYLES = {
@@ -225,6 +226,227 @@ async function readTelegramTargetConfig(paths) {
     if (config && typeof config === "object") return config;
   }
   return {};
+}
+
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function resolveHomePath(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw === "~") return process.env.HOME || raw;
+  if (raw.startsWith("~/")) return path.join(process.env.HOME || os.homedir(), raw.slice(2));
+  return raw;
+}
+
+async function readOpenClawConfig() {
+  const home = process.env.OPENCLAW_HOME || (process.env.HOME ? path.join(process.env.HOME, ".openclaw") : "");
+  const candidates = [
+    process.env.OPENCLAW_CONFIG,
+    home ? path.join(home, "openclaw.json") : "",
+    path.join(os.homedir(), ".openclaw", "openclaw.json")
+  ].map(resolveHomePath).filter(Boolean);
+  for (const file of [...new Set(candidates)]) {
+    const config = await readOptionalJson(file).catch(() => null);
+    if (config && typeof config === "object") return config;
+  }
+  return {};
+}
+
+function tradingWorkflowPluginConfig(config = {}) {
+  return objectValue(config.plugins?.entries?.["trading-agents-workflow"]?.config);
+}
+
+function normalizeHumanGateWebAppRoutePath(value) {
+  const raw = String(value || HUMAN_GATE_WEB_APP_ROUTE_PATH).trim();
+  if (!raw) return HUMAN_GATE_WEB_APP_ROUTE_PATH;
+  return raw.startsWith("/") ? raw.replace(/\/+$/g, "") || "/" : `/${raw.replace(/\/+$/g, "")}`;
+}
+
+function normalizeHumanGateWebAppBaseUrl(baseUrl, routePath = HUMAN_GATE_WEB_APP_ROUTE_PATH) {
+  const raw = String(baseUrl || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:") return "";
+    const normalizedRoute = normalizeHumanGateWebAppRoutePath(routePath);
+    const rawPath = url.pathname.replace(/\/+$/g, "");
+    if (!rawPath.endsWith(normalizedRoute)) {
+      url.pathname = `${rawPath}/${normalizedRoute.replace(/^\/+/, "")}`.replace(/\/{2,}/g, "/");
+    }
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/g, "");
+  } catch {
+    return "";
+  }
+}
+
+async function humanGateWebAppConfig(input = {}) {
+  const config = await readOpenClawConfig();
+  const plugin = tradingWorkflowPluginConfig(config);
+  const humanGate = objectValue(plugin.humanGate || plugin.human_gate);
+  const routePath = normalizeHumanGateWebAppRoutePath(firstText(
+    input.webAppRoutePath,
+    input.web_app_route_path,
+    process.env.TRADING_AGENTS_WORKFLOW_HG_WEBAPP_ROUTE,
+    process.env.TRADING_AGENTS_WORKFLOW_WEB_APP_ROUTE,
+    humanGate.webAppRoutePath,
+    humanGate.web_app_route_path,
+    plugin.humanGateWebAppRoutePath,
+    plugin.human_gate_web_app_route_path,
+    HUMAN_GATE_WEB_APP_ROUTE_PATH
+  ));
+  const baseUrl = normalizeHumanGateWebAppBaseUrl(firstText(
+    input.webAppBaseUrl,
+    input.web_app_base_url,
+    process.env.TRADING_AGENTS_WORKFLOW_HG_WEBAPP_BASE_URL,
+    process.env.TRADING_AGENTS_WORKFLOW_WEB_APP_BASE_URL,
+    humanGate.webAppBaseUrl,
+    humanGate.web_app_base_url,
+    plugin.humanGateWebAppBaseUrl,
+    plugin.human_gate_web_app_base_url
+  ), routePath);
+  const verifyTelegramInitData = firstText(
+    input.verifyTelegramInitData,
+    input.verify_telegram_init_data,
+    humanGate.verifyTelegramInitData,
+    humanGate.verify_telegram_init_data,
+    "if_present"
+  );
+  const maxInitDataAgeSeconds = Math.max(60, Math.min(7 * 24 * 3600, Number(firstText(
+    input.webAppInitDataMaxAgeSeconds,
+    input.web_app_init_data_max_age_seconds,
+    humanGate.webAppInitDataMaxAgeSeconds,
+    humanGate.web_app_init_data_max_age_seconds,
+    24 * 3600
+  ))));
+  const allowedTelegramUserIds = toList(
+    input.allowedTelegramUserIds ?? input.allowed_telegram_user_ids ??
+    humanGate.allowedTelegramUserIds ?? humanGate.allowed_telegram_user_ids ??
+    DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID
+  ).map((item) => String(item || "").trim()).filter(Boolean);
+  return {
+    enabled: Boolean(baseUrl),
+    baseUrl,
+    routePath,
+    verifyTelegramInitData: String(verifyTelegramInitData || "if_present").trim().toLowerCase(),
+    maxInitDataAgeSeconds,
+    allowedTelegramUserIds
+  };
+}
+
+function humanGateWebAppReviewUrl(token, webApp = {}) {
+  const callbackToken = String(token || "").trim();
+  if (!callbackToken || !webApp.baseUrl) return "";
+  const url = new URL(`${webApp.baseUrl.replace(/\/+$/g, "")}/review`);
+  url.searchParams.set("token", callbackToken);
+  return url.toString();
+}
+
+function humanGateWebAppReplyMarkup(buttons = [], webApp = {}) {
+  if (!webApp.enabled || !webApp.baseUrl) return null;
+  const rows = [];
+  for (const [index, button] of buttons.entries()) {
+    const callbackToken = String(button.callbackToken || button.callback_token || "").trim();
+    const url = humanGateWebAppReviewUrl(callbackToken, webApp);
+    if (!url) continue;
+    rows.push([{
+      text: humanGateButtonDisplayLabel(button, index),
+      web_app: { url }
+    }]);
+  }
+  return rows.length ? { inline_keyboard: rows } : null;
+}
+
+function telegramConfigFromOpenClaw(config = {}) {
+  return objectValue(config.channels?.telegram || config.telegram || config.plugins?.entries?.telegram?.config);
+}
+
+function telegramAccountConfig(telegram = {}, accountId = "") {
+  const normalized = String(accountId || "").trim();
+  const accounts = telegram.accounts;
+  if (Array.isArray(accounts)) {
+    return objectValue(accounts.find((account) => {
+      const id = String(account?.id || account?.accountId || account?.account_id || account?.name || "").trim();
+      return normalized ? id === normalized : id === "default";
+    }) || accounts[0]);
+  }
+  if (accounts && typeof accounts === "object") {
+    return objectValue(accounts[normalized] || accounts.default || Object.values(accounts)[0]);
+  }
+  return {};
+}
+
+async function resolveSecretLike(value) {
+  if (typeof value === "string") return value.trim();
+  if (!value || typeof value !== "object") return "";
+  const direct = firstText(value.value, value.secret, value.token, value.plaintext, value.plainText);
+  if (direct) return direct;
+  const envName = firstText(value.env, value.envVar, value.env_var, value.$env, value.fromEnv);
+  if (envName && process.env[envName]) return String(process.env[envName]).trim();
+  const file = resolveHomePath(firstText(value.file, value.path, value.$file, value.fromFile));
+  if (file) {
+    try {
+      return (await fs.readFile(file, "utf8")).trim();
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+async function resolveTelegramBotToken(accountId = "", input = {}) {
+  const envToken = firstText(
+    input.telegramBotToken,
+    input.telegram_bot_token,
+    process.env.TRADING_AGENTS_WORKFLOW_TELEGRAM_BOT_TOKEN,
+    process.env.TELEGRAM_BOT_TOKEN,
+    process.env.OPENCLAW_TELEGRAM_BOT_TOKEN
+  );
+  if (envToken) return envToken;
+  const config = await readOpenClawConfig();
+  const telegram = telegramConfigFromOpenClaw(config);
+  const account = telegramAccountConfig(telegram, accountId);
+  for (const candidate of [account.botToken, account.bot_token, account.token, telegram.botToken, telegram.bot_token, telegram.token]) {
+    const token = await resolveSecretLike(candidate);
+    if (token) return token;
+  }
+  const tokenFile = resolveHomePath(firstText(account.tokenFile, account.token_file, telegram.tokenFile, telegram.token_file));
+  if (!tokenFile) return "";
+  try {
+    return (await fs.readFile(tokenFile, "utf8")).trim();
+  } catch {
+    return "";
+  }
+}
+
+function verifyTelegramWebAppInitData(initData = "", botToken = "", options = {}) {
+  const raw = String(initData || "").trim();
+  if (!raw) return { ok: false, reason: "missing_init_data" };
+  if (!botToken) return { ok: false, reason: "missing_bot_token" };
+  const params = new URLSearchParams(raw);
+  const receivedHash = params.get("hash") || "";
+  if (!receivedHash) return { ok: false, reason: "missing_hash" };
+  params.delete("hash");
+  const dataCheckString = [...params.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+  const secretKey = createHmac("sha256", "WebAppData").update(botToken).digest();
+  const computedHash = createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
+  const received = Buffer.from(receivedHash, "hex");
+  const computed = Buffer.from(computedHash, "hex");
+  if (received.length !== computed.length || !timingSafeEqual(received, computed)) return { ok: false, reason: "hash_mismatch" };
+  const authDate = Number(params.get("auth_date") || 0);
+  const maxAgeSeconds = Number(options.maxAgeSeconds || 0);
+  if (authDate && maxAgeSeconds > 0 && Date.now() / 1000 - authDate > maxAgeSeconds) return { ok: false, reason: "init_data_expired", authDate };
+  const user = parseJsonValue(params.get("user"), {});
+  const userId = String(user?.id || "").trim();
+  const allowed = Array.isArray(options.allowedTelegramUserIds) ? options.allowedTelegramUserIds.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  if (allowed.length && userId && !allowed.includes(userId)) return { ok: false, reason: "telegram_user_not_allowed", userId };
+  return { ok: true, userId, username: user?.username || "", authDate, reason: "" };
 }
 
 function targetValue(entry) {
@@ -2963,9 +3185,8 @@ WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
     }
     const { buttons } = buttonSet;
 
-    const presentationInput = { title: "Human Gate 确认", text: summary };
-    const presentation = humanGateButtonPresentation(presentationInput, buttons);
-    const text = humanGateButtonFallbackText(presentationInput, buttons);
+    const presentationInput = { ...input, title: "Human Gate 确认", text: summary };
+    const { webApp, presentation, telegramReplyMarkup, text } = await humanGateTelegramArtifacts(presentationInput, buttons);
     const outboxPayload = {
       humanGateId: row.object_id,
       gateType,
@@ -2977,6 +3198,8 @@ WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
       targetRef,
       buttons,
       presentation,
+      telegramReplyMarkup,
+      webApp,
       textPolicyVersion: HUMAN_GATE_TEXT_POLICY_VERSION,
       ensuredBy: "workflow.control_loop.tick"
     };
@@ -3419,6 +3642,73 @@ function telegramChunks(text, limit = 3500) {
   return chunks.map((chunk, index) => chunks.length > 1 ? `[${index + 1}/${chunks.length}]\n${chunk}` : chunk);
 }
 
+function normalizeTelegramBotApiChatId(value = "") {
+  return String(value || "").trim().replace(/^telegram:/, "");
+}
+
+async function telegramBotApiPost(token, method, body, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const text = await response.text();
+    const parsed = parseJsonValue(text, null);
+    if (!response.ok || !parsed || parsed.ok === false) {
+      const description = parsed?.description || text || response.statusText;
+      throw new Error(`telegram bot api ${method} failed: ${String(description).slice(0, 1000)}`);
+    }
+    return parsed.result || parsed;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function deliverTelegramOutboxRowViaWebApp(paths, row, input, context) {
+  const payload = context.payload || {};
+  const replyMarkup = payload.telegramReplyMarkup || payload.reply_markup || null;
+  if (!replyMarkup?.inline_keyboard?.length) return null;
+  const account = context.account;
+  const target = normalizeTelegramBotApiChatId(context.target);
+  if (!target) return null;
+  const token = await resolveTelegramBotToken(account, input);
+  if (!token) return null;
+  const deliveredAt = nowIso();
+  const receipts = [];
+  try {
+    for (const [index, chunk] of context.chunks.entries()) {
+      const receipt = await telegramBotApiPost(token, "sendMessage", {
+        chat_id: target,
+        text: chunk,
+        disable_web_page_preview: true,
+        ...(index === context.chunks.length - 1 ? { reply_markup: replyMarkup } : {})
+      }, context.timeoutSeconds * 1000);
+      receipts.push(receipt);
+    }
+    const updatedPayload = { ...payload, delivery: { channel: "telegram", account, target, mode: "direct_bot_api_web_app", deliveredAt, receipts } };
+    await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='sent', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(deliveredAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)};`);
+    return { outboxId: row.outbox_id, status: "sent", account, target, mode: "direct_bot_api_web_app", parts: context.chunks.length, receipts };
+  } catch (error) {
+    const failedAt = nowIso();
+    if (receipts.length > 0) {
+      const updatedPayload = { ...payload, delivery: { channel: "telegram", account, target, mode: "direct_bot_api_web_app", failedAt, error: String(error?.message || error).slice(0, 2000), receipts } };
+      await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='failed', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(failedAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)};`);
+      return { outboxId: row.outbox_id, status: "failed", account, target, mode: "direct_bot_api_web_app", error: String(error?.message || error).slice(0, 2000), receipts };
+    }
+    return { outboxId: row.outbox_id, status: "web_app_direct_delivery_unavailable", account, target, error: String(error?.message || error).slice(0, 2000), receipts };
+  }
+}
+
 async function deliverTelegramOutboxRow(paths, row, input = {}) {
   const payload = parseJsonValue(row.payload_json, {});
   const account = String(input.account || payload.account || "cat_claw").trim();
@@ -3441,6 +3731,15 @@ WHERE outbox_id=${sqlValue(row.outbox_id)};`);
   const deliveredAt = nowIso();
   const receipts = [];
   try {
+    const webAppDelivery = await deliverTelegramOutboxRowViaWebApp(paths, row, input, { payload, account, target, chunks, timeoutSeconds });
+    if (webAppDelivery?.status === "sent" || webAppDelivery?.status === "failed") return webAppDelivery;
+    if (webAppDelivery?.status === "web_app_direct_delivery_unavailable") {
+      payload.webAppDirectDeliveryFallback = {
+        attemptedAt: nowIso(),
+        error: webAppDelivery.error,
+        reason: "falling_back_to_openclaw_callback_buttons"
+      };
+    }
     for (const [index, chunk] of chunks.entries()) {
       const args = [
         "message",
@@ -4811,20 +5110,25 @@ function humanGateButtonDetailLines(button = {}, index = 0) {
 function humanGateButtonPresentation(input = {}, buttons = []) {
   if (!buttons.length) return null;
   const text = humanGateTranslatedText(input.text || input.summary || "", 900);
+  const webApp = input.webApp || input.web_app || {};
+  const contextText = webApp.enabled
+    ? "请点击对应按钮，在弹出的审核表单里填写“闪电猫原话/审核意见”，点击发送后 Human Gate 才正式完成并恢复 workflow。"
+    : "请先点击按钮锁定选择；随后发送 /hgate 加闪电猫原话或审核意见。原话提交后 Human Gate 才正式完成并恢复 workflow。";
   return {
     title: input.title || "Human Gate 确认",
     tone: "warning",
     policyVersion: HUMAN_GATE_TEXT_POLICY_VERSION,
     blocks: [
       text ? { type: "text", text } : null,
-      { type: "context", text: "请先点击按钮锁定选择；随后发送 /hgate 加闪电猫原话或审核意见。原话提交后 Human Gate 才正式完成并恢复 workflow。" },
+      { type: "context", text: contextText },
       {
         type: "buttons",
         buttons: buttons.map((button, index) => ({
           label: humanGateButtonDisplayLabel(button, index),
           value: button.callbackData,
           style: humanGateButtonTelegramStyle(button, index),
-          color: humanGateButtonTelegramStyle(button, index)
+          color: humanGateButtonTelegramStyle(button, index),
+          webAppUrl: humanGateWebAppReviewUrl(button.callbackToken || button.callback_token, webApp)
         }))
       }
     ].filter(Boolean)
@@ -4834,6 +5138,7 @@ function humanGateButtonPresentation(input = {}, buttons = []) {
 function humanGateButtonFallbackText(input = {}, buttons = []) {
   const text = humanGateTranslatedText(input.text || input.summary || "", 900);
   if (!buttons.length) return text;
+  const useWebApp = Boolean((input.webApp || input.web_app || {}).enabled);
   const planButtons = buttons.filter((button) => !humanGateButtonIsControl(button));
   const controlButtons = buttons.filter((button) => humanGateButtonIsControl(button));
   const lines = [
@@ -4845,9 +5150,22 @@ function humanGateButtonFallbackText(input = {}, buttons = []) {
     controlButtons.length ? "工作流控制：": null,
     ...controlButtons.flatMap((button, index) => humanGateButtonDetailLines(button, planButtons.length + index)),
     "",
-    "请只点击下方按钮确认选择；系统使用按钮 callback 推进 workflow，不应根据自然语言猜测闪电猫意图。"
+    useWebApp
+      ? "请只点击下方按钮确认选择；Web App 表单会把按钮选择和闪电猫原话绑定到同一个 Human Gate token，不应根据自然语言猜测闪电猫意图。"
+      : "请只点击下方按钮确认选择；如 Web App 未配置，系统只接受带 token 的 /hgate 兜底反馈，不应根据自然语言猜测闪电猫意图。"
   ].filter((line) => line !== "" && line !== null);
   return lines.join("\n");
+}
+
+async function humanGateTelegramArtifacts(input = {}, buttons = []) {
+  const webApp = await humanGateWebAppConfig(input);
+  const presentationInput = { ...input, webApp };
+  return {
+    webApp,
+    presentation: humanGateButtonPresentation(presentationInput, buttons),
+    telegramReplyMarkup: humanGateWebAppReplyMarkup(buttons, webApp),
+    text: humanGateButtonFallbackText(presentationInput, buttons)
+  };
 }
 
 export async function humanGateRequest(rootDir, input) {
@@ -4885,8 +5203,7 @@ export async function humanGateRequest(rootDir, input) {
     humanGateId: gate.objectId,
     createdBy: requester
   });
-  const presentation = humanGateButtonPresentation(input, buttons);
-  const text = humanGateButtonFallbackText(input, buttons);
+  const { webApp, presentation, telegramReplyMarkup, text } = await humanGateTelegramArtifacts(input, buttons);
   const eventId = safeId("control");
   const createdAt = nowIso();
   await sqlite(paths.dbFile, `
@@ -4905,7 +5222,7 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
     targetRef,
     messageType: "human_gate_request",
     text,
-    payload: { humanGateId: gate.objectId, gateType, workflowId, eventId, account: deliveryAccount, requester, targetKind, targetRef, buttons, presentation, textPolicyVersion: HUMAN_GATE_TEXT_POLICY_VERSION }
+    payload: { humanGateId: gate.objectId, gateType, workflowId, eventId, account: deliveryAccount, requester, targetKind, targetRef, buttons, presentation, telegramReplyMarkup, webApp, textPolicyVersion: HUMAN_GATE_TEXT_POLICY_VERSION }
   });
   let delivery = null;
   const shouldDeliver = boolOption(input.autoDeliver ?? input.auto_deliver ?? input.deliver, false);
@@ -4913,7 +5230,7 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
     const rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(telegramOutbox.outboxId)} LIMIT 1;`, { json: true });
     if (rows[0]) delivery = await deliverTelegramOutboxRow(paths, rows[0], { ...input, account: deliveryAccount, target: targetRef });
   }
-  return { meetingId, workflowId, humanGateId: gate.objectId, gateType, eventId, buttons, presentation, targetKind, targetRef, deliveryAccount, telegramOutbox, deliveryRequired: telegramOutbox.status === "queued" && !delivery, delivery, status: "pending", dbFile: paths.dbFile };
+  return { meetingId, workflowId, humanGateId: gate.objectId, gateType, eventId, buttons, presentation, telegramReplyMarkup, webApp, targetKind, targetRef, deliveryAccount, telegramOutbox, deliveryRequired: telegramOutbox.status === "queued" && !delivery, delivery, status: "pending", dbFile: paths.dbFile };
 }
 
 async function workflowPayloadWithHumanGateFeedback(paths, workflowId, button, selectedAt, feedbackContext = {}) {
@@ -5058,9 +5375,120 @@ WHERE object_id=${sqlValue(humanGateId)} AND object_type='human_gate_record';`);
   return nextPayload;
 }
 
-async function findPendingHumanGateFeedbackButton(paths, input = {}) {
+function normalizeHumanGateCallbackToken(input = {}) {
   const rawToken = String(input.token || input.callbackToken || input.callback_token || input.payload || "").trim();
-  const token = rawToken.startsWith("tawhg:") ? rawToken.slice("tawhg:".length) : rawToken;
+  return rawToken.startsWith("tawhg:") ? rawToken.slice("tawhg:".length) : rawToken;
+}
+
+async function humanGateButtonRowByToken(paths, input = {}) {
+  const token = normalizeHumanGateCallbackToken(input);
+  if (!token) return null;
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+export async function humanGateWebAppReview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const button = await humanGateButtonRowByToken(paths, input);
+  if (!button) return { handled: true, status: "not_found", token: normalizeHumanGateCallbackToken(input), replyText: "Human Gate 按钮已失效或不存在。", dbFile: paths.dbFile };
+  const recordRows = await sqlite(paths.dbFile, `
+SELECT object_id, status, source_agent, parent_object_id, path, payload_json, created_at, updated_at
+FROM protocol_objects
+WHERE object_id=${sqlValue(button.human_gate_id)} AND object_type='human_gate_record'
+LIMIT 1;`, { json: true });
+  const record = recordRows[0] || {};
+  const recordPayload = parseJsonValue(record.payload_json, {});
+  const body = humanGateBody(recordPayload);
+  const webApp = await humanGateWebAppConfig(input);
+  const publicButton = humanGateButtonFromRow(button, paths.root);
+  const canSubmit = ["active", "feedback_pending"].includes(button.status);
+  return {
+    handled: true,
+    status: canSubmit ? "ready" : button.status,
+    canSubmit,
+    token: button.callback_token,
+    humanGateId: button.human_gate_id,
+    workflowId: button.workflow_id || "",
+    meetingId: button.meeting_id || "",
+    button: {
+      buttonId: button.button_id,
+      label: publicButton.label,
+      displayLabel: humanGateButtonDisplayLabel(publicButton, 0),
+      decisionStatus: button.decision_status,
+      role: button.button_role || "",
+      style: humanGateButtonTelegramStyle(publicButton, 0),
+      artifactRef: button.artifact_ref || "",
+      summary: button.summary || "",
+      prompt: button.prompt || "",
+      status: button.status,
+      feedbackStatus: button.feedback_status || "",
+      selectedAt: button.selected_at || "",
+      feedbackReceivedAt: button.feedback_received_at || ""
+    },
+    humanGate: {
+      status: record.status || "",
+      summary: humanGateSummary(recordPayload, body),
+      gateType: body.gateType || body.gate_type || recordPayload.gateType || recordPayload.gate_type || "",
+      artifactRef: humanGateArtifactRef(record, recordPayload, body),
+      createdAt: record.created_at || "",
+      updatedAt: record.updated_at || ""
+    },
+    webApp,
+    dbFile: paths.dbFile
+  };
+}
+
+export async function humanGateWebAppSubmit(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const token = normalizeHumanGateCallbackToken(input);
+  const feedbackText = humanGateFeedbackText(input);
+  if (!token) return { handled: true, status: "token_required", replyText: "缺少 Human Gate token，无法判断这段原话对应哪个按钮/事项/workflow。" };
+  if (!feedbackText) return { handled: true, status: "feedback_required", replyText: "请填写闪电猫原话或审核意见；点击发送后 Human Gate 才会正式完成。" };
+  const webApp = await humanGateWebAppConfig(input);
+  const account = String(input.account || input.accountId || input.account_id || "cat_claw").trim();
+  const initData = String(input.initData || input.init_data || input.telegramWebAppInitData || input.telegram_web_app_init_data || "").trim();
+  let telegramAuth = { ok: false, reason: initData ? "not_checked" : "missing_init_data" };
+  if (initData) {
+    const botToken = await resolveTelegramBotToken(account, input);
+    telegramAuth = verifyTelegramWebAppInitData(initData, botToken, {
+      maxAgeSeconds: webApp.maxInitDataAgeSeconds,
+      allowedTelegramUserIds: webApp.allowedTelegramUserIds
+    });
+  }
+  const verifyPolicy = webApp.verifyTelegramInitData;
+  const strictVerify = ["1", "true", "required", "strict", "yes"].includes(verifyPolicy);
+  if (telegramAuth.reason === "telegram_user_not_allowed") {
+    return { handled: true, status: "telegram_user_not_allowed", telegramAuth, replyText: "该 Telegram 用户不在 Human Gate 允许提交名单中。" };
+  }
+  if (strictVerify && !telegramAuth.ok) {
+    return { handled: true, status: "telegram_auth_failed", telegramAuth, replyText: `Telegram Web App 身份校验失败：${telegramAuth.reason}` };
+  }
+  if (telegramAuth.ok && webApp.allowedTelegramUserIds.length && telegramAuth.userId && !webApp.allowedTelegramUserIds.includes(telegramAuth.userId)) {
+    return { handled: true, status: "telegram_user_not_allowed", telegramAuth, replyText: "该 Telegram 用户不在 Human Gate 允许提交名单中。" };
+  }
+  return humanGateButtonCallback(rootDir, {
+    ...input,
+    token,
+    feedbackText,
+    actor: input.actor || telegramAuth.userId || "flashcat",
+    senderId: input.senderId || input.sender_id || telegramAuth.userId || "",
+    sourceSystem: input.sourceSystem || input.source_system || "telegram_web_app",
+    payload: {
+      ...(input.payload && typeof input.payload === "object" ? input.payload : {}),
+      telegramWebApp: {
+        initDataPresent: Boolean(initData),
+        initDataVerified: Boolean(telegramAuth.ok),
+        authReason: telegramAuth.reason || "",
+        userId: telegramAuth.userId || "",
+        username: telegramAuth.username || "",
+        submittedAt: nowIso()
+      }
+    }
+  });
+}
+
+async function findPendingHumanGateFeedbackButton(paths, input = {}) {
+  const token = normalizeHumanGateCallbackToken(input);
   if (token) {
     const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} AND status='feedback_pending' LIMIT 1;`, { json: true });
     if (rows[0]) return rows[0];
@@ -5087,8 +5515,7 @@ export async function humanGateFeedback(rootDir, input = {}) {
 
 export async function humanGateButtonCallback(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
-  const rawToken = String(input.token || input.callbackToken || input.callback_token || input.payload || "").trim();
-  const token = rawToken.startsWith("tawhg:") ? rawToken.slice("tawhg:".length) : rawToken;
+  const token = normalizeHumanGateCallbackToken(input);
   if (!token) throw new Error("callback token is required");
   const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} LIMIT 1;`, { json: true });
   const button = rows[0];
@@ -5108,6 +5535,7 @@ export async function humanGateButtonCallback(rootDir, input = {}) {
     callbackChatId,
     callbackMessageId,
     callbackData: input.callbackData || input.callback_data || input.payload?.callbackData || "",
+    telegramWebApp: input.telegramWebApp || input.telegram_web_app || input.payload?.telegramWebApp || input.payload?.telegram_web_app || {},
     selectedAt,
     updatedAt: now
   };
@@ -6095,6 +6523,12 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return runtimeBridgeDrain(rootDir, input);
     case "human_gate.request":
       return humanGateRequest(rootDir, input);
+    case "human_gate.web_app_review":
+    case "human_gate.review_form":
+      return humanGateWebAppReview(rootDir, input);
+    case "human_gate.web_app_submit":
+    case "human_gate.submit_form":
+      return humanGateWebAppSubmit(rootDir, input);
     case "human_gate.button_callback":
     case "human_gate.callback":
       return humanGateButtonCallback(rootDir, input);
