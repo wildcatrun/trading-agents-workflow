@@ -46,6 +46,43 @@ Environment variables:
 - Redacts callback tokens, API keys, secrets, passwords and OAuth-ish fields in read API responses.
 - `POST /api/actions` only allows `workflow.advance.preview` and `workflow.supervise.preview` unless writes are explicitly enabled.
 
+## Development Deployment Snapshot
+
+2026-05-19 v0.2 validation state:
+
+- Commit: `7b07125 Improve workflow console workbench`
+- Development server checkout:
+  `/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout`
+- Console process: `127.0.0.1:8791`
+- Data source:
+  `/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow/tracking.db`
+- Local access tunnel:
+  `127.0.0.1:18791 -> 106.54.53.146:127.0.0.1:8791`
+- Runtime log:
+  `/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow/governance-logs/workflow-console-dev.log`
+- Mode: read-only / preview-only
+
+The console is not a required runtime dependency for workflow correctness. It is
+an operator observation surface over the workflow DB and governed actions.
+
+## Phase Hold
+
+After v0.2, console feature expansion is intentionally paused.
+
+Do not add real write controls until the existing cat-system workflow has run
+longer and `trading-agents-workflow` has more stable evidence around:
+
+- dispatch/receipt completeness
+- runtime bridge behavior
+- Human Gate button/resume closure
+- Telegram outbox delivery
+- readiness and incident false positives
+- checkpoint and evidence discipline
+
+When work resumes, the next product slice should be Task Card Draft and Cat
+Brain Preheat preview. Do not prioritize merge, terminate, pause, approval,
+Gateway restart, production deploy or live trading controls.
+
 ## Preview Actions
 
 The console must call:
