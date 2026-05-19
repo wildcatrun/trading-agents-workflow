@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
+import https from "node:https";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import tls from "node:tls";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -3646,26 +3649,179 @@ function normalizeTelegramBotApiChatId(value = "") {
   return String(value || "").trim().replace(/^telegram:/, "");
 }
 
-async function telegramBotApiPost(token, method, body, timeoutMs = 30000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-    const text = await response.text();
-    const parsed = parseJsonValue(text, null);
-    if (!response.ok || !parsed || parsed.ok === false) {
-      const description = parsed?.description || text || response.statusText;
-      throw new Error(`telegram bot api ${method} failed: ${String(description).slice(0, 1000)}`);
-    }
-    return parsed.result || parsed;
-  } finally {
-    clearTimeout(timer);
+function noProxyList() {
+  return String(process.env.NO_PROXY || process.env.no_proxy || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function noProxyMatches(hostname = "", port = "") {
+  const host = String(hostname || "").toLowerCase();
+  const hostPort = `${host}:${String(port || "").trim()}`;
+  for (const entryRaw of noProxyList()) {
+    const entry = entryRaw.toLowerCase();
+    if (entry === "*") return true;
+    if (entry.includes(":") && entry === hostPort) return true;
+    const domain = entry.replace(/^\./, "");
+    if (host === domain || host.endsWith(`.${domain}`)) return true;
   }
+  return false;
+}
+
+function proxyUrlForHttpsTarget(targetUrl) {
+  const url = targetUrl instanceof URL ? targetUrl : new URL(String(targetUrl || ""));
+  if (noProxyMatches(url.hostname, url.port || "443")) return "";
+  return firstText(
+    process.env.HTTPS_PROXY,
+    process.env.https_proxy,
+    process.env.HTTP_PROXY,
+    process.env.http_proxy,
+    process.env.ALL_PROXY,
+    process.env.all_proxy
+  );
+}
+
+function proxyAuthorizationHeader(proxyUrl) {
+  if (!proxyUrl.username) return "";
+  const username = decodeURIComponent(proxyUrl.username);
+  const password = decodeURIComponent(proxyUrl.password || "");
+  return `Proxy-Authorization: Basic ${Buffer.from(`${username}:${password}`).toString("base64")}\r\n`;
+}
+
+function connectTlsViaHttpProxy(proxyRawUrl, target, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    let proxyUrl;
+    try {
+      proxyUrl = new URL(proxyRawUrl);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    if (!["http:", "https:"].includes(proxyUrl.protocol)) {
+      reject(new Error(`unsupported proxy protocol for telegram bot api: ${proxyUrl.protocol}`));
+      return;
+    }
+
+    const proxyPort = Number(proxyUrl.port || (proxyUrl.protocol === "https:" ? 443 : 80));
+    const targetHost = String(target.hostname || target.host || "").trim();
+    const targetPort = Number(target.port || 443);
+    const connectOptions = { host: proxyUrl.hostname, port: proxyPort };
+    const rawSocket = proxyUrl.protocol === "https:"
+      ? tls.connect({ ...connectOptions, servername: proxyUrl.hostname })
+      : net.connect(connectOptions);
+    let settled = false;
+    let buffered = Buffer.alloc(0);
+
+    const cleanup = () => {
+      rawSocket.removeListener("data", onData);
+      rawSocket.removeListener("error", onError);
+      rawSocket.removeListener("timeout", onTimeout);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rawSocket.destroy();
+      reject(error);
+    };
+    const onError = (error) => fail(error);
+    const onTimeout = () => fail(new Error("telegram bot api proxy connect timeout"));
+    const onData = (chunk) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      const headerEnd = buffered.indexOf("\r\n\r\n");
+      if (headerEnd < 0) return;
+      const header = buffered.slice(0, headerEnd).toString("latin1");
+      if (!/^HTTP\/1\.[01] 2\d\d\b/.test(header)) {
+        fail(new Error(`telegram bot api proxy connect failed: ${header.split("\r\n")[0] || "unknown response"}`));
+        return;
+      }
+      cleanup();
+      const secureSocket = tls.connect({
+        socket: rawSocket,
+        servername: target.servername || targetHost,
+        ALPNProtocols: ["http/1.1"]
+      }, () => {
+        if (settled) return;
+        settled = true;
+        secureSocket.setTimeout(0);
+        resolve(secureSocket);
+      });
+      secureSocket.once("error", fail);
+      secureSocket.setTimeout(timeoutMs, () => fail(new Error("telegram bot api tls handshake timeout")));
+    };
+    const sendConnect = () => {
+      const auth = proxyAuthorizationHeader(proxyUrl);
+      rawSocket.write(`CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\nProxy-Connection: Keep-Alive\r\n${auth}\r\n`);
+    };
+
+    rawSocket.setTimeout(timeoutMs, onTimeout);
+    rawSocket.once("error", onError);
+    rawSocket.on("data", onData);
+    rawSocket.once(proxyUrl.protocol === "https:" ? "secureConnect" : "connect", sendConnect);
+  });
+}
+
+function telegramBotApiHttpPost(url, body, timeoutMs = 30000) {
+  const targetUrl = url instanceof URL ? url : new URL(String(url || ""));
+  const payload = JSON.stringify(body);
+  const proxyUrl = proxyUrlForHttpsTarget(targetUrl);
+  return new Promise((resolve, reject) => {
+    const requestOptions = {
+      protocol: targetUrl.protocol,
+      hostname: targetUrl.hostname,
+      port: Number(targetUrl.port || 443),
+      path: `${targetUrl.pathname}${targetUrl.search}`,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload)
+      },
+      timeout: timeoutMs
+    };
+    if (proxyUrl) {
+      requestOptions.createConnection = (options, callback) => {
+        connectTlsViaHttpProxy(proxyUrl, {
+          hostname: targetUrl.hostname,
+          port: Number(targetUrl.port || 443),
+          servername: options.servername || targetUrl.hostname
+        }, timeoutMs).then((socket) => callback(null, socket), callback);
+      };
+    }
+    const req = https.request(requestOptions, (res) => {
+      const chunks = [];
+      let size = 0;
+      res.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > 2 * 1024 * 1024) {
+          req.destroy(new Error("telegram bot api response too large"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("end", () => {
+        resolve({
+          statusCode: res.statusCode || 0,
+          statusMessage: res.statusMessage || "",
+          text: Buffer.concat(chunks).toString("utf8")
+        });
+      });
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error("telegram bot api request timeout")));
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function telegramBotApiPost(token, method, body, timeoutMs = 30000) {
+  const response = await telegramBotApiHttpPost(`https://api.telegram.org/bot${token}/${method}`, body, timeoutMs);
+  const parsed = parseJsonValue(response.text, null);
+  if (response.statusCode < 200 || response.statusCode >= 300 || !parsed || parsed.ok === false) {
+    const description = parsed?.description || response.text || response.statusMessage;
+    throw new Error(`telegram bot api ${method} failed: ${String(description).slice(0, 1000)}`);
+  }
+  return parsed.result || parsed;
 }
 
 async function deliverTelegramOutboxRowViaWebApp(paths, row, input, context) {
