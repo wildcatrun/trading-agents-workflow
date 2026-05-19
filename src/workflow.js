@@ -32,30 +32,67 @@ const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_r
 const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = "8390724843";
 const CONTROL_LOOP_WORKFLOW_STATUSES = new Set(["active", "waiting_human", "blocked"]);
 const CONTROL_LOOP_ACTIVE_JOB_STATUSES = new Set(["queued", "running", "retry_scheduled"]);
-const HUMAN_GATE_TEXT_POLICY_VERSION = "human_gate_abc_details_v1";
-const HUMAN_GATE_PLAN_COLOR_MARKERS = {
-  A: "🟦",
-  B: "🟩",
-  C: "🟧",
-  D: "🟪",
-  E: "🟫",
-  F: "⬜"
+const HUMAN_GATE_TEXT_POLICY_VERSION = "human_gate_chinese_botapi_style_v1";
+const TELEGRAM_BUTTON_STYLES = new Set(["danger", "success", "primary"]);
+const HUMAN_GATE_PLAN_STYLES = {
+  A: "primary",
+  B: "success",
+  C: "danger",
+  D: "primary",
+  E: "success",
+  F: "danger"
 };
-const HUMAN_GATE_CONTROL_COLOR_MARKERS = {
-  approve: "✅",
-  approve_option: "🔷",
-  reject: "🟪",
-  rejected: "🟪",
-  pause: "🟨",
-  paused: "🟨",
-  terminate: "🟥",
-  terminated: "🟥"
+const HUMAN_GATE_CONTROL_STYLES = {
+  approve: "success",
+  approve_option: "primary",
+  reject: "danger",
+  rejected: "danger",
+  pause: "primary",
+  paused: "primary",
+  terminate: "danger",
+  terminated: "danger"
 };
-const HUMAN_GATE_COLOR_MARKER_SET = new Set([
-  ...Object.values(HUMAN_GATE_PLAN_COLOR_MARKERS),
-  ...Object.values(HUMAN_GATE_CONTROL_COLOR_MARKERS)
-]);
 const HUMAN_GATE_REDACTED_DETAIL_KEY = /callback|token|secret|password|api[_-]?key|access[_-]?key|refresh/i;
+const HUMAN_GATE_ZH_TEXT = new Map([
+  [
+    "Hermes cron/heartbeat migration Human Gate: choose A/B/C next path after cat_claw audit pass. Recommended path remains Plan C unless Flashcat selects otherwise.",
+    "Hermes cron/heartbeat 迁移 Human Gate：猫爪复核通过后，请在 A/B/C 中选择下一步路径。除非闪电猫另行选择，建议路径仍为方案 C。"
+  ],
+  ["Freeze-and-map only", "冻结现状并梳理边界"],
+  ["Controlled pilot with dual-path verification", "受控试点并保留双路径验证"],
+  ["Controlled pilot with dual-path ver...", "受控试点并保留双路径验证"],
+  ["Problem-exposure improvement track", "暴露问题并改进治理"],
+  [
+    "Approve no migration or shutdown. Keep current cron/control path unchanged. Only collect evidence and map boundary issues: WeCom auth error 850002, Telegram target/channel mismatch, Hermes/OpenClaw control-path ambiguity, readiness degraded / queued dispatches.",
+    "批准不迁移、不停用现有机制。保持当前 cron/control 路径不变，只收集证据并梳理边界问题：WeCom 鉴权错误 850002、Telegram target/channel 不一致、Hermes/OpenClaw 控制路径不清、readiness 降级和排队 dispatch。"
+  ],
+  [
+    "Proceed with Plan A freeze-and-map only. No migration, shutdown, or sole Hermes execution.",
+    "按方案 A 仅执行冻结现状和边界梳理。不迁移、不停用、不切到 Hermes 单独执行。"
+  ],
+  ["No operational change; stop evidence collection.", "没有运行态变更；如需停止，结束证据收集即可。"],
+  [
+    "Approve a limited Hermes/OpenClaw pilot only for non-trading workflow dispatch/reporting, while old cron remains active as fallback. Require receipt comparison, delivery-channel verification, and readiness recovery evidence before any shutdown.",
+    "批准仅针对非交易 workflow dispatch/reporting 的受控 Hermes/OpenClaw 试点，同时保留旧 cron 作为回退路径。在任何停用旧路径前，必须完成 receipt 对比、投递通道验证和 readiness 恢复证据。"
+  ],
+  [
+    "Proceed with Plan B controlled pilot and dual-path verification. Keep old cron fallback active.",
+    "按方案 B 执行受控试点和双路径验证；旧 cron 回退路径保持 active。"
+  ],
+  ["Stop pilot dispatches and continue old cron path.", "停止试点 dispatch，继续使用旧 cron 路径。"],
+  [
+    "Approve Plan C as chosen direction: actively expose workflow problems so the cat-system can improve, but forbid old cron shutdown and forbid Hermes sole execution before a later Human Gate. Use current failures as training/governance evidence.",
+    "批准方案 C 作为当前方向：主动暴露 workflow 问题，让猫体系用这些故障改进治理；但在后续 Human Gate 前，禁止停用旧 cron，禁止让 Hermes 单独执行。当前故障只作为训练和治理证据使用。"
+  ],
+  [
+    "Proceed with Plan C problem-exposure improvement track. No old cron shutdown and no Hermes sole execution before a later Human Gate.",
+    "按方案 C 执行问题暴露和治理改进；在后续 Human Gate 前不得停用旧 cron，也不得切到 Hermes 单独执行。"
+  ],
+  [
+    "If readiness worsens or delivery paths remain unverifiable, return to Plan A freeze-and-map.",
+    "如果 readiness 继续恶化，或投递路径仍无法验证，回退到方案 A：冻结现状并梳理边界。"
+  ]
+]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -2298,6 +2335,44 @@ function compactText(value, max = 220) {
   return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}...` : text;
 }
 
+function humanGateTranslatedText(value, max = 520) {
+  const text = compactText(value, max);
+  if (!text) return "";
+  return compactText(HUMAN_GATE_ZH_TEXT.get(text) || text, max);
+}
+
+function stripHumanGatePlanPrefix(value = "") {
+  return String(value || "")
+    .trim()
+    .replace(/^[^\p{L}\p{N}]+/u, "")
+    .replace(/^(?:批准)?方案\s*[A-Z]\s*[:：]?\s*/i, "")
+    .replace(/^[A-Z]\s*[:：]\s*/i, "")
+    .trim();
+}
+
+function humanGateLocalizedPlanTitle(value = {}, key = "", max = 36) {
+  const payload = parseJsonValue(value.payload, value.payload || {});
+  const nestedPayload = parseJsonValue(payload.payload, payload.payload || {});
+  const raw = stripHumanGatePlanPrefix(firstText(
+    nestedPayload.title,
+    nestedPayload.name,
+    payload.title,
+    payload.name,
+    value.title,
+    value.name,
+    value.label,
+    value.summary,
+    value.description,
+    value.text,
+    key ? `方案 ${key}` : ""
+  ));
+  return humanGateTranslatedText(raw, max);
+}
+
+function humanGateLocalizedDetail(value, max = 520) {
+  return humanGateTranslatedText(humanGateSafeDetailString(value, max), max);
+}
+
 function workflowFilterMatches(workflowId, value) {
   return !workflowId || String(value || "").trim() === workflowId;
 }
@@ -2486,16 +2561,20 @@ function humanGateAlternativeButtons(row, payload = {}, body = {}) {
   return alternatives.map((rawItem, index) => {
     const value = rawItem && typeof rawItem === "object" ? rawItem : { title: String(rawItem || "").trim() };
     const key = optionKeyLabel(value, index);
-    const title = compactText(firstText(value.title, value.label, value.summary, value.description, value.text, value.name, `方案 ${key}`), 36);
+    const title = humanGateLocalizedPlanTitle(value, key);
+    const summary = humanGateLocalizedDetail(firstText(value.summary, value.description, value.text, title || `批准方案 ${key}`), 700);
+    const prompt = humanGateLocalizedDetail(firstText(value.prompt, value.nextAction, value.next_action, `按方案 ${key} 继续推进 workflow。`), 520);
+    const rollback = humanGateLocalizedDetail(firstText(value.rollback, value.rollbackPlan, value.rollback_plan, value.recovery, value.restore, value.fallback), 520);
     return {
       label: `批准方案 ${key}${title ? `：${title}` : ""}`,
       decisionStatus: "approved",
       role: "approve_option",
-      style: "success",
+      style: HUMAN_GATE_PLAN_STYLES[key] || "primary",
       artifactRef: String(value.artifactRef || value.artifact_ref || artifactRef).trim(),
-      summary: String(value.summary || value.description || value.text || title || `批准方案 ${key}`).trim(),
-      prompt: String(value.prompt || value.nextAction || value.next_action || `按方案 ${key} 继续推进 workflow。`).trim(),
-      payload: { ...value, optionKey: key, optionIndex: index }
+      summary,
+      prompt,
+      rollback,
+      payload: { ...value, optionKey: key, optionIndex: index, localized: { title, summary, prompt, rollback } }
     };
   });
 }
@@ -2522,14 +2601,14 @@ function humanGateControlButtons(row, payload = {}, body = {}, options = {}) {
       role: "reject",
       style: "danger",
       artifactRef,
-      summary: summary || "退回本次 Human Gate，要求补齐证据包或修改方案后再次提交。",
+      summary: humanGateTranslatedText(summary, 700) || "退回本次 Human Gate，要求补齐证据包或修改方案后再次提交。",
       prompt: "补齐证据包或修改方案；如仍需闪电猫确认，重新提交 Human Gate。"
     },
     {
       label: "暂停工作流",
       decisionStatus: "paused",
       role: "pause",
-      style: "secondary",
+      style: "primary",
       artifactRef,
       summary: "暂停该 workflow，不继续自动推进，等待新的明确指令或 Human Gate。",
       prompt: "暂停该 workflow；不要继续自动推进。"
@@ -2576,17 +2655,30 @@ function normalizeRawHumanGateButtonSpecs(specs = [], row = {}, payload = {}, bo
       const defaultKey = nextPlanIndex < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[nextPlanIndex] : String(nextPlanIndex + 1);
       const key = humanGatePlanKey(value, defaultKey);
       nextPlanIndex += 1;
-      const title = compactText(firstText(value.title, value.label, value.summary, value.description, value.text, value.name, `方案 ${key}`), 36);
+      const title = humanGateLocalizedPlanTitle(value, key);
+      const rawPayload = parseJsonValue(value.payload, value.payload || {});
+      const summary = humanGateLocalizedDetail(firstText(value.summary, value.description, value.text, title || `批准方案 ${key}`), 700);
+      const prompt = humanGateLocalizedDetail(firstText(value.prompt, value.nextAction, value.next_action), 520);
+      const rollback = humanGateLocalizedDetail(firstText(value.rollback, value.rollbackPlan, value.rollback_plan, rawPayload.rollback, rawPayload.rollbackPlan, rawPayload.rollback_plan, rawPayload.recovery, rawPayload.restore, rawPayload.fallback), 520);
       result.push({
         ...value,
-        label: String(value.label || "").startsWith(`批准方案 ${key}`) ? value.label : `批准方案 ${key}${title ? `：${title.replace(/^(?:批准)?方案\s*[A-Z]\s*[:：]?\s*/i, "").replace(/^[A-Z]\s*[:：]\s*/i, "")}` : ""}`,
+        label: `批准方案 ${key}${title ? `：${title}` : ""}`,
         decisionStatus: "approved",
         role: role === "approve" ? "approve_option" : role,
-        style: value.style || "success",
-        payload: { ...parseJsonValue(value.payload, value.payload || {}), optionKey: key, optionIndex: nextPlanIndex - 1 }
+        style: HUMAN_GATE_PLAN_STYLES[key] || value.style || "primary",
+        summary,
+        prompt,
+        rollback,
+        payload: { ...rawPayload, optionKey: key, optionIndex: nextPlanIndex - 1, localized: { title, summary, prompt, rollback } }
       });
     } else {
-      result.push({ ...value, decisionStatus: status, role, style: value.style || defaultHumanGateButtonStyle(status) });
+      result.push({
+        ...value,
+        summary: humanGateTranslatedText(value.summary || value.description || value.text || "", 700),
+        decisionStatus: status,
+        role,
+        style: HUMAN_GATE_CONTROL_STYLES[role] || HUMAN_GATE_CONTROL_STYLES[status] || value.style || defaultHumanGateButtonStyle(status)
+      });
     }
   }
   return result;
@@ -2652,6 +2744,44 @@ function auditHumanGatePlanOptions(buttons = []) {
   };
 }
 
+function hasChineseText(value) {
+  return /[\u3400-\u9fff]/.test(String(value || ""));
+}
+
+function auditHumanGateChinesePlanDetails(buttons = []) {
+  const planButtons = humanGatePlanOptionButtons(buttons);
+  const missing = [];
+  for (const [index, button] of planButtons.entries()) {
+    const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
+    const key = humanGatePlanKey(button, fallback);
+    const title = humanGateLocalizedPlanTitle(button, key, 80);
+    const summary = firstHumanGateDetail(button, ["summary", "description", "text", "content"], 700);
+    const prompt = firstHumanGateDetail(button, ["prompt", "nextAction", "next_action", "nextStep", "next_step", "execution", "action"], 520);
+    const rollback = firstHumanGateDetail(button, ["rollback", "rollbackPlan", "rollback_plan", "rollbackBoundary", "rollback_boundary", "recovery", "restore", "fallback"], 520);
+    if (!hasChineseText(title)) missing.push(`${key}.title`);
+    if (!hasChineseText(summary)) missing.push(`${key}.summary`);
+    if (!hasChineseText(prompt)) missing.push(`${key}.prompt`);
+    if (!hasChineseText(rollback)) missing.push(`${key}.rollback`);
+  }
+  return {
+    ok: missing.length === 0,
+    missingChineseFields: missing,
+    reason: missing.length ? "human_gate_requires_chinese_plan_details" : ""
+  };
+}
+
+function combineHumanGateAudits(...audits) {
+  const failed = audits.filter((audit) => audit && !audit.ok);
+  if (!failed.length) return { ok: true, reason: "", audits };
+  const details = failed.reduce((acc, audit) => ({ ...acc, ...audit }), {});
+  return {
+    ...details,
+    ok: false,
+    reason: failed.map((audit) => audit.reason).filter(Boolean).join(";") || "human_gate_audit_failed",
+    audits
+  };
+}
+
 function humanGateButtonShape(value = {}) {
   return [humanGateButtonStatus(value), humanGateButtonRole(value), String(value.label || value.title || value.text || "").trim()].join("\u0000");
 }
@@ -2688,7 +2818,7 @@ ORDER BY created_at ASC;`, { json: true });
 
 async function ensureHumanGateButtonSet(paths, row, payload = {}, body = {}, workflowId = "", meetingId = "") {
   const desiredSpecs = humanGateButtonSpecs(row, payload, body);
-  const audit = auditHumanGatePlanOptions(desiredSpecs);
+  const audit = combineHumanGateAudits(auditHumanGatePlanOptions(desiredSpecs), auditHumanGateChinesePlanDetails(desiredSpecs));
   if (!audit.ok) {
     const refreshedAt = nowIso();
     await sqlite(paths.dbFile, `
@@ -2733,13 +2863,13 @@ async function dispatchHumanGatePlanRevision(rootDir, paths, row, workflowId, me
   const eventId = safeId("control");
   await sqlite(paths.dbFile, `
 INSERT INTO meeting_control_events(event_id, meeting_id, event_type, status, summary, payload_json, created_by, created_at)
-VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId || workflowId || row.object_id)}, 'human_gate_audit_failed', 'blocked', ${sqlValue("Human Gate evidence package lacks at least A/B/C alternatives")}, ${sqlValue(JSON.stringify({ humanGateId: row.object_id, workflowId, audit }))}, 'cat_claw', ${sqlValue(createdAt)});`);
+VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId || workflowId || row.object_id)}, 'human_gate_audit_failed', 'blocked', ${sqlValue("Human Gate evidence package lacks required A/B/C Chinese alternatives")}, ${sqlValue(JSON.stringify({ humanGateId: row.object_id, workflowId, audit }))}, 'cat_claw', ${sqlValue(createdAt)});`);
   const dispatch = await meetingDispatch(rootDir, {
     workflowRootDir: paths.root,
     meetingId: meetingId || workflowId || row.object_id,
     workflowId,
-    traceId: `${workflowId || row.object_id}:human_gate_abc_audit:${row.object_id}`,
-    idempotencyKey: `workflow:${workflowId || row.object_id}:human_gate_abc_audit:${row.object_id}`,
+    traceId: `${workflowId || row.object_id}:human_gate_policy_audit:${row.object_id}`,
+    idempotencyKey: `workflow:${workflowId || row.object_id}:human_gate_policy_audit:${row.object_id}`,
     runtime: "openclaw",
     agentId: "main",
     dispatchType: "human_gate_evidence_revision",
@@ -2752,7 +2882,9 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId || workflowId || row.object_i
       `摘要: ${summary || ""}`,
       "",
       "硬性要求：提交给闪电猫的 Human Gate 汇报必须包含至少 A/B/C 三个以上可独立批准的备选方案。",
-      "猫爪只审计是否满足该结构，不生成方案内容。请猫之脑 main 补齐备选方案内容，并在再次交给猫爪前自检：方案 A、方案 B、方案 C 都存在、互斥、可执行、有证据和回滚边界。",
+      "硬性要求：正式汇报正文、方案标题、方案内容、下一步/执行边界、证据/回执、回滚/停止条件必须使用中文；技术名词、agent id、artifact 路径可以保留原文。",
+      "硬性要求：Telegram 按钮必须使用 Bot API style 字段渲染整按钮颜色；不要用颜色方块 emoji 冒充按钮底色。",
+      "猫爪只审计是否满足该结构，不生成方案内容。请猫之脑 main 补齐中文备选方案内容，并在再次交给猫爪前自检：方案 A、方案 B、方案 C 都存在、互斥、可执行、有证据和回滚边界。",
       "补齐后再由猫爪复核并提交 button-first Human Gate。"
     ].filter(Boolean).join("\n"),
     payload: {
@@ -2760,7 +2892,7 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId || workflowId || row.object_i
       meetingId,
       humanGateId: row.object_id,
       audit,
-      source: "cat_claw.human_gate_abc_audit"
+      source: "cat_claw.human_gate_policy_audit"
     }
   });
   return { eventId, dispatch };
@@ -4515,7 +4647,7 @@ function defaultHumanGateButtonRole(decisionStatus) {
 function defaultHumanGateButtonStyle(decisionStatus) {
   if (decisionStatus === "approved") return "success";
   if (decisionStatus === "rejected" || decisionStatus === "terminated") return "danger";
-  return "secondary";
+  return "primary";
 }
 
 function humanGateButtonOptions(input = {}) {
@@ -4534,7 +4666,7 @@ function humanGateButtonOptions(input = {}) {
       label,
       decisionStatus,
       role,
-      style: value.style || defaultHumanGateButtonStyle(decisionStatus),
+      style: TELEGRAM_BUTTON_STYLES.has(value.style) ? value.style : defaultHumanGateButtonStyle(decisionStatus),
       artifactRef: String(value.artifactRef || value.artifact_ref || value.path || "").trim(),
       summary: String(value.summary || value.description || value.text || label).trim(),
       prompt: String(value.prompt || value.nextAction || value.next_action || "").trim(),
@@ -4588,32 +4720,25 @@ function humanGateButtonIsControl(button = {}) {
   return status !== "approved" || ["reject", "pause", "terminate"].includes(role);
 }
 
-function humanGateButtonColorMarker(button = {}, index = 0) {
+function humanGateButtonTelegramStyle(button = {}, index = 0) {
   const status = humanGateButtonStatus(button);
   const role = humanGateButtonRole(button);
   if (!humanGateButtonIsControl(button)) {
     const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
     const key = humanGatePlanKey(button, fallback);
-    return HUMAN_GATE_PLAN_COLOR_MARKERS[key] || HUMAN_GATE_CONTROL_COLOR_MARKERS.approve_option;
+    return HUMAN_GATE_PLAN_STYLES[key] || "primary";
   }
-  return HUMAN_GATE_CONTROL_COLOR_MARKERS[role] || HUMAN_GATE_CONTROL_COLOR_MARKERS[status] || "⬜";
-}
-
-function humanGateButtonColorName(button = {}, index = 0) {
-  const status = humanGateButtonStatus(button);
-  const role = humanGateButtonRole(button);
-  if (!humanGateButtonIsControl(button)) {
-    const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
-    return `plan_${humanGatePlanKey(button, fallback).toLowerCase()}`;
-  }
-  return role || status || "secondary";
+  const style = HUMAN_GATE_CONTROL_STYLES[role] || HUMAN_GATE_CONTROL_STYLES[status] || defaultHumanGateButtonStyle(status);
+  return TELEGRAM_BUTTON_STYLES.has(style) ? style : "primary";
 }
 
 function humanGateButtonDisplayLabel(button = {}, index = 0) {
   const label = String(button.label || button.title || button.text || `Option ${index + 1}`).trim();
-  const first = String(label.split(/\s+/)[0] || "").trim();
-  if (HUMAN_GATE_COLOR_MARKER_SET.has(first)) return label;
-  return `${humanGateButtonColorMarker(button, index)} ${label}`;
+  if (humanGateButtonIsControl(button)) return humanGateTranslatedText(label, 48) || label;
+  const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
+  const key = humanGatePlanKey(button, fallback);
+  const title = humanGateLocalizedPlanTitle(button, key, 36);
+  return `批准方案 ${key}${title ? `：${title}` : ""}`;
 }
 
 function humanGateSafeDetailString(value, max = 520, depth = 0) {
@@ -4647,7 +4772,7 @@ function firstHumanGateDetail(button = {}, keys = [], max = 520) {
   for (const source of humanGatePayloadSources(button)) {
     for (const key of keys) {
       if (source[key] === undefined || source[key] === null || source[key] === "") continue;
-      const text = humanGateSafeDetailString(source[key], max);
+      const text = humanGateLocalizedDetail(source[key], max);
       if (text) return text;
     }
   }
@@ -4668,13 +4793,13 @@ function humanGateButtonDetailLines(button = {}, index = 0) {
   if (boundary) lines.push(`  约束边界：${boundary}`);
   if (evidence) lines.push(`  证据/回执：${evidence}`);
   if (rollback) lines.push(`  回滚/停止：${rollback}`);
-  if (artifact) lines.push(`  artifact：${artifact}`);
+  if (artifact) lines.push(`  产物/记录：${artifact}`);
   return lines;
 }
 
 function humanGateButtonPresentation(input = {}, buttons = []) {
   if (!buttons.length) return null;
-  const text = String(input.text || input.summary || "").trim();
+  const text = humanGateTranslatedText(input.text || input.summary || "", 900);
   return {
     title: input.title || "Human Gate 确认",
     tone: "warning",
@@ -4687,9 +4812,8 @@ function humanGateButtonPresentation(input = {}, buttons = []) {
         buttons: buttons.map((button, index) => ({
           label: humanGateButtonDisplayLabel(button, index),
           value: button.callbackData,
-          style: button.style,
-          color: humanGateButtonColorName(button, index),
-          colorMarker: humanGateButtonColorMarker(button, index)
+          style: humanGateButtonTelegramStyle(button, index),
+          color: humanGateButtonTelegramStyle(button, index)
         }))
       }
     ].filter(Boolean)
@@ -4697,14 +4821,14 @@ function humanGateButtonPresentation(input = {}, buttons = []) {
 }
 
 function humanGateButtonFallbackText(input = {}, buttons = []) {
-  const text = String(input.text || input.summary || "").trim();
+  const text = humanGateTranslatedText(input.text || input.summary || "", 900);
   if (!buttons.length) return text;
   const planButtons = buttons.filter((button) => !humanGateButtonIsControl(button));
   const controlButtons = buttons.filter((button) => humanGateButtonIsControl(button));
   const lines = [
     text,
     "",
-    "Human Gate 决策材料：",
+    "人工确认决策材料（Human Gate）：",
     ...planButtons.flatMap((button, index) => humanGateButtonDetailLines(button, index)),
     controlButtons.length ? "" : null,
     controlButtons.length ? "工作流控制：": null,
@@ -4727,9 +4851,9 @@ export async function humanGateRequest(rootDir, input) {
     { ...input, payload: requestPayload },
     { ...input, raw: requestPayload }
   );
-  const buttonAudit = auditHumanGatePlanOptions(buttonSpecs);
+  const buttonAudit = combineHumanGateAudits(auditHumanGatePlanOptions(buttonSpecs), auditHumanGateChinesePlanDetails(buttonSpecs));
   if (!buttonAudit.ok) {
-    throw new Error(`Human Gate request blocked: ${buttonAudit.reason}; cat-brain main must provide at least plan A, plan B, and plan C before cat_claw submits to Flashcat`);
+    throw new Error(`Human Gate request blocked: ${buttonAudit.reason}; cat-brain main must provide Chinese plan A/B/C details before cat_claw submits to Flashcat`);
   }
   const gate = await workflowHumanGateRecord(rootDir, {
     ...input,
