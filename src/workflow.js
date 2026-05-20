@@ -8014,6 +8014,79 @@ LIMIT ${limit};`, { json: true });
   return { count: rows.length, rows, dbFile: paths.dbFile };
 }
 
+export async function messageFlowReconcile(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const stuckAfterMs = Math.max(60_000, Math.min(24 * 3600_000, Number(input.messageFlowStuckAfterMs || input.message_flow_stuck_after_ms || input.stuckAfterMs || input.stuck_after_ms || 5 * 60_000)));
+  const limit = Math.max(1, Math.min(200, Number(input.messageFlowReconcileLimit || input.message_flow_reconcile_limit || input.limit || 20)));
+  const cutoff = new Date(Date.now() - stuckAfterMs).toISOString();
+  const rows = await sqlite(paths.dbFile, `
+SELECT mf.*, o.status AS outbox_status, o.updated_at AS outbox_updated_at, o.target_kind, o.target_ref
+FROM message_flows mf
+LEFT JOIN telegram_outbox o ON o.outbox_id=mf.outbox_id
+WHERE mf.final_output_present=1
+  AND mf.delivery_receipt_present=0
+  AND mf.runtime_completed_at IS NOT NULL
+  AND mf.runtime_completed_at != ''
+  AND mf.runtime_completed_at < ${sqlValue(cutoff)}
+  AND mf.status != 'telegram_sent'
+ORDER BY mf.runtime_completed_at
+LIMIT ${limit};`, { json: true });
+  const incidents = [];
+  for (const row of rows) {
+    const incidentId = `message-flow-stuck-${cleanFileSegment(row.flow_id)}`;
+    const minutes = Math.round(stuckAfterMs / 60_000);
+    const summary = `message_flow ${row.flow_id} runtime completed but Telegram delivery receipt is still missing after ${minutes}m`;
+    const incident = await incidentState(paths.root, {
+      incidentId,
+      status: "active",
+      mode: "degraded",
+      commander: "trading-agents-workflow",
+      affectedPlanes: ["workflow", "runtime_bridge", "telegram"],
+      summary,
+      impact: "A non-OpenClaw agent produced runtime output, but the user-visible reply has not been confirmed by Telegram delivery receipt.",
+      currentHypothesis: row.outbox_id
+        ? `telegram_outbox ${row.outbox_id} status=${row.outbox_status || "missing"}`
+        : "message_flow has no outbound outbox id after runtime completion",
+      mitigation: "10s control loop records this incident and lets telegram_outbox delivery/retry continue under queue governance.",
+      rollbackOptions: "No destructive rollback. Preserve flow, dispatch, runtime_run, and outbox evidence; inspect Telegram delivery and return path.",
+      exitCriteria: "message_flows.delivery_receipt_present=1 and status=telegram_sent, or the flow is explicitly marked telegram_failed with evidence.",
+      timeline: [
+        `${nowIso()} ${summary}`,
+        `flow=${row.flow_id} dispatch=${row.dispatch_id || ""} outbox=${row.outbox_id || ""} outbox_status=${row.outbox_status || ""}`
+      ],
+      payload: {
+        flowId: row.flow_id,
+        dispatchId: row.dispatch_id || "",
+        runtimeRunId: row.runtime_run_id || "",
+        messageId: row.message_id || "",
+        outboxId: row.outbox_id || "",
+        outboxStatus: row.outbox_status || "",
+        targetKind: row.target_kind || "",
+        targetRef: row.target_ref || "",
+        runtimeCompletedAt: row.runtime_completed_at || "",
+        status: row.status,
+        stuckAfterMs,
+        cutoff
+      }
+    });
+    await appendMessageFlowEvent(paths, row.flow_id, row.status, "stuck_incident_recorded", {
+      incidentId: incident.incidentId,
+      stuckAfterMs,
+      outboxId: row.outbox_id || "",
+      outboxStatus: row.outbox_status || ""
+    });
+    incidents.push({
+      flowId: row.flow_id,
+      status: row.status,
+      incidentId: incident.incidentId,
+      outboxId: row.outbox_id || "",
+      outboxStatus: row.outbox_status || "",
+      runtimeCompletedAt: row.runtime_completed_at || ""
+    });
+  }
+  return { operation: "message_flow.reconcile", stuckAfterMs, cutoff, count: rows.length, incidents, dbFile: paths.dbFile };
+}
+
 async function acquireControlLoopLease(paths, input = {}) {
   const owner = String(input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}`).trim();
   const leaseMs = Math.max(10_000, Math.min(600_000, Number(input.leaseMs || input.lease_ms || 120_000)));
@@ -8491,6 +8564,9 @@ async function seedControlLoopJobs(paths, input = {}) {
   const staleDispatchAfterMs = Math.max(5 * 60_000, Number(input.staleDispatchAfterMs || input.stale_dispatch_after_ms || Math.max(30 * 60_000, (timeoutSeconds + 60) * 1000)));
   const staleDispatchCutoff = new Date(Date.now() - staleDispatchAfterMs).toISOString();
   const dispatchReconcileLimit = Math.max(1, Math.min(100, Number(input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20)));
+  const messageFlowStuckAfterMs = Math.max(60_000, Math.min(24 * 3600_000, Number(input.messageFlowStuckAfterMs || input.message_flow_stuck_after_ms || 5 * 60_000)));
+  const messageFlowReconcileLimit = Math.max(1, Math.min(200, Number(input.messageFlowReconcileLimit || input.message_flow_reconcile_limit || 20)));
+  const messageFlowStuckCutoff = new Date(Date.now() - messageFlowStuckAfterMs).toISOString();
   const statuses = controlLoopStatuses(input);
 
   seeded.push(...await seedDueScheduleJobs(paths, input));
@@ -8536,6 +8612,24 @@ WHERE status='sent' AND updated_at < ${sqlValue(staleDispatchCutoff)};`, { json:
       dedupeKey: "stale_dispatch_reconcile",
       priority: "high",
       payload: { limit: dispatchReconcileLimit, staleDispatchAfterMs }
+    }));
+  }
+
+  const stuckMessageFlowRows = await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM message_flows
+WHERE final_output_present=1
+  AND delivery_receipt_present=0
+  AND runtime_completed_at IS NOT NULL
+  AND runtime_completed_at != ''
+  AND runtime_completed_at < ${sqlValue(messageFlowStuckCutoff)}
+  AND status != 'telegram_sent';`, { json: true });
+  if (Number(stuckMessageFlowRows[0]?.count || 0) > 0) {
+    seeded.push(await enqueueControlLoopJob(paths, {
+      jobType: "message_flow_reconcile",
+      dedupeKey: "message_flow_reconcile",
+      priority: "high",
+      payload: { limit: messageFlowReconcileLimit, messageFlowStuckAfterMs }
     }));
   }
 
@@ -8730,6 +8824,14 @@ async function runControlLoopJob(rootDir, paths, job, input = {}) {
       workflowRootDir: paths.root,
       limit: payload.limit || input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20,
       staleDispatchAfterMs: payload.staleDispatchAfterMs || payload.stale_dispatch_after_ms || input.staleDispatchAfterMs || input.stale_dispatch_after_ms
+    });
+  }
+  if (job.job_type === "message_flow_reconcile") {
+    return messageFlowReconcile(rootDir, {
+      ...input,
+      workflowRootDir: paths.root,
+      limit: payload.limit || input.messageFlowReconcileLimit || input.message_flow_reconcile_limit || 20,
+      messageFlowStuckAfterMs: payload.messageFlowStuckAfterMs || payload.message_flow_stuck_after_ms || input.messageFlowStuckAfterMs || input.message_flow_stuck_after_ms
     });
   }
   if (job.job_type === "human_gate_request_ensure") {
@@ -9008,6 +9110,9 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.message_flow.list":
     case "workflow.message_flow.status":
       return messageFlowList(rootDir, input);
+    case "message_flow.reconcile":
+    case "workflow.message_flow.reconcile":
+      return messageFlowReconcile(rootDir, input);
     case "protocol.record":
     case "protocol.object":
       return protocolRecord(rootDir, input);

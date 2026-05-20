@@ -16,7 +16,7 @@ function usage() {
   trading-agents-workflow workflow-advance-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--goal-complete] [--root DIR]
   trading-agents-workflow workflow-supervise --workflow ID [--meeting ID] [--auto-dispatch] [--drain] [--max-cycles N] [--auto-report false] [--openclaw-bin PATH] [--root DIR]
   trading-agents-workflow workflow-supervise-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--drain true|false] [--max-cycles N] [--auto-report true|false] [--root DIR]
-  trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermers] [--limit N] [--job-limit N] [--tick-budget-ms N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--enable-schedules true|false] [--root DIR]
+  trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermers] [--limit N] [--job-limit N] [--tick-budget-ms N] [--message-flow-stuck-after-ms N] [--message-flow-reconcile-limit N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--enable-schedules true|false] [--root DIR]
   trading-agents-workflow workflow-schedule-upsert --id ID --agent AGENT --prompt TEXT [--runtime hermers] [--kind cron|interval] [--cron EXPR] [--interval-seconds N] [--next-run-at ISO] [--root DIR]
   trading-agents-workflow workflow-schedule-list [--id ID] [--status active|paused|disabled] [--runtime RUNTIME] [--agent AGENT] [--run-limit N] [--root DIR]
   trading-agents-workflow workflow-schedule-pause --id ID [--root DIR]
@@ -253,6 +253,8 @@ function toAction({ command, positional, options }) {
           runtimeLimit: options.limit,
           jobLimit: options["job-limit"],
           jobLeaseMs: options["job-lease-ms"],
+          messageFlowStuckAfterMs: options["message-flow-stuck-after-ms"],
+          messageFlowReconcileLimit: options["message-flow-reconcile-limit"],
           outboxLimit: options["outbox-limit"],
           timeoutSeconds: options["timeout-seconds"],
           tickBudgetMs: options["tick-budget-ms"],

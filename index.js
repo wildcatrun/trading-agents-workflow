@@ -168,8 +168,10 @@ const toolParameters = {
         "telegram.outbox",
         "message_flow.list",
         "message_flow.status",
+        "message_flow.reconcile",
         "workflow.message_flow.list",
         "workflow.message_flow.status",
+        "workflow.message_flow.reconcile",
         "instrument.upsert",
         "tracking.instrument",
         "radar.update",
@@ -310,6 +312,8 @@ const toolParameters = {
     traceId: { type: "string" },
     flowId: { type: "string" },
     messageFlowId: { type: "string" },
+    messageFlowStuckAfterMs: { type: "number" },
+    messageFlowReconcileLimit: { type: "number" },
     returnPolicy: { type: "string" },
     deliveryPolicy: { type: "string" },
     imIdentity: { type: "string" },
@@ -955,6 +959,8 @@ function registerCli(api) {
       .option("--outbox-limit <limit>", "Telegram outbox delivery limit", "5")
       .option("--job-limit <limit>", "Control-loop jobs to claim per tick", "4")
       .option("--job-lease-ms <ms>", "Control-loop job lease", "120000")
+      .option("--message-flow-stuck-after-ms <ms>", "Create an incident when a completed message flow has no Telegram receipt after this window", "300000")
+      .option("--message-flow-reconcile-limit <limit>", "Max stuck message flows to inspect per reconcile job", "20")
       .option("--timeout-seconds <seconds>", "Runtime dispatch timeout", "45")
       .option("--tick-budget-ms <ms>", "Soft per-tick budget", "60000")
       .option("--runtime <runtimeList>", "Comma-separated platforms to drain", "hermers")
@@ -983,6 +989,8 @@ function registerCli(api) {
           outboxLimit: Number(options.outboxLimit),
           jobLimit: Number(options.jobLimit),
           jobLeaseMs: Number(options.jobLeaseMs),
+          messageFlowStuckAfterMs: Number(options.messageFlowStuckAfterMs),
+          messageFlowReconcileLimit: Number(options.messageFlowReconcileLimit),
           timeoutSeconds: Number(options.timeoutSeconds),
           tickBudgetMs: Number(options.tickBudgetMs),
           runtimes: options.runtime,
@@ -1838,6 +1846,8 @@ function controlLoopConfig(api) {
   };
   const tickBudgetMs = numberValue(configured.tickBudgetMs, 60_000, 5_000, 30 * 60_000);
   const timeoutSeconds = numberValue(configured.timeoutSeconds, 45, 5, 900);
+  const messageFlowStuckAfterMs = numberValue(configured.messageFlowStuckAfterMs ?? configured.message_flow_stuck_after_ms, 5 * 60_000, 60_000, 24 * 3600_000);
+  const messageFlowReconcileLimit = numberValue(configured.messageFlowReconcileLimit ?? configured.message_flow_reconcile_limit, 20, 1, 200);
   const requestedJobLeaseMs = numberValue(configured.jobLeaseMs, 120_000, 10_000, 60 * 60_000);
   const minSafeJobLeaseMs = Math.max(tickBudgetMs + 30_000, (timeoutSeconds + 30) * 1000);
   const jobLeaseMs = Math.max(requestedJobLeaseMs, minSafeJobLeaseMs);
@@ -1852,6 +1862,8 @@ function controlLoopConfig(api) {
     outboxLimit: numberValue(configured.outboxLimit, 2, 1, 20),
     jobLimit: numberValue(configured.jobLimit, 4, 1, 20),
     jobLeaseMs,
+    messageFlowStuckAfterMs,
+    messageFlowReconcileLimit,
     timeoutSeconds,
     owner: String(configured.owner || "openclaw-plugin").trim() || "openclaw-plugin",
     workerMode: String(configured.workerMode || "process").trim() || "process",
@@ -1884,6 +1896,8 @@ function controlLoopWorkerArgs(config, root, reason) {
     "--limit", String(config.runtimeLimit),
     "--job-limit", String(config.jobLimit),
     "--job-lease-ms", String(config.jobLeaseMs),
+    "--message-flow-stuck-after-ms", String(config.messageFlowStuckAfterMs),
+    "--message-flow-reconcile-limit", String(config.messageFlowReconcileLimit),
     "--outbox-limit", String(config.outboxLimit),
     "--timeout-seconds", String(config.timeoutSeconds),
     "--tick-budget-ms", String(config.tickBudgetMs),
@@ -1916,6 +1930,8 @@ function runControlLoopWorker(api, config, reason) {
       outboxLimit: config.outboxLimit,
       jobLimit: config.jobLimit,
       jobLeaseMs: config.jobLeaseMs,
+      messageFlowStuckAfterMs: config.messageFlowStuckAfterMs,
+      messageFlowReconcileLimit: config.messageFlowReconcileLimit,
       timeoutSeconds: config.timeoutSeconds,
       tickBudgetMs: config.tickBudgetMs,
       owner: config.owner,

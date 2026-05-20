@@ -1218,6 +1218,8 @@ export async function runAction(rootDir, input = {}) {
     action === "telegram.outbox" ||
     action === "message_flow.list" ||
     action === "message_flow.status" ||
+    action === "message_flow.reconcile" ||
+    action === "workflow.message_flow.reconcile" ||
     action === "meeting.runtime_participant" ||
     action === "meeting.dispatch" ||
     action === "meeting.ingest" ||
