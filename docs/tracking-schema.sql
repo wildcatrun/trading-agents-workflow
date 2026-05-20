@@ -475,6 +475,78 @@ CREATE TABLE readiness_snapshots (
   findings_json TEXT NOT NULL,
   payload_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE workflow_schedules (
+  schedule_id TEXT PRIMARY KEY,
+  name TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  schedule_kind TEXT NOT NULL,
+  cron_expr TEXT,
+  interval_seconds INTEGER,
+  timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+  runtime TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  dispatch_type TEXT NOT NULL DEFAULT 'scheduled_dispatch',
+  priority TEXT NOT NULL DEFAULT 'normal',
+  prompt TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  concurrency_policy TEXT NOT NULL DEFAULT 'skip',
+  catchup_window_seconds INTEGER NOT NULL DEFAULT 900,
+  misfire_policy TEXT NOT NULL DEFAULT 'skip',
+  timeout_seconds INTEGER NOT NULL DEFAULT 45,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
+  next_run_at TEXT,
+  last_scheduled_at TEXT,
+  last_dispatch_id TEXT,
+  created_by TEXT NOT NULL DEFAULT 'workflow_scheduler',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_workflow_schedules_due ON workflow_schedules(status, next_run_at, priority);
+CREATE INDEX idx_workflow_schedules_target ON workflow_schedules(runtime, agent_id, status);
+CREATE TABLE scheduled_runs (
+  run_id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL,
+  scheduled_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  workflow_id TEXT,
+  meeting_id TEXT,
+  dispatch_id TEXT,
+  runtime TEXT,
+  agent_id TEXT,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  UNIQUE(schedule_id, scheduled_at)
+);
+CREATE INDEX idx_scheduled_runs_schedule ON scheduled_runs(schedule_id, scheduled_at DESC);
+CREATE INDEX idx_scheduled_runs_dispatch ON scheduled_runs(dispatch_id);
+CREATE INDEX idx_scheduled_runs_status ON scheduled_runs(status, updated_at);
+CREATE TABLE control_loop_jobs (
+  job_id TEXT PRIMARY KEY,
+  job_type TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'normal',
+  status TEXT NOT NULL DEFAULT 'queued',
+  workflow_id TEXT,
+  runtime TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  attempt INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 20,
+  next_run_at TEXT,
+  lease_owner TEXT,
+  lease_until TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX idx_control_loop_jobs_status ON control_loop_jobs(status, next_run_at, priority, created_at);
+CREATE INDEX idx_control_loop_jobs_workflow ON control_loop_jobs(workflow_id, status, updated_at);
+CREATE UNIQUE INDEX idx_control_loop_jobs_active_dedupe ON control_loop_jobs(dedupe_key) WHERE status IN ('queued','running','retry_scheduled');
 CREATE UNIQUE INDEX idx_mixed_dispatches_idempotency ON mixed_meeting_dispatches(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE INDEX idx_mixed_dispatches_trace ON mixed_meeting_dispatches(trace_id, created_at DESC);
 CREATE INDEX idx_mixed_dispatches_retry ON mixed_meeting_dispatches(status, next_retry_at);

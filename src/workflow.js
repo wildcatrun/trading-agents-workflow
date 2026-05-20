@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 9;
+export const WORKFLOW_SCHEMA_VERSION = 10;
 export const DEFAULT_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
@@ -30,6 +30,10 @@ const DISPATCH_STATUSES = new Set(["queued", "sent", "acked", "failed", "cancell
 const WORKFLOW_RUN_STATUSES = new Set(["active", "waiting_human", "blocked", "paused", "completed", "stopped", "cancelled"]);
 const WORKFLOW_TASK_STATUSES = new Set(["pending", "in_progress", "done", "blocked", "failed", "cancelled"]);
 const WORKFLOW_TASK_PRIORITIES = new Set(["flash", "steer", "high", "normal", "low"]);
+const WORKFLOW_SCHEDULE_STATUSES = new Set(["active", "paused", "disabled"]);
+const WORKFLOW_SCHEDULE_KINDS = new Set(["cron", "interval"]);
+const WORKFLOW_SCHEDULE_CONCURRENCY_POLICIES = new Set(["skip", "allow"]);
+const WORKFLOW_SCHEDULE_MISFIRE_POLICIES = new Set(["skip", "run_once"]);
 const INCIDENT_STATUSES = new Set(["active", "mitigating", "monitoring", "resolved", "cancelled"]);
 const INCIDENT_MODES = new Set(["normal", "degraded", "critical-only", "paper-only", "frozen"]);
 const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout", "acp_unavailable", "transient_runtime"]);
@@ -635,6 +639,206 @@ function normalizeMeetingRef(value) {
   return cleanFileSegment(meetingId).slice(0, 120);
 }
 
+function normalizeScheduleId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) throw new Error("scheduleId is required");
+  return cleanFileSegment(raw).slice(0, 120);
+}
+
+function normalizeScheduleStatus(value, fallback = "active") {
+  const status = String(value || fallback).trim().toLowerCase();
+  return WORKFLOW_SCHEDULE_STATUSES.has(status) ? status : fallback;
+}
+
+function normalizeScheduleKind(value, input = {}) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (WORKFLOW_SCHEDULE_KINDS.has(raw)) return raw;
+  if (input.cronExpr || input.cron_expr || input.cron) return "cron";
+  return "interval";
+}
+
+function normalizeSchedulePriority(value) {
+  const priority = String(value || "normal").trim();
+  return WORKFLOW_TASK_PRIORITIES.has(priority) ? priority : "normal";
+}
+
+function normalizeSchedulePolicy(value, allowed, fallback) {
+  const text = String(value || fallback).trim().toLowerCase();
+  return allowed.has(text) ? text : fallback;
+}
+
+function normalizeTimezone(value) {
+  const timezone = String(value || "Asia/Shanghai").trim();
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
+    return timezone;
+  } catch {
+    throw new Error(`invalid timezone: ${timezone}`);
+  }
+}
+
+function normalizeIsoTimestamp(value, fieldName = "timestamp") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) throw new Error(`invalid ${fieldName}: ${text}`);
+  return date.toISOString();
+}
+
+const CRON_MONTH_NAMES = {
+  jan: 1,
+  feb: 2,
+  mar: 3,
+  apr: 4,
+  may: 5,
+  jun: 6,
+  jul: 7,
+  aug: 8,
+  sep: 9,
+  oct: 10,
+  nov: 11,
+  dec: 12
+};
+
+const CRON_DOW_NAMES = {
+  sun: 0,
+  mon: 1,
+  tue: 2,
+  wed: 3,
+  thu: 4,
+  fri: 5,
+  sat: 6
+};
+
+function cronTokenNumber(token, aliases = {}) {
+  const text = String(token || "").trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(aliases, text)) return aliases[text];
+  if (!/^\d+$/.test(text)) throw new Error(`invalid cron token: ${token}`);
+  return Number(text);
+}
+
+function parseCronField(raw, min, max, aliases = {}, options = {}) {
+  const text = String(raw || "").trim().toLowerCase();
+  if (!text) throw new Error("empty cron field");
+  const values = new Set();
+  const parts = text.split(",").map((part) => part.trim()).filter(Boolean);
+  const explicitWildcard = text === "*";
+  for (const part of parts) {
+    const [rangePartRaw, stepRaw] = part.split("/");
+    const rangePart = String(rangePartRaw || "").trim();
+    const step = stepRaw === undefined || stepRaw === "" ? 1 : Number(stepRaw);
+    if (!Number.isInteger(step) || step < 1) throw new Error(`invalid cron step: ${part}`);
+    let start;
+    let end;
+    if (rangePart === "*") {
+      start = min;
+      end = max;
+    } else if (rangePart.includes("-")) {
+      const [left, right] = rangePart.split("-");
+      start = cronTokenNumber(left, aliases);
+      end = cronTokenNumber(right, aliases);
+    } else {
+      start = cronTokenNumber(rangePart, aliases);
+      end = start;
+    }
+    if (start > end) throw new Error(`invalid cron range: ${part}`);
+    for (let value = start; value <= end; value += step) {
+      let normalized = value;
+      if (options.sevenIsSunday && normalized === 7) normalized = 0;
+      if (normalized < min || normalized > (options.sevenIsSunday ? 6 : max)) {
+        throw new Error(`cron value out of range: ${part}`);
+      }
+      values.add(normalized);
+    }
+  }
+  const fullSize = options.sevenIsSunday ? 7 : max - min + 1;
+  return { wildcard: explicitWildcard || values.size === fullSize, values };
+}
+
+function parseCronExpression(expression) {
+  const fields = String(expression || "").trim().split(/\s+/);
+  if (fields.length !== 5) throw new Error(`cron expression must have 5 fields: ${expression}`);
+  return {
+    minute: parseCronField(fields[0], 0, 59),
+    hour: parseCronField(fields[1], 0, 23),
+    dom: parseCronField(fields[2], 1, 31),
+    month: parseCronField(fields[3], 1, 12, CRON_MONTH_NAMES),
+    dow: parseCronField(fields[4], 0, 7, CRON_DOW_NAMES, { sevenIsSunday: true })
+  };
+}
+
+function zonedFormatter(timezone) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  });
+}
+
+function zonedDateParts(date, formatter) {
+  const parts = {};
+  for (const item of formatter.formatToParts(date)) {
+    if (item.type !== "literal") parts[item.type] = item.value;
+  }
+  const year = Number(parts.year);
+  const month = Number(parts.month);
+  const day = Number(parts.day);
+  return {
+    year,
+    month,
+    day,
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    dow: new Date(Date.UTC(year, month - 1, day)).getUTCDay()
+  };
+}
+
+function cronFieldMatches(field, value) {
+  return field.values.has(value);
+}
+
+function cronMatchesDate(parsed, date, formatter) {
+  const parts = zonedDateParts(date, formatter);
+  if (!cronFieldMatches(parsed.minute, parts.minute)) return false;
+  if (!cronFieldMatches(parsed.hour, parts.hour)) return false;
+  if (!cronFieldMatches(parsed.month, parts.month)) return false;
+  const domMatches = cronFieldMatches(parsed.dom, parts.day);
+  const dowMatches = cronFieldMatches(parsed.dow, parts.dow);
+  const dayMatches = !parsed.dom.wildcard && !parsed.dow.wildcard ? (domMatches || dowMatches) : (domMatches && dowMatches);
+  return dayMatches;
+}
+
+function roundToNextMinute(date) {
+  const next = new Date(date.getTime());
+  next.setUTCSeconds(0, 0);
+  if (next.getTime() <= date.getTime()) next.setUTCMinutes(next.getUTCMinutes() + 1);
+  return next;
+}
+
+function nextCronRunAt(expression, timezone, fromIso = nowIso()) {
+  const parsed = parseCronExpression(expression);
+  const formatter = zonedFormatter(timezone);
+  let cursor = roundToNextMinute(new Date(fromIso));
+  const deadline = cursor.getTime() + 366 * 24 * 60 * 60 * 1000;
+  while (cursor.getTime() <= deadline) {
+    if (cronMatchesDate(parsed, cursor, formatter)) return cursor.toISOString();
+    cursor = new Date(cursor.getTime() + 60_000);
+  }
+  throw new Error(`no cron run found within 366 days: ${expression}`);
+}
+
+function scheduleRunId(scheduleId, scheduledAt) {
+  return `scheduled_run.${cleanFileSegment(scheduleId)}.${cleanFileSegment(String(scheduledAt).replace(/[:.]/g, ""))}`;
+}
+
+function scheduledMeetingId(scheduleId, scheduledAt) {
+  return `scheduled.${cleanFileSegment(scheduleId)}.${cleanFileSegment(String(scheduledAt).replace(/[:.]/g, ""))}`.slice(0, 120);
+}
+
 function numberOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
@@ -1232,6 +1436,55 @@ CREATE TABLE IF NOT EXISTS readiness_snapshots (
   findings_json TEXT NOT NULL,
   payload_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS workflow_schedules (
+  schedule_id TEXT PRIMARY KEY,
+  name TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  schedule_kind TEXT NOT NULL,
+  cron_expr TEXT,
+  interval_seconds INTEGER,
+  timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+  runtime TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  dispatch_type TEXT NOT NULL DEFAULT 'scheduled_dispatch',
+  priority TEXT NOT NULL DEFAULT 'normal',
+  prompt TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  concurrency_policy TEXT NOT NULL DEFAULT 'skip',
+  catchup_window_seconds INTEGER NOT NULL DEFAULT 900,
+  misfire_policy TEXT NOT NULL DEFAULT 'skip',
+  timeout_seconds INTEGER NOT NULL DEFAULT 45,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
+  next_run_at TEXT,
+  last_scheduled_at TEXT,
+  last_dispatch_id TEXT,
+  created_by TEXT NOT NULL DEFAULT 'workflow_scheduler',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_schedules_due ON workflow_schedules(status, next_run_at, priority);
+CREATE INDEX IF NOT EXISTS idx_workflow_schedules_target ON workflow_schedules(runtime, agent_id, status);
+CREATE TABLE IF NOT EXISTS scheduled_runs (
+  run_id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL,
+  scheduled_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  workflow_id TEXT,
+  meeting_id TEXT,
+  dispatch_id TEXT,
+  runtime TEXT,
+  agent_id TEXT,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  UNIQUE(schedule_id, scheduled_at)
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_schedule ON scheduled_runs(schedule_id, scheduled_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_dispatch ON scheduled_runs(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_status ON scheduled_runs(status, updated_at);
 CREATE TABLE IF NOT EXISTS control_loop_jobs (
   job_id TEXT PRIMARY KEY,
   job_type TEXT NOT NULL,
@@ -1412,6 +1665,55 @@ CREATE INDEX IF NOT EXISTS idx_mixed_dispatches_retry ON mixed_meeting_dispatche
 CREATE INDEX IF NOT EXISTS idx_side_effects_idempotency ON side_effect_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE INDEX IF NOT EXISTS idx_incident_states_status ON incident_states(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_readiness_snapshots_checked ON readiness_snapshots(checked_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_schedules (
+  schedule_id TEXT PRIMARY KEY,
+  name TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  schedule_kind TEXT NOT NULL,
+  cron_expr TEXT,
+  interval_seconds INTEGER,
+  timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+  runtime TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  dispatch_type TEXT NOT NULL DEFAULT 'scheduled_dispatch',
+  priority TEXT NOT NULL DEFAULT 'normal',
+  prompt TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  concurrency_policy TEXT NOT NULL DEFAULT 'skip',
+  catchup_window_seconds INTEGER NOT NULL DEFAULT 900,
+  misfire_policy TEXT NOT NULL DEFAULT 'skip',
+  timeout_seconds INTEGER NOT NULL DEFAULT 45,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
+  next_run_at TEXT,
+  last_scheduled_at TEXT,
+  last_dispatch_id TEXT,
+  created_by TEXT NOT NULL DEFAULT 'workflow_scheduler',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_schedules_due ON workflow_schedules(status, next_run_at, priority);
+CREATE INDEX IF NOT EXISTS idx_workflow_schedules_target ON workflow_schedules(runtime, agent_id, status);
+CREATE TABLE IF NOT EXISTS scheduled_runs (
+  run_id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL,
+  scheduled_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  workflow_id TEXT,
+  meeting_id TEXT,
+  dispatch_id TEXT,
+  runtime TEXT,
+  agent_id TEXT,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  UNIQUE(schedule_id, scheduled_at)
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_schedule ON scheduled_runs(schedule_id, scheduled_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_dispatch ON scheduled_runs(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_status ON scheduled_runs(status, updated_at);
 CREATE TABLE IF NOT EXISTS control_loop_jobs (
   job_id TEXT PRIMARY KEY,
   job_type TEXT NOT NULL,
@@ -7163,6 +7465,342 @@ function sqlStringList(values) {
   return values.map((value) => sqlValue(value)).join(", ");
 }
 
+function scheduleRow(row = {}) {
+  return {
+    scheduleId: row.schedule_id || "",
+    name: row.name || "",
+    status: row.status || "",
+    scheduleKind: row.schedule_kind || "",
+    cronExpr: row.cron_expr || "",
+    intervalSeconds: Number(row.interval_seconds || 0) || null,
+    timezone: row.timezone || "",
+    runtime: row.runtime || "",
+    agentId: row.agent_id || "",
+    dispatchType: row.dispatch_type || "",
+    priority: row.priority || "normal",
+    prompt: row.prompt || "",
+    payload: parseJsonValue(row.payload_json, {}),
+    concurrencyPolicy: row.concurrency_policy || "skip",
+    catchupWindowSeconds: Number(row.catchup_window_seconds || 0) || 0,
+    misfirePolicy: row.misfire_policy || "skip",
+    timeoutSeconds: Number(row.timeout_seconds || 0) || 45,
+    maxAttempts: Number(row.max_attempts || 0) || 1,
+    nextRunAt: row.next_run_at || "",
+    lastScheduledAt: row.last_scheduled_at || "",
+    lastDispatchId: row.last_dispatch_id || "",
+    createdBy: row.created_by || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function nextScheduleRunAt(schedule, fromIso = nowIso()) {
+  const kind = normalizeScheduleKind(schedule.schedule_kind || schedule.scheduleKind, schedule);
+  if (kind === "cron") {
+    const cronExpr = String(schedule.cron_expr || schedule.cronExpr || schedule.cron || "").trim();
+    if (!cronExpr) throw new Error("cron schedule requires cronExpr");
+    return nextCronRunAt(cronExpr, normalizeTimezone(schedule.timezone), fromIso);
+  }
+  const rawIntervalSeconds = Number(schedule.interval_seconds || schedule.intervalSeconds || 0);
+  if (!Number.isFinite(rawIntervalSeconds) || rawIntervalSeconds <= 0) throw new Error("interval schedule requires intervalSeconds");
+  const intervalSeconds = Math.max(10, Math.min(366 * 24 * 3600, rawIntervalSeconds));
+  const fromDate = new Date(fromIso);
+  if (Number.isNaN(fromDate.getTime())) throw new Error(`invalid schedule base timestamp: ${fromIso}`);
+  return new Date(fromDate.getTime() + intervalSeconds * 1000).toISOString();
+}
+
+function nextScheduleRunAfterSeed(schedule, scheduledAt, now, misfired) {
+  let nextRunAt = nextScheduleRunAt(schedule, scheduledAt);
+  if (!misfired || schedule.misfire_policy !== "skip") return nextRunAt;
+  const catchupSeconds = Math.max(0, Number(schedule.catchup_window_seconds || 0));
+  const oldestAllowed = new Date(new Date(now).getTime() - catchupSeconds * 1000).toISOString();
+  let guard = 0;
+  while (nextRunAt && nextRunAt < oldestAllowed && guard < 1000) {
+    nextRunAt = nextScheduleRunAt(schedule, nextRunAt);
+    guard += 1;
+  }
+  return nextRunAt;
+}
+
+async function workflowScheduleUpsert(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const scheduleId = normalizeScheduleId(input.scheduleId || input.schedule_id || input.id);
+  const existingRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_schedules WHERE schedule_id=${sqlValue(scheduleId)} LIMIT 1;`, { json: true });
+  const existing = existingRows[0] || {};
+  const scheduleKind = normalizeScheduleKind(input.scheduleKind || input.schedule_kind || existing.schedule_kind, input);
+  const status = normalizeScheduleStatus(input.status || existing.status || "active");
+  const timezone = normalizeTimezone(input.timezone || existing.timezone || "Asia/Shanghai");
+  const cronExpr = scheduleKind === "cron" ? String(input.cronExpr || input.cron_expr || input.cron || existing.cron_expr || "").trim() : "";
+  const rawIntervalSeconds = Number(input.intervalSeconds || input.interval_seconds || existing.interval_seconds || 0);
+  const intervalSeconds = scheduleKind === "interval"
+    ? Math.max(10, Math.min(366 * 24 * 3600, rawIntervalSeconds))
+    : null;
+  if (scheduleKind === "cron") parseCronExpression(cronExpr);
+  if (scheduleKind === "interval" && (!Number.isFinite(rawIntervalSeconds) || rawIntervalSeconds <= 0)) throw new Error("interval schedule requires intervalSeconds");
+
+  const runtime = normalizeRuntime(input.runtime || existing.runtime || "hermers");
+  const agentId = normalizeAgentId(input.agentId || input.agent_id || input.target || existing.agent_id);
+  const prompt = firstText(input.prompt, input.text, existing.prompt);
+  if (!prompt) throw new Error("schedule prompt is required");
+  const priority = normalizeSchedulePriority(input.priority || existing.priority);
+  const concurrencyPolicy = normalizeSchedulePolicy(input.concurrencyPolicy || input.concurrency_policy || existing.concurrency_policy, WORKFLOW_SCHEDULE_CONCURRENCY_POLICIES, "skip");
+  const misfirePolicy = normalizeSchedulePolicy(input.misfirePolicy || input.misfire_policy || existing.misfire_policy, WORKFLOW_SCHEDULE_MISFIRE_POLICIES, "skip");
+  const catchupWindowSeconds = Math.max(0, Math.min(7 * 24 * 3600, Number(input.catchupWindowSeconds || input.catchup_window_seconds || existing.catchup_window_seconds || 900)));
+  const timeoutSeconds = Math.max(5, Math.min(900, Number(input.timeoutSeconds || input.timeout_seconds || existing.timeout_seconds || 45)));
+  const maxAttempts = Math.max(1, Math.min(10, Number(input.maxAttempts || input.max_attempts || existing.max_attempts || 1)));
+  const payload = input.payload === undefined ? parseJsonValue(existing.payload_json, {}) : parseJsonValue(input.payload, input.payload || {});
+  const now = nowIso();
+  const nextRunInput = normalizeIsoTimestamp(input.nextRunAt || input.next_run_at || "", "nextRunAt");
+  const resetNextRun = boolOption(input.resetNextRun ?? input.reset_next_run, false);
+  const effectiveSchedule = { schedule_kind: scheduleKind, cron_expr: cronExpr, interval_seconds: intervalSeconds, timezone };
+  const nextRunAt = nextRunInput || (!existing.schedule_id || resetNextRun || !existing.next_run_at ? nextScheduleRunAt(effectiveSchedule, now) : existing.next_run_at);
+  const createdAt = existing.created_at || now;
+  const createdBy = firstText(input.createdBy, input.created_by, input.from, existing.created_by, "workflow_scheduler");
+  const dispatchType = firstText(input.dispatchType, input.dispatch_type, existing.dispatch_type, scheduleKind === "cron" ? "scheduled_cron" : "scheduled_interval");
+  const name = firstText(input.name, existing.name, scheduleId);
+
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_schedules(schedule_id, name, status, schedule_kind, cron_expr, interval_seconds, timezone, runtime, agent_id, dispatch_type, priority, prompt, payload_json, concurrency_policy, catchup_window_seconds, misfire_policy, timeout_seconds, max_attempts, next_run_at, last_scheduled_at, last_dispatch_id, created_by, created_at, updated_at)
+VALUES (${sqlValue(scheduleId)}, ${sqlValue(name)}, ${sqlValue(status)}, ${sqlValue(scheduleKind)}, ${sqlValue(cronExpr)}, ${sqlValue(intervalSeconds)}, ${sqlValue(timezone)}, ${sqlValue(runtime)}, ${sqlValue(agentId)}, ${sqlValue(dispatchType)}, ${sqlValue(priority)}, ${sqlValue(prompt)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(concurrencyPolicy)}, ${sqlValue(catchupWindowSeconds)}, ${sqlValue(misfirePolicy)}, ${sqlValue(timeoutSeconds)}, ${sqlValue(maxAttempts)}, ${sqlValue(nextRunAt)}, ${sqlValue(existing.last_scheduled_at || "")}, ${sqlValue(existing.last_dispatch_id || "")}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)}, ${sqlValue(now)})
+ON CONFLICT(schedule_id) DO UPDATE SET
+  name=excluded.name,
+  status=excluded.status,
+  schedule_kind=excluded.schedule_kind,
+  cron_expr=excluded.cron_expr,
+  interval_seconds=excluded.interval_seconds,
+  timezone=excluded.timezone,
+  runtime=excluded.runtime,
+  agent_id=excluded.agent_id,
+  dispatch_type=excluded.dispatch_type,
+  priority=excluded.priority,
+  prompt=excluded.prompt,
+  payload_json=excluded.payload_json,
+  concurrency_policy=excluded.concurrency_policy,
+  catchup_window_seconds=excluded.catchup_window_seconds,
+  misfire_policy=excluded.misfire_policy,
+  timeout_seconds=excluded.timeout_seconds,
+  max_attempts=excluded.max_attempts,
+  next_run_at=excluded.next_run_at,
+  created_by=COALESCE(NULLIF(workflow_schedules.created_by,''), excluded.created_by),
+  updated_at=excluded.updated_at;`);
+
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM workflow_schedules WHERE schedule_id=${sqlValue(scheduleId)} LIMIT 1;`, { json: true });
+  return { schedule: scheduleRow(rows[0]), dbFile: paths.dbFile };
+}
+
+async function workflowScheduleList(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const filters = [];
+  if (input.scheduleId || input.schedule_id || input.id) filters.push(`schedule_id=${sqlValue(normalizeScheduleId(input.scheduleId || input.schedule_id || input.id))}`);
+  if (input.status) filters.push(`status=${sqlValue(normalizeScheduleStatus(input.status))}`);
+  if (input.runtime) filters.push(`runtime=${sqlValue(normalizeRuntime(input.runtime))}`);
+  if (input.agentId || input.agent_id) filters.push(`agent_id=${sqlValue(normalizeAgentId(input.agentId || input.agent_id))}`);
+  const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const limit = Math.max(1, Math.min(200, Number(input.limit || 50)));
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_schedules
+${where}
+ORDER BY status, next_run_at, schedule_id
+LIMIT ${limit};`, { json: true });
+  const runLimit = Math.max(0, Math.min(20, Number(input.runLimit || input.run_limit || 0)));
+  const schedules = rows.map(scheduleRow);
+  if (runLimit > 0) {
+    for (const schedule of schedules) {
+      const runs = await sqlite(paths.dbFile, `
+SELECT *
+FROM scheduled_runs
+WHERE schedule_id=${sqlValue(schedule.scheduleId)}
+ORDER BY scheduled_at DESC
+LIMIT ${runLimit};`, { json: true });
+      schedule.recentRuns = runs.map((row) => ({ ...row, result: parseJsonValue(row.result_json, {}) }));
+    }
+  }
+  return { schedules, count: schedules.length, dbFile: paths.dbFile };
+}
+
+async function workflowScheduleStatus(rootDir, input = {}, forcedStatus = "") {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const scheduleId = normalizeScheduleId(input.scheduleId || input.schedule_id || input.id);
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM workflow_schedules WHERE schedule_id=${sqlValue(scheduleId)} LIMIT 1;`, { json: true });
+  if (!rows[0]) throw new Error(`schedule not found: ${scheduleId}`);
+  const status = normalizeScheduleStatus(forcedStatus || input.status, rows[0].status || "paused");
+  const now = nowIso();
+  let nextRunAt = rows[0].next_run_at || "";
+  if (status === "active" && (!nextRunAt || nextRunAt <= now || boolOption(input.resetNextRun ?? input.reset_next_run, true))) {
+    nextRunAt = nextScheduleRunAt(rows[0], now);
+  }
+  await sqlite(paths.dbFile, `
+UPDATE workflow_schedules
+SET status=${sqlValue(status)},
+    next_run_at=${sqlValue(nextRunAt)},
+    updated_at=${sqlValue(now)}
+WHERE schedule_id=${sqlValue(scheduleId)};`);
+  const updated = await sqlite(paths.dbFile, `SELECT * FROM workflow_schedules WHERE schedule_id=${sqlValue(scheduleId)} LIMIT 1;`, { json: true });
+  return { schedule: scheduleRow(updated[0]), dbFile: paths.dbFile };
+}
+
+async function hasActiveScheduledDispatch(paths, scheduleId) {
+  const rows = await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM scheduled_runs sr
+LEFT JOIN mixed_meeting_dispatches d ON d.dispatch_id=sr.dispatch_id
+WHERE sr.schedule_id=${sqlValue(scheduleId)}
+  AND sr.status IN ('queued','dispatched')
+  AND (
+    sr.status='queued'
+    OR d.dispatch_id IS NULL
+    OR d.status IN ('queued','sent')
+  );`, { json: true });
+  return Number(rows[0]?.count || 0) > 0;
+}
+
+async function seedDueScheduleJobs(paths, input = {}) {
+  if (!boolOption(input.enableSchedules ?? input.enable_schedules, true)) return [];
+  const now = normalizeIsoTimestamp(input.now || input.nowIso || input.now_iso || nowIso(), "now");
+  const limit = Math.max(1, Math.min(100, Number(input.scheduleLimit || input.schedule_limit || 20)));
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_schedules
+WHERE status='active'
+  AND next_run_at IS NOT NULL
+  AND next_run_at != ''
+  AND next_run_at <= ${sqlValue(now)}
+ORDER BY
+  CASE priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+  next_run_at,
+  schedule_id
+LIMIT ${limit};`, { json: true });
+  const seeded = [];
+  for (const raw of rows) {
+    const schedule = { ...raw };
+    const scheduledAt = normalizeIsoTimestamp(schedule.next_run_at, "nextRunAt");
+    const runId = scheduleRunId(schedule.schedule_id, scheduledAt);
+    const catchupSeconds = Math.max(0, Number(schedule.catchup_window_seconds || 0));
+    const misfired = catchupSeconds > 0 && scheduledAt < new Date(new Date(now).getTime() - catchupSeconds * 1000).toISOString();
+    const activeDispatch = schedule.concurrency_policy === "skip" ? await hasActiveScheduledDispatch(paths, schedule.schedule_id) : false;
+    const skipped = (misfired && schedule.misfire_policy === "skip") || activeDispatch;
+    const status = skipped ? "skipped" : "queued";
+    const error = activeDispatch ? "concurrency_policy_skip" : misfired ? "misfire_window_exceeded" : "";
+    const createdAt = nowIso();
+
+    await sqlite(paths.dbFile, `
+INSERT OR IGNORE INTO scheduled_runs(run_id, schedule_id, scheduled_at, status, workflow_id, meeting_id, dispatch_id, runtime, agent_id, attempt, result_json, error, created_at, updated_at, completed_at)
+VALUES (${sqlValue(runId)}, ${sqlValue(schedule.schedule_id)}, ${sqlValue(scheduledAt)}, ${sqlValue(status)}, '', '', '', ${sqlValue(schedule.runtime)}, ${sqlValue(schedule.agent_id)}, 0, ${sqlValue(JSON.stringify({ seededAt: createdAt, skipped }))}, ${sqlValue(error)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)}, ${sqlValue(skipped ? createdAt : "")});`);
+
+    let job = null;
+    if (!skipped) {
+      job = await enqueueControlLoopJob(paths, {
+        jobType: "scheduled_dispatch",
+        dedupeKey: `scheduled_dispatch:${schedule.schedule_id}:${scheduledAt}`,
+        priority: schedule.priority || "normal",
+        workflowId: `schedule.${schedule.schedule_id}`,
+        runtime: schedule.runtime,
+        maxAttempts: schedule.max_attempts || 1,
+        payload: { scheduleId: schedule.schedule_id, runId, scheduledAt }
+      });
+    }
+
+    const nextRunAt = nextScheduleRunAfterSeed(schedule, scheduledAt, now, misfired);
+    await sqlite(paths.dbFile, `
+UPDATE workflow_schedules
+SET next_run_at=${sqlValue(nextRunAt)},
+    last_scheduled_at=${sqlValue(scheduledAt)},
+    updated_at=${sqlValue(createdAt)}
+WHERE schedule_id=${sqlValue(schedule.schedule_id)}
+  AND next_run_at=${sqlValue(scheduledAt)};`);
+    seeded.push({ scheduleId: schedule.schedule_id, runId, scheduledAt, status, error, job });
+  }
+  return seeded;
+}
+
+async function runScheduledDispatchJob(rootDir, paths, job, input = {}) {
+  const payload = parseJsonValue(job.payload_json, {});
+  const scheduleId = normalizeScheduleId(payload.scheduleId || payload.schedule_id);
+  const scheduledAt = normalizeIsoTimestamp(payload.scheduledAt || payload.scheduled_at, "scheduledAt");
+  const runId = String(payload.runId || payload.run_id || scheduleRunId(scheduleId, scheduledAt)).trim();
+  const scheduleRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_schedules WHERE schedule_id=${sqlValue(scheduleId)} LIMIT 1;`, { json: true });
+  const schedule = scheduleRows[0];
+  if (!schedule) throw new Error(`schedule not found: ${scheduleId}`);
+  const runRows = await sqlite(paths.dbFile, `SELECT * FROM scheduled_runs WHERE run_id=${sqlValue(runId)} LIMIT 1;`, { json: true });
+  const run = runRows[0];
+  if (!run) throw new Error(`scheduled run not found: ${runId}`);
+  if (run.status !== "queued") return { scheduleId, runId, status: run.status, skipped: true };
+  const workflowId = scheduledMeetingId(scheduleId, scheduledAt);
+  const meetingId = workflowId;
+  const traceId = `schedule.${scheduleId}.${cleanFileSegment(scheduledAt.replace(/[:.]/g, ""))}`;
+  const idempotencyKey = `schedule:${scheduleId}:${scheduledAt}`;
+  const schedulePayload = parseJsonValue(schedule.payload_json, {});
+  try {
+    const dispatch = await meetingDispatch(rootDir, {
+      ...input,
+      workflowRootDir: paths.root,
+      meetingId,
+      workflowId,
+      traceId,
+      idempotencyKey,
+      dispatchId: `dispatch.${runId}`,
+      runtime: schedule.runtime,
+      agentId: schedule.agent_id,
+      dispatchType: schedule.dispatch_type || "scheduled_dispatch",
+      priority: schedule.priority || "normal",
+      prompt: schedule.prompt,
+      createdBy: schedule.created_by || "workflow_scheduler",
+      maxAttempts: schedule.max_attempts || 1,
+      payload: {
+        scheduleId,
+        runId,
+        scheduledAt,
+        scheduleKind: schedule.schedule_kind,
+        scheduleName: schedule.name || "",
+        schedulePayload
+      }
+    });
+    const completedAt = nowIso();
+    await sqlite(paths.dbFile, `
+UPDATE scheduled_runs
+SET status='dispatched',
+    workflow_id=${sqlValue(workflowId)},
+    meeting_id=${sqlValue(meetingId)},
+    dispatch_id=${sqlValue(dispatch.dispatchId)},
+    runtime=${sqlValue(dispatch.runtime || schedule.runtime)},
+    agent_id=${sqlValue(dispatch.agentId || schedule.agent_id)},
+    attempt=attempt+1,
+    result_json=${sqlValue(JSON.stringify({ dispatch, dispatchedAt: completedAt }))},
+    updated_at=${sqlValue(completedAt)}
+WHERE run_id=${sqlValue(runId)};`);
+    await sqlite(paths.dbFile, `
+UPDATE workflow_schedules
+SET last_dispatch_id=${sqlValue(dispatch.dispatchId)},
+    updated_at=${sqlValue(completedAt)}
+WHERE schedule_id=${sqlValue(scheduleId)};`);
+    await enqueueControlLoopJob(paths, {
+      jobType: "runtime_drain",
+      dedupeKey: `runtime_drain:${dispatch.runtime || schedule.runtime}`,
+      priority: schedule.priority === "flash" ? "flash" : "high",
+      runtime: dispatch.runtime || schedule.runtime,
+      payload: {
+        runtime: dispatch.runtime || schedule.runtime,
+        limit: 1,
+        timeoutSeconds: schedule.timeout_seconds || input.timeoutSeconds || input.timeout_seconds || 45
+      }
+    });
+    return { scheduleId, runId, scheduledAt, status: "dispatched", dispatchId: dispatch.dispatchId, runtime: dispatch.runtime, agentId: dispatch.agentId, deduped: Boolean(dispatch.deduped) };
+  } catch (error) {
+    const failedAt = nowIso();
+    const terminal = Number(job.attempt || 0) >= Number(job.max_attempts || 1);
+    await sqlite(paths.dbFile, `
+UPDATE scheduled_runs
+SET status=${sqlValue(terminal ? "failed" : "queued")},
+    attempt=attempt+1,
+    error=${sqlValue(String(error?.message || error).slice(0, 2000))},
+    updated_at=${sqlValue(failedAt)},
+    completed_at=${sqlValue(terminal ? failedAt : "")}
+WHERE run_id=${sqlValue(runId)};`);
+    throw error;
+  }
+}
+
 function controlLoopStatuses(input = {}) {
   const requested = toList(input.workflowStatuses || input.workflow_statuses || input.statuses);
   const statuses = requested.length ? requested : [...CONTROL_LOOP_WORKFLOW_STATUSES];
@@ -7241,6 +7879,8 @@ async function seedControlLoopJobs(paths, input = {}) {
   const staleDispatchCutoff = new Date(Date.now() - staleDispatchAfterMs).toISOString();
   const dispatchReconcileLimit = Math.max(1, Math.min(100, Number(input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20)));
   const statuses = controlLoopStatuses(input);
+
+  seeded.push(...await seedDueScheduleJobs(paths, input));
 
   const workflowRows = await sqlite(paths.dbFile, `
 SELECT workflow_id, status, current_decision, payload_json, updated_at
@@ -7457,6 +8097,9 @@ async function runControlLoopJob(rootDir, paths, job, input = {}) {
       dispatched: supervised.dispatched?.length || 0,
       catClawReportDispatchId: supervised.catClawReport?.dispatchId || ""
     };
+  }
+  if (job.job_type === "scheduled_dispatch") {
+    return runScheduledDispatchJob(rootDir, paths, job, input);
   }
   if (job.job_type === "runtime_drain") {
     return runtimeBridgeDrain(rootDir, {
@@ -7679,6 +8322,19 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.loop.tick":
     case "workflow.reconciler.tick":
       return workflowControlLoopTick(rootDir, input);
+    case "workflow.schedule.upsert":
+    case "workflow.scheduler.upsert":
+      return workflowScheduleUpsert(rootDir, input);
+    case "workflow.schedule.list":
+    case "workflow.schedules":
+    case "workflow.scheduler.list":
+      return workflowScheduleList(rootDir, input);
+    case "workflow.schedule.pause":
+      return workflowScheduleStatus(rootDir, input, "paused");
+    case "workflow.schedule.resume":
+      return workflowScheduleStatus(rootDir, input, "active");
+    case "workflow.schedule.disable":
+      return workflowScheduleStatus(rootDir, input, "disabled");
     case "workflow.checkpoint":
     case "workflow.context_checkpoint":
     case "context.checkpoint":

@@ -16,7 +16,12 @@ function usage() {
   trading-agents-workflow workflow-advance-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--goal-complete] [--root DIR]
   trading-agents-workflow workflow-supervise --workflow ID [--meeting ID] [--auto-dispatch] [--drain] [--max-cycles N] [--auto-report false] [--openclaw-bin PATH] [--root DIR]
   trading-agents-workflow workflow-supervise-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--drain true|false] [--max-cycles N] [--auto-report true|false] [--root DIR]
-  trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermers] [--limit N] [--job-limit N] [--tick-budget-ms N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--root DIR]
+  trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermers] [--limit N] [--job-limit N] [--tick-budget-ms N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--enable-schedules true|false] [--root DIR]
+  trading-agents-workflow workflow-schedule-upsert --id ID --agent AGENT --prompt TEXT [--runtime hermers] [--kind cron|interval] [--cron EXPR] [--interval-seconds N] [--next-run-at ISO] [--root DIR]
+  trading-agents-workflow workflow-schedule-list [--id ID] [--status active|paused|disabled] [--runtime RUNTIME] [--agent AGENT] [--run-limit N] [--root DIR]
+  trading-agents-workflow workflow-schedule-pause --id ID [--root DIR]
+  trading-agents-workflow workflow-schedule-resume --id ID [--reset-next-run true|false] [--root DIR]
+  trading-agents-workflow workflow-schedule-disable --id ID [--root DIR]
   trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
   trading-agents-workflow runtime-agent --platform PLATFORM --agent AGENT [--runtime RUNTIME_KEY] [--execution-adapter ADAPTER] [--im-ingress-owner OWNER] [--im-ingress-adapter ADAPTER] [--workflow-ingress-adapter ADAPTER] [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
   trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--chat-id ID] [--sender-id ID] [--target-platform PLATFORM] [--target-adapter ADAPTER] [--drain-now true|false] [--root DIR]
@@ -260,11 +265,60 @@ function toAction({ command, positional, options }) {
           autoReport: options["auto-report"] === "true",
           ensureHumanGateRequests: options["ensure-human-gate-requests"] !== "false",
           createHumanGateInbox: options["create-human-gate-inbox"] !== "false",
+          enableSchedules: options["enable-schedules"] !== "false",
+          scheduleLimit: options["schedule-limit"],
           dryRun: options["dry-run"] === "true",
           owner: options.owner,
           payload: options.reason ? { reason: options.reason } : undefined
         }
       };
+    case "workflow-schedule-upsert":
+      return {
+        root,
+        input: {
+          action: "workflow.schedule.upsert",
+          scheduleId: options.id,
+          name: options.name,
+          scheduleKind: options.kind,
+          cronExpr: options.cron,
+          intervalSeconds: options["interval-seconds"],
+          timezone: options.timezone,
+          runtime: options.runtime,
+          agentId: options.agent,
+          prompt: options.prompt,
+          dispatchType: options.type,
+          priority: options.priority,
+          status: options.status,
+          concurrencyPolicy: options["concurrency-policy"],
+          catchupWindowSeconds: options["catchup-window-seconds"],
+          misfirePolicy: options["misfire-policy"],
+          timeoutSeconds: options["timeout-seconds"],
+          maxAttempts: options["max-attempts"],
+          nextRunAt: options["next-run-at"],
+          resetNextRun: options["reset-next-run"] === "true",
+          payload: options.payload,
+          createdBy: options.from
+        }
+      };
+    case "workflow-schedule-list":
+      return {
+        root,
+        input: {
+          action: "workflow.schedule.list",
+          scheduleId: options.id,
+          status: options.status,
+          runtime: options.runtime,
+          agentId: options.agent,
+          limit: options.limit,
+          runLimit: options["run-limit"]
+        }
+      };
+    case "workflow-schedule-pause":
+      return { root, input: { action: "workflow.schedule.pause", scheduleId: options.id } };
+    case "workflow-schedule-resume":
+      return { root, input: { action: "workflow.schedule.resume", scheduleId: options.id, resetNextRun: options["reset-next-run"] !== "false" } };
+    case "workflow-schedule-disable":
+      return { root, input: { action: "workflow.schedule.disable", scheduleId: options.id } };
     case "workflow-checkpoint":
       return {
         root,

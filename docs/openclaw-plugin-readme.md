@@ -396,7 +396,9 @@ node bin/cat-meeting-governance.mjs workflow-supervise --workflow demo-initiativ
 node bin/cat-meeting-governance.mjs workflow-supervise-preview --workflow demo-initiative --meeting demo-initiative --root "$ROOT"
 ```
 
-Use `workflow.control_loop.tick` as the plugin-internal 10s reconciler tick. The tick period is a scheduling cadence, not a promise that all workflow work finishes inside 10 seconds. Each tick records readiness, seeds durable `control_loop_jobs`, claims a bounded number of jobs, executes those jobs, and leaves unfinished work queued for later ticks. Queue jobs cover workflow supervision, stale dispatch reconciliation, runtime drain, pending Human Gate request/button/outbox ensure, Telegram outbox delivery, and Human Gate inbox batch creation. Phase progress is written to `bridge/control-loop-events.jsonl`; tick summaries go to `bridge/control-loop.jsonl`. A file lease at `bridge/control-loop-lease.json` prevents overlapping ticks, while each queue job has its own DB lease, retry, and attempt state.
+Use `workflow.control_loop.tick` as the plugin-internal 10s reconciler tick. The tick period is a scheduling cadence, not a promise that all workflow work finishes inside 10 seconds. Each tick records readiness, seeds durable `control_loop_jobs`, claims a bounded number of jobs, executes those jobs, and leaves unfinished work queued for later ticks. Queue jobs cover due workflow schedules, workflow supervision, stale dispatch reconciliation, runtime drain, pending Human Gate request/button/outbox ensure, Telegram outbox delivery, and Human Gate inbox batch creation. Phase progress is written to `bridge/control-loop-events.jsonl`; tick summaries go to `bridge/control-loop.jsonl`. A file lease at `bridge/control-loop-lease.json` prevents overlapping ticks, while each queue job has its own DB lease, retry, and attempt state.
+
+Workflow-native schedules are stored in `workflow_schedules`; each due tick writes a `scheduled_runs` row and queues one `scheduled_dispatch` job. The schedule layer does not execute agent work inline. It calls `meeting.dispatch` with a deterministic idempotency key, and normal `runtime_drain` later invokes the registered runtime, such as `platform=hermers` plus `workflow_ingress_adapter=acp`. This is the replacement path for OpenClaw cron driving migrated professional agents through prompt-based route-shell forwarding.
 
 The OpenClaw plugin can run this loop when `controlLoop.enabled=true` in plugin config or `TRADING_AGENTS_WORKFLOW_CONTROL_LOOP=1` is set. The recommended tick period is `10000` ms. Startup does not run an immediate tick by default; set `controlLoop.startupTick=true` only after Gateway startup load is known to be safe. The default `controlLoop.workerMode` is `process`, so the plugin launches a bounded Node worker process for each tick instead of running jobs inside the Gateway event loop. Defaults are conservative: `jobLimit=4`, `runtimeLimit=1`, `timeoutSeconds=45`, `tickBudgetMs=60000`, and `autoReport=false`. Runtime drain defaults to `openclaw_route_shell,hermers`: route-shell rows are redirected by registry, while professional work registered on Hermers drains through ACP. Add `openclaw` only as an explicit, reviewed exception because it calls back into the Gateway process.
 
@@ -422,6 +424,19 @@ node bin/cat-meeting-governance.mjs workflow-control-loop-tick \
   --max-workflows 2 \
   --runtime openclaw_route_shell,hermers \
   --limit 1 \
+  --root "$ROOT"
+```
+
+Schedule example:
+
+```bash
+node bin/cat-meeting-governance.mjs workflow-schedule-upsert \
+  --id cat-nose-heartbeat \
+  --agent cat_nose \
+  --runtime hermers \
+  --kind cron \
+  --cron "*/30 * * * *" \
+  --prompt "Run the registered heartbeat check and report receipt through the workflow channel." \
   --root "$ROOT"
 ```
 

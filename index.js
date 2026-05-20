@@ -130,6 +130,14 @@ const toolParameters = {
         "workflow.control_loop.tick",
         "workflow.loop.tick",
         "workflow.reconciler.tick",
+        "workflow.schedule.upsert",
+        "workflow.scheduler.upsert",
+        "workflow.schedule.list",
+        "workflow.schedules",
+        "workflow.scheduler.list",
+        "workflow.schedule.pause",
+        "workflow.schedule.resume",
+        "workflow.schedule.disable",
         "workflow.checkpoint",
         "workflow.context_checkpoint",
         "context.checkpoint",
@@ -298,6 +306,20 @@ const toolParameters = {
     maxAttempts: { type: "number" },
     staleDays: { type: "number" }
     ,
+    scheduleId: { type: "string" },
+    scheduleKind: { type: "string" },
+    cronExpr: { type: "string" },
+    intervalSeconds: { type: "number" },
+    timezone: { type: "string" },
+    concurrencyPolicy: { type: "string" },
+    catchupWindowSeconds: { type: "number" },
+    misfirePolicy: { type: "string" },
+    nextRunAt: { type: "string" },
+    resetNextRun: { type: "boolean" },
+    enableSchedules: { type: "boolean" },
+    scheduleLimit: { type: "number" },
+    runLimit: { type: "number" },
+    now: { type: "string" },
     objectId: { type: "string" },
     objectType: { type: "string" },
     parentObjectId: { type: "string" },
@@ -915,6 +937,7 @@ function registerCli(api) {
       .option("--tick-ms <ms>", "Control-loop tick period metadata", "10000")
       .option("--max-workflows <count>", "Max workflows to supervise", "2")
       .option("--limit <limit>", "Runtime drain limit", "1")
+      .option("--outbox-limit <limit>", "Telegram outbox delivery limit", "5")
       .option("--job-limit <limit>", "Control-loop jobs to claim per tick", "4")
       .option("--job-lease-ms <ms>", "Control-loop job lease", "120000")
       .option("--timeout-seconds <seconds>", "Runtime dispatch timeout", "45")
@@ -929,6 +952,8 @@ function registerCli(api) {
       .option("--auto-report <trueOrFalse>", "Create Cat Claw report dispatch when required", "false")
       .option("--ensure-human-gate-requests <trueOrFalse>", "Ensure pending Human Gate records have buttons and outbox", "true")
       .option("--create-human-gate-inbox <trueOrFalse>", "Create Human Gate inbox when no recent batch exists", "true")
+      .option("--enable-schedules <trueOrFalse>", "Seed due workflow schedules", "true")
+      .option("--schedule-limit <count>", "Max due schedules to seed per tick", "20")
       .option("--dry-run <trueOrFalse>", "Do not drain runtime or deliver outbox", "false")
       .option("--owner <owner>", "Lease owner", "openclaw-plugin")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
@@ -940,6 +965,7 @@ function registerCli(api) {
           tickMs: Number(options.tickMs),
           maxWorkflows: Number(options.maxWorkflows),
           runtimeLimit: Number(options.limit),
+          outboxLimit: Number(options.outboxLimit),
           jobLimit: Number(options.jobLimit),
           jobLeaseMs: Number(options.jobLeaseMs),
           timeoutSeconds: Number(options.timeoutSeconds),
@@ -954,8 +980,122 @@ function registerCli(api) {
           autoReport: options.autoReport === "true",
           ensureHumanGateRequests: options.ensureHumanGateRequests !== "false",
           createHumanGateInbox: options.createHumanGateInbox !== "false",
+          enableSchedules: options.enableSchedules !== "false",
+          scheduleLimit: Number(options.scheduleLimit),
           dryRun: options.dryRun === "true",
           owner: options.owner
+        }), null, 2));
+      });
+
+    command.command("workflow-schedule-upsert")
+      .requiredOption("--id <scheduleId>", "Schedule id")
+      .requiredOption("--agent <agentId>", "Target agent id")
+      .requiredOption("--prompt <prompt>", "Prompt to dispatch when due")
+      .option("--name <name>", "Schedule display name")
+      .option("--kind <scheduleKind>", "cron or interval")
+      .option("--cron <cronExpr>", "Five-field cron expression")
+      .option("--interval-seconds <seconds>", "Interval schedule seconds")
+      .option("--timezone <timezone>", "IANA timezone", "Asia/Shanghai")
+      .option("--runtime <runtime>", "Target runtime", "hermers")
+      .option("--type <dispatchType>", "Dispatch type")
+      .option("--priority <priority>", "flash, steer, high, normal, low", "normal")
+      .option("--status <status>", "active, paused, disabled", "active")
+      .option("--concurrency-policy <policy>", "skip or allow", "skip")
+      .option("--catchup-window-seconds <seconds>", "Allowed catchup window", "900")
+      .option("--misfire-policy <policy>", "skip or run_once", "skip")
+      .option("--timeout-seconds <seconds>", "Runtime dispatch timeout", "45")
+      .option("--max-attempts <count>", "Runtime dispatch attempts", "1")
+      .option("--next-run-at <iso>", "Explicit next run timestamp")
+      .option("--reset-next-run <trueOrFalse>", "Recompute next_run_at", "false")
+      .option("--payload <json>", "Schedule payload JSON")
+      .option("--from <createdBy>", "Creator", "workflow_scheduler")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.schedule.upsert",
+          workflowRootDir: options.workflowRoot,
+          scheduleId: options.id,
+          name: options.name,
+          scheduleKind: options.kind,
+          cronExpr: options.cron,
+          intervalSeconds: options.intervalSeconds ? Number(options.intervalSeconds) : undefined,
+          timezone: options.timezone,
+          runtime: options.runtime,
+          agentId: options.agent,
+          prompt: options.prompt,
+          dispatchType: options.type,
+          priority: options.priority,
+          status: options.status,
+          concurrencyPolicy: options.concurrencyPolicy,
+          catchupWindowSeconds: Number(options.catchupWindowSeconds),
+          misfirePolicy: options.misfirePolicy,
+          timeoutSeconds: Number(options.timeoutSeconds),
+          maxAttempts: Number(options.maxAttempts),
+          nextRunAt: options.nextRunAt,
+          resetNextRun: options.resetNextRun === "true",
+          payload: options.payload,
+          createdBy: options.from
+        }), null, 2));
+      });
+
+    command.command("workflow-schedule-list")
+      .option("--id <scheduleId>", "Schedule id")
+      .option("--status <status>", "active, paused, disabled")
+      .option("--runtime <runtime>", "Target runtime")
+      .option("--agent <agentId>", "Target agent id")
+      .option("--limit <count>", "Schedule limit", "50")
+      .option("--run-limit <count>", "Recent runs per schedule", "0")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.schedule.list",
+          workflowRootDir: options.workflowRoot,
+          scheduleId: options.id,
+          status: options.status,
+          runtime: options.runtime,
+          agentId: options.agent,
+          limit: Number(options.limit),
+          runLimit: Number(options.runLimit)
+        }), null, 2));
+      });
+
+    command.command("workflow-schedule-pause")
+      .requiredOption("--id <scheduleId>", "Schedule id")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.schedule.pause",
+          workflowRootDir: options.workflowRoot,
+          scheduleId: options.id
+        }), null, 2));
+      });
+
+    command.command("workflow-schedule-resume")
+      .requiredOption("--id <scheduleId>", "Schedule id")
+      .option("--reset-next-run <trueOrFalse>", "Recompute next_run_at", "true")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.schedule.resume",
+          workflowRootDir: options.workflowRoot,
+          scheduleId: options.id,
+          resetNextRun: options.resetNextRun !== "false"
+        }), null, 2));
+      });
+
+    command.command("workflow-schedule-disable")
+      .requiredOption("--id <scheduleId>", "Schedule id")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.schedule.disable",
+          workflowRootDir: options.workflowRoot,
+          scheduleId: options.id
         }), null, 2));
       });
 
@@ -1678,7 +1818,9 @@ function controlLoopConfig(api) {
     deliverOutbox: configured.deliverOutbox !== false,
     autoReport: configured.autoReport === true,
     ensureHumanGateRequests: configured.ensureHumanGateRequests !== false,
-    createHumanGateInbox: configured.createHumanGateInbox !== false
+    createHumanGateInbox: configured.createHumanGateInbox !== false,
+    enableSchedules: configured.enableSchedules !== false,
+    scheduleLimit: numberValue(configured.scheduleLimit, 20, 1, 100)
   };
 }
 
@@ -1709,7 +1851,9 @@ function controlLoopWorkerArgs(config, root, reason) {
     "--deliver-outbox", boolArg(config.deliverOutbox),
     "--auto-report", boolArg(config.autoReport),
     "--ensure-human-gate-requests", boolArg(config.ensureHumanGateRequests),
-    "--create-human-gate-inbox", boolArg(config.createHumanGateInbox)
+    "--create-human-gate-inbox", boolArg(config.createHumanGateInbox),
+    "--enable-schedules", boolArg(config.enableSchedules),
+    "--schedule-limit", String(config.scheduleLimit)
   ];
   if (root) args.splice(2, 0, "--root", root);
   if (reason) args.push("--reason", reason);
@@ -1739,6 +1883,8 @@ function runControlLoopWorker(api, config, reason) {
       autoReport: config.autoReport,
       ensureHumanGateRequests: config.ensureHumanGateRequests,
       createHumanGateInbox: config.createHumanGateInbox,
+      enableSchedules: config.enableSchedules,
+      scheduleLimit: config.scheduleLimit,
       payload: { reason }
     });
   }
