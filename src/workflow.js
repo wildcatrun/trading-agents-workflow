@@ -6595,13 +6595,14 @@ async function startStandaloneAcpxBackend(paths, input = {}) {
   if (typeof createService !== "function") throw new Error(`OpenClaw ACPX runtime plugin has no createAcpxRuntimeService export: ${imported.source}`);
   const pluginConfig = standaloneAcpxPluginConfig(paths, input);
   const service = createService({ pluginConfig });
-  await service.start({
+  const ctx = {
     workspaceDir: paths.root,
     stateDir: pluginConfig.stateDir,
     config: { acp: { allowedAgents: toList(input.acpAllowedAgents || input.acp_allowed_agents || process.env.TRADING_AGENTS_ACP_ALLOWED_AGENTS) } },
     logger: standaloneAcpxLogger(input)
-  });
-  return { source: imported.source, stateDir: pluginConfig.stateDir };
+  };
+  await service.start(ctx);
+  return { source: imported.source, stateDir: pluginConfig.stateDir, service, ctx };
 }
 
 async function resolveAcpBackend(backendId, input = {}, paths = null) {
@@ -6609,13 +6610,17 @@ async function resolveAcpBackend(backendId, input = {}, paths = null) {
   const imported = await importAcpRuntimeBackendModule(input);
   let backend = imported.module.getAcpRuntimeBackend?.(normalizedBackendId);
   let source = imported.source;
+  let cleanup = async () => {};
   if (!backend?.runtime && normalizedBackendId === "acpx" && paths) {
     const standalone = await startStandaloneAcpxBackend(paths, input);
     backend = imported.module.getAcpRuntimeBackend?.(normalizedBackendId);
     source = `${source}; acpx-service:${standalone.source}`;
+    cleanup = async () => {
+      await standalone.service?.stop?.(standalone.ctx);
+    };
   }
   if (!backend?.runtime) throw new Error(`ACP runtime backend is not loaded: ${normalizedBackendId}`);
-  return { backend, source };
+  return { backend, source, cleanup };
 }
 
 function acpTextFromEvent(event) {
@@ -6636,10 +6641,12 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
   const attempt = Number(row.attempt || 0) + 1;
   let backend;
   let backendSource = "";
+  let backendCleanup = async () => {};
   try {
     const resolvedBackend = await resolveAcpBackend(backendId, input, paths);
     backend = resolvedBackend.backend;
     backendSource = resolvedBackend.source;
+    backendCleanup = resolvedBackend.cleanup || backendCleanup;
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
@@ -6825,6 +6832,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "acp", backend: backendId, acpAgent, sessionKey, failureType, retryScheduled: shouldRetry, error: message };
   } finally {
     if (timeout) clearTimeout(timeout);
+    await backendCleanup();
   }
 }
 
