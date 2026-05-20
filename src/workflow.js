@@ -6164,6 +6164,7 @@ function classifyRuntimeError(error) {
   if (lower.includes("acp runtime backend") || lower.includes("acp") && lower.includes("unavailable")) return "acp_unavailable";
   if (lower.includes("oauth") || lower.includes("auth")) return "auth_unavailable";
   if (lower.includes("empty output")) return "empty_output";
+  if (lower.includes("incomplete output") || lower.includes("operation interrupted")) return "incomplete_output";
   if (lower.includes("schema") || lower.includes("validation")) return "schema_validation";
   if (lower.includes("guardrail")) return "guardrail_block";
   if (lower.includes("stale")) return "stale_input";
@@ -6233,6 +6234,7 @@ async function runHermesDispatch(paths, row, input = {}) {
     });
     const text = String(stdout || "").trim();
     if (!text) throw new Error(String(stderr || "Hermes returned empty output").trim());
+    if (!messageFlowOutputIsFinal(text)) throw new Error(`Hermes returned incomplete output: ${compactText(text, 500)}`);
     const completedAt = nowIso();
     const outputHash = textHash(text);
     const ingest = await meetingIngest(paths.root, {
@@ -6617,6 +6619,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     }
     const text = chunks.join("").trim();
     if (!text) throw new Error("Hermes ACP returned empty output");
+    if (!messageFlowOutputIsFinal(text)) throw new Error(`Hermes ACP returned incomplete output: ${compactText(text, 500)}`);
     const completedAt = nowIso();
     const outputHash = textHash(text);
     const ingest = await meetingIngest(paths.root, {
