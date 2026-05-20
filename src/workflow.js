@@ -6320,6 +6320,7 @@ WHERE dispatch_id=${sqlValue(dispatchId)};`);
 function classifyRuntimeError(error) {
   const message = error instanceof Error ? error.message : String(error || "");
   const lower = message.toLowerCase();
+  if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return "runtime_timeout";
   if (lower.includes("abort") || lower.includes("timeout") || lower.includes("timed out")) return "runtime_timeout";
   if (lower.includes("acp runtime backend") || lower.includes("acp") && lower.includes("unavailable")) return "acp_unavailable";
   if (lower.includes("oauth") || lower.includes("auth")) return "auth_unavailable";
@@ -6674,6 +6675,48 @@ function acpTextFromEvent(event) {
   return "";
 }
 
+function acpTimeoutError(timeoutSeconds) {
+  const error = new Error(`Hermes ACP runtime timed out after ${timeoutSeconds}s without final output`);
+  error.code = "RUNTIME_TIMEOUT";
+  return error;
+}
+
+async function collectAcpTurnOutput(backend, request, timeoutSeconds, controller) {
+  const chunks = [];
+  const acpEvents = [];
+  const turn = (async () => {
+    for await (const event of backend.runtime.runTurn(request)) {
+      if (event?.type === "error") throw new Error(event.message || "ACP runtime turn failed");
+      const text = acpTextFromEvent(event);
+      if (text) chunks.push(text);
+      if (event?.type && event.type !== "text_delta") {
+        acpEvents.push({
+          type: event.type,
+          text: String(event.text || event.message || "").slice(0, 1000),
+          tag: event.tag || "",
+          stopReason: event.stopReason || ""
+        });
+      }
+    }
+    return { text: chunks.join("").trim(), acpEvents };
+  })();
+  let hardTimeout = null;
+  try {
+    return await Promise.race([
+      turn,
+      new Promise((_, reject) => {
+        hardTimeout = setTimeout(() => {
+          controller.abort();
+          reject(acpTimeoutError(timeoutSeconds));
+        }, timeoutSeconds * 1000 + 3000);
+      })
+    ]);
+  } finally {
+    if (hardTimeout) clearTimeout(hardTimeout);
+    turn.catch(() => {});
+  }
+}
+
 async function runHermesAcpDispatch(paths, row, input = {}) {
   const backendId = String(input.acpBackend || input.acp_backend || process.env.TRADING_AGENTS_ACP_BACKEND || "acpx").trim();
   const acpAgent = String(input.acpAgent || input.acp_agent || hermesAcpAgentFromEndpoint(row.endpoint_ref, row.agent_id)).trim();
@@ -6763,28 +6806,14 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       cwd: paths.root
     });
     timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
-    const chunks = [];
-    const acpEvents = [];
-    for await (const event of backend.runtime.runTurn({
+    if (typeof timeout.unref === "function") timeout.unref();
+    const { text, acpEvents } = await collectAcpTurnOutput(backend, {
       handle,
       text: prompt,
       mode: "prompt",
       requestId: row.dispatch_id,
       signal: controller.signal
-    })) {
-      if (event?.type === "error") throw new Error(event.message || "ACP runtime turn failed");
-      const text = acpTextFromEvent(event);
-      if (text) chunks.push(text);
-      if (event?.type && event.type !== "text_delta") {
-        acpEvents.push({
-          type: event.type,
-          text: String(event.text || event.message || "").slice(0, 1000),
-          tag: event.tag || "",
-          stopReason: event.stopReason || ""
-        });
-      }
-    }
-    const text = chunks.join("").trim();
+    }, timeoutSeconds, controller);
     if (!text) throw new Error("Hermes ACP returned empty output");
     if (!messageFlowOutputIsFinal(text)) throw new Error(`Hermes ACP returned incomplete output: ${compactText(text, 500)}`);
     const completedAt = nowIso();
