@@ -6265,12 +6265,32 @@ function hermesProfileFromEndpoint(endpointRef, agentId) {
   return String(agentId || "").replace(/_/g, "").trim();
 }
 
+function isHumanGateDispatchContext(row, payload, dispatchType) {
+  const flagCandidates = [
+    row.human_gate_required,
+    payload.humanGateRequired,
+    payload.human_gate_required,
+    payload.requiresHumanGate,
+    payload.requires_human_gate,
+    payload.humanGate?.required,
+    payload.human_gate?.required,
+    payload.payload?.humanGateRequired,
+    payload.payload?.human_gate_required
+  ];
+  if (flagCandidates.some((value) => boolOption(value, false))) return true;
+  return String(dispatchType || "").toLowerCase().startsWith("human_gate");
+}
+
 function buildRuntimeBridgePrompt(row) {
   const payload = parseJsonValue(row.payload_json, {});
   const role = row.role ? `Runtime role: ${row.role}` : "";
   const createdBy = row.created_by || payload.chair || "main";
   const invocationTs = nowIso();
   const dispatchType = row.dispatch_type || payload.dispatchType || "discussion_turn";
+  const humanGateContext = isHumanGateDispatchContext(row, payload, dispatchType);
+  const humanGateRequirement = humanGateContext
+    ? "- This dispatch explicitly involves Human Gate. Preserve button-first confirmation boundaries and do not bypass Flashcat confirmation."
+    : "- This dispatch is not a Human Gate request. Do not create, imply, or route through Human Gate unless humanGateRequired=true or a human_gate dispatch type is explicitly present.";
   const heartbeatBudget = dispatchType === "cron_heartbeat"
     ? [
         "",
@@ -6303,7 +6323,8 @@ function buildRuntimeBridgePrompt(row) {
     "- Return the final answer only.",
     "- Include an ISO timestamp in the answer.",
     "- State evidence, assumptions, uncertainty, and next workflow action clearly.",
-    "- Do not bypass Human Gate.",
+    humanGateRequirement,
+    "- For normal message-flow replies, the next workflow action must describe the actual reply/report path, not an invented approval gate.",
     "- Do not execute live trades or create executable trade intents.",
     "- If a structured workflow object is needed, name the intended object type such as research_signal, evidence_pack, research_memo, trade_proposal, risk_decision, or artifact."
   ].filter(Boolean).join("\n");
