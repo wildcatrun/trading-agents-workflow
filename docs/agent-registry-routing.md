@@ -56,6 +56,8 @@ All message and workflow entry points must resolve the target agent through the 
 
 Non-OpenClaw agents are first-class cross-platform message participants. A message addressed through an OpenClaw route-shell must create one `message_flows` record and carry the return path through the whole turn.
 
+Agent-originated internal notices must use `workflow.message_flow.send` when the sender needs governed delivery state. The sender provides `fromAgent`, `fromRuntime`, `targets`, message body, optional `sourceRefs`, and an idempotency key. The action resolves each target through `runtime_agents`, queues a dispatch, and creates one `message_flows` row per target. It does not directly mark the message as read, acknowledged, or delivered.
+
 State machine:
 
 ```text

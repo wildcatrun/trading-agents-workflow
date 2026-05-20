@@ -88,6 +88,14 @@ def run_remote(script: str, timeout: int = 30) -> dict[str, Any]:
     return run(cmd, timeout=max(timeout, 30))
 
 
+def as_str_list(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()]
+
+
 def workflow_db_path(source: str) -> str:
     if source == "local":
         return str(local_repo() / "tracking.db")
@@ -505,6 +513,64 @@ def reconcile_dry_run(args: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    from_agent = str(args.get("from_agent") or args.get("fromAgent") or args.get("from") or "").strip()
+    body = str(args.get("body") or args.get("text") or args.get("message") or "").strip()
+    targets = as_str_list(args.get("to_agents") or args.get("toAgents") or args.get("targets") or args.get("to"))
+    if not from_agent:
+        raise ValueError("from_agent is required")
+    if not body and not str(args.get("subject") or "").strip():
+        raise ValueError("body/text/message or subject is required")
+    if not targets:
+        raise ValueError("to_agents/targets is required")
+
+    cli_args = [
+        "node",
+        "bin/cat-meeting-governance.mjs",
+        "message-flow-send",
+        "--from",
+        from_agent,
+        "--body",
+        body,
+    ]
+    optional_pairs = [
+        ("--from-runtime", args.get("from_runtime") or args.get("fromRuntime")),
+        ("--subject", args.get("subject")),
+        ("--type", args.get("message_type") or args.get("messageType")),
+        ("--workflow", args.get("workflow_id") or args.get("workflowId")),
+        ("--meeting", args.get("meeting_id") or args.get("meetingId")),
+        ("--trace-id", args.get("trace_id") or args.get("traceId")),
+        ("--idempotency-key", args.get("idempotency_key") or args.get("idempotencyKey")),
+        ("--requires-ack", str(bool(args.get("requires_ack") or args.get("requiresAck"))).lower() if ("requires_ack" in args or "requiresAck" in args) else None),
+        ("--priority", args.get("priority")),
+        ("--return-policy", args.get("return_policy") or args.get("returnPolicy")),
+        ("--root", args.get("workflow_root") or args.get("workflowRoot")),
+    ]
+    for target in targets:
+        cli_args.extend(["--to", target])
+    for ref in as_str_list(args.get("source_refs") or args.get("sourceRefs")):
+        cli_args.extend(["--source-ref", ref])
+    for key, value in optional_pairs:
+        if value not in (None, ""):
+            cli_args.extend([key, str(value)])
+
+    if source == "local":
+        result = run(cli_args, cwd=local_repo(), timeout=60)
+    elif source == "remote":
+        quoted = " ".join(shlex.quote(part) for part in cli_args)
+        result = run_remote(f"cd {shlex.quote(remote_path())} && {quoted}", timeout=90)
+    else:
+        raise ValueError("source must be local or remote")
+    try:
+        payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
+    except json.JSONDecodeError:
+        payload = {}
+    response = {"source": source, "ok": result.get("ok"), "result": payload, "command": cli_args[:3] + ["..."], "runner": result}
+    audit({"event": "message_flow_send", "source": source, "ok": result.get("ok"), "target_count": len(targets)})
+    return response
+
+
 TOOLS: dict[str, dict[str, Any]] = {
     "workflow_git_status": {
         "description": "Return local Git status for the trading-agents-workflow repository.",
@@ -578,6 +644,44 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "status": {"type": "string"},
                 "contains": {"type": "string"},
                 "limit": {"type": "number"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "workflow_message_flow_send": {
+        "description": "Create governed message_flow dispatches for agent-to-agent notices through trading-agents-workflow. Mutates workflow state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "from_agent": {"type": "string"},
+                "fromAgent": {"type": "string"},
+                "from_runtime": {"type": "string"},
+                "fromRuntime": {"type": "string"},
+                "to_agents": {"type": "array", "items": {"type": "string"}},
+                "toAgents": {"type": "array", "items": {"type": "string"}},
+                "targets": {"type": "array", "items": {"type": "string"}},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+                "message_type": {"type": "string"},
+                "messageType": {"type": "string"},
+                "workflow_id": {"type": "string"},
+                "workflowId": {"type": "string"},
+                "meeting_id": {"type": "string"},
+                "meetingId": {"type": "string"},
+                "trace_id": {"type": "string"},
+                "traceId": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+                "idempotencyKey": {"type": "string"},
+                "source_refs": {"type": "array", "items": {"type": "string"}},
+                "sourceRefs": {"type": "array", "items": {"type": "string"}},
+                "requires_ack": {"type": "boolean"},
+                "requiresAck": {"type": "boolean"},
+                "priority": {"type": "string"},
+                "return_policy": {"type": "string"},
+                "returnPolicy": {"type": "string"},
+                "workflow_root": {"type": "string"},
+                "workflowRoot": {"type": "string"},
             },
             "additionalProperties": False,
         },
@@ -662,6 +766,8 @@ def handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
                 payload = receipts(arguments)
             elif name == "workflow_message_flows":
                 payload = message_flows(arguments)
+            elif name == "workflow_message_flow_send":
+                payload = message_flow_send(arguments)
             elif name == "workflow_incidents":
                 payload = incidents(arguments)
             elif name == "workflow_reconcile_dry_run":

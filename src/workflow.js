@@ -4867,6 +4867,51 @@ function messageFlowIdFromParts(...parts) {
   return `flow.${createHash("sha256").update(seed).digest("hex").slice(0, 24)}`;
 }
 
+function messageFlowSendTargets(input = {}) {
+  const rawTargets = input.targets ?? input.toAgents ?? input.to_agents ?? input.toAgent ?? input.to_agent ?? input.to ?? input.target ?? input.agentId ?? input.agent_id;
+  const targetItems = Array.isArray(rawTargets)
+    ? rawTargets
+    : (typeof rawTargets === "string" ? toList(rawTargets) : (rawTargets ? [rawTargets] : []));
+  const fallbackRuntime = String(input.targetRuntime || input.target_runtime || input.runtime || "").trim();
+  const seen = new Set();
+  const targets = [];
+  for (const item of targetItems) {
+    let runtime = "";
+    let agentId = "";
+    if (item && typeof item === "object") {
+      runtime = String(item.runtime || item.platform || "").trim();
+      agentId = String(item.agentId || item.agent_id || item.agent || item.id || "").trim();
+    } else {
+      const text = String(item || "").trim();
+      if (!text) continue;
+      const parts = text.includes(":") ? text.split(":", 2) : ["", text];
+      runtime = parts[0] || "";
+      agentId = parts[1] || "";
+    }
+    agentId = normalizeAgentId(agentId);
+    runtime = runtime ? normalizeRuntime(runtime) : (fallbackRuntime ? normalizeRuntime(fallbackRuntime) : "");
+    const key = `${runtime || "*"}:${agentId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ runtime, agentId, key });
+  }
+  if (!targets.length) throw new Error("at least one target/toAgent is required for workflow.message_flow.send");
+  return targets;
+}
+
+function messageFlowSendPrompt(input = {}) {
+  const subject = String(input.subject || input.title || "").trim();
+  const body = String(input.body || input.text || input.message || input.content || "").trim();
+  const sourceRefs = toList(input.sourceRefs || input.source_refs || input.artifacts || input.artifactRefs || input.artifact_refs);
+  if (!subject && !body) throw new Error("body/text/message or subject is required for workflow.message_flow.send");
+  const lines = [];
+  if (subject) lines.push(`Subject: ${subject}`);
+  if (body) lines.push(body);
+  if (sourceRefs.length) lines.push(["Source refs:", ...sourceRefs.map((ref) => `- ${ref}`)].join("\n"));
+  if (boolOption(input.requiresAck ?? input.requires_ack, false)) lines.push("Ack required: record a workflow receipt or explicit reply after checking this message.");
+  return { subject, body, sourceRefs, prompt: lines.join("\n\n") };
+}
+
 function messageFlowStatusTimestampColumn(status) {
   return {
     inbound_received: "inbound_received_at",
@@ -5751,7 +5796,7 @@ VALUES (${sqlValue(dispatchId)}, ${sqlValue(meetingId)}, ${sqlValue(workflowId)}
     createdAt
   });
   const relPath = await writeJsonArtifact(paths.root, path.join(paths.dispatchesDir, status), dispatchId, payload);
-  return { meetingId, workflowId, traceId, idempotencyKey, dispatchId, runtime: dispatchRuntime, platform: targetRegistry.platform, workflowIngressAdapter: targetRegistry.workflowIngressAdapter, agentId, status, messageFlowId: messageFlow?.flowId || "", returnPolicy: messageFlow?.returnPolicy || "", relativePath: relPath, dbFile: paths.dbFile };
+  return { meetingId, workflowId, traceId, idempotencyKey, dispatchId, runtime: dispatchRuntime, platform: targetRegistry.platform, workflowIngressAdapter: targetRegistry.workflowIngressAdapter, imIdentity: targetRegistry.imIdentity, executionIdentity: targetRegistry.executionIdentity, agentId, status, messageFlowId: messageFlow?.flowId || "", returnPolicy: messageFlow?.returnPolicy || "", relativePath: relPath, dbFile: paths.dbFile };
 }
 
 async function findActiveRuntimeAgent(paths, runtime, agentId) {
@@ -8265,6 +8310,186 @@ LIMIT ${limit};`, { json: true });
   return { count: rows.length, rows, dbFile: paths.dbFile };
 }
 
+export async function messageFlowSend(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const targets = messageFlowSendTargets(input);
+  const { subject, body, sourceRefs, prompt } = messageFlowSendPrompt(input);
+  const baseFlowId = String(input.messageFlowId || input.message_flow_id || input.flowId || input.flow_id || "").trim();
+  const baseDispatchId = String(input.dispatchId || input.dispatch_id || "").trim();
+  if (baseFlowId && targets.length > 1) throw new Error("messageFlowId/flowId can only be provided for a single target");
+  if (baseDispatchId && targets.length > 1) throw new Error("dispatchId can only be provided for a single target");
+
+  const createdAt = nowIso();
+  const sourceRuntime = normalizeRuntime(input.fromRuntime || input.from_runtime || input.sourceRuntime || input.source_runtime || "other");
+  const fromAgent = normalizeAgentId(input.fromAgent || input.from_agent || input.senderAgent || input.sender_agent || input.from || input.sender || "unknown");
+  const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id || input.workflowId || input.workflow_id || `message-flow-${Date.now().toString(36)}`);
+  const workflowId = String(input.workflowId || input.workflow_id || meetingId).trim();
+  const traceId = String(input.traceId || input.trace_id || safeId("trace")).trim();
+  const explicitSourceMessageId = String(input.sourceMessageId || input.source_message_id || input.providerMessageId || input.provider_message_id || input.messageId || input.message_id || "").trim();
+  const baseIdempotencyKey = String(input.idempotencyKey || input.idempotency_key || (explicitSourceMessageId ? `message-flow-send:${sourceRuntime}:${fromAgent}:${explicitSourceMessageId}` : "")).trim();
+  const sourceMessageId = explicitSourceMessageId || (baseIdempotencyKey ? `msg.${createHash("sha256").update(baseIdempotencyKey).digest("hex").slice(0, 24)}` : "");
+  const messageType = String(input.messageType || input.message_type || "internal_notice").trim();
+  const requiresAck = boolOption(input.requiresAck ?? input.requires_ack, false);
+  const returnPolicy = normalizeReturnPolicy(input.returnPolicy || input.return_policy || input.deliveryPolicy || input.delivery_policy, "silent");
+  const sourceChannel = String(input.sourceChannel || input.source_channel || "workflow_internal").trim();
+  const sourceSystem = String(input.sourceSystem || input.source_system || "workflow.message_flow.send").trim();
+  const sourceAccountId = firstText(input.sourceAccountId, input.source_account_id, input.accountId, input.account_id, input.account);
+  const sourceChatId = firstText(input.sourceChatId, input.source_chat_id, input.chatId, input.chat_id, input.conversationId, input.conversation_id);
+  const senderId = firstText(input.senderId, input.sender_id, fromAgent);
+  if (returnPolicy === "reply_to_source_chat" && (!sourceChannel || !sourceAccountId || !sourceChatId || !senderId || !sourceMessageId)) {
+    throw new Error("workflow.message_flow.send with return_policy=reply_to_source_chat requires source_channel, account_id, chat_id, sender_id, source_message_id");
+  }
+  const rawPayload = parseJsonValue(input.payload, input.payload || {});
+  const sourcePayload = {
+    messageType,
+    subject,
+    body,
+    sourceRefs,
+    requiresAck,
+    source: {
+      runtime: sourceRuntime,
+      agentId: fromAgent,
+      sourceChannel,
+      sourceSystem,
+      sourceAccountId,
+      sourceChatId,
+      senderId,
+      sourceMessageId
+    },
+    raw: rawPayload
+  };
+
+  let sourceRecord = null;
+  if (boolOption(input.recordIngress ?? input.record_ingress, true)) {
+    try {
+      sourceRecord = await meetingIngest(rootDir, {
+        meetingId,
+        runtime: sourceRuntime,
+        agentId: fromAgent,
+        text: prompt,
+        messageId: sourceMessageId || input.messageId || input.message_id || undefined,
+        messageType,
+        phase: input.phase || "message_flow_send",
+        payload: sourcePayload
+      });
+    } catch (error) {
+      if (!sourceMessageId || !isSqliteConstraintError(error)) throw error;
+      sourceRecord = { messageId: sourceMessageId, deduped: true };
+    }
+  }
+
+  const dispatches = [];
+  for (const target of targets) {
+    const targetKey = `${target.runtime || "registry"}:${target.agentId}`;
+    const idempotencyKey = baseIdempotencyKey ? `${baseIdempotencyKey}:${cleanFileSegment(targetKey)}` : "";
+    const flowId = baseFlowId || messageFlowIdFromParts(idempotencyKey || traceId, meetingId, sourceMessageId, targetKey, subject, body);
+    const dispatchId = baseDispatchId || safeId("dispatch");
+    const targetPayload = {
+      ...sourcePayload,
+      messageFlowId: flowId,
+      target: {
+        runtime: target.runtime,
+        agentId: target.agentId,
+        key: targetKey
+      }
+    };
+    const dispatch = await meetingDispatch(rootDir, {
+      meetingId,
+      workflowId,
+      traceId,
+      idempotencyKey,
+      dispatchId,
+      runtime: target.runtime || undefined,
+      agentId: target.agentId,
+      dispatchType: input.dispatchType || input.dispatch_type || "message_flow_send",
+      prompt,
+      priority: input.priority || "normal",
+      createdBy: input.createdBy || input.created_by || `${sourceRuntime}:${fromAgent}`,
+      maxAttempts: input.maxAttempts || input.max_attempts || 1,
+      returnPolicy: "silent",
+      deliveryPolicy: "silent",
+      sourceChannel,
+      sourceSystem,
+      sourceRuntime,
+      sourceAccountId,
+      sourceChatId,
+      senderId,
+      sourceMessageId,
+      payload: targetPayload
+    });
+    const existingFlow = await readMessageFlow(paths, flowId);
+    let flow = existingFlow;
+    if (!existingFlow) {
+      await createMessageFlow(paths, {
+        flowId,
+        traceId,
+        idempotencyKey,
+        meetingId,
+        workflowId,
+        dispatchId: dispatch.dispatchId,
+        messageId: sourceRecord?.messageId || "",
+        sourceChannel,
+        sourceSystem,
+        sourceRuntime,
+        sourceAccountId,
+        sourceChatId,
+        senderId,
+        sourceMessageId,
+        routeAgentId: fromAgent,
+        routeRuntime: sourceRuntime,
+        targetRuntime: dispatch.runtime,
+        targetAgentId: dispatch.agentId,
+        targetPlatform: dispatch.platform || dispatch.runtime,
+        workflowIngressAdapter: dispatch.workflowIngressAdapter || "",
+        imIdentity: dispatch.imIdentity || "",
+        executionIdentity: dispatch.executionIdentity || "",
+        returnPolicy,
+        status: "route_registered",
+        createdAt,
+        payload: {
+          ...targetPayload,
+          dispatchId: dispatch.dispatchId,
+          dispatchStatus: dispatch.status,
+          returnPolicy
+        }
+      });
+      flow = await readMessageFlow(paths, flowId);
+    }
+    dispatches.push({
+      target: targetKey,
+      agentId: dispatch.agentId,
+      runtime: dispatch.runtime,
+      platform: dispatch.platform || flow?.target_platform || "",
+      workflowIngressAdapter: dispatch.workflowIngressAdapter || flow?.workflow_ingress_adapter || "",
+      imIdentity: dispatch.imIdentity || flow?.im_identity || "",
+      executionIdentity: dispatch.executionIdentity || flow?.execution_identity || "",
+      dispatchId: dispatch.dispatchId,
+      dispatchStatus: dispatch.status,
+      messageFlowId: flowId,
+      messageFlowStatus: flow?.status || "",
+      idempotencyKey,
+      deduped: Boolean(dispatch.deduped || existingFlow)
+    });
+  }
+
+  return {
+    operation: "workflow.message_flow.send",
+    meetingId,
+    workflowId,
+    traceId,
+    idempotencyKey: baseIdempotencyKey,
+    fromRuntime: sourceRuntime,
+    fromAgent,
+    messageId: sourceRecord?.messageId || "",
+    messageType,
+    subject,
+    requiresAck,
+    targetCount: dispatches.length,
+    dispatches,
+    dbFile: paths.dbFile
+  };
+}
+
 export async function messageFlowReconcile(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const stuckAfterMs = Math.max(60_000, Math.min(24 * 3600_000, Number(input.messageFlowStuckAfterMs || input.message_flow_stuck_after_ms || input.stuckAfterMs || input.stuck_after_ms || 5 * 60_000)));
@@ -9376,6 +9601,9 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return meetingDisperse(rootDir, input);
     case "telegram.outbox":
       return telegramOutbox(rootDir, input);
+    case "message_flow.send":
+    case "workflow.message_flow.send":
+      return messageFlowSend(rootDir, input);
     case "message_flow.list":
     case "message_flow.status":
     case "workflow.message_flow.list":

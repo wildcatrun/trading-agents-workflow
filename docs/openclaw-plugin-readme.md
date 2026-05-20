@@ -42,6 +42,28 @@ Local Mac Codex is Flashcat's control panel and outbound operator surface. It ca
 
 Agent-to-Flashcat return traffic must not target local Mac Codex. Reports, alerts, confirmation requests, Human Gate requests, task results, receipts, and trading-related messages must leave through governed IM exits such as Telegram, WeCom, or OpenClaw IM. The local Codex-to-node path is one-way for control-plane operations; it is not an inbox for cat-system callbacks.
 
+## Agent-to-Agent Message Flow
+
+Use `workflow.message_flow.send` for governed internal notices that need a durable dispatch, `message_flows` row, trace id, idempotency key, and later receipt checks. This is the agent-facing send entry; agents should not write notification Markdown into another agent's workspace and treat that as delivery.
+
+Minimal action payload:
+
+```json
+{
+  "action": "workflow.message_flow.send",
+  "fromAgent": "catnose",
+  "fromRuntime": "hermers",
+  "targets": ["hermers:cateyes", "hermers:catears"],
+  "subject": "DB migration notice",
+  "body": "Two db files moved. Please check cron, scripts, and prompt references before the next run.",
+  "sourceRefs": ["/home/flashcat/.../migration-evidence.md"],
+  "requiresAck": true,
+  "idempotencyKey": "catnose-db-migration-20260520"
+}
+```
+
+The action creates one queued dispatch and one `message_flows` record per target. Completion is still proven by the normal runtime bridge and receipt path; `workflow.message_flow.send` only registers the governed message flow and does not claim that the target has read or acted on the message.
+
 ## Agent Registry Routing
 
 Every cat-system agent instance must be registered in `runtime_agents`; the registry is the workflow scheduler's source of truth for platform, execution adapter, IM ingress, workflow ingress, readiness, audit, and rollback decisions. The formal routing contract is maintained in [agent-registry-routing.md](agent-registry-routing.md).

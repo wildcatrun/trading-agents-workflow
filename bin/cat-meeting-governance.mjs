@@ -40,6 +40,7 @@ function usage() {
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
   trading-agents-workflow telegram-outbox [--status queued|sent|failed] [--limit N] [--mark OUTBOX_ID] [--deliver] [--account cat_claw] [--target CHAT_ID] [--root DIR]
+  trading-agents-workflow message-flow-send --from AGENT --to runtime:agent --body TEXT [--subject TEXT] [--from-runtime RUNTIME] [--workflow ID] [--meeting ID] [--source-ref PATH] [--requires-ack true|false] [--root DIR]
   trading-agents-workflow message-flow [--flow ID] [--dispatch ID] [--status STATUS] [--limit N] [--root DIR]
   trading-agents-workflow trade-proposal --asset TYPE --symbol SYMBOL [--summary TEXT] [--side SIDE] [--quantity N] [--order-type TYPE] [--proposal-id ID] [--payload JSON] [--root DIR]
   trading-agents-workflow risk-decision --proposal ID [--status approved|rejected|pending] [--summary TEXT] [--reviewer AGENT] [--risk-decision-id ID] [--root DIR]
@@ -393,6 +394,27 @@ function toAction({ command, positional, options }) {
       return { root, input: { action: "runtime.bridge.drain", runtime: options.runtime, dispatchId: options.dispatch || options["dispatch-id"], limit: options.limit, timeoutSeconds: options["timeout-seconds"], sessionMode: options["session-mode"], acpBackend: options["acp-backend"], acpAgent: options["acp-agent"], sessionKey: options["session-key"], dryRun: options["dry-run"] === "true", hermesBin: options["hermes-bin"], openclawBin: options["openclaw-bin"], reportDelivery: options["report-delivery"] } };
     case "dispatch-reconcile":
       return { root, input: { action: "workflow.dispatch.reconcile", limit: options.limit, staleDispatchAfterMs: options["stale-after-ms"], timeoutSeconds: options["timeout-seconds"] } };
+    case "message-flow-send":
+      return {
+        root,
+        input: {
+          action: "workflow.message_flow.send",
+          fromAgent: options.from,
+          fromRuntime: options["from-runtime"],
+          targets: listOption(options.to),
+          subject: options.subject,
+          body: options.body || options.text || options.message,
+          messageType: options.type,
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          traceId: options["trace-id"],
+          idempotencyKey: options["idempotency-key"],
+          sourceRefs: listOption(options["source-ref"]),
+          requiresAck: options["requires-ack"] === "true",
+          priority: options.priority,
+          returnPolicy: options["return-policy"]
+        }
+      };
     case "message-flow":
       return { root, input: { action: "message_flow.list", flowId: options.flow, dispatchId: options.dispatch || options["dispatch-id"], status: options.status, limit: options.limit } };
     case "human-gate-request":

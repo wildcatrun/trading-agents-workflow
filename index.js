@@ -166,9 +166,11 @@ const toolParameters = {
         "meeting.resume",
         "meeting.disperse",
         "telegram.outbox",
+        "message_flow.send",
         "message_flow.list",
         "message_flow.status",
         "message_flow.reconcile",
+        "workflow.message_flow.send",
         "workflow.message_flow.list",
         "workflow.message_flow.status",
         "workflow.message_flow.reconcile",
@@ -225,6 +227,13 @@ const toolParameters = {
     date: { type: "string" },
     source: { type: "string" },
     from: { type: "string" },
+    fromAgent: { type: "string" },
+    fromRuntime: { type: "string" },
+    toAgents: { type: "array", items: { type: "string" } },
+    subject: { type: "string" },
+    body: { type: "string" },
+    sourceRefs: { type: "array", items: { type: "string" } },
+    requiresAck: { type: "boolean" },
     priority: { type: "string" },
     gateType: { type: "string" },
     status: { type: "string" },
@@ -1506,6 +1515,44 @@ function registerCli(api) {
           limit: Number(options.limit),
           account: options.account,
           target: options.target
+        }), null, 2));
+      });
+
+    command.command("message-flow-send")
+      .requiredOption("--from <agentId>", "Source agent id")
+      .requiredOption("--to <runtime:agent...>", "Target agent, optionally runtime:agent")
+      .option("--from-runtime <runtime>", "Source runtime", "other")
+      .option("--subject <subject>", "Message subject")
+      .option("--body <body>", "Message body")
+      .option("--type <messageType>", "Message type", "internal_notice")
+      .option("--workflow <workflowId>", "Workflow id")
+      .option("--meeting <meetingId>", "Meeting id")
+      .option("--trace-id <traceId>", "Trace id")
+      .option("--idempotency-key <key>", "Base idempotency key")
+      .option("--source-ref <path...>", "Source artifact reference")
+      .option("--requires-ack <trueOrFalse>", "Whether target should acknowledge", "false")
+      .option("--priority <priority>", "Dispatch priority", "normal")
+      .option("--return-policy <policy>", "Message flow return policy", "silent")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "workflow.message_flow.send",
+          workflowRootDir: options.workflowRoot,
+          fromAgent: options.from,
+          fromRuntime: options.fromRuntime,
+          targets: options.to || [],
+          subject: options.subject,
+          body: options.body,
+          messageType: options.type,
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          traceId: options.traceId,
+          idempotencyKey: options.idempotencyKey,
+          sourceRefs: options.sourceRef || [],
+          requiresAck: options.requiresAck === "true",
+          priority: options.priority,
+          returnPolicy: options.returnPolicy
         }), null, 2));
       });
 
