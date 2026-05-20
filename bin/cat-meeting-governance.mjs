@@ -27,7 +27,7 @@ function usage() {
   trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--source-channel CHANNEL] [--account-id ACCOUNT] [--chat-id ID] [--sender-id ID] [--return-policy POLICY] [--target-platform PLATFORM] [--target-adapter ADAPTER] [--drain-now true|false] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
-  trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--root DIR]
+  trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--return-policy POLICY] [--source-channel CHANNEL] [--account-id ACCOUNT] [--chat-id ID] [--sender-id ID] [--source-message-id ID] [--root DIR]
   trading-agents-workflow meeting-ingest --meeting ID --runtime RUNTIME --agent AGENT --text TEXT [--type TYPE] [--phase PHASE] [--root DIR]
   trading-agents-workflow runtime-bridge [--runtime openclaw|hermers|openclaw_route_shell] [--dispatch ID] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--openclaw-bin PATH] [--dry-run] [--report-delivery false] [--root DIR]
   trading-agents-workflow dispatch-reconcile [--limit N] [--stale-after-ms N] [--timeout-seconds N] [--root DIR]
@@ -386,7 +386,7 @@ function toAction({ command, positional, options }) {
     case "telegram-live":
       return { root, input: { action: "telegram.live", meetingId: options.meeting, chatId: options.chat, channelId: options.channel, humanGateChannelId: options["human-gate-channel"], mode: options.mode } };
     case "meeting-dispatch":
-      return { root, input: { action: "meeting.dispatch", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, prompt: options.prompt, dispatchType: options.type, priority: options.priority, createdBy: options.from, traceId: options["trace-id"], idempotencyKey: options["idempotency-key"], maxAttempts: options["max-attempts"] } };
+      return { root, input: { action: "meeting.dispatch", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, prompt: options.prompt, dispatchType: options.type, priority: options.priority, createdBy: options.from, traceId: options["trace-id"], idempotencyKey: options["idempotency-key"], maxAttempts: options["max-attempts"], returnPolicy: options["return-policy"], deliveryPolicy: options["return-policy"], sourceChannel: options["source-channel"], accountId: options["account-id"], chatId: options["chat-id"], senderId: options["sender-id"], sourceMessageId: options["source-message-id"] } };
     case "meeting-ingest":
       return { root, input: { action: "meeting.ingest", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, text: options.text, messageType: options.type, phase: options.phase } };
     case "runtime-bridge":

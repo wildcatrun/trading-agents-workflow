@@ -1285,6 +1285,12 @@ function registerCli(api) {
       .option("--type <dispatchType>", "Dispatch type", "discussion_turn")
       .option("--priority <priority>", "Priority", "normal")
       .option("--from <createdBy>", "Creator", "main")
+      .option("--return-policy <policy>", "Message flow return policy")
+      .option("--source-channel <channel>", "Source channel for reply return path")
+      .option("--account-id <accountId>", "Source/delivery account id")
+      .option("--chat-id <chatId>", "Source Telegram chat id")
+      .option("--sender-id <senderId>", "Source sender id")
+      .option("--source-message-id <messageId>", "Source message id for idempotency")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
@@ -1297,7 +1303,14 @@ function registerCli(api) {
           prompt: options.prompt,
           dispatchType: options.type,
           priority: options.priority,
-          createdBy: options.from
+          createdBy: options.from,
+          returnPolicy: options.returnPolicy,
+          deliveryPolicy: options.returnPolicy,
+          sourceChannel: options.sourceChannel,
+          accountId: options.accountId,
+          chatId: options.chatId,
+          senderId: options.senderId,
+          sourceMessageId: options.sourceMessageId
         }), null, 2));
       });
 

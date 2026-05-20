@@ -5654,6 +5654,20 @@ export async function meetingDispatch(rootDir, input) {
     maxAttempts,
     payload: parseJsonValue(input.payload, input.payload || {})
   };
+  await createDispatchMessageFlow(paths, input, {
+    validateOnly: true,
+    targetRegistry,
+    meetingId,
+    workflowId,
+    traceId,
+    idempotencyKey,
+    dispatchId,
+    dispatchRuntime,
+    agentId,
+    dispatchType: payload.dispatchType,
+    createdBy: payload.chair,
+    createdAt
+  });
   try {
     await sqlite(paths.dbFile, `
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
@@ -5677,8 +5691,21 @@ VALUES (${sqlValue(dispatchId)}, ${sqlValue(meetingId)}, ${sqlValue(workflowId)}
     }
     throw error;
   }
+  const messageFlow = await createDispatchMessageFlow(paths, input, {
+    targetRegistry,
+    meetingId,
+    workflowId,
+    traceId,
+    idempotencyKey,
+    dispatchId,
+    dispatchRuntime,
+    agentId,
+    dispatchType: payload.dispatchType,
+    createdBy: payload.chair,
+    createdAt
+  });
   const relPath = await writeJsonArtifact(paths.root, path.join(paths.dispatchesDir, status), dispatchId, payload);
-  return { meetingId, workflowId, traceId, idempotencyKey, dispatchId, runtime: dispatchRuntime, platform: targetRegistry.platform, workflowIngressAdapter: targetRegistry.workflowIngressAdapter, agentId, status, relativePath: relPath, dbFile: paths.dbFile };
+  return { meetingId, workflowId, traceId, idempotencyKey, dispatchId, runtime: dispatchRuntime, platform: targetRegistry.platform, workflowIngressAdapter: targetRegistry.workflowIngressAdapter, agentId, status, messageFlowId: messageFlow?.flowId || "", returnPolicy: messageFlow?.returnPolicy || "", relativePath: relPath, dbFile: paths.dbFile };
 }
 
 async function findActiveRuntimeAgent(paths, runtime, agentId) {
@@ -5745,6 +5772,94 @@ async function resolveRegisteredDispatchTarget(paths, input = {}) {
     throw new Error(`active dispatch-capable registry row not found for ${agentId}${filterText}`);
   }
   return { agentId, target, registry: registrySnapshot(target) };
+}
+
+function dispatchSourceMessageId(input = {}, fallback = "") {
+  return firstText(
+    input.sourceMessageId,
+    input.source_message_id,
+    input.providerMessageId,
+    input.provider_message_id,
+    input.messageId,
+    input.message_id,
+    input.cronRunId,
+    input.cron_run_id,
+    fallback
+  );
+}
+
+function dispatchReturnPolicyInput(input = {}, originalPayload = {}, targetRegistry = {}) {
+  const delivery = objectValue(input.delivery || input.delivery_config || originalPayload.delivery || originalPayload.deliveryConfig || originalPayload.delivery_config);
+  const explicit = firstText(
+    input.returnPolicy,
+    input.return_policy,
+    input.deliveryPolicy,
+    input.delivery_policy,
+    delivery.returnPolicy,
+    delivery.return_policy,
+    delivery.deliveryPolicy,
+    delivery.delivery_policy
+  );
+  if (explicit) return explicit;
+  const deliveryMode = String(delivery.mode || "").trim().toLowerCase();
+  const deliveryChannel = String(delivery.channel || "").trim().toLowerCase();
+  if (deliveryMode === "announce" && (deliveryChannel === "telegram" || delivery.to || delivery.chatId || delivery.chat_id)) return "reply_to_source_chat";
+  return "";
+}
+
+async function createDispatchMessageFlow(paths, input = {}, context = {}) {
+  const targetRegistry = context.targetRegistry || {};
+  if (targetRegistry.platform === "openclaw") return null;
+  const originalPayload = parseJsonValue(input.payload, input.payload || {});
+  const beforeDispatch = objectValue(originalPayload.beforeDispatch || originalPayload.before_dispatch);
+  const delivery = objectValue(input.delivery || input.delivery_config || originalPayload.delivery || originalPayload.deliveryConfig || originalPayload.delivery_config);
+  const sourceChannel = messageFlowSourceChannel(input, originalPayload);
+  const sourceChatId = String(firstText(input.sourceChatId, input.source_chat_id, input.chatId, input.chat_id, input.conversationId, input.conversation_id, delivery.to, delivery.chatId, delivery.chat_id, beforeDispatch.conversationId, beforeDispatch.conversation_id)).trim();
+  const sourceAccountId = firstText(input.sourceAccountId, input.source_account_id, input.accountId, input.account_id, input.account, delivery.accountId, delivery.account_id, delivery.account, beforeDispatch.accountId, beforeDispatch.account_id);
+  const senderId = firstText(input.senderId, input.sender_id, input.from, delivery.senderId, delivery.sender_id, beforeDispatch.senderId, beforeDispatch.sender_id, "openclaw_cron");
+  const sourceMessageId = dispatchSourceMessageId(input, context.dispatchId);
+  const returnPolicy = normalizeReturnPolicy(dispatchReturnPolicyInput(input, originalPayload, targetRegistry), "silent");
+  if (returnPolicy === "silent") return null;
+  if (returnPolicy === "reply_to_source_chat" && (!sourceChannel || !sourceAccountId || !sourceChatId || !senderId || !sourceMessageId)) {
+    throw new Error("non-openclaw meeting.dispatch with return_policy=reply_to_source_chat requires source_channel, account_id, chat_id, sender_id, source_message_id");
+  }
+  const flowId = String(input.messageFlowId || input.message_flow_id || originalPayload.messageFlowId || originalPayload.message_flow_id || messageFlowIdFromParts(context.idempotencyKey, context.traceId, context.meetingId, sourceMessageId, context.dispatchId)).trim();
+  const result = { flowId, returnPolicy };
+  if (context.validateOnly) return result;
+  await createMessageFlow(paths, {
+    flowId,
+    traceId: context.traceId,
+    idempotencyKey: context.idempotencyKey,
+    meetingId: context.meetingId,
+    workflowId: context.workflowId,
+    dispatchId: context.dispatchId,
+    sourceChannel,
+    sourceSystem: firstText(input.sourceSystem, input.source_system, delivery.sourceSystem, delivery.source_system, "workflow_dispatch"),
+    sourceRuntime: normalizeRuntime(input.sourceRuntime || input.source_runtime || "workflow_dispatch"),
+    sourceAccountId,
+    sourceChatId,
+    senderId,
+    sourceMessageId,
+    routeAgentId: firstText(input.routeAgentId, input.route_agent_id, context.createdBy),
+    routeRuntime: normalizeRuntime(input.routeRuntime || input.route_runtime || "openclaw_route_shell"),
+    targetRuntime: targetRegistry.platform || context.dispatchRuntime,
+    targetAgentId: context.agentId,
+    targetPlatform: targetRegistry.platform || context.dispatchRuntime,
+    workflowIngressAdapter: targetRegistry.workflowIngressAdapter,
+    imIdentity: targetRegistry.imIdentity,
+    executionIdentity: targetRegistry.executionIdentity,
+    returnPolicy,
+    status: "route_registered",
+    createdAt: context.createdAt,
+    payload: {
+      dispatchId: context.dispatchId,
+      dispatchType: context.dispatchType,
+      createdBy: context.createdBy,
+      directDispatch: true,
+      delivery
+    }
+  });
+  return result;
 }
 
 async function resolveRouteShellTarget(paths, input = {}) {
