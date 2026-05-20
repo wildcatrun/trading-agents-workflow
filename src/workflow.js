@@ -59,6 +59,7 @@ const HUMAN_GATE_CONTROL_STYLES = {
   terminated: "danger"
 };
 const HUMAN_GATE_REDACTED_DETAIL_KEY = /callback|token|secret|password|api[_-]?key|access[_-]?key|refresh/i;
+const TELEGRAM_OUTBOX_DELIVERY_LEASE_MS = 120_000;
 const HUMAN_GATE_ZH_TEXT = new Map([
   [
     "Hermes cron/heartbeat migration Human Gate: choose A/B/C next path after cat_claw audit pass. Recommended path remains Plan C unless Flashcat selects otherwise.",
@@ -4718,7 +4719,51 @@ WHERE outbox_id=${sqlValue(row.outbox_id)};`);
   }
 }
 
+async function claimTelegramOutboxDelivery(paths, row, input = {}) {
+  const status = String(row.status || "").trim();
+  if (!["queued", "failed", "delivering"].includes(status)) {
+    return { claimed: false, row, reason: `status_${status || "unknown"}` };
+  }
+  const claimedAt = nowIso();
+  const staleBefore = new Date(Date.now() - TELEGRAM_OUTBOX_DELIVERY_LEASE_MS).toISOString();
+  const payload = parseJsonValue(row.payload_json, {});
+  const claim = {
+    claimId: safeId("tg_claim"),
+    claimedAt,
+    owner: firstText(input.owner, input.from, "workflow"),
+    previousStatus: status
+  };
+  const updatedPayload = { ...payload, deliveryClaim: claim };
+  const statusPredicate = status === "delivering"
+    ? `status='delivering' AND updated_at <= ${sqlValue(staleBefore)}`
+    : `status=${sqlValue(status)}`;
+  const changed = await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='delivering', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(claimedAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)} AND (${statusPredicate});
+SELECT changes() AS changed;`, { json: true });
+  if (Number(changed?.[0]?.changed || 0) !== 1) {
+    const rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(row.outbox_id)} LIMIT 1;`, { json: true });
+    return { claimed: false, row: rows[0] || row, reason: "not_claimed" };
+  }
+  return {
+    claimed: true,
+    row: {
+      ...row,
+      status: "delivering",
+      payload_json: JSON.stringify(updatedPayload),
+      updated_at: claimedAt
+    },
+    claim
+  };
+}
+
 async function deliverTelegramOutboxRow(paths, row, input = {}) {
+  const claim = await claimTelegramOutboxDelivery(paths, row, input);
+  if (!claim.claimed) {
+    return { outboxId: row.outbox_id, status: claim.row?.status || row.status || "not_claimed", skipped: true, reason: claim.reason };
+  }
+  row = claim.row;
   const payload = parseJsonValue(row.payload_json, {});
   const account = String(input.account || payload.account || "cat_claw").trim();
   const explicitTarget = String(input.target || "").trim();
@@ -4938,7 +4983,7 @@ async function updateMessageFlow(paths, flowId, status, patch = {}) {
   if (patch.finalOutputPresent !== undefined || patch.final_output_present !== undefined) assignments.push(`final_output_present=${sqlValue((patch.finalOutputPresent ?? patch.final_output_present) ? 1 : 0)}`);
   if (patch.deliveryReceiptPresent !== undefined || patch.delivery_receipt_present !== undefined) assignments.push(`delivery_receipt_present=${sqlValue((patch.deliveryReceiptPresent ?? patch.delivery_receipt_present) ? 1 : 0)}`);
   await sqlite(paths.dbFile, `UPDATE message_flows SET ${assignments.join(", ")} WHERE flow_id=${sqlValue(flowId)};`);
-  await appendMessageFlowEvent(paths, flowId, status, patch.payload || {});
+  await appendMessageFlowEvent(paths, flowId, status, "state", patch.payload || {});
   return readMessageFlow(paths, flowId);
 }
 
@@ -8091,7 +8136,12 @@ export async function telegramOutbox(rootDir, input = {}) {
   if (input.operation === "deliver" || input.deliver) {
     const limit = Math.max(1, Math.min(20, Number(input.limit || 5)));
     const outboxId = String(input.outboxId || input.outbox_id || "").trim();
-    const where = outboxId ? `outbox_id=${sqlValue(outboxId)}` : `status=${sqlValue(input.status || "queued")}`;
+    const status = String(input.status || "queued").trim();
+    const staleDeliveringBefore = new Date(Date.now() - TELEGRAM_OUTBOX_DELIVERY_LEASE_MS).toISOString();
+    const statusWhere = status === "queued"
+      ? `(status='queued' OR (status='delivering' AND updated_at <= ${sqlValue(staleDeliveringBefore)}))`
+      : `status=${sqlValue(status)}`;
+    const where = outboxId ? `outbox_id=${sqlValue(outboxId)}` : statusWhere;
     const rows = await sqlite(paths.dbFile, `
 SELECT * FROM telegram_outbox
 WHERE ${where}
@@ -8970,7 +9020,7 @@ async function runControlLoopJob(rootDir, paths, job, input = {}) {
       operation: "deliver",
       status: "queued",
       limit: payload.limit || input.outboxLimit || input.outbox_limit || 5,
-      account: input.account || "cat_claw"
+      account: input.account
     });
   }
   if (job.job_type === "human_gate_inbox") {
