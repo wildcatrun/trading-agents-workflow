@@ -4997,7 +4997,7 @@ function messageFlowOutputIsFinal(text = "") {
   const value = String(text || "").trim();
   const lower = value.toLowerCase();
   if (!value) return false;
-  if (/^heartbeat_ok\b/i.test(value)) return true;
+  if (/^heartbeat_(ok|degraded)\b/i.test(value)) return true;
   if (lower.startsWith("operation interrupted:")) return false;
   if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return false;
   return true;
@@ -7166,7 +7166,7 @@ LIMIT ${limit};`, { json: true });
 export async function staleDispatchReconcile(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const timeoutSeconds = controlLoopTimeoutSeconds(input);
-  const staleAfterMs = Math.max(5 * 60_000, Number(input.staleDispatchAfterMs || input.stale_dispatch_after_ms || Math.max(30 * 60_000, (timeoutSeconds + 60) * 1000)));
+  const staleAfterMs = Math.max(5 * 60_000, Number(input.staleDispatchAfterMs || input.stale_dispatch_after_ms || (timeoutSeconds + 60) * 1000));
   const cutoff = new Date(Date.now() - staleAfterMs).toISOString();
   const limit = Math.max(1, Math.min(100, Number(input.limit || input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20)));
   const rows = await sqlite(paths.dbFile, `
@@ -7218,7 +7218,7 @@ LIMIT ${limit};`, { json: true });
       error,
       nextRetryAt: retry ? nextRetryAt(Math.max(1, attempt)) : ""
     });
-    await recordRuntimeRun(paths, row, {
+    const staleRuntimeRunId = await recordRuntimeRun(paths, row, {
       runtimeRunId: safeId(retry ? "runtime_run_retry" : "runtime_run_failed"),
       adapter: "stale_dispatch_reconcile",
       status: retry ? "retry_scheduled" : "failed",
@@ -7229,6 +7229,14 @@ LIMIT ${limit};`, { json: true });
       error,
       payload: { staleAfterMs, retry }
     });
+    if (!retry) {
+      await finishMessageFlowRuntime(paths, row, {
+        runtimeRunId: staleRuntimeRunId,
+        finalOutputPresent: false,
+        failureType: "runtime_stale",
+        lastError: error
+      }, input);
+    }
     results.push({ dispatchId: row.dispatch_id, status: retry ? "queued" : "failed", reason: "missing_terminal_runtime_receipt" });
   }
   return { operation: "stale_dispatch_reconcile", cutoff, staleAfterMs, count: rows.length, results, dbFile: paths.dbFile };
@@ -8802,7 +8810,7 @@ async function seedControlLoopJobs(paths, input = {}) {
   const createHumanGateInbox = boolOption(input.createHumanGateInbox ?? input.create_human_gate_inbox, true);
   const reportRuntime = normalizeRuntime(input.reportRuntime || input.report_runtime || "openclaw");
   const reportAgent = normalizeAgentId(input.reportAgent || input.report_agent || "cat_claw");
-  const staleDispatchAfterMs = Math.max(5 * 60_000, Number(input.staleDispatchAfterMs || input.stale_dispatch_after_ms || Math.max(30 * 60_000, (timeoutSeconds + 60) * 1000)));
+  const staleDispatchAfterMs = Math.max(5 * 60_000, Number(input.staleDispatchAfterMs || input.stale_dispatch_after_ms || (timeoutSeconds + 60) * 1000));
   const staleDispatchCutoff = new Date(Date.now() - staleDispatchAfterMs).toISOString();
   const dispatchReconcileLimit = Math.max(1, Math.min(100, Number(input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20)));
   const messageFlowStuckAfterMs = Math.max(60_000, Math.min(24 * 3600_000, Number(input.messageFlowStuckAfterMs || input.message_flow_stuck_after_ms || 5 * 60_000)));
