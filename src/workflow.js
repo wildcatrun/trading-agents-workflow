@@ -1731,14 +1731,14 @@ SELECT
   END,
   CASE WHEN workflow_ingress_adapter != '' THEN workflow_ingress_adapter ELSE 'acp' END,
   CASE
-    WHEN im_identity != '' THEN im_identity
     WHEN EXISTS (SELECT 1 FROM runtime_agents r2 WHERE r2.agent_id=runtime_agents.agent_id AND r2.runtime='openclaw_route_shell') THEN 'openclaw_route_shell'
+    WHEN im_identity != '' THEN im_identity
     ELSE 'platform_im'
   END,
   CASE WHEN execution_identity != '' THEN execution_identity ELSE 'hermers_acp' END,
   CASE
-    WHEN return_policy != '' THEN return_policy
     WHEN EXISTS (SELECT 1 FROM runtime_agents r2 WHERE r2.agent_id=runtime_agents.agent_id AND r2.runtime='openclaw_route_shell') THEN 'reply_to_source_chat'
+    WHEN return_policy != '' THEN return_policy
     ELSE 'silent'
   END,
   can_receive_dispatch,
@@ -1772,6 +1772,26 @@ ON CONFLICT(agent_key) DO UPDATE SET
   capabilities_json=excluded.capabilities_json,
   metadata_json=excluded.metadata_json,
   updated_at=excluded.updated_at;
+UPDATE runtime_agents
+SET
+  im_ingress_owner='openclaw_gateway',
+  im_ingress_adapter='openclaw_route_shell',
+  im_identity='openclaw_route_shell',
+  execution_identity=CASE
+    WHEN platform='hermers' AND workflow_ingress_adapter='acp' THEN 'hermers_acp'
+    WHEN execution_identity='' THEN 'hermers_acp'
+    ELSE execution_identity
+  END,
+  return_policy='reply_to_source_chat',
+  updated_at=${sqlValue(nowIso())}
+WHERE runtime='hermers'
+  AND EXISTS (
+    SELECT 1
+    FROM runtime_agents route_shell
+    WHERE route_shell.agent_id=runtime_agents.agent_id
+      AND route_shell.runtime='openclaw_route_shell'
+      AND route_shell.status='active'
+  );
 UPDATE mixed_meeting_dispatches SET runtime='hermers' WHERE runtime IN ('hermes','hermes_acp');
 UPDATE mixed_meeting_messages SET runtime='hermers' WHERE runtime IN ('hermes','hermes_acp');
 INSERT OR IGNORE INTO mixed_meeting_participants(meeting_id, agent_key, runtime, agent_id, participant_role, chair, decider, secretary, live_mode, status, metadata_json, created_at, updated_at)
@@ -3290,7 +3310,7 @@ VALUES (${sqlValue(gateId)}, ${sqlValue(instrument?.instrumentId || null)}, ${sq
 export async function workflowTopology(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const registeredAgents = await sqlite(paths.dbFile, `
-SELECT runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, endpoint_ref
+SELECT runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, endpoint_ref
 FROM runtime_agents
 ORDER BY platform, agent_id;`, { json: true });
   const activeAgentIds = [
@@ -3314,6 +3334,9 @@ ORDER BY platform, agent_id;`, { json: true });
       imIngressOwner: snap.imIngressOwner,
       imIngressAdapter: snap.imIngressAdapter,
       workflowIngressAdapter: snap.workflowIngressAdapter,
+      imIdentity: snap.imIdentity,
+      executionIdentity: snap.executionIdentity,
+      returnPolicy: snap.returnPolicy,
       canReceiveDispatch: snap.canReceiveDispatch,
       canStartWorkflow: snap.canStartWorkflow,
       gatewayProxyAllowed: snap.gatewayProxyAllowed,
