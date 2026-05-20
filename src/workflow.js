@@ -8483,7 +8483,7 @@ async function workflowScheduleUpsert(rootDir, input = {}) {
   const concurrencyPolicy = normalizeSchedulePolicy(input.concurrencyPolicy || input.concurrency_policy || existing.concurrency_policy, WORKFLOW_SCHEDULE_CONCURRENCY_POLICIES, "skip");
   const misfirePolicy = normalizeSchedulePolicy(input.misfirePolicy || input.misfire_policy || existing.misfire_policy, WORKFLOW_SCHEDULE_MISFIRE_POLICIES, "skip");
   const catchupWindowSeconds = Math.max(0, Math.min(7 * 24 * 3600, Number(input.catchupWindowSeconds || input.catchup_window_seconds || existing.catchup_window_seconds || 900)));
-  const timeoutSeconds = Math.max(5, Math.min(900, Number(input.timeoutSeconds || input.timeout_seconds || existing.timeout_seconds || 45)));
+  const timeoutSeconds = Math.max(5, Math.min(1800, Number(input.timeoutSeconds || input.timeout_seconds || existing.timeout_seconds || 45)));
   const maxAttempts = Math.max(1, Math.min(10, Number(input.maxAttempts || input.max_attempts || existing.max_attempts || 1)));
   const payload = input.payload === undefined ? parseJsonValue(existing.payload_json, {}) : parseJsonValue(input.payload, input.payload || {});
   const now = nowIso();
@@ -8668,6 +8668,12 @@ async function runScheduledDispatchJob(rootDir, paths, job, input = {}) {
   const traceId = `schedule.${scheduleId}.${cleanFileSegment(scheduledAt.replace(/[:.]/g, ""))}`;
   const idempotencyKey = `schedule:${scheduleId}:${scheduledAt}`;
   const schedulePayload = parseJsonValue(schedule.payload_json, {});
+  const delivery = objectValue(schedulePayload.delivery || schedulePayload.deliveryConfig || schedulePayload.delivery_config);
+  const deliveryMode = String(delivery.mode || "").trim().toLowerCase();
+  const deliveryChannel = String(delivery.channel || "").trim().toLowerCase();
+  const deliveryAccount = firstText(schedulePayload.accountId, schedulePayload.account_id, delivery.accountId, delivery.account_id, delivery.account, schedule.agent_id);
+  const deliveryTarget = firstText(schedulePayload.chatId, schedulePayload.chat_id, schedulePayload.conversationId, schedulePayload.conversation_id, delivery.to, delivery.chatId, delivery.chat_id);
+  const wantsTelegramReply = deliveryMode === "announce" && (deliveryChannel === "telegram" || deliveryTarget);
   try {
     const dispatch = await meetingDispatch(rootDir, {
       ...input,
@@ -8684,6 +8690,20 @@ async function runScheduledDispatchJob(rootDir, paths, job, input = {}) {
       prompt: schedule.prompt,
       createdBy: schedule.created_by || "workflow_scheduler",
       maxAttempts: schedule.max_attempts || 1,
+      ...(wantsTelegramReply ? {
+        delivery,
+        returnPolicy: firstText(schedulePayload.returnPolicy, schedulePayload.return_policy, delivery.returnPolicy, delivery.return_policy, "reply_to_source_chat"),
+        deliveryPolicy: firstText(schedulePayload.deliveryPolicy, schedulePayload.delivery_policy, delivery.deliveryPolicy, delivery.delivery_policy, "reply_to_source_chat"),
+        sourceChannel: firstText(schedulePayload.sourceChannel, schedulePayload.source_channel, delivery.channel, "telegram"),
+        sourceSystem: firstText(schedulePayload.sourceSystem, schedulePayload.source_system, "workflow_scheduler"),
+        sourceRuntime: firstText(schedulePayload.sourceRuntime, schedulePayload.source_runtime, "workflow_scheduler"),
+        accountId: deliveryAccount,
+        chatId: deliveryTarget,
+        senderId: firstText(schedulePayload.senderId, schedulePayload.sender_id, "workflow_scheduler"),
+        sourceMessageId: firstText(schedulePayload.sourceMessageId, schedulePayload.source_message_id, `schedule:${schedule.schedule_id}:${scheduledAt}`),
+        routeAgentId: firstText(schedulePayload.routeAgentId, schedulePayload.route_agent_id, "workflow_scheduler"),
+        routeRuntime: firstText(schedulePayload.routeRuntime, schedulePayload.route_runtime, "workflow_scheduler")
+      } : {}),
       payload: {
         scheduleId,
         runId,
