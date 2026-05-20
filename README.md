@@ -60,6 +60,12 @@ enabled = true
 
 The MCP server is intentionally read-oriented. It can inspect local Git state, read governance JSONL logs, query `runtime_agents`, and take read-only development-server snapshots. Publishing changes still requires normal Git review and push.
 
+## Companion Stability Plugin
+
+`cat-agents-stability` is the companion governance package for this workflow plugin. It owns stability probes, lane policy, findings, runbooks, desired-state drift checks, and guarded low-risk diagnostics. It does not embed `trading-agents-workflow`, replace the 10s queue, or directly mutate workflow tables.
+
+The boundary is recorded in `docs/companion-stability-plugin.md`. Local Codex should load both MCP servers so it can observe workflow state and stability drift from the same control panel without becoming a workflow runtime.
+
 ## OpenClaw Gateway Tool Policy
 
 For route-shell agents to dispatch migrated agents through this plugin, OpenClaw
@@ -84,6 +90,7 @@ Hermers ACP dispatch.
 - `templates/` - workflow report and review templates.
 - `docs/governance-records.md` - policy for recording workflow incidents, fixes, delivery failures, and Human Gate packages inside this plugin.
 - `docs/agent-registry-routing.md` - routing contract for platform, adapter, IM ingress, workflow ingress, and route-shell behavior.
+- `docs/companion-stability-plugin.md` - boundary contract with `cat-agents-stability`.
 - `docs/tracking-schema.sql` - schema export for `tracking.db`.
 - `scripts/trading_agents_workflow_mcp.py` - local Codex MCP server.
 - `skills/trading-agents-workflow/` - Codex skill instructions for this integration.
