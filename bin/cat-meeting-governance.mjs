@@ -23,8 +23,8 @@ function usage() {
   trading-agents-workflow workflow-schedule-resume --id ID [--reset-next-run true|false] [--root DIR]
   trading-agents-workflow workflow-schedule-disable --id ID [--root DIR]
   trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
-  trading-agents-workflow runtime-agent --platform PLATFORM --agent AGENT [--runtime RUNTIME_KEY] [--execution-adapter ADAPTER] [--im-ingress-owner OWNER] [--im-ingress-adapter ADAPTER] [--workflow-ingress-adapter ADAPTER] [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
-  trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--chat-id ID] [--sender-id ID] [--target-platform PLATFORM] [--target-adapter ADAPTER] [--drain-now true|false] [--root DIR]
+  trading-agents-workflow runtime-agent --platform PLATFORM --agent AGENT [--runtime RUNTIME_KEY] [--execution-adapter ADAPTER] [--im-ingress-owner OWNER] [--im-ingress-adapter ADAPTER] [--workflow-ingress-adapter ADAPTER] [--im-identity ID] [--execution-identity ID] [--return-policy reply_to_source_chat|report_to_flashcat|silent] [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
+  trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--source-channel CHANNEL] [--account-id ACCOUNT] [--chat-id ID] [--sender-id ID] [--return-policy POLICY] [--target-platform PLATFORM] [--target-adapter ADAPTER] [--drain-now true|false] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
   trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--root DIR]
@@ -40,6 +40,7 @@ function usage() {
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
   trading-agents-workflow telegram-outbox [--status queued|sent|failed] [--limit N] [--mark OUTBOX_ID] [--deliver] [--account cat_claw] [--target CHAT_ID] [--root DIR]
+  trading-agents-workflow message-flow [--flow ID] [--dispatch ID] [--status STATUS] [--limit N] [--root DIR]
   trading-agents-workflow trade-proposal --asset TYPE --symbol SYMBOL [--summary TEXT] [--side SIDE] [--quantity N] [--order-type TYPE] [--proposal-id ID] [--payload JSON] [--root DIR]
   trading-agents-workflow risk-decision --proposal ID [--status approved|rejected|pending] [--summary TEXT] [--reviewer AGENT] [--risk-decision-id ID] [--root DIR]
   trading-agents-workflow human-gate-workflow [--human-gate-id ID] [--parent ID] [--gate TYPE] [--status approved|rejected|paused|terminated|pending] [--text TEXT] [--assurance mtls] [--root DIR]
@@ -347,6 +348,9 @@ function toAction({ command, positional, options }) {
           imIngressOwner: options["im-ingress-owner"],
           imIngressAdapter: options["im-ingress-adapter"],
           workflowIngressAdapter: options["workflow-ingress-adapter"],
+          imIdentity: options["im-identity"],
+          executionIdentity: options["execution-identity"],
+          returnPolicy: options["return-policy"],
           canReceiveDispatch: options["can-receive-dispatch"] !== "false",
           canStartWorkflow: options["can-start-workflow"] !== "false",
           gatewayProxyAllowed: options["gateway-proxy-allowed"] !== "false",
@@ -361,6 +365,8 @@ function toAction({ command, positional, options }) {
           routeAgentId: options.agent,
           text: options.text,
           sourceMessageId: options["message-id"],
+          sourceChannel: options["source-channel"],
+          accountId: options["account-id"],
           chatId: options["chat-id"],
           senderId: options["sender-id"],
           sourceSystem: options.source || "cli",
@@ -368,7 +374,9 @@ function toAction({ command, positional, options }) {
           targetAdapter: options["target-adapter"],
           priority: options.priority,
           drainNow: options["drain-now"] === "true",
-          timeoutSeconds: options["timeout-seconds"]
+          timeoutSeconds: options["timeout-seconds"],
+          returnPolicy: options["return-policy"],
+          deliveryPolicy: options["return-policy"]
         }
       };
     case "meeting-participant":
@@ -383,6 +391,8 @@ function toAction({ command, positional, options }) {
       return { root, input: { action: "runtime.bridge.drain", runtime: options.runtime, dispatchId: options.dispatch || options["dispatch-id"], limit: options.limit, timeoutSeconds: options["timeout-seconds"], sessionMode: options["session-mode"], acpBackend: options["acp-backend"], acpAgent: options["acp-agent"], sessionKey: options["session-key"], dryRun: options["dry-run"] === "true", hermesBin: options["hermes-bin"], openclawBin: options["openclaw-bin"], reportDelivery: options["report-delivery"] } };
     case "dispatch-reconcile":
       return { root, input: { action: "workflow.dispatch.reconcile", limit: options.limit, staleDispatchAfterMs: options["stale-after-ms"], timeoutSeconds: options["timeout-seconds"] } };
+    case "message-flow":
+      return { root, input: { action: "message_flow.list", flowId: options.flow, dispatchId: options.dispatch || options["dispatch-id"], status: options.status, limit: options.limit } };
     case "human-gate-request":
       return { root, input: { action: "human_gate.request", meetingId: options.meeting, text: options.text, gateType: options.gate, buttons: listOption(options.button), from: options.from, target: options.target, channelId: options.channel, autoDeliver: options.deliver === "true", account: options.account } };
     case "human-gate-inbox":

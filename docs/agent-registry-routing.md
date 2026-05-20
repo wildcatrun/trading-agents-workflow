@@ -14,6 +14,9 @@ Every registered agent instance must declare these fields:
 - `im_ingress_owner`: who owns the human/IM entry point, for example `openclaw_gateway`, `external_platform`, or `none`.
 - `im_ingress_adapter`: which IM ingress receives messages, for example `openclaw_native`, `openclaw_route_shell`, `platform_im`, or `custom`.
 - `workflow_ingress_adapter`: how workflow dispatches reach the instance, for example `openclaw_native`, `acp`, `api`, `webhook`, `queue`, or `route_shell`.
+- `im_identity`: the normalized IM identity layer, for example `openclaw_route_shell` or `openclaw_native`.
+- `execution_identity`: the normalized execution layer, for example `hermers_acp`, `openclaw_native`, or `openclaw_route_shell`.
+- `return_policy`: how a runtime result returns to a human-visible channel: `reply_to_source_chat`, `report_to_flashcat`, or `silent`.
 - `can_receive_dispatch`: whether workflow dispatch may target this instance.
 - `can_start_workflow`: whether this instance may create workflow records.
 - `gateway_proxy_allowed`: whether OpenClaw Gateway may proxy messages for this instance.
@@ -31,7 +34,7 @@ The registry uses `platform=openclaw`, `execution_adapter=native`, `im_ingress_o
 
 Class B: IM ingress is OpenClaw Gateway and execution is not OpenClaw.
 
-The registry uses the true platform, for example `platform=hermers`, with `im_ingress_owner=openclaw_gateway`, `im_ingress_adapter=openclaw_route_shell`, and the real workflow adapter, for example `workflow_ingress_adapter=acp`. The OpenClaw route shell is an ingress and audit anchor only; it is not an executor.
+The registry uses the true platform, for example `platform=hermers`, with `im_ingress_owner=openclaw_gateway`, `im_ingress_adapter=openclaw_route_shell`, `im_identity=openclaw_route_shell`, `workflow_ingress_adapter=acp`, `execution_identity=hermers_acp`, and `return_policy=reply_to_source_chat`. The OpenClaw route shell is an ingress and audit anchor only; it is not an executor.
 
 Class C: IM ingress and execution are outside OpenClaw Gateway.
 
@@ -43,11 +46,32 @@ All message and workflow entry points must resolve the target agent through the 
 
 - Gateway IM hooks route by `agent_id`, then require a registered Gateway ingress row and a dispatch-capable target row.
 - Workflow dispatch and scripted dispatch route by the registered `platform` and `workflow_ingress_adapter`.
-- OpenClaw route-shell rows may acknowledge route status or route failure, but must not run professional work.
+- OpenClaw route-shell rows may acknowledge route status or route failure only as ingress metadata, and successful route-shell acknowledgement is not an agent reply.
 - Missing registry rows, missing workflow ingress adapters, disabled instances, or policy blocks fail closed.
 - ACP backend unavailability fails the ACP dispatch; CLI execution is not an implicit ACP fallback.
 - External IM ownership is not a failure condition. A class C agent is reachable through its registered workflow adapter even though its IM ingress is outside OpenClaw Gateway.
 - Agent migration is a registry update, not a rewrite of Telegram hooks, cron jobs, or workflow dispatch logic.
+
+## Message Flow Contract
+
+Non-OpenClaw agents are first-class cross-platform message participants. A message addressed through an OpenClaw route-shell must create one `message_flows` record and carry the return path through the whole turn.
+
+State machine:
+
+```text
+inbound_received -> route_registered -> runtime_dispatched -> runtime_completed/runtime_failed -> outbound_queued -> telegram_sent/telegram_failed
+```
+
+Required return-path fields for `return_policy=reply_to_source_chat`:
+
+- `source_channel`
+- `account_id` (stored as `source_account_id`)
+- `chat_id` (stored as `source_chat_id`)
+- `sender_id`
+- `source_message_id`
+- `delivery_policy`
+
+For non-OpenClaw agents, completion is not `dispatch.status=acked`. A user-visible reply is complete only when the flow has `final_output_present=1` and `delivery_receipt_present=1`, normally with status `telegram_sent`. Empty output, interrupted output, cancelled ACP turns, missing return path, and Telegram delivery failure are flow failures even if the dispatch row was already acknowledged at the runtime layer.
 
 ## Examples
 
@@ -71,6 +95,9 @@ execution_adapter=acp
 im_ingress_owner=openclaw_gateway
 im_ingress_adapter=openclaw_route_shell
 workflow_ingress_adapter=acp
+im_identity=openclaw_route_shell
+execution_identity=hermers_acp
+return_policy=reply_to_source_chat
 endpoint_ref=hermers-profile:catbody
 ```
 

@@ -166,6 +166,10 @@ const toolParameters = {
         "meeting.resume",
         "meeting.disperse",
         "telegram.outbox",
+        "message_flow.list",
+        "message_flow.status",
+        "workflow.message_flow.list",
+        "workflow.message_flow.status",
         "instrument.upsert",
         "tracking.instrument",
         "radar.update",
@@ -276,6 +280,7 @@ const toolParameters = {
     drain: { type: "boolean" },
     drainQueued: { type: "boolean" },
     deliverOutbox: { type: "boolean" },
+    autoDeliverMessageFlowOutbox: { type: "boolean" },
     autoReport: { type: "boolean" },
     ensureHumanGateRequests: { type: "boolean" },
     dryRun: { type: "boolean" },
@@ -303,6 +308,12 @@ const toolParameters = {
     compactAtPercent: { type: "number" },
     restorePolicy: { type: "string" },
     traceId: { type: "string" },
+    flowId: { type: "string" },
+    messageFlowId: { type: "string" },
+    returnPolicy: { type: "string" },
+    deliveryPolicy: { type: "string" },
+    imIdentity: { type: "string" },
+    executionIdentity: { type: "string" },
     maxAttempts: { type: "number" },
     staleDays: { type: "number" }
     ,
@@ -399,6 +410,10 @@ const toolParameters = {
     sourceMessageId: { type: "string" },
     sourceSystem: { type: "string" },
     sourceRuntime: { type: "string" },
+    sourceChannel: { type: "string" },
+    accountId: { type: "string" },
+    sourceAccountId: { type: "string" },
+    sourceChatId: { type: "string" },
     targetPlatform: { type: "string" },
     targetAdapter: { type: "string" },
     drainNow: { type: "boolean" },
@@ -1133,6 +1148,9 @@ function registerCli(api) {
       .option("--im-ingress-owner <owner>", "openclaw_gateway, external_platform, none")
       .option("--im-ingress-adapter <adapter>", "openclaw_native, openclaw_route_shell, platform_im, custom")
       .option("--workflow-ingress-adapter <adapter>", "openclaw_native, acp, api, webhook, queue, route_shell")
+      .option("--im-identity <identity>", "IM identity, for example openclaw_route_shell")
+      .option("--execution-identity <identity>", "Execution identity, for example hermers_acp")
+      .option("--return-policy <policy>", "reply_to_source_chat, report_to_flashcat, or silent")
       .option("--can-receive-dispatch <trueOrFalse>", "Whether workflow dispatches may target this instance", "true")
       .option("--can-start-workflow <trueOrFalse>", "Whether this instance may start workflow records", "true")
       .option("--gateway-proxy-allowed <trueOrFalse>", "Whether OpenClaw Gateway may proxy messages for this instance", "true")
@@ -1152,6 +1170,9 @@ function registerCli(api) {
           imIngressOwner: options.imIngressOwner,
           imIngressAdapter: options.imIngressAdapter,
           workflowIngressAdapter: options.workflowIngressAdapter,
+          imIdentity: options.imIdentity,
+          executionIdentity: options.executionIdentity,
+          returnPolicy: options.returnPolicy,
           canReceiveDispatch: options.canReceiveDispatch !== "false",
           canStartWorkflow: options.canStartWorkflow !== "false",
           gatewayProxyAllowed: options.gatewayProxyAllowed !== "false",
@@ -1163,11 +1184,14 @@ function registerCli(api) {
       .requiredOption("--agent <agentId>", "OpenClaw route-shell agent id")
       .requiredOption("--text <text>", "Raw message to route")
       .option("--message-id <messageId>", "Provider/source message id")
+      .option("--source-channel <channel>", "Source channel, for example telegram")
+      .option("--account-id <accountId>", "Source/delivery account id")
       .option("--chat-id <chatId>", "Source chat/conversation id")
       .option("--sender-id <senderId>", "Source sender id")
       .option("--source <sourceSystem>", "Source system", "cli")
       .option("--target-platform <platform>", "Override target platform")
       .option("--target-adapter <adapter>", "Override target workflow ingress adapter")
+      .option("--return-policy <policy>", "reply_to_source_chat, report_to_flashcat, or silent")
       .option("--priority <priority>", "flash, steer, high, normal, low", "normal")
       .option("--drain-now <trueOrFalse>", "Drain the created dispatch immediately", "false")
       .option("--timeout-seconds <seconds>", "Runtime drain timeout", "45")
@@ -1180,11 +1204,15 @@ function registerCli(api) {
           routeAgentId: options.agent,
           text: options.text,
           sourceMessageId: options.messageId,
+          sourceChannel: options.sourceChannel,
+          accountId: options.accountId,
           chatId: options.chatId,
           senderId: options.senderId,
           sourceSystem: options.source,
           targetPlatform: options.targetPlatform,
           targetAdapter: options.targetAdapter,
+          returnPolicy: options.returnPolicy,
+          deliveryPolicy: options.returnPolicy,
           priority: options.priority,
           drainNow: options.drainNow === "true",
           timeoutSeconds: Number(options.timeoutSeconds)
@@ -1457,6 +1485,24 @@ function registerCli(api) {
           limit: Number(options.limit),
           account: options.account,
           target: options.target
+        }), null, 2));
+      });
+
+    command.command("message-flow")
+      .option("--flow <flowId>", "Message flow id")
+      .option("--dispatch <dispatchId>", "Dispatch id")
+      .option("--status <status>", "Flow status")
+      .option("--limit <limit>", "Limit", "20")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+          action: "message_flow.list",
+          workflowRootDir: options.workflowRoot,
+          flowId: options.flow,
+          dispatchId: options.dispatch,
+          status: options.status,
+          limit: Number(options.limit)
         }), null, 2));
       });
 
@@ -1972,7 +2018,7 @@ function routeShellConfig(api) {
     timeoutSeconds: Number.isFinite(Number(configured.timeoutSeconds ?? configured.timeout_seconds))
       ? Number(configured.timeoutSeconds ?? configured.timeout_seconds)
       : 45,
-    ack: configured.ack !== false,
+    ack: configured.ack === true || configured.ack === "true",
     requireRouteShell: configured.requireRouteShell !== false && configured.require_route_shell !== false,
     requireProviderMessageId: configured.requireProviderMessageId === true || configured.require_provider_message_id === true,
     blockOnFailure: configured.blockOnFailure !== false && configured.block_on_failure !== false
@@ -2086,6 +2132,8 @@ function registerRouteShellBeforeDispatch(api) {
         routeAgentId: target.routeAgentId,
         text,
         sourceMessageId,
+        sourceChannel: target.channel,
+        accountId: ctx.accountId,
         sourceSystem: `gateway:${target.channel || "unknown"}:before_dispatch`,
         sourceRuntime: "openclaw_route_shell",
         targetPlatform: config.targetPlatform || undefined,

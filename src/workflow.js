@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 10;
+export const WORKFLOW_SCHEMA_VERSION = 11;
 export const DEFAULT_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
@@ -27,6 +27,8 @@ const ORDER_TYPES = new Set(["market", "limit", "stop", "stop_limit", "twap", "v
 const RECEIPT_STATUSES = new Set(["accepted", "rejected", "submitted", "filled", "partial", "cancelled", "failed"]);
 const RUNTIMES = new Set(["openclaw", "openclaw_route_shell", "hermers", "telegram", "local_codex", "codex", "claude_code", "claude-code", "opencode", "trading_sim", "trading_core", "system", "other"]);
 const DISPATCH_STATUSES = new Set(["queued", "sent", "acked", "failed", "cancelled"]);
+const MESSAGE_FLOW_STATUSES = new Set(["inbound_received", "route_registered", "runtime_dispatched", "runtime_completed", "runtime_failed", "outbound_queued", "telegram_sent", "telegram_failed"]);
+const MESSAGE_FLOW_RETURN_POLICIES = new Set(["reply_to_source_chat", "report_to_flashcat", "silent"]);
 const WORKFLOW_RUN_STATUSES = new Set(["active", "waiting_human", "blocked", "paused", "completed", "stopped", "cancelled"]);
 const WORKFLOW_TASK_STATUSES = new Set(["pending", "in_progress", "done", "blocked", "failed", "cancelled"]);
 const WORKFLOW_TASK_PRIORITIES = new Set(["flash", "steer", "high", "normal", "low"]);
@@ -597,6 +599,48 @@ function normalizeWorkflowIngressAdapter(value, platform = "", runtime = "") {
   return "adapter";
 }
 
+function normalizeImIdentity(value, owner = "", adapter = "", runtime = "") {
+  const explicit = normalizeRegistryToken(value);
+  if (explicit) return explicit;
+  const normalizedRuntime = normalizeRuntime(runtime);
+  const normalizedOwner = normalizeRegistryToken(owner);
+  const normalizedAdapter = normalizeRegistryToken(adapter);
+  if (normalizedRuntime === "openclaw_route_shell" || normalizedAdapter === "openclaw_route_shell") return "openclaw_route_shell";
+  if (normalizedRuntime === "openclaw" || normalizedAdapter === "openclaw_native") return "openclaw_native";
+  if (normalizedOwner && normalizedAdapter) return `${normalizedOwner}:${normalizedAdapter}`.slice(0, 96);
+  return normalizedAdapter || normalizedOwner || "";
+}
+
+function normalizeExecutionIdentity(value, platform = "", workflowIngressAdapter = "", runtime = "") {
+  const explicit = normalizeRegistryToken(value);
+  if (explicit) return explicit;
+  const normalizedRuntime = normalizeRuntime(runtime);
+  const normalizedPlatform = normalizeAgentPlatform(platform, runtime);
+  const normalizedAdapter = normalizeWorkflowIngressAdapter(workflowIngressAdapter, normalizedPlatform, runtime);
+  if (normalizedRuntime === "openclaw_route_shell") return "openclaw_route_shell";
+  if (normalizedRuntime === "openclaw" || (normalizedPlatform === "openclaw" && normalizedAdapter === "openclaw_native")) return "openclaw_native";
+  if (normalizedPlatform === "hermers" && normalizedAdapter === "acp") return "hermers_acp";
+  if (normalizedPlatform && normalizedAdapter) return `${normalizedPlatform}_${normalizedAdapter}`.slice(0, 96);
+  return normalizedPlatform || normalizedAdapter || "";
+}
+
+function normalizeReturnPolicy(value, fallback = "silent") {
+  const explicit = normalizeRegistryToken(value);
+  const aliases = {
+    reply: "reply_to_source_chat",
+    reply_to_source: "reply_to_source_chat",
+    source_chat: "reply_to_source_chat",
+    telegram_source: "reply_to_source_chat",
+    report: "report_to_flashcat",
+    flashcat: "report_to_flashcat",
+    none: "silent",
+    disabled: "silent"
+  };
+  const normalized = aliases[explicit] || explicit;
+  if (MESSAGE_FLOW_RETURN_POLICIES.has(normalized)) return normalized;
+  return MESSAGE_FLOW_RETURN_POLICIES.has(fallback) ? fallback : "silent";
+}
+
 function boolInt(value, fallback = true) {
   if (value === undefined || value === null || value === "") return fallback ? 1 : 0;
   if (typeof value === "boolean") return value ? 1 : 0;
@@ -615,6 +659,9 @@ function registrySnapshot(row = {}) {
     imIngressOwner: row.im_ingress_owner || normalizeImIngressOwner("", row.platform, row.runtime),
     imIngressAdapter: row.im_ingress_adapter || normalizeImIngressAdapter("", row.im_ingress_owner, row.runtime),
     workflowIngressAdapter: row.workflow_ingress_adapter || normalizeWorkflowIngressAdapter("", row.platform, row.runtime),
+    imIdentity: row.im_identity || normalizeImIdentity("", row.im_ingress_owner, row.im_ingress_adapter, row.runtime),
+    executionIdentity: row.execution_identity || normalizeExecutionIdentity("", row.platform, row.workflow_ingress_adapter, row.runtime),
+    returnPolicy: normalizeReturnPolicy(row.return_policy, "silent"),
     canReceiveDispatch: Number(row.can_receive_dispatch ?? 1) !== 0,
     canStartWorkflow: Number(row.can_start_workflow ?? 1) !== 0,
     gatewayProxyAllowed: Number(row.gateway_proxy_allowed ?? 1) !== 0,
@@ -1217,6 +1264,9 @@ CREATE TABLE IF NOT EXISTS runtime_agents (
   im_ingress_owner TEXT NOT NULL DEFAULT '',
   im_ingress_adapter TEXT NOT NULL DEFAULT '',
   workflow_ingress_adapter TEXT NOT NULL DEFAULT '',
+  im_identity TEXT NOT NULL DEFAULT '',
+  execution_identity TEXT NOT NULL DEFAULT '',
+  return_policy TEXT NOT NULL DEFAULT '',
   can_receive_dispatch INTEGER NOT NULL DEFAULT 1,
   can_start_workflow INTEGER NOT NULL DEFAULT 1,
   gateway_proxy_allowed INTEGER NOT NULL DEFAULT 1,
@@ -1335,6 +1385,63 @@ CREATE TABLE IF NOT EXISTS telegram_outbox (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_telegram_outbox_status ON telegram_outbox(status, created_at);
+CREATE TABLE IF NOT EXISTS message_flows (
+  flow_id TEXT PRIMARY KEY,
+  trace_id TEXT,
+  idempotency_key TEXT,
+  meeting_id TEXT NOT NULL,
+  workflow_id TEXT,
+  dispatch_id TEXT,
+  runtime_run_id TEXT,
+  message_id TEXT,
+  outbox_id TEXT,
+  source_channel TEXT NOT NULL DEFAULT '',
+  source_system TEXT NOT NULL DEFAULT '',
+  source_runtime TEXT NOT NULL DEFAULT '',
+  source_account_id TEXT NOT NULL DEFAULT '',
+  source_chat_id TEXT NOT NULL DEFAULT '',
+  sender_id TEXT NOT NULL DEFAULT '',
+  source_message_id TEXT NOT NULL DEFAULT '',
+  route_agent_id TEXT NOT NULL DEFAULT '',
+  route_runtime TEXT NOT NULL DEFAULT '',
+  target_runtime TEXT NOT NULL DEFAULT '',
+  target_agent_id TEXT NOT NULL DEFAULT '',
+  target_platform TEXT NOT NULL DEFAULT '',
+  workflow_ingress_adapter TEXT NOT NULL DEFAULT '',
+  im_identity TEXT NOT NULL DEFAULT '',
+  execution_identity TEXT NOT NULL DEFAULT '',
+  return_policy TEXT NOT NULL DEFAULT 'silent',
+  status TEXT NOT NULL,
+  inbound_received_at TEXT,
+  route_registered_at TEXT,
+  runtime_dispatched_at TEXT,
+  runtime_completed_at TEXT,
+  runtime_failed_at TEXT,
+  outbound_queued_at TEXT,
+  telegram_sent_at TEXT,
+  telegram_failed_at TEXT,
+  completed_at TEXT,
+  failure_type TEXT,
+  last_error TEXT,
+  final_output_present INTEGER NOT NULL DEFAULT 0,
+  delivery_receipt_present INTEGER NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_message_flows_status ON message_flows(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_message_flows_dispatch ON message_flows(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_message_flows_trace ON message_flows(trace_id);
+CREATE INDEX IF NOT EXISTS idx_message_flows_outbox ON message_flows(outbox_id);
+CREATE TABLE IF NOT EXISTS message_flow_events (
+  event_id TEXT PRIMARY KEY,
+  flow_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_message_flow_events_flow ON message_flow_events(flow_id, created_at);
 CREATE TABLE IF NOT EXISTS human_gate_buttons (
   button_id TEXT PRIMARY KEY,
   callback_token TEXT NOT NULL UNIQUE,
@@ -1537,6 +1644,9 @@ async function migrateDatabase(dbFile) {
     ["im_ingress_owner", "TEXT NOT NULL DEFAULT ''"],
     ["im_ingress_adapter", "TEXT NOT NULL DEFAULT ''"],
     ["workflow_ingress_adapter", "TEXT NOT NULL DEFAULT ''"],
+    ["im_identity", "TEXT NOT NULL DEFAULT ''"],
+    ["execution_identity", "TEXT NOT NULL DEFAULT ''"],
+    ["return_policy", "TEXT NOT NULL DEFAULT ''"],
     ["can_receive_dispatch", "INTEGER NOT NULL DEFAULT 1"],
     ["can_start_workflow", "INTEGER NOT NULL DEFAULT 1"],
     ["gateway_proxy_allowed", "INTEGER NOT NULL DEFAULT 1"],
@@ -1575,9 +1685,31 @@ SET
     WHEN runtime='openclaw' THEN 'openclaw_native'
     WHEN runtime IN ('hermes','hermes_acp','hermers') THEN 'acp'
     ELSE 'adapter'
+  END,
+  im_identity=CASE
+    WHEN im_identity IS NOT NULL AND im_identity != '' THEN im_identity
+    WHEN runtime='openclaw_route_shell' OR im_ingress_adapter='openclaw_route_shell' THEN 'openclaw_route_shell'
+    WHEN runtime='openclaw' OR im_ingress_adapter='openclaw_native' THEN 'openclaw_native'
+    WHEN im_ingress_owner != '' AND im_ingress_adapter != '' THEN im_ingress_owner || ':' || im_ingress_adapter
+    ELSE im_ingress_adapter
+  END,
+  execution_identity=CASE
+    WHEN execution_identity IS NOT NULL AND execution_identity != '' THEN execution_identity
+    WHEN runtime='openclaw_route_shell' THEN 'openclaw_route_shell'
+    WHEN runtime='openclaw' OR (platform='openclaw' AND workflow_ingress_adapter='openclaw_native') THEN 'openclaw_native'
+    WHEN platform='hermers' AND workflow_ingress_adapter='acp' THEN 'hermers_acp'
+    WHEN platform != '' AND workflow_ingress_adapter != '' THEN platform || '_' || workflow_ingress_adapter
+    ELSE platform
+  END,
+  return_policy=CASE
+    WHEN return_policy IS NOT NULL AND return_policy != '' THEN return_policy
+    WHEN runtime='openclaw_route_shell' THEN 'silent'
+    WHEN runtime='hermers' AND im_ingress_adapter='openclaw_route_shell' THEN 'reply_to_source_chat'
+    WHEN runtime='openclaw' THEN 'reply_to_source_chat'
+    ELSE 'silent'
   END
-WHERE platform='' OR execution_adapter='' OR im_ingress_owner='' OR im_ingress_adapter='' OR workflow_ingress_adapter='';
-INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, routing_policy_json, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
+WHERE platform='' OR execution_adapter='' OR im_ingress_owner='' OR im_ingress_adapter='' OR workflow_ingress_adapter='' OR im_identity='' OR execution_identity='' OR return_policy='';
+INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, routing_policy_json, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
 SELECT
   'hermers:' || agent_id,
   'hermers',
@@ -1598,6 +1730,17 @@ SELECT
     ELSE 'platform_im'
   END,
   CASE WHEN workflow_ingress_adapter != '' THEN workflow_ingress_adapter ELSE 'acp' END,
+  CASE
+    WHEN im_identity != '' THEN im_identity
+    WHEN EXISTS (SELECT 1 FROM runtime_agents r2 WHERE r2.agent_id=runtime_agents.agent_id AND r2.runtime='openclaw_route_shell') THEN 'openclaw_route_shell'
+    ELSE 'platform_im'
+  END,
+  CASE WHEN execution_identity != '' THEN execution_identity ELSE 'hermers_acp' END,
+  CASE
+    WHEN return_policy != '' THEN return_policy
+    WHEN EXISTS (SELECT 1 FROM runtime_agents r2 WHERE r2.agent_id=runtime_agents.agent_id AND r2.runtime='openclaw_route_shell') THEN 'reply_to_source_chat'
+    ELSE 'silent'
+  END,
   can_receive_dispatch,
   can_start_workflow,
   gateway_proxy_allowed,
@@ -1618,6 +1761,9 @@ ON CONFLICT(agent_key) DO UPDATE SET
   im_ingress_owner=excluded.im_ingress_owner,
   im_ingress_adapter=excluded.im_ingress_adapter,
   workflow_ingress_adapter=excluded.workflow_ingress_adapter,
+  im_identity=excluded.im_identity,
+  execution_identity=excluded.execution_identity,
+  return_policy=excluded.return_policy,
   can_receive_dispatch=excluded.can_receive_dispatch,
   can_start_workflow=excluded.can_start_workflow,
   gateway_proxy_allowed=excluded.gateway_proxy_allowed,
@@ -4562,7 +4708,9 @@ async function deliverTelegramOutboxRow(paths, row, input = {}) {
 UPDATE telegram_outbox
 SET status='failed', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(failedAt)}
 WHERE outbox_id=${sqlValue(row.outbox_id)};`);
-    return { outboxId: row.outbox_id, status: "failed", account, error };
+    const result = { outboxId: row.outbox_id, status: "failed", account, error };
+    await updateMessageFlowFromTelegramDelivery(paths, row, result);
+    return result;
   }
   const target = explicitTarget || rowTarget;
   const openclawBin = String(input.openclawBin || input.openclaw_bin || "openclaw").trim();
@@ -4572,7 +4720,10 @@ WHERE outbox_id=${sqlValue(row.outbox_id)};`);
   const receipts = [];
   try {
     const webAppDelivery = await deliverTelegramOutboxRowViaWebApp(paths, row, input, { payload, account, target, chunks, timeoutSeconds });
-    if (webAppDelivery?.status === "sent" || webAppDelivery?.status === "failed") return webAppDelivery;
+    if (webAppDelivery?.status === "sent" || webAppDelivery?.status === "failed") {
+      await updateMessageFlowFromTelegramDelivery(paths, row, webAppDelivery);
+      return webAppDelivery;
+    }
     if (webAppDelivery?.status === "web_app_direct_delivery_unavailable") {
       payload.webAppDirectDeliveryFallback = {
         attemptedAt: nowIso(),
@@ -4613,7 +4764,9 @@ WHERE outbox_id=${sqlValue(row.outbox_id)};`);
 UPDATE telegram_outbox
 SET status='sent', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(deliveredAt)}
 WHERE outbox_id=${sqlValue(row.outbox_id)};`);
-    return { outboxId: row.outbox_id, status: "sent", account, target, parts: chunks.length, receipts };
+    const result = { outboxId: row.outbox_id, status: "sent", account, target, parts: chunks.length, receipts };
+    await updateMessageFlowFromTelegramDelivery(paths, row, result);
+    return result;
   } catch (error) {
     const failedAt = nowIso();
     const updatedPayload = { ...payload, delivery: { channel: "telegram", account, target, failedAt, error: String(error?.message || error).slice(0, 2000), receipts } };
@@ -4621,7 +4774,9 @@ WHERE outbox_id=${sqlValue(row.outbox_id)};`);
 UPDATE telegram_outbox
 SET status='failed', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(failedAt)}
 WHERE outbox_id=${sqlValue(row.outbox_id)};`);
-    return { outboxId: row.outbox_id, status: "failed", account, target, error: String(error?.message || error).slice(0, 2000), receipts };
+    const result = { outboxId: row.outbox_id, status: "failed", account, target, error: String(error?.message || error).slice(0, 2000), receipts };
+    await updateMessageFlowFromTelegramDelivery(paths, row, result);
+    return result;
   }
 }
 
@@ -4639,6 +4794,270 @@ LIMIT 1;`, { json: true });
   return deliverTelegramOutboxRow(paths, row, input);
 }
 
+function messageFlowIdFromParts(...parts) {
+  const seed = parts.map((part) => String(part || "").trim()).filter(Boolean).join("\n") || safeId("flow");
+  return `flow.${createHash("sha256").update(seed).digest("hex").slice(0, 24)}`;
+}
+
+function messageFlowStatusTimestampColumn(status) {
+  return {
+    inbound_received: "inbound_received_at",
+    route_registered: "route_registered_at",
+    runtime_dispatched: "runtime_dispatched_at",
+    runtime_completed: "runtime_completed_at",
+    runtime_failed: "runtime_failed_at",
+    outbound_queued: "outbound_queued_at",
+    telegram_sent: "telegram_sent_at",
+    telegram_failed: "telegram_failed_at"
+  }[status] || "";
+}
+
+async function appendMessageFlowEvent(paths, flowId, status, eventType, payload = {}) {
+  await sqlite(paths.dbFile, `
+INSERT INTO message_flow_events(event_id, flow_id, status, event_type, payload_json, created_at)
+VALUES (${sqlValue(safeId("flowevt"))}, ${sqlValue(flowId)}, ${sqlValue(status)}, ${sqlValue(eventType)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(nowIso())});`);
+}
+
+async function createMessageFlow(paths, input = {}) {
+  const createdAt = input.createdAt || input.created_at || nowIso();
+  const flowId = String(input.flowId || input.flow_id || messageFlowIdFromParts(input.idempotencyKey || input.idempotency_key, input.traceId || input.trace_id, input.meetingId || input.meeting_id)).trim();
+  const status = MESSAGE_FLOW_STATUSES.has(String(input.status || "inbound_received")) ? String(input.status || "inbound_received") : "inbound_received";
+  const returnPolicy = normalizeReturnPolicy(input.returnPolicy || input.return_policy, "silent");
+  const payload = parseJsonValue(input.payload, input.payload || {});
+  const timestampColumn = messageFlowStatusTimestampColumn(status);
+  await sqlite(paths.dbFile, `
+INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, runtime_run_id, message_id, outbox_id, source_channel, source_system, source_runtime, source_account_id, source_chat_id, sender_id, source_message_id, route_agent_id, route_runtime, target_runtime, target_agent_id, target_platform, workflow_ingress_adapter, im_identity, execution_identity, return_policy, status, inbound_received_at, route_registered_at, runtime_dispatched_at, runtime_completed_at, runtime_failed_at, outbound_queued_at, telegram_sent_at, telegram_failed_at, completed_at, failure_type, last_error, final_output_present, delivery_receipt_present, payload_json, created_at, updated_at)
+VALUES (${sqlValue(flowId)}, ${sqlValue(input.traceId || input.trace_id || "")}, ${sqlValue(input.idempotencyKey || input.idempotency_key || "")}, ${sqlValue(input.meetingId || input.meeting_id || "")}, ${sqlValue(input.workflowId || input.workflow_id || "")}, ${sqlValue(input.dispatchId || input.dispatch_id || "")}, ${sqlValue(input.runtimeRunId || input.runtime_run_id || "")}, ${sqlValue(input.messageId || input.message_id || "")}, ${sqlValue(input.outboxId || input.outbox_id || "")}, ${sqlValue(input.sourceChannel || input.source_channel || "")}, ${sqlValue(input.sourceSystem || input.source_system || "")}, ${sqlValue(input.sourceRuntime || input.source_runtime || "")}, ${sqlValue(input.sourceAccountId || input.source_account_id || "")}, ${sqlValue(input.sourceChatId || input.source_chat_id || "")}, ${sqlValue(input.senderId || input.sender_id || "")}, ${sqlValue(input.sourceMessageId || input.source_message_id || "")}, ${sqlValue(input.routeAgentId || input.route_agent_id || "")}, ${sqlValue(input.routeRuntime || input.route_runtime || "")}, ${sqlValue(input.targetRuntime || input.target_runtime || "")}, ${sqlValue(input.targetAgentId || input.target_agent_id || "")}, ${sqlValue(input.targetPlatform || input.target_platform || "")}, ${sqlValue(input.workflowIngressAdapter || input.workflow_ingress_adapter || "")}, ${sqlValue(input.imIdentity || input.im_identity || "")}, ${sqlValue(input.executionIdentity || input.execution_identity || "")}, ${sqlValue(returnPolicy)}, ${sqlValue(status)}, ${sqlValue(timestampColumn === "inbound_received_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "route_registered_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "runtime_dispatched_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "runtime_completed_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "runtime_failed_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "outbound_queued_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "telegram_sent_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "telegram_failed_at" ? createdAt : "")}, ${sqlValue(["telegram_sent", "telegram_failed"].includes(status) ? createdAt : "")}, ${sqlValue(input.failureType || input.failure_type || "")}, ${sqlValue(input.lastError || input.last_error || "")}, ${sqlValue(input.finalOutputPresent ? 1 : 0)}, ${sqlValue(input.deliveryReceiptPresent ? 1 : 0)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+ON CONFLICT(flow_id) DO UPDATE SET
+  trace_id=CASE WHEN excluded.trace_id != '' THEN excluded.trace_id ELSE message_flows.trace_id END,
+  idempotency_key=CASE WHEN excluded.idempotency_key != '' THEN excluded.idempotency_key ELSE message_flows.idempotency_key END,
+  meeting_id=CASE WHEN excluded.meeting_id != '' THEN excluded.meeting_id ELSE message_flows.meeting_id END,
+  workflow_id=CASE WHEN excluded.workflow_id != '' THEN excluded.workflow_id ELSE message_flows.workflow_id END,
+  dispatch_id=CASE WHEN excluded.dispatch_id != '' THEN excluded.dispatch_id ELSE message_flows.dispatch_id END,
+  runtime_run_id=CASE WHEN excluded.runtime_run_id != '' THEN excluded.runtime_run_id ELSE message_flows.runtime_run_id END,
+  message_id=CASE WHEN excluded.message_id != '' THEN excluded.message_id ELSE message_flows.message_id END,
+  outbox_id=CASE WHEN excluded.outbox_id != '' THEN excluded.outbox_id ELSE message_flows.outbox_id END,
+  source_channel=CASE WHEN excluded.source_channel != '' THEN excluded.source_channel ELSE message_flows.source_channel END,
+  source_system=CASE WHEN excluded.source_system != '' THEN excluded.source_system ELSE message_flows.source_system END,
+  source_runtime=CASE WHEN excluded.source_runtime != '' THEN excluded.source_runtime ELSE message_flows.source_runtime END,
+  source_account_id=CASE WHEN excluded.source_account_id != '' THEN excluded.source_account_id ELSE message_flows.source_account_id END,
+  source_chat_id=CASE WHEN excluded.source_chat_id != '' THEN excluded.source_chat_id ELSE message_flows.source_chat_id END,
+  sender_id=CASE WHEN excluded.sender_id != '' THEN excluded.sender_id ELSE message_flows.sender_id END,
+  source_message_id=CASE WHEN excluded.source_message_id != '' THEN excluded.source_message_id ELSE message_flows.source_message_id END,
+  route_agent_id=CASE WHEN excluded.route_agent_id != '' THEN excluded.route_agent_id ELSE message_flows.route_agent_id END,
+  route_runtime=CASE WHEN excluded.route_runtime != '' THEN excluded.route_runtime ELSE message_flows.route_runtime END,
+  target_runtime=CASE WHEN excluded.target_runtime != '' THEN excluded.target_runtime ELSE message_flows.target_runtime END,
+  target_agent_id=CASE WHEN excluded.target_agent_id != '' THEN excluded.target_agent_id ELSE message_flows.target_agent_id END,
+  target_platform=CASE WHEN excluded.target_platform != '' THEN excluded.target_platform ELSE message_flows.target_platform END,
+  workflow_ingress_adapter=CASE WHEN excluded.workflow_ingress_adapter != '' THEN excluded.workflow_ingress_adapter ELSE message_flows.workflow_ingress_adapter END,
+  im_identity=CASE WHEN excluded.im_identity != '' THEN excluded.im_identity ELSE message_flows.im_identity END,
+  execution_identity=CASE WHEN excluded.execution_identity != '' THEN excluded.execution_identity ELSE message_flows.execution_identity END,
+  return_policy=CASE WHEN excluded.return_policy != 'silent' OR message_flows.return_policy='' THEN excluded.return_policy ELSE message_flows.return_policy END,
+  status=excluded.status,
+  inbound_received_at=CASE WHEN excluded.inbound_received_at != '' THEN excluded.inbound_received_at ELSE message_flows.inbound_received_at END,
+  route_registered_at=CASE WHEN excluded.route_registered_at != '' THEN excluded.route_registered_at ELSE message_flows.route_registered_at END,
+  runtime_dispatched_at=CASE WHEN excluded.runtime_dispatched_at != '' THEN excluded.runtime_dispatched_at ELSE message_flows.runtime_dispatched_at END,
+  runtime_completed_at=CASE WHEN excluded.runtime_completed_at != '' THEN excluded.runtime_completed_at ELSE message_flows.runtime_completed_at END,
+  runtime_failed_at=CASE WHEN excluded.runtime_failed_at != '' THEN excluded.runtime_failed_at ELSE message_flows.runtime_failed_at END,
+  outbound_queued_at=CASE WHEN excluded.outbound_queued_at != '' THEN excluded.outbound_queued_at ELSE message_flows.outbound_queued_at END,
+  telegram_sent_at=CASE WHEN excluded.telegram_sent_at != '' THEN excluded.telegram_sent_at ELSE message_flows.telegram_sent_at END,
+  telegram_failed_at=CASE WHEN excluded.telegram_failed_at != '' THEN excluded.telegram_failed_at ELSE message_flows.telegram_failed_at END,
+  completed_at=CASE WHEN excluded.completed_at != '' THEN excluded.completed_at ELSE message_flows.completed_at END,
+  failure_type=CASE WHEN excluded.failure_type != '' THEN excluded.failure_type ELSE message_flows.failure_type END,
+  last_error=CASE WHEN excluded.last_error != '' THEN excluded.last_error ELSE message_flows.last_error END,
+  final_output_present=CASE WHEN excluded.final_output_present != 0 THEN excluded.final_output_present ELSE message_flows.final_output_present END,
+  delivery_receipt_present=CASE WHEN excluded.delivery_receipt_present != 0 THEN excluded.delivery_receipt_present ELSE message_flows.delivery_receipt_present END,
+  payload_json=excluded.payload_json,
+  updated_at=excluded.updated_at;`);
+  await appendMessageFlowEvent(paths, flowId, status, "state", payload);
+  return { flowId, status, returnPolicy };
+}
+
+async function readMessageFlow(paths, flowId) {
+  if (!flowId) return null;
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM message_flows WHERE flow_id=${sqlValue(flowId)} LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+function messageFlowIdFromDispatchPayload(row = {}) {
+  const payload = parseJsonValue(row.payload_json, {});
+  return String(payload.messageFlowId || payload.message_flow_id || payload.routeShell?.messageFlowId || payload.routeShell?.message_flow_id || payload.payload?.messageFlowId || payload.payload?.routeShell?.messageFlowId || "").trim();
+}
+
+async function messageFlowForDispatch(paths, row = {}) {
+  const flowId = messageFlowIdFromDispatchPayload(row);
+  if (flowId) return readMessageFlow(paths, flowId);
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM message_flows WHERE dispatch_id=${sqlValue(row.dispatch_id || "")} LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function updateMessageFlow(paths, flowId, status, patch = {}) {
+  if (!flowId || !MESSAGE_FLOW_STATUSES.has(status)) return null;
+  const rows = await sqlite(paths.dbFile, `SELECT payload_json FROM message_flows WHERE flow_id=${sqlValue(flowId)} LIMIT 1;`, { json: true });
+  if (!rows[0]) return null;
+  const existingPayload = parseJsonValue(rows[0].payload_json, {});
+  const payload = { ...existingPayload, ...parseJsonValue(patch.payload, patch.payload || {}), updatedAt: nowIso() };
+  const updatedAt = patch.updatedAt || patch.updated_at || nowIso();
+  const timestampColumn = messageFlowStatusTimestampColumn(status);
+  const assignments = [
+    `status=${sqlValue(status)}`,
+    `payload_json=${sqlValue(JSON.stringify(payload))}`,
+    `updated_at=${sqlValue(updatedAt)}`
+  ];
+  if (timestampColumn) assignments.push(`${timestampColumn}=${sqlValue(updatedAt)}`);
+  if (["telegram_sent", "telegram_failed"].includes(status)) assignments.push(`completed_at=${sqlValue(updatedAt)}`);
+  if (patch.dispatchId || patch.dispatch_id) assignments.push(`dispatch_id=${sqlValue(patch.dispatchId || patch.dispatch_id)}`);
+  if (patch.runtimeRunId || patch.runtime_run_id) assignments.push(`runtime_run_id=${sqlValue(patch.runtimeRunId || patch.runtime_run_id)}`);
+  if (patch.messageId || patch.message_id) assignments.push(`message_id=${sqlValue(patch.messageId || patch.message_id)}`);
+  if (patch.outboxId || patch.outbox_id) assignments.push(`outbox_id=${sqlValue(patch.outboxId || patch.outbox_id)}`);
+  if (patch.failureType || patch.failure_type) assignments.push(`failure_type=${sqlValue(patch.failureType || patch.failure_type)}`);
+  if (patch.lastError || patch.last_error) assignments.push(`last_error=${sqlValue(String(patch.lastError || patch.last_error).slice(0, 2000))}`);
+  if (patch.finalOutputPresent !== undefined || patch.final_output_present !== undefined) assignments.push(`final_output_present=${sqlValue((patch.finalOutputPresent ?? patch.final_output_present) ? 1 : 0)}`);
+  if (patch.deliveryReceiptPresent !== undefined || patch.delivery_receipt_present !== undefined) assignments.push(`delivery_receipt_present=${sqlValue((patch.deliveryReceiptPresent ?? patch.delivery_receipt_present) ? 1 : 0)}`);
+  await sqlite(paths.dbFile, `UPDATE message_flows SET ${assignments.join(", ")} WHERE flow_id=${sqlValue(flowId)};`);
+  await appendMessageFlowEvent(paths, flowId, status, patch.payload || {});
+  return readMessageFlow(paths, flowId);
+}
+
+function messageFlowSourceChannel(input = {}, originalPayload = {}) {
+  const beforeDispatch = objectValue(originalPayload.beforeDispatch || originalPayload.before_dispatch);
+  const sourceSystem = String(input.sourceSystem || input.source_system || "").toLowerCase();
+  return firstText(input.sourceChannel, input.source_channel, input.channelId, input.channel_id, input.channel, beforeDispatch.channel, sourceSystem.includes("telegram") ? "telegram" : "");
+}
+
+function messageFlowOutputIsFinal(text = "") {
+  const value = String(text || "").trim();
+  const lower = value.toLowerCase();
+  if (!value) return false;
+  if (lower.startsWith("operation interrupted:")) return false;
+  if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return false;
+  return true;
+}
+
+function messageFlowDeliveryTarget(flow = {}) {
+  const returnPolicy = normalizeReturnPolicy(flow.return_policy, "silent");
+  if (returnPolicy === "silent") return null;
+  if (returnPolicy === "report_to_flashcat") {
+    return { targetKind: "private", targetRef: DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID, account: "cat_claw", mode: returnPolicy };
+  }
+  if (returnPolicy === "reply_to_source_chat") {
+    if (String(flow.source_channel || "").toLowerCase() !== "telegram" || !String(flow.source_chat_id || "").trim()) return null;
+    const targetRef = String(flow.source_chat_id || "").trim();
+    return {
+      targetKind: targetRef.startsWith("-") ? "group" : "private",
+      targetRef,
+      account: firstText(flow.source_account_id, flow.route_agent_id, flow.target_agent_id, "cat_claw"),
+      mode: returnPolicy
+    };
+  }
+  return null;
+}
+
+function formatMessageFlowFailureText(flow = {}, data = {}) {
+  const agent = firstText(flow.target_agent_id, flow.route_agent_id, "unknown");
+  const failureType = firstText(data.failureType, data.failure_type, flow.failure_type, "runtime_failed");
+  const error = compactText(firstText(data.error, data.lastError, data.last_error, flow.last_error, "非 OpenClaw agent 本轮没有产出可投递的正式回复。"), 900);
+  return [
+    `【${agent} 未产出有效回复】`,
+    `时间：${nowIso()}`,
+    `Flow：${flow.flow_id || ""}`,
+    `Dispatch：${flow.dispatch_id || ""}`,
+    `状态：${failureType}`,
+    `原因：${error}`,
+    "",
+    "说明：route-shell 只表示入口已登记；本消息来自 workflow 的跨平台消息流状态机，不把 route-shell ack 或 Hermers 空输出伪装成正式回复。"
+  ].join("\n");
+}
+
+async function enqueueMessageFlowOutbound(paths, flow, text, input = {}, extraPayload = {}) {
+  if (!flow?.flow_id) return { status: "skipped", reason: "missing_flow" };
+  const target = messageFlowDeliveryTarget(flow);
+  if (!target) {
+    await appendMessageFlowEvent(paths, flow.flow_id, flow.status || "runtime_completed", "delivery_skipped", { reason: "return_policy_silent_or_missing_target" });
+    return { status: "delivery_skipped", reason: "return_policy_silent_or_missing_target", flowId: flow.flow_id };
+  }
+  const outboxId = flow.outbox_id || `flow-${cleanFileSegment(flow.flow_id)}`;
+  let rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`, { json: true });
+  if (!rows[0]) {
+    await enqueueTelegramOutbox(paths, {
+      outboxId,
+      meetingId: flow.meeting_id,
+      targetKind: target.targetKind,
+      targetRef: target.targetRef,
+      messageType: "message_flow_reply",
+      text,
+      payload: {
+        ...extraPayload,
+        messageFlowId: flow.flow_id,
+        dispatchId: flow.dispatch_id || "",
+        messageId: flow.message_id || "",
+        returnPolicy: flow.return_policy || "",
+        account: target.account,
+        target: target.targetRef,
+        flowDeliveryRequired: true
+      }
+    });
+    await updateMessageFlow(paths, flow.flow_id, "outbound_queued", { outboxId, payload: { outboxId, targetRef: target.targetRef, account: target.account } });
+    rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`, { json: true });
+  }
+  const row = rows[0];
+  if (!row) return { status: "missing_outbox", outboxId };
+  if (row.status === "sent") return updateMessageFlow(paths, flow.flow_id, "telegram_sent", { outboxId, deliveryReceiptPresent: true });
+  const deliverNow = boolOption(input.autoDeliverMessageFlowOutbox ?? input.auto_deliver_message_flow_outbox ?? input.deliverMessageFlowOutbox ?? input.deliver_message_flow_outbox, true);
+  if (!deliverNow || row.status !== "queued") return { status: row.status, outboxId, queued: true };
+  return deliverTelegramOutboxRow(paths, row, { ...input, account: target.account, target: target.targetRef });
+}
+
+async function updateMessageFlowFromTelegramDelivery(paths, row, result = {}) {
+  const payload = parseJsonValue(row.payload_json, {});
+  const flowId = String(payload.messageFlowId || payload.message_flow_id || "").trim();
+  if (!flowId) return null;
+  const status = result.status === "sent" ? "telegram_sent" : "telegram_failed";
+  const messageId = String(payload.messageId || payload.message_id || "").trim();
+  if (messageId) {
+    await sqlite(paths.dbFile, `UPDATE mixed_meeting_messages SET telegram_live_status=${sqlValue(status === "telegram_sent" ? "sent" : "failed")} WHERE message_id=${sqlValue(messageId)};`);
+  }
+  return updateMessageFlow(paths, flowId, status, {
+    outboxId: row.outbox_id,
+    deliveryReceiptPresent: status === "telegram_sent",
+    lastError: result.error || "",
+    payload: { delivery: result }
+  });
+}
+
+async function finishMessageFlowRuntime(paths, row, data = {}, input = {}) {
+  const flow = await messageFlowForDispatch(paths, row);
+  if (!flow) return null;
+  const text = String(data.text || "").trim();
+  const finalOutputPresent = data.finalOutputPresent ?? messageFlowOutputIsFinal(text);
+  const runtimeRunId = data.runtimeRunId || data.runtime_run_id || "";
+  const messageId = data.messageId || data.message_id || "";
+  const status = finalOutputPresent ? "runtime_completed" : "runtime_failed";
+  const failureType = finalOutputPresent ? "" : firstText(data.failureType, data.failure_type, "incomplete_output");
+  const lastError = finalOutputPresent ? "" : firstText(data.lastError, data.last_error, text || "runtime did not produce final output");
+  const updated = await updateMessageFlow(paths, flow.flow_id, status, {
+    runtimeRunId,
+    messageId,
+    finalOutputPresent,
+    failureType,
+    lastError,
+    payload: {
+      runtimeStatus: status,
+      runtimeRunId,
+      messageId,
+      outputHash: data.outputHash || data.output_hash || "",
+      dispatchStatus: row.status
+    }
+  });
+  const latest = updated || await readMessageFlow(paths, flow.flow_id);
+  const deliveryText = finalOutputPresent ? text : formatMessageFlowFailureText(latest || flow, { failureType, lastError });
+  return enqueueMessageFlowOutbound(paths, latest || flow, deliveryText, input, {
+    runtimeStatus: status,
+    failureType,
+    finalOutputPresent: Boolean(finalOutputPresent)
+  });
+}
+
 async function ensureRuntimeAgent(paths, input) {
   const runtime = normalizeRuntime(input.runtime || input.runtimeKey || input.runtime_key || input.platform);
   const agentId = normalizeAgentId(input.agentId || input.agent_id);
@@ -4647,11 +5066,30 @@ async function ensureRuntimeAgent(paths, input) {
   const displayName = String(input.displayName || input.display_name || "").trim();
   const role = String(input.role || "").trim();
   const endpointRef = String(input.endpointRef || input.endpoint_ref || "").trim();
-  const platform = normalizeAgentPlatform(input.platform || input.runtimePlatform || input.runtime_platform, runtime);
-  const executionAdapter = normalizeExecutionAdapter(input.executionAdapter || input.execution_adapter, platform, runtime);
-  const imIngressOwner = normalizeImIngressOwner(input.imIngressOwner || input.im_ingress_owner, platform, runtime);
-  const imIngressAdapter = normalizeImIngressAdapter(input.imIngressAdapter || input.im_ingress_adapter, imIngressOwner, runtime);
-  const workflowIngressAdapter = normalizeWorkflowIngressAdapter(input.workflowIngressAdapter || input.workflow_ingress_adapter, platform, runtime);
+  const platformInput = input.platform || input.runtimePlatform || input.runtime_platform;
+  const executionAdapterInput = input.executionAdapter || input.execution_adapter;
+  const imIngressOwnerInput = input.imIngressOwner || input.im_ingress_owner;
+  const imIngressAdapterInput = input.imIngressAdapter || input.im_ingress_adapter;
+  const workflowIngressAdapterInput = input.workflowIngressAdapter || input.workflow_ingress_adapter;
+  const platform = normalizeAgentPlatform(platformInput, runtime);
+  const executionAdapter = normalizeExecutionAdapter(executionAdapterInput, platform, runtime);
+  const imIngressOwner = normalizeImIngressOwner(imIngressOwnerInput, platform, runtime);
+  const imIngressAdapter = normalizeImIngressAdapter(imIngressAdapterInput, imIngressOwner, runtime);
+  const workflowIngressAdapter = normalizeWorkflowIngressAdapter(workflowIngressAdapterInput, platform, runtime);
+  const imIdentityInput = input.imIdentity || input.im_identity;
+  const executionIdentityInput = input.executionIdentity || input.execution_identity;
+  const returnPolicyInput = input.returnPolicy || input.return_policy;
+  const imIdentity = normalizeImIdentity(imIdentityInput, imIngressOwner, imIngressAdapter, runtime);
+  const executionIdentity = normalizeExecutionIdentity(executionIdentityInput, platform, workflowIngressAdapter, runtime);
+  const returnPolicy = normalizeReturnPolicy(returnPolicyInput, executionIdentity === "hermers_acp" && imIdentity === "openclaw_route_shell" ? "reply_to_source_chat" : "silent");
+  const imIdentityExplicit = firstText(imIdentityInput) ? 1 : 0;
+  const executionIdentityExplicit = firstText(executionIdentityInput) ? 1 : 0;
+  const returnPolicyExplicit = firstText(returnPolicyInput) ? 1 : 0;
+  const platformExplicit = firstText(platformInput) ? 1 : 0;
+  const executionAdapterExplicit = firstText(executionAdapterInput) ? 1 : 0;
+  const imIngressOwnerExplicit = firstText(imIngressOwnerInput) ? 1 : 0;
+  const imIngressAdapterExplicit = firstText(imIngressAdapterInput) ? 1 : 0;
+  const workflowIngressAdapterExplicit = firstText(workflowIngressAdapterInput) ? 1 : 0;
   const canReceiveDispatch = boolInt(input.canReceiveDispatch ?? input.can_receive_dispatch, workflowIngressAdapter !== "none");
   const canStartWorkflow = boolInt(input.canStartWorkflow ?? input.can_start_workflow, true);
   const gatewayProxyAllowed = boolInt(input.gatewayProxyAllowed ?? input.gateway_proxy_allowed, imIngressOwner === "openclaw_gateway");
@@ -4663,11 +5101,14 @@ async function ensureRuntimeAgent(paths, input) {
   display_name=CASE WHEN ${sqlValue(displayName)} != '' THEN excluded.display_name ELSE runtime_agents.display_name END,
   role=CASE WHEN ${sqlValue(role)} != '' THEN excluded.role ELSE runtime_agents.role END,
   status=excluded.status,
-  platform=CASE WHEN ${sqlValue(platform)} != '' THEN excluded.platform ELSE runtime_agents.platform END,
-  execution_adapter=CASE WHEN ${sqlValue(executionAdapter)} != '' THEN excluded.execution_adapter ELSE runtime_agents.execution_adapter END,
-  im_ingress_owner=CASE WHEN ${sqlValue(imIngressOwner)} != '' THEN excluded.im_ingress_owner ELSE runtime_agents.im_ingress_owner END,
-  im_ingress_adapter=CASE WHEN ${sqlValue(imIngressAdapter)} != '' THEN excluded.im_ingress_adapter ELSE runtime_agents.im_ingress_adapter END,
-  workflow_ingress_adapter=CASE WHEN ${sqlValue(workflowIngressAdapter)} != '' THEN excluded.workflow_ingress_adapter ELSE runtime_agents.workflow_ingress_adapter END,
+  platform=CASE WHEN ${sqlValue(platformExplicit)}=1 OR runtime_agents.platform='' THEN excluded.platform ELSE runtime_agents.platform END,
+  execution_adapter=CASE WHEN ${sqlValue(executionAdapterExplicit)}=1 OR runtime_agents.execution_adapter='' THEN excluded.execution_adapter ELSE runtime_agents.execution_adapter END,
+  im_ingress_owner=CASE WHEN ${sqlValue(imIngressOwnerExplicit)}=1 OR runtime_agents.im_ingress_owner='' THEN excluded.im_ingress_owner ELSE runtime_agents.im_ingress_owner END,
+  im_ingress_adapter=CASE WHEN ${sqlValue(imIngressAdapterExplicit)}=1 OR runtime_agents.im_ingress_adapter='' THEN excluded.im_ingress_adapter ELSE runtime_agents.im_ingress_adapter END,
+  workflow_ingress_adapter=CASE WHEN ${sqlValue(workflowIngressAdapterExplicit)}=1 OR runtime_agents.workflow_ingress_adapter='' THEN excluded.workflow_ingress_adapter ELSE runtime_agents.workflow_ingress_adapter END,
+  im_identity=CASE WHEN ${sqlValue(imIdentityExplicit)}=1 OR runtime_agents.im_identity='' THEN excluded.im_identity ELSE runtime_agents.im_identity END,
+  execution_identity=CASE WHEN ${sqlValue(executionIdentityExplicit)}=1 OR runtime_agents.execution_identity='' THEN excluded.execution_identity ELSE runtime_agents.execution_identity END,
+  return_policy=CASE WHEN ${sqlValue(returnPolicyExplicit)}=1 OR runtime_agents.return_policy='' THEN excluded.return_policy ELSE runtime_agents.return_policy END,
   can_receive_dispatch=excluded.can_receive_dispatch,
   can_start_workflow=excluded.can_start_workflow,
   gateway_proxy_allowed=excluded.gateway_proxy_allowed,
@@ -4684,6 +5125,9 @@ async function ensureRuntimeAgent(paths, input) {
   im_ingress_owner=excluded.im_ingress_owner,
   im_ingress_adapter=excluded.im_ingress_adapter,
   workflow_ingress_adapter=excluded.workflow_ingress_adapter,
+  im_identity=excluded.im_identity,
+  execution_identity=excluded.execution_identity,
+  return_policy=excluded.return_policy,
   can_receive_dispatch=excluded.can_receive_dispatch,
   can_start_workflow=excluded.can_start_workflow,
   gateway_proxy_allowed=excluded.gateway_proxy_allowed,
@@ -4693,11 +5137,13 @@ async function ensureRuntimeAgent(paths, input) {
   metadata_json=excluded.metadata_json,
   updated_at=excluded.updated_at;`;
   await sqlite(paths.dbFile, `
-INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, routing_policy_json, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
-VALUES (${sqlValue(agentKey)}, ${sqlValue(runtime)}, ${sqlValue(agentId)}, ${sqlValue(displayName || agentId)}, ${sqlValue(role)}, ${sqlValue(input.status || "active")}, ${sqlValue(platform)}, ${sqlValue(executionAdapter)}, ${sqlValue(imIngressOwner)}, ${sqlValue(imIngressAdapter)}, ${sqlValue(workflowIngressAdapter)}, ${sqlValue(canReceiveDispatch)}, ${sqlValue(canStartWorkflow)}, ${sqlValue(gatewayProxyAllowed)}, ${sqlValue(JSON.stringify(routingPolicy))}, ${sqlValue(endpointRef)}, ${sqlValue(capabilitiesJson)}, ${sqlValue(metadataJson)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, routing_policy_json, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
+VALUES (${sqlValue(agentKey)}, ${sqlValue(runtime)}, ${sqlValue(agentId)}, ${sqlValue(displayName || agentId)}, ${sqlValue(role)}, ${sqlValue(input.status || "active")}, ${sqlValue(platform)}, ${sqlValue(executionAdapter)}, ${sqlValue(imIngressOwner)}, ${sqlValue(imIngressAdapter)}, ${sqlValue(workflowIngressAdapter)}, ${sqlValue(imIdentity)}, ${sqlValue(executionIdentity)}, ${sqlValue(returnPolicy)}, ${sqlValue(canReceiveDispatch)}, ${sqlValue(canStartWorkflow)}, ${sqlValue(gatewayProxyAllowed)}, ${sqlValue(JSON.stringify(routingPolicy))}, ${sqlValue(endpointRef)}, ${sqlValue(capabilitiesJson)}, ${sqlValue(metadataJson)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
 ON CONFLICT(agent_key) DO UPDATE SET
 ${conflictUpdate}`);
-  return { agentKey, runtime, agentId, platform, executionAdapter, imIngressOwner, imIngressAdapter, workflowIngressAdapter, canReceiveDispatch: Boolean(canReceiveDispatch), canStartWorkflow: Boolean(canStartWorkflow), gatewayProxyAllowed: Boolean(gatewayProxyAllowed) };
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM runtime_agents WHERE agent_key=${sqlValue(agentKey)} LIMIT 1;`, { json: true });
+  const saved = registrySnapshot(rows[0] || { agent_key: agentKey, runtime, agent_id: agentId, platform, execution_adapter: executionAdapter, im_ingress_owner: imIngressOwner, im_ingress_adapter: imIngressAdapter, workflow_ingress_adapter: workflowIngressAdapter, im_identity: imIdentity, execution_identity: executionIdentity, return_policy: returnPolicy, can_receive_dispatch: canReceiveDispatch, can_start_workflow: canStartWorkflow, gateway_proxy_allowed: gatewayProxyAllowed });
+  return { agentKey: saved.agentKey, runtime: rows[0]?.runtime || runtime, agentId: saved.agentId, platform: saved.platform, executionAdapter: saved.executionAdapter, imIngressOwner: saved.imIngressOwner, imIngressAdapter: saved.imIngressAdapter, workflowIngressAdapter: saved.workflowIngressAdapter, imIdentity: saved.imIdentity, executionIdentity: saved.executionIdentity, returnPolicy: saved.returnPolicy, canReceiveDispatch: saved.canReceiveDispatch, canStartWorkflow: saved.canStartWorkflow, gatewayProxyAllowed: saved.gatewayProxyAllowed };
 }
 
 export async function protocolRecord(rootDir, input) {
@@ -5343,15 +5789,10 @@ function routeShellAckText(result) {
     ].join("\n");
   }
   return [
-    "ROUTE_QUEUED",
+    "ROUTE_REGISTERED",
     `timestamp: ${result.createdAt}`,
-    `route_shell: openclaw_route_shell:${result.routeAgentId}`,
-    `target_platform: ${result.targetPlatform}:${result.targetAgentId}`,
-    `workflow_ingress_adapter: ${result.workflowIngressAdapter || ""}`,
-    `dispatch_id: ${result.dispatchId}`,
-    `workflow_id: ${result.workflowId}`,
     `trace_id: ${result.traceId}`,
-    `status: ${result.status}`
+    `flow_id: ${result.messageFlowId || ""}`
   ].join("\n");
 }
 
@@ -5375,20 +5816,52 @@ export async function routeShellIngest(rootDir, input = {}) {
   const workflowId = String(input.workflowId || input.workflow_id || meetingId).trim();
   const traceId = String(input.traceId || input.trace_id || (sourceMessageId ? `route-shell:${resolved.routeAgentId}:${cleanFileSegment(sourceMessageId)}` : safeId("route_trace"))).trim();
   const idempotencyKey = String(input.idempotencyKey || input.idempotency_key || (sourceMessageId ? `route-shell:${resolved.routeAgentId}:${sourceSystem}:${sourceMessageId}` : "")).trim();
+  const originalPayload = parseJsonValue(input.payload, input.payload || {});
+  const beforeDispatch = objectValue(originalPayload.beforeDispatch || originalPayload.before_dispatch);
+  const sourceChannel = messageFlowSourceChannel(input, originalPayload);
+  const sourceChatId = String(input.chatId || input.chat_id || input.conversationId || input.conversation_id || beforeDispatch.conversationId || beforeDispatch.conversation_id || "").trim();
+  const sourceAccountId = firstText(input.accountId, input.account_id, input.account, beforeDispatch.accountId, beforeDispatch.account_id);
+  const senderId = firstText(input.senderId, input.sender_id, input.from, beforeDispatch.senderId, beforeDispatch.sender_id);
+  const returnPolicy = normalizeReturnPolicy(input.returnPolicy || input.return_policy || input.deliveryPolicy || input.delivery_policy || targetRegistry.returnPolicy, targetRegistry.platform === "hermers" && sourceChannel === "telegram" ? "reply_to_source_chat" : "silent");
+  if (targetRegistry.platform !== "openclaw" && returnPolicy === "reply_to_source_chat" && (!sourceChannel || !sourceAccountId || !sourceChatId || !senderId || !sourceMessageId)) {
+    const result = {
+      ok: false,
+      status: "route_failed",
+      routeAgentId: resolved.routeAgentId,
+      createdAt,
+      reason: "non-openclaw route-shell message requires return path: source_channel, account_id, chat_id, sender_id, source_message_id",
+      dbFile: paths.dbFile
+    };
+    return { ...result, ackText: routeShellAckText(result) };
+  }
+  const messageFlowId = String(input.messageFlowId || input.message_flow_id || messageFlowIdFromParts(idempotencyKey, traceId, meetingId, sourceMessageId)).trim();
   const payload = {
+    messageFlowId,
     routeShell: {
+      messageFlowId,
       routeAgentId: resolved.routeAgentId,
       sourceRuntime,
       sourceSystem,
       sourceMessageId,
-      sourceChatId: String(input.chatId || input.chat_id || input.conversationId || input.conversation_id || "").trim(),
-      senderId: String(input.senderId || input.sender_id || input.from || "").trim(),
+      sourceChannel,
+      sourceAccountId,
+      sourceChatId,
+      senderId,
+      returnPolicy,
+      deliveryPolicy: returnPolicy,
+      returnPath: {
+        source_channel: sourceChannel,
+        account_id: sourceAccountId,
+        chat_id: sourceChatId,
+        sender_id: senderId,
+        source_message_id: sourceMessageId,
+        delivery_policy: returnPolicy
+      },
       receivedAt: input.receivedAt || input.received_at || createdAt,
       target: targetRegistry
     },
-    originalPayload: parseJsonValue(input.payload, input.payload || {})
+    originalPayload
   };
-
   if (idempotencyKey) {
     const existingRows = await sqlite(paths.dbFile, `
 SELECT *
@@ -5397,6 +5870,7 @@ WHERE idempotency_key=${sqlValue(idempotencyKey)}
 LIMIT 1;`, { json: true });
     const existing = existingRows[0];
     if (existing) {
+      const existingFlow = await readMessageFlow(paths, messageFlowId);
       const result = {
         ok: true,
         status: existing.status,
@@ -5414,6 +5888,8 @@ LIMIT 1;`, { json: true });
         traceId: existing.trace_id || traceId,
         idempotencyKey,
         dispatchId: existing.dispatch_id,
+        messageFlowId,
+        messageFlowStatus: existingFlow?.status || "",
         deduped: true,
         ingressMessageId: "",
         drainResult: null,
@@ -5422,6 +5898,33 @@ LIMIT 1;`, { json: true });
       return { ...result, ackText: routeShellAckText(result) };
     }
   }
+
+  await createMessageFlow(paths, {
+    flowId: messageFlowId,
+    traceId,
+    idempotencyKey,
+    meetingId,
+    workflowId,
+    sourceChannel,
+    sourceSystem,
+    sourceRuntime,
+    sourceAccountId,
+    sourceChatId,
+    senderId,
+    sourceMessageId,
+    routeAgentId: resolved.routeAgentId,
+    routeRuntime: "openclaw_route_shell",
+    targetRuntime: targetRegistry.platform,
+    targetAgentId: resolved.target.agent_id,
+    targetPlatform: targetRegistry.platform,
+    workflowIngressAdapter: targetRegistry.workflowIngressAdapter,
+    imIdentity: targetRegistry.imIdentity,
+    executionIdentity: targetRegistry.executionIdentity,
+    returnPolicy,
+    status: "inbound_received",
+    createdAt,
+    payload: { routeShell: payload.routeShell }
+  });
 
   let ingress = null;
   if (boolOption(input.recordIngress ?? input.record_ingress, true)) {
@@ -5464,6 +5967,14 @@ LIMIT 1;`, { json: true });
     maxAttempts: input.maxAttempts || input.max_attempts || 1,
     payload
   });
+  await updateMessageFlow(paths, messageFlowId, "route_registered", {
+    dispatchId: dispatch.dispatchId,
+    payload: {
+      dispatchId: dispatch.dispatchId,
+      dispatchStatus: dispatch.status,
+      workflowIngressAdapter: targetRegistry.workflowIngressAdapter
+    }
+  });
 
   let drainResult = null;
   if (boolOption(input.drainNow ?? input.drain_now, false) && dispatch.status === "queued") {
@@ -5494,6 +6005,7 @@ LIMIT 1;`, { json: true });
     traceId,
     idempotencyKey,
     dispatchId: dispatch.dispatchId,
+    messageFlowId,
     deduped: Boolean(dispatch.deduped),
     ingressMessageId: ingress?.messageId || "",
     drainResult,
@@ -5670,6 +6182,13 @@ async function runHermesDispatch(paths, row, input = {}) {
   const attempt = Number(row.attempt || 0) + 1;
   await updateDispatch(paths, row.dispatch_id, "sent", { adapter, profile, startedAt, attempt });
   const runtimeRunId = await recordRuntimeRun(paths, row, { adapter, status: "started", startedAt, attempt, payload: { profile } });
+  const flow = await messageFlowForDispatch(paths, row);
+  if (flow) {
+    await updateMessageFlow(paths, flow.flow_id, "runtime_dispatched", {
+      runtimeRunId,
+      payload: { dispatchId: row.dispatch_id, runtimeRunId, adapter, profile }
+    });
+  }
   await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
     event: "runtime_dispatch_started",
     dispatchId: row.dispatch_id,
@@ -5709,7 +6228,14 @@ async function runHermesDispatch(paths, row, input = {}) {
     });
     const reportDelivery = await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter, profile, completedAt, messageId: ingest.messageId, attempt });
-    await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { profile } });
+    const ackRuntimeRunId = safeId("runtime_run_ack");
+    await recordRuntimeRun(paths, row, { runtimeRunId: ackRuntimeRunId, adapter, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { profile } });
+    const messageFlowDelivery = await finishMessageFlowRuntime(paths, row, {
+      runtimeRunId: ackRuntimeRunId,
+      messageId: ingest.messageId,
+      text,
+      outputHash
+    }, input);
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       event: "runtime_dispatch_acked",
       dispatchId: row.dispatch_id,
@@ -5721,16 +6247,25 @@ async function runHermesDispatch(paths, row, input = {}) {
       messageId: ingest.messageId,
       completedAt,
       attempt,
-      runtimeRunId
+      runtimeRunId: ackRuntimeRunId,
+      messageFlowDelivery
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter, profile, messageId: ingest.messageId, reportDelivery };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter, profile, messageId: ingest.messageId, reportDelivery, messageFlowDelivery };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
     const failureType = classifyRuntimeError(error);
     const shouldRetry = AUTO_RETRY_FAILURE_TYPES.has(failureType) && attempt < Number(row.max_attempts || 1);
     await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter, profile, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
-    await recordRuntimeRun(paths, row, { adapter, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { profile, retry: shouldRetry } });
+    const failedRuntimeRunId = await recordRuntimeRun(paths, row, { adapter, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { profile, retry: shouldRetry } });
+    if (!shouldRetry) {
+      await finishMessageFlowRuntime(paths, row, {
+        runtimeRunId: failedRuntimeRunId,
+        finalOutputPresent: false,
+        failureType,
+        lastError: message
+      }, input);
+    }
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       event: "runtime_dispatch_failed",
       dispatchId: row.dispatch_id,
@@ -5972,6 +6507,14 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     const shouldRetry = attempt < Number(row.max_attempts || 1);
     await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
     const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, retry: shouldRetry, failClosed: true } });
+    if (!shouldRetry) {
+      await finishMessageFlowRuntime(paths, row, {
+        runtimeRunId,
+        finalOutputPresent: false,
+        failureType,
+        lastError: message
+      }, input);
+    }
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: failedAt,
       event: "runtime_dispatch_failed",
@@ -5995,6 +6538,13 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
   }
   await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "acp", backend: backendId, backendSource, acpAgent, sessionMode, sessionKey, startedAt, attempt });
   const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "started", startedAt, attempt, payload: { sessionMode, backendSource } });
+  const flow = await messageFlowForDispatch(paths, row);
+  if (flow) {
+    await updateMessageFlow(paths, flow.flow_id, "runtime_dispatched", {
+      runtimeRunId,
+      payload: { dispatchId: row.dispatch_id, runtimeRunId, adapter: "acp", backend: backendId, acpAgent, sessionMode }
+    });
+  }
   await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
     ts: startedAt,
     event: "runtime_dispatch_started",
@@ -6067,7 +6617,14 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     });
     const reportDelivery = await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "acp", backend: backendId, acpAgent, completedAt, messageId: ingest.messageId, attempt });
-    await recordRuntimeRun(paths, row, { runtimeRunId: safeId("runtime_run_ack"), adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { sessionMode, backendSource, events: acpEvents.slice(-20) } });
+    const ackRuntimeRunId = safeId("runtime_run_ack");
+    await recordRuntimeRun(paths, row, { runtimeRunId: ackRuntimeRunId, adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { sessionMode, backendSource, events: acpEvents.slice(-20) } });
+    const messageFlowDelivery = await finishMessageFlowRuntime(paths, row, {
+      runtimeRunId: ackRuntimeRunId,
+      messageId: ingest.messageId,
+      text,
+      outputHash
+    }, input);
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: completedAt,
       event: "runtime_dispatch_acked",
@@ -6084,17 +6641,26 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       messageId: ingest.messageId,
       completedAt,
       attempt,
-      runtimeRunId
+      runtimeRunId: ackRuntimeRunId,
+      messageFlowDelivery
     });
     if (sessionMode === "oneshot") await backend.runtime.close({ handle, reason: "trading-agents-workflow oneshot completed", discardPersistentState: true }).catch(() => {});
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "acp", backend: backendId, acpAgent, sessionKey, messageId: ingest.messageId, reportDelivery };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "acp", backend: backendId, acpAgent, sessionKey, messageId: ingest.messageId, reportDelivery, messageFlowDelivery };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
     const failureType = classifyRuntimeError(error);
     const shouldRetry = AUTO_RETRY_FAILURE_TYPES.has(failureType) && attempt < Number(row.max_attempts || 1);
     await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
-    await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, backendSource, retry: shouldRetry } });
+    const failedRuntimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, backendSource, retry: shouldRetry } });
+    if (!shouldRetry) {
+      await finishMessageFlowRuntime(paths, row, {
+        runtimeRunId: failedRuntimeRunId,
+        finalOutputPresent: false,
+        failureType,
+        lastError: message
+      }, input);
+    }
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: failedAt,
       event: "runtime_dispatch_failed",
@@ -7401,6 +7967,30 @@ LIMIT ${limit};`, { json: true });
   return { status, count: rows.length, rows, dbFile: paths.dbFile };
 }
 
+export async function messageFlowList(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const flowId = String(input.flowId || input.flow_id || "").trim();
+  const dispatchId = String(input.dispatchId || input.dispatch_id || "").trim();
+  const status = String(input.status || "").trim();
+  const where = [];
+  if (flowId) where.push(`flow_id=${sqlValue(flowId)}`);
+  if (dispatchId) where.push(`dispatch_id=${sqlValue(dispatchId)}`);
+  if (status) where.push(`status=${sqlValue(status)}`);
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const limit = Math.max(1, Math.min(200, Number(input.limit || 20)));
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM message_flows
+${whereSql}
+ORDER BY updated_at DESC
+LIMIT ${limit};`, { json: true });
+  for (const row of rows) {
+    row.payload = parseJsonValue(row.payload_json, {});
+    delete row.payload_json;
+  }
+  return { count: rows.length, rows, dbFile: paths.dbFile };
+}
+
 async function acquireControlLoopLease(paths, input = {}) {
   const owner = String(input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}`).trim();
   const leaseMs = Math.max(10_000, Math.min(600_000, Number(input.leaseMs || input.lease_ms || 120_000)));
@@ -8390,6 +8980,11 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return meetingDisperse(rootDir, input);
     case "telegram.outbox":
       return telegramOutbox(rootDir, input);
+    case "message_flow.list":
+    case "message_flow.status":
+    case "workflow.message_flow.list":
+    case "workflow.message_flow.status":
+      return messageFlowList(rootDir, input);
     case "protocol.record":
     case "protocol.object":
       return protocolRecord(rootDir, input);

@@ -80,12 +80,15 @@ Route-shell forwarding must be a Gateway pre-dispatch routing action, not an age
 
 - extracts the route-shell agent id from the OpenClaw session key, for example `agent:cat_ears:telegram:...`;
 - resolves the target through `runtime_agents` by `agent_id`, `platform`, `im_ingress_owner`, `im_ingress_adapter`, and `workflow_ingress_adapter`;
+- creates a `message_flows` record with source channel, account, chat, sender, source message id, IM identity, execution identity, and return policy;
 - records a `route_shell_ingress` message with timestamp and source metadata;
 - creates a durable `route_shell_forward` dispatch to the same agent's registered target platform and workflow ingress adapter;
 - returns `handled=true` so OpenClaw does not run the route-shell agent model;
-- replies with `ROUTE_QUEUED` or `ROUTE_FAILED`.
+- by default stays silent on successful routing; if `ack=true`, replies only with minimal `ROUTE_REGISTERED`, `trace_id`, and `flow_id`.
 
-This is fail-closed by default. If the registered Gateway ingress row or dispatch-capable target row is missing, the hook handles the message and returns `ROUTE_FAILED`; it does not fall back to the OpenClaw route-shell agent. `drainNow` defaults to `false` because Gateway dispatch should not synchronously run external platform work. The 10s control loop should drain the queued dispatch.
+This is fail-closed by default. If the registered Gateway ingress row, dispatch-capable target row, or required return path is missing, the hook handles the message and returns `ROUTE_FAILED`; it does not fall back to the OpenClaw route-shell agent. `drainNow` defaults to `false` because Gateway dispatch should not synchronously run external platform work. The 10s control loop should drain the queued dispatch.
+
+For non-OpenClaw agents, a route-shell acknowledgement is never a formal agent reply. The formal success condition is a completed message flow: `final_output_present=1` and `delivery_receipt_present=1`, normally with `message_flows.status=telegram_sent`. `dispatch.status=acked` means only that the runtime turn ended.
 
 The hook also applies in-process single-flight by route-shell agent, channel, and source message id. Concurrent provider retries for the same Telegram message wait on the same routing promise instead of creating a thundering herd against SQLite. SQLite unique idempotency still remains the durable backstop across process restarts.
 
@@ -101,7 +104,7 @@ Configuration example:
     "channels": ["*"],
     "priority": "normal",
     "drainNow": false,
-    "ack": true,
+    "ack": false,
     "blockOnFailure": true
   }
 }

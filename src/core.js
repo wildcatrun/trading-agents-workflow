@@ -1216,6 +1216,8 @@ export async function runAction(rootDir, input = {}) {
     action === "telegram.live" ||
     action === "telegram.live.configure" ||
     action === "telegram.outbox" ||
+    action === "message_flow.list" ||
+    action === "message_flow.status" ||
     action === "meeting.runtime_participant" ||
     action === "meeting.dispatch" ||
     action === "meeting.ingest" ||

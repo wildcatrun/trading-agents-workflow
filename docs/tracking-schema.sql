@@ -255,6 +255,9 @@ CREATE TABLE runtime_agents (
   im_ingress_owner TEXT NOT NULL DEFAULT '',
   im_ingress_adapter TEXT NOT NULL DEFAULT '',
   workflow_ingress_adapter TEXT NOT NULL DEFAULT '',
+  im_identity TEXT NOT NULL DEFAULT '',
+  execution_identity TEXT NOT NULL DEFAULT '',
+  return_policy TEXT NOT NULL DEFAULT '',
   can_receive_dispatch INTEGER NOT NULL DEFAULT 1,
   can_start_workflow INTEGER NOT NULL DEFAULT 1,
   gateway_proxy_allowed INTEGER NOT NULL DEFAULT 1,
@@ -336,6 +339,63 @@ CREATE TABLE telegram_outbox (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX idx_telegram_outbox_status ON telegram_outbox(status, created_at);
+CREATE TABLE message_flows (
+  flow_id TEXT PRIMARY KEY,
+  trace_id TEXT,
+  idempotency_key TEXT,
+  meeting_id TEXT NOT NULL,
+  workflow_id TEXT,
+  dispatch_id TEXT,
+  runtime_run_id TEXT,
+  message_id TEXT,
+  outbox_id TEXT,
+  source_channel TEXT NOT NULL DEFAULT '',
+  source_system TEXT NOT NULL DEFAULT '',
+  source_runtime TEXT NOT NULL DEFAULT '',
+  source_account_id TEXT NOT NULL DEFAULT '',
+  source_chat_id TEXT NOT NULL DEFAULT '',
+  sender_id TEXT NOT NULL DEFAULT '',
+  source_message_id TEXT NOT NULL DEFAULT '',
+  route_agent_id TEXT NOT NULL DEFAULT '',
+  route_runtime TEXT NOT NULL DEFAULT '',
+  target_runtime TEXT NOT NULL DEFAULT '',
+  target_agent_id TEXT NOT NULL DEFAULT '',
+  target_platform TEXT NOT NULL DEFAULT '',
+  workflow_ingress_adapter TEXT NOT NULL DEFAULT '',
+  im_identity TEXT NOT NULL DEFAULT '',
+  execution_identity TEXT NOT NULL DEFAULT '',
+  return_policy TEXT NOT NULL DEFAULT 'silent',
+  status TEXT NOT NULL,
+  inbound_received_at TEXT,
+  route_registered_at TEXT,
+  runtime_dispatched_at TEXT,
+  runtime_completed_at TEXT,
+  runtime_failed_at TEXT,
+  outbound_queued_at TEXT,
+  telegram_sent_at TEXT,
+  telegram_failed_at TEXT,
+  completed_at TEXT,
+  failure_type TEXT,
+  last_error TEXT,
+  final_output_present INTEGER NOT NULL DEFAULT 0,
+  delivery_receipt_present INTEGER NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_message_flows_status ON message_flows(status, updated_at);
+CREATE INDEX idx_message_flows_dispatch ON message_flows(dispatch_id);
+CREATE INDEX idx_message_flows_trace ON message_flows(trace_id);
+CREATE INDEX idx_message_flows_outbox ON message_flows(outbox_id);
+CREATE TABLE message_flow_events (
+  event_id TEXT PRIMARY KEY,
+  flow_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_message_flow_events_flow ON message_flow_events(flow_id, created_at);
 CREATE TABLE human_gate_buttons (
   button_id TEXT PRIMARY KEY,
   callback_token TEXT NOT NULL UNIQUE,
