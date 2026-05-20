@@ -1920,6 +1920,27 @@ function controlLoopWorkerArgs(config, root, reason) {
   return args;
 }
 
+function signalControlLoopWorker(child, signal) {
+  if (!child?.pid) return;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      if (error?.code !== "ESRCH") {
+        console.error(`[trading-agents-workflow] failed to signal control loop worker group ${child.pid}: ${error.message}`);
+      }
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch (error) {
+    if (error?.code !== "ESRCH") {
+      console.error(`[trading-agents-workflow] failed to signal control loop worker ${child.pid}: ${error.message}`);
+    }
+  }
+}
+
 function runControlLoopWorker(api, config, reason) {
   if (config.workerMode === "inline") {
     return runAction(resolveRoot(api), {
@@ -1953,6 +1974,7 @@ function runControlLoopWorker(api, config, reason) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, controlLoopWorkerArgs(config, resolveRoot(api), reason), {
       cwd: PLUGIN_DIR,
+      detached: process.platform !== "win32",
       env: {
         ...process.env,
         TRADING_AGENTS_WORKFLOW_CONTROL_LOOP_WORKER: "1"
@@ -1960,9 +1982,15 @@ function runControlLoopWorker(api, config, reason) {
       stdio: ["ignore", "ignore", "pipe"]
     });
     let stderr = "";
+    let sigkillTimer = null;
     const killAfterMs = Math.max(config.tickBudgetMs + 15_000, (config.timeoutSeconds + 15) * 1000);
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      console.error(`[trading-agents-workflow] control loop worker timed out after ${killAfterMs}ms; terminating process group`);
+      signalControlLoopWorker(child, "SIGTERM");
+      sigkillTimer = setTimeout(() => {
+        signalControlLoopWorker(child, "SIGKILL");
+      }, 5_000);
+      if (typeof sigkillTimer.unref === "function") sigkillTimer.unref();
     }, killAfterMs);
     if (typeof timer.unref === "function") timer.unref();
     child.stderr.on("data", (chunk) => {
@@ -1971,11 +1999,13 @@ function runControlLoopWorker(api, config, reason) {
     });
     child.on("error", (error) => {
       clearTimeout(timer);
+      if (sigkillTimer) clearTimeout(sigkillTimer);
       console.error(`[trading-agents-workflow] control loop worker failed to start: ${error.message}`);
       resolve();
     });
     child.on("exit", (code, signal) => {
       clearTimeout(timer);
+      if (sigkillTimer) clearTimeout(sigkillTimer);
       if (code !== 0 || signal) {
         const suffix = stderr.trim() ? `: ${stderr.trim().slice(-1000)}` : "";
         console.error(`[trading-agents-workflow] control loop worker exited code=${code ?? ""} signal=${signal || ""}${suffix}`);
