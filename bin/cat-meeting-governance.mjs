@@ -580,10 +580,26 @@ function toAction({ command, positional, options }) {
   }
 }
 
-try {
-  const request = toAction(parseArgv(process.argv.slice(2)));
-  if (request) console.log(JSON.stringify(await runAction(request.root, request.input), null, 2));
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
+async function writeLine(stream, text) {
+  await new Promise((resolve, reject) => {
+    stream.write(`${text}\n`, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
+
+async function main() {
+  try {
+    const request = toAction(parseArgv(process.argv.slice(2)));
+    if (request) {
+      await writeLine(process.stdout, JSON.stringify(await runAction(request.root, request.input), null, 2));
+    }
+    return 0;
+  } catch (error) {
+    await writeLine(process.stderr, error instanceof Error ? error.message : String(error)).catch(() => {});
+    return 1;
+  }
+}
+
+process.exit(await main());
