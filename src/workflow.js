@@ -4997,6 +4997,7 @@ function messageFlowOutputIsFinal(text = "") {
   const value = String(text || "").trim();
   const lower = value.toLowerCase();
   if (!value) return false;
+  if (/^heartbeat_ok\b/i.test(value)) return true;
   if (lower.startsWith("operation interrupted:")) return false;
   if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return false;
   return true;
