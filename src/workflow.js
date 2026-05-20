@@ -6325,6 +6325,7 @@ function buildRuntimeBridgePrompt(row) {
     "- State evidence, assumptions, uncertainty, and next workflow action clearly.",
     humanGateRequirement,
     "- For normal message-flow replies, the next workflow action must describe the actual reply/report path, not an invented approval gate.",
+    "- ACP runs non-interactively. Do not request interactive permissions; use only already-authorized capabilities, or return a bounded failure/degraded result with the missing permission or adapter named.",
     "- Do not execute live trades or create executable trade intents.",
     "- If a structured workflow object is needed, name the intended object type such as research_signal, evidence_pack, research_memo, trade_proposal, risk_decision, or artifact."
   ].filter(Boolean).join("\n");
@@ -6355,6 +6356,7 @@ WHERE dispatch_id=${sqlValue(dispatchId)};`);
 function classifyRuntimeError(error) {
   const message = error instanceof Error ? error.message : String(error || "");
   const lower = message.toLowerCase();
+  if (lower.includes("permission prompt unavailable") || lower.includes("permission") && lower.includes("non-interactive")) return "permission_unavailable";
   if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return "runtime_timeout";
   if (lower.includes("abort") || lower.includes("timeout") || lower.includes("timed out")) return "runtime_timeout";
   if (lower.includes("acp runtime backend") || lower.includes("acp") && lower.includes("unavailable")) return "acp_unavailable";
