@@ -6814,6 +6814,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       requestId: row.dispatch_id,
       signal: controller.signal
     }, timeoutSeconds, controller);
+    if (!text && controller.signal.aborted) throw acpTimeoutError(timeoutSeconds);
     if (!text) throw new Error("Hermes ACP returned empty output");
     if (!messageFlowOutputIsFinal(text)) throw new Error(`Hermes ACP returned incomplete output: ${compactText(text, 500)}`);
     const completedAt = nowIso();
