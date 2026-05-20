@@ -88,6 +88,103 @@ def run_remote(script: str, timeout: int = 30) -> dict[str, Any]:
     return run(cmd, timeout=max(timeout, 30))
 
 
+def workflow_db_path(source: str) -> str:
+    if source == "local":
+        return str(local_repo() / "tracking.db")
+    return f"{remote_path().rstrip('/')}/tracking.db"
+
+
+def db_query(source: str, query: str, params: list[Any] | None = None, timeout: int = 30) -> dict[str, Any]:
+    params = params or []
+    if source == "local":
+        db = Path(workflow_db_path(source))
+        if not db.exists():
+            return {"ok": False, "database": str(db), "exists": False, "rows": [], "error": "database not found"}
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+            return {"ok": True, "database": str(db), "exists": True, "rows": rows}
+        except Exception as exc:
+            return {"ok": False, "database": str(db), "exists": True, "rows": [], "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            conn.close()
+    if source == "remote":
+        payload = json.dumps({"db": workflow_db_path(source), "query": query, "params": params}, ensure_ascii=False)
+        code = (
+            "import json,sqlite3,sys;"
+            "p=json.loads(sys.stdin.read());"
+            "c=sqlite3.connect(p['db']);"
+            "c.row_factory=sqlite3.Row;"
+            "rows=[dict(r) for r in c.execute(p['query'], p.get('params') or []).fetchall()];"
+            "c.close();"
+            "print(json.dumps(rows, ensure_ascii=False))"
+        )
+        result = run_remote(f"printf %s {shlex.quote(payload)} | python3 -c {shlex.quote(code)}", timeout=timeout)
+        try:
+            rows = json.loads(result.get("stdout") or "[]") if result.get("ok") else []
+        except json.JSONDecodeError:
+            rows = []
+        return {"ok": result.get("ok"), "database": workflow_db_path(source), "exists": True, "rows": rows, "remote": result}
+    raise ValueError("source must be local or remote")
+
+
+def table_columns(source: str, table: str) -> list[str]:
+    if not table.replace("_", "").isalnum():
+        raise ValueError("unsafe table name")
+    result = db_query(source, f"PRAGMA table_info({table})")
+    return [str(row.get("name")) for row in result.get("rows", []) if row.get("name")]
+
+
+def select_table(
+    source: str,
+    table: str,
+    desired_columns: list[str],
+    filters: dict[str, Any] | None = None,
+    contains: dict[str, str] | None = None,
+    order_columns: list[str] | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    columns = table_columns(source, table)
+    if not columns:
+        return {"table": table, "exists": False, "columns": [], "rows": []}
+    selected = [col for col in desired_columns if col in columns] or columns
+    where = []
+    params: list[Any] = []
+    for col, value in (filters or {}).items():
+        if value in (None, "") or col not in columns:
+            continue
+        where.append(f"{col} = ?")
+        params.append(value)
+    for col, value in (contains or {}).items():
+        if value in (None, "") or col not in columns:
+            continue
+        where.append(f"{col} LIKE ?")
+        params.append(f"%{value}%")
+    order = ""
+    for col in order_columns or []:
+        if col in columns:
+            order = f" ORDER BY {col} DESC"
+            break
+    safe_limit = max(1, min(int(limit), 500))
+    query = f"SELECT {', '.join(selected)} FROM {table}"
+    if where:
+        query += " WHERE " + " AND ".join(where)
+    query += f"{order} LIMIT ?"
+    params.append(safe_limit)
+    result = db_query(source, query, params)
+    return {
+        "table": table,
+        "exists": True,
+        "columns": columns,
+        "selectedColumns": selected,
+        "rows": result.get("rows", []),
+        "queryOk": result.get("ok"),
+        "error": result.get("error"),
+        "remote": result.get("remote"),
+    }
+
+
 def git_status(args: dict[str, Any]) -> dict[str, Any]:
     repo = local_repo()
     status = run(["git", "status", "--short", "--branch"], cwd=repo)
@@ -195,6 +292,219 @@ def runtime_agents(args: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def receipts(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    limit = max(1, min(int(args.get("limit") or 50), 200))
+    filters = {
+        "workflow_id": str(args.get("workflow_id") or args.get("workflowId") or "").strip(),
+        "dispatch_id": str(args.get("dispatch_id") or args.get("dispatchId") or "").strip(),
+        "agent_id": str(args.get("agent_id") or args.get("agentId") or "").strip(),
+        "runtime": str(args.get("runtime") or "").strip(),
+        "status": str(args.get("status") or "").strip(),
+    }
+    runtime_rows = select_table(
+        source,
+        "runtime_runs",
+        [
+            "runtime_run_id",
+            "dispatch_id",
+            "meeting_id",
+            "workflow_id",
+            "trace_id",
+            "runtime",
+            "agent_id",
+            "adapter",
+            "status",
+            "failure_type",
+            "attempt",
+            "started_at",
+            "completed_at",
+            "latency_ms",
+            "message_id",
+            "error",
+        ],
+        filters=filters,
+        order_columns=["completed_at", "started_at"],
+        limit=limit,
+    )
+    outbox_contains = {
+        "payload_json": filters["workflow_id"] or filters["dispatch_id"],
+        "text": str(args.get("text_contains") or args.get("textContains") or "").strip(),
+    }
+    outbox_rows = select_table(
+        source,
+        "telegram_outbox",
+        ["outbox_id", "meeting_id", "target_kind", "target_ref", "message_type", "status", "created_at", "updated_at", "payload_json"],
+        filters={"status": filters["status"]},
+        contains=outbox_contains,
+        order_columns=["updated_at", "created_at"],
+        limit=limit,
+    )
+    trading_core_rows = select_table(
+        source,
+        "trading_core_receipts",
+        ["receipt_id", "intent_id", "status", "trading_core_ref", "source_system", "created_at", "payload_json"],
+        filters={"status": filters["status"]},
+        contains={"payload_json": filters["workflow_id"] or filters["dispatch_id"]},
+        order_columns=["created_at"],
+        limit=limit,
+    )
+    payload = {
+        "source": source,
+        "database": workflow_db_path(source),
+        "limit": limit,
+        "runtimeRuns": runtime_rows,
+        "telegramOutbox": outbox_rows,
+        "tradingCoreReceipts": trading_core_rows,
+    }
+    audit({"event": "receipts", "source": source, "runtime_count": len(runtime_rows.get("rows", []))})
+    return payload
+
+
+def message_flows(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    limit = max(1, min(int(args.get("limit") or 50), 200))
+    filters = {
+        "workflow_id": str(args.get("workflow_id") or args.get("workflowId") or "").strip(),
+        "dispatch_id": str(args.get("dispatch_id") or args.get("dispatchId") or "").strip(),
+        "status": str(args.get("status") or "").strip(),
+        "agent_id": str(args.get("agent_id") or args.get("agentId") or "").strip(),
+    }
+    rows = select_table(
+        source,
+        "message_flows",
+        [
+            "flow_id",
+            "message_flow_id",
+            "workflow_id",
+            "dispatch_id",
+            "meeting_id",
+            "source_channel",
+            "source_account_id",
+            "agent_id",
+            "runtime",
+            "status",
+            "final_output_present",
+            "delivery_receipt_present",
+            "runtime_completed_at",
+            "outbox_id",
+            "created_at",
+            "updated_at",
+            "payload_json",
+        ],
+        filters=filters,
+        contains={"payload_json": str(args.get("contains") or "").strip()},
+        order_columns=["updated_at", "created_at"],
+        limit=limit,
+    )
+    payload = {"source": source, "database": workflow_db_path(source), "limit": limit, "messageFlows": rows}
+    audit({"event": "message_flows", "source": source, "count": len(rows.get("rows", []))})
+    return payload
+
+
+def incidents(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    limit = max(1, min(int(args.get("limit") or 50), 200))
+    filters = {
+        "status": str(args.get("status") or "").strip(),
+        "mode": str(args.get("mode") or "").strip(),
+        "incident_id": str(args.get("incident_id") or args.get("incidentId") or "").strip(),
+    }
+    rows = select_table(
+        source,
+        "incident_states",
+        [
+            "incident_id",
+            "status",
+            "mode",
+            "summary",
+            "commander",
+            "impact",
+            "mitigation",
+            "declared_at",
+            "next_update_at",
+            "resolved_at",
+            "updated_at",
+            "payload_json",
+        ],
+        filters=filters,
+        contains={"payload_json": str(args.get("workflow_id") or args.get("workflowId") or args.get("contains") or "").strip()},
+        order_columns=["updated_at", "declared_at"],
+        limit=limit,
+    )
+    payload = {"source": source, "database": workflow_db_path(source), "limit": limit, "incidents": rows}
+    audit({"event": "incidents", "source": source, "count": len(rows.get("rows", []))})
+    return payload
+
+
+def reconcile_dry_run(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    limit = max(1, min(int(args.get("limit") or 20), 100))
+    stale_after_ms = max(60_000, min(int(args.get("stale_after_ms") or args.get("staleAfterMs") or 300_000), 24 * 3600_000))
+    cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(milliseconds=stale_after_ms)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    stale_dispatches = db_query(
+        source,
+        """
+        SELECT d.dispatch_id, d.workflow_id, d.meeting_id, d.runtime, d.agent_id, d.status,
+               d.sent_at, d.updated_at, d.attempt, d.max_attempts,
+               (SELECT rr.status FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id ORDER BY COALESCE(rr.completed_at, rr.started_at) DESC LIMIT 1) AS latest_runtime_status,
+               (SELECT rr.completed_at FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id ORDER BY COALESCE(rr.completed_at, rr.started_at) DESC LIMIT 1) AS latest_runtime_completed_at
+        FROM mixed_meeting_dispatches d
+        WHERE d.status='sent' AND COALESCE(NULLIF(d.updated_at,''), d.created_at) < ?
+        ORDER BY COALESCE(NULLIF(d.updated_at,''), d.created_at)
+        LIMIT ?
+        """,
+        [cutoff, limit],
+    )
+    message_flow_columns = table_columns(source, "message_flows")
+    message_flow_candidates: dict[str, Any]
+    if message_flow_columns:
+        where = []
+        params: list[Any] = []
+        if "runtime_completed_at" in message_flow_columns:
+            where.append("runtime_completed_at < ?")
+            params.append(cutoff)
+        if "final_output_present" in message_flow_columns:
+            where.append("final_output_present=1")
+        if "delivery_receipt_present" in message_flow_columns:
+            where.append("delivery_receipt_present=0")
+        query = "SELECT * FROM message_flows"
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY updated_at DESC LIMIT ?" if "updated_at" in message_flow_columns else " LIMIT ?"
+        params.append(limit)
+        message_flow_candidates = db_query(source, query, params)
+    else:
+        message_flow_candidates = {"ok": True, "exists": False, "rows": [], "note": "message_flows table not present"}
+    incidents_rows = select_table(
+        source,
+        "incident_states",
+        ["incident_id", "status", "mode", "summary", "updated_at", "next_update_at"],
+        filters={},
+        contains={},
+        order_columns=["updated_at", "declared_at"],
+        limit=limit,
+    )
+    payload = {
+        "source": source,
+        "database": workflow_db_path(source),
+        "dryRun": True,
+        "staleAfterMs": stale_after_ms,
+        "cutoff": cutoff,
+        "wouldCall": [
+            "workflow.dispatch.reconcile",
+            "workflow.message_flow.reconcile",
+            "incident.state"
+        ],
+        "mutated": False,
+        "staleDispatchCandidates": stale_dispatches,
+        "messageFlowCandidates": message_flow_candidates,
+        "recentIncidents": incidents_rows,
+    }
+    audit({"event": "reconcile_dry_run", "source": source, "stale_count": len(stale_dispatches.get("rows", []))})
+    return payload
+
+
 TOOLS: dict[str, dict[str, Any]] = {
     "workflow_git_status": {
         "description": "Return local Git status for the trading-agents-workflow repository.",
@@ -227,6 +537,77 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "source": {"type": "string", "enum": ["local", "remote"]},
                 "runtime": {"type": "string"},
+                "limit": {"type": "number"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "workflow_receipts": {
+        "description": "Read workflow receipt surfaces: runtime_runs, telegram_outbox, and trading_core_receipts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "workflow_id": {"type": "string"},
+                "workflowId": {"type": "string"},
+                "dispatch_id": {"type": "string"},
+                "dispatchId": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "agentId": {"type": "string"},
+                "runtime": {"type": "string"},
+                "status": {"type": "string"},
+                "text_contains": {"type": "string"},
+                "textContains": {"type": "string"},
+                "limit": {"type": "number"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "workflow_message_flows": {
+        "description": "Read message_flow records when the workflow database has the message_flows table.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "workflow_id": {"type": "string"},
+                "workflowId": {"type": "string"},
+                "dispatch_id": {"type": "string"},
+                "dispatchId": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "agentId": {"type": "string"},
+                "status": {"type": "string"},
+                "contains": {"type": "string"},
+                "limit": {"type": "number"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "workflow_incidents": {
+        "description": "Read workflow incident_states records.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "incident_id": {"type": "string"},
+                "incidentId": {"type": "string"},
+                "workflow_id": {"type": "string"},
+                "workflowId": {"type": "string"},
+                "status": {"type": "string"},
+                "mode": {"type": "string"},
+                "contains": {"type": "string"},
+                "limit": {"type": "number"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "workflow_reconcile_dry_run": {
+        "description": "Read-only reconcile planner for stale dispatches, message_flow candidates, and incident evidence. Does not mutate workflow state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "stale_after_ms": {"type": "number"},
+                "staleAfterMs": {"type": "number"},
                 "limit": {"type": "number"},
             },
             "additionalProperties": False,
@@ -277,6 +658,14 @@ def handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
                 payload = latest_jsonl(arguments)
             elif name == "workflow_runtime_agents":
                 payload = runtime_agents(arguments)
+            elif name == "workflow_receipts":
+                payload = receipts(arguments)
+            elif name == "workflow_message_flows":
+                payload = message_flows(arguments)
+            elif name == "workflow_incidents":
+                payload = incidents(arguments)
+            elif name == "workflow_reconcile_dry_run":
+                payload = reconcile_dry_run(arguments)
             else:
                 raise ValueError(f"unknown tool: {name}")
             return {"jsonrpc": "2.0", "id": req_id, "result": tool_result(payload)}

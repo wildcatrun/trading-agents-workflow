@@ -1,7 +1,7 @@
 {
   "name": "trading-agents-workflow",
   "version": "0.1.0",
-  "description": "Codex control-plane access for the trading-agents workflow registry, governance logs, and Git-managed workflow assets.",
+  "description": "Codex control-plane access for the trading-agents workflow registry, receipts, incidents, reconcile dry-runs, governance logs, and Git-managed workflow assets.",
   "author": {
     "name": "Flashcat",
     "email": "flashcat@localhost",
@@ -21,8 +21,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Trading Agents Workflow",
-    "shortDescription": "Inspect cat-system workflow registry, logs, and Git state.",
-    "longDescription": "Provides local Codex with a governed MCP entrypoint for trading-agents-workflow readiness logs, runtime agent registry, server snapshots, and local Git status.",
+    "shortDescription": "Inspect workflow registry, receipts, incidents, logs, and Git state.",
+    "longDescription": "Provides local Codex with a governed MCP entrypoint for trading-agents-workflow readiness logs, runtime agent registry, receipts, message flows, incidents, reconcile dry-runs, server snapshots, and local Git status.",
     "developerName": "Flashcat",
     "category": "Developer Tools",
     "capabilities": [
@@ -33,6 +33,8 @@
     "defaultPrompt": [
       "Check trading-agents workflow readiness.",
       "List registered runtime agents.",
+      "Show workflow receipts and incidents.",
+      "Run a workflow reconcile dry-run.",
       "Compare workflow server state with Git."
     ],
     "brandColor": "#2563EB"

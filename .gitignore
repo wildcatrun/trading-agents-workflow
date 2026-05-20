@@ -27,6 +27,8 @@ coverage/
 *.db
 *.db-*
 backups/
+governance-logs/stability-evidence-latest.json
+governance-logs/stability-evidence-latest.md
 
 # Large local archives
 *.tar

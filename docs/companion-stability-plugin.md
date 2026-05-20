@@ -24,6 +24,15 @@ It improves observability, readiness checks, incident evidence, and guarded low-
 - OpenClaw, Hermers, Telegram, cron, session, and data freshness observations
 - low-risk repair only when policy and risk gates permit
 
+## Evidence Handoff
+
+`cat-agents-stability` writes the latest stability evidence package into this repository:
+
+- `governance-logs/stability-evidence-latest.json`
+- `governance-logs/stability-evidence-latest.md`
+
+Cat-brain `main` should read those artifacts during 30min semantic governance checks before deciding whether the workflow has enough evidence to ask Cat Claw for Human Gate submission.
+
 Cat-brain `main` consumes both sets of evidence and remains responsible for semantic incident command and Human Gate escalation judgment.
 
 ## Write Contract
