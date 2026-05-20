@@ -6270,6 +6270,18 @@ function buildRuntimeBridgePrompt(row) {
   const role = row.role ? `Runtime role: ${row.role}` : "";
   const createdBy = row.created_by || payload.chair || "main";
   const invocationTs = nowIso();
+  const dispatchType = row.dispatch_type || payload.dispatchType || "discussion_turn";
+  const heartbeatBudget = dispatchType === "cron_heartbeat"
+    ? [
+        "",
+        "Cron heartbeat runtime budget:",
+        "- This heartbeat is a lightweight liveness/readiness check, not a heavy report.",
+        "- Finish within the workflow runtime budget; prefer a timely bounded reply over exhaustive diagnostics.",
+        "- Use at most 4 quick tool calls. Do not run broad scans, long scripts, package installs, or slow network probes.",
+        "- If a check is slow, blocked, or inconclusive, skip it and report skipped_due_to_budget with the evidence you already have.",
+        "- Start the final answer with HEARTBEAT_OK when basic liveness is confirmed, or HEARTBEAT_DEGRADED when a real issue is found."
+      ]
+    : [];
   return [
     "You are being invoked by trading-agents-workflow through the OpenClaw gateway control plane.",
     "Treat this as one assigned collaboration turn in a mixed-runtime trading_agents workflow.",
@@ -6281,7 +6293,8 @@ function buildRuntimeBridgePrompt(row) {
     `Assigned agent: ${row.runtime}:${row.agent_id}`,
     `Created by: ${createdBy}`,
     role,
-    `Dispatch type: ${row.dispatch_type || payload.dispatchType || "discussion_turn"}`,
+    `Dispatch type: ${dispatchType}`,
+    ...heartbeatBudget,
     "",
     "Task:",
     row.prompt || payload.prompt || "",
