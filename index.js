@@ -84,6 +84,42 @@ function normalizeAgentId(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function configuredAgentSet(api, key, fallback = []) {
+  const accessConfig = objectConfig(pluginConfig(api).toolAccess);
+  return new Set(configList(accessConfig[key] ?? pluginConfig(api)[key], fallback).map(normalizeAgentId));
+}
+
+function workflowToolMode(api, toolContext = {}) {
+  const agentId = normalizeAgentId(toolContext.agentId);
+  const disabledAgents = configuredAgentSet(api, "disabledAgents", []);
+  if (disabledAgents.has(agentId)) return "disabled";
+  const fullAgents = configuredAgentSet(api, "fullAgents", ["main", "cat_claw"]);
+  if (fullAgents.has(agentId)) return "full";
+  return "message_only";
+}
+
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== ""));
+}
+
+function messageFlowSendInput(params = {}, toolContext = {}) {
+  const sourceAgent = normalizeAgentId(params.fromAgent ?? params.from_agent ?? toolContext.agentId ?? "unknown");
+  return compactObject({
+    action: "message_flow.send",
+    fromAgent: sourceAgent,
+    fromRuntime: params.fromRuntime ?? params.from_runtime ?? "openclaw",
+    to: params.to,
+    body: params.body,
+    subject: params.subject,
+    workflowId: params.workflowId ?? params.workflow_id,
+    meetingId: params.meetingId ?? params.meeting_id,
+    requiresAck: params.requiresAck ?? params.requires_ack,
+    sourceSystem: "openclaw_plugin",
+    createdBy: `openclaw:${sourceAgent || "unknown"}`,
+    calledAt: new Date().toISOString()
+  });
+}
+
 function isPluginInspectionProcess() {
   const args = process.argv.map((arg) => String(arg || ""));
   const pluginsIndex = args.indexOf("plugins");
@@ -443,6 +479,30 @@ const toolParameters = {
     decider: { type: "boolean" },
     secretary: { type: "boolean" }
   }
+};
+
+const messageFlowSendParameters = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    to: {
+      type: "string",
+      description: "Target as runtime:agent or a registered agent id."
+    },
+    body: { type: "string" },
+    subject: { type: "string" },
+    fromAgent: { type: "string" },
+    from_agent: { type: "string" },
+    fromRuntime: { type: "string" },
+    from_runtime: { type: "string" },
+    workflowId: { type: "string" },
+    workflow_id: { type: "string" },
+    meetingId: { type: "string" },
+    meeting_id: { type: "string" },
+    requiresAck: { type: "boolean" },
+    requires_ack: { type: "boolean" }
+  },
+  required: ["to", "body"]
 };
 
 function registerCli(api) {
@@ -2676,12 +2736,25 @@ export default definePluginEntry({
     }
   },
   register(api) {
-    const execute = async (_id, params) => jsonText(await runAction(resolveRoot(api), params || {}));
-    api.registerTool({
-      name: "trading_agents_workflow",
-      description: "Manage trading agents workflow records: instruments, radar scores, thesis files, evidence packs, research memos, gates, and cat_claw audits.",
-      parameters: toolParameters,
-      execute
+    api.registerTool((toolContext) => {
+      const mode = workflowToolMode(api, toolContext);
+      if (mode === "disabled") return null;
+      const messageFlowTool = {
+        name: "workflow_message_flow_send",
+        description: "Send a governed internal message through trading-agents-workflow message_flow. This is the limited OpenClaw agent surface and does not expose workflow scheduling or state mutation actions.",
+        parameters: messageFlowSendParameters,
+        execute: async (_id, params) => jsonText(await runAction(resolveRoot(api), messageFlowSendInput(params || {}, toolContext)))
+      };
+      if (mode !== "full") return messageFlowTool;
+      return [
+        {
+          name: "trading_agents_workflow",
+          description: "Manage trading agents workflow records, schedules, dispatches, receipts, message flows, Human Gate, incidents, and cat_claw audits. Full surface is limited to configured governance agents.",
+          parameters: toolParameters,
+          execute: async (_id, params) => jsonText(await runAction(resolveRoot(api), params || {}))
+        },
+        messageFlowTool
+      ];
     });
     registerCli(api);
     registerControlLoop(api);

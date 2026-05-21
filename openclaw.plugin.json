@@ -5,7 +5,8 @@
   "version": "0.7.0",
   "contracts": {
     "tools": [
-      "trading_agents_workflow"
+      "trading_agents_workflow",
+      "workflow_message_flow_send"
     ]
   },
   "activation": {
@@ -37,6 +38,25 @@
             "type": "number"
           },
           "allowedTelegramUserIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "toolAccess": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Per-agent OpenClaw tool exposure. Full agents receive trading_agents_workflow plus workflow_message_flow_send; all other agents receive only workflow_message_flow_send unless disabled.",
+        "properties": {
+          "fullAgents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "disabledAgents": {
             "type": "array",
             "items": {
               "type": "string"
