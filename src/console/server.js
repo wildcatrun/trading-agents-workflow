@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_WORKFLOW_ROOT, workflowPaths } from "../workflow.js";
+import { workflowPaths } from "../workflow.js";
 import { WorkflowActionGateway } from "./action-gateway.js";
 import { WorkflowReadModel } from "./read-model.js";
 
@@ -108,7 +108,10 @@ async function serveStatic(req, res, pathname) {
 }
 
 export function createConsoleServer(options = {}) {
-  const rootDir = options.rootDir || process.env.TRADING_AGENTS_WORKFLOW_ROOT || process.env.CAT_MEETING_GOVERNANCE_ROOT || DEFAULT_WORKFLOW_ROOT;
+  const rootDir = options.rootDir || process.env.TRADING_AGENTS_WORKFLOW_ROOT || process.env.CAT_MEETING_GOVERNANCE_ROOT;
+  if (!rootDir) {
+    throw new Error("workflow console root is required; pass rootDir or set TRADING_AGENTS_WORKFLOW_ROOT. The legacy shared workflow root is retired.");
+  }
   const paths = workflowPaths(rootDir, { workflowRootDir: rootDir });
   const readOnly = options.readOnly ?? boolEnv("WORKFLOW_CONSOLE_READONLY", true);
   const readModel = new WorkflowReadModel(paths);

@@ -22,7 +22,9 @@ SERVER_NAME = "trading-agents-workflow-hermes"
 SERVER_VERSION = "0.1.0"
 
 DEFAULT_WORKFLOW_PACKAGE = Path("/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout")
-DEFAULT_WORKFLOW_ROOT = Path("/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow")
+DEFAULT_ACTIVE_WORKFLOW_ROOT = Path("/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow")
+LEGACY_WORKFLOW_ROOT = Path("/home/flashcat/.openclaw/shared/trading-agents-workflow")
+ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT"
 MAX_TIMEOUT_SECONDS = 1800
 
 
@@ -53,18 +55,44 @@ def workflow_package() -> Path:
     return Path(os.environ.get("TRADING_AGENTS_WORKFLOW_PACKAGE", str(DEFAULT_WORKFLOW_PACKAGE))).expanduser()
 
 
+def truthy_env(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def normalized_root(value: str | Path) -> Path:
+    return Path(str(value)).expanduser().resolve(strict=False)
+
+
+def guard_workflow_root(value: str | Path) -> str:
+    root = normalized_root(value)
+    if root == normalized_root(LEGACY_WORKFLOW_ROOT) and not truthy_env(ALLOW_LEGACY_ROOT_ENV):
+        raise ValueError(
+            f"legacy trading-agents-workflow root has retired and is fail-closed: {LEGACY_WORKFLOW_ROOT}; "
+            "set TRADING_AGENTS_WORKFLOW_ROOT to the active workflow state root"
+        )
+    return str(root)
+
+
 def workflow_root(args: dict[str, Any] | None = None) -> str:
     args = args or {}
-    return str(
-        Path(
-            str(
-                args.get("rootDir")
-                or args.get("root")
-                or os.environ.get("TRADING_AGENTS_WORKFLOW_ROOT")
-                or DEFAULT_WORKFLOW_ROOT
-            )
-        ).expanduser()
-    )
+    configured = guard_workflow_root(os.environ.get("TRADING_AGENTS_WORKFLOW_ROOT") or DEFAULT_ACTIVE_WORKFLOW_ROOT)
+    override = args.get("rootDir") or args.get("root")
+    if override:
+        override_root = guard_workflow_root(override)
+        if normalized_root(override_root) != normalized_root(configured):
+            raise ValueError("rootDir override is not allowed through Hermers MCP; set TRADING_AGENTS_WORKFLOW_ROOT in the profile MCP config")
+    return configured
+
+
+def guard_payload_root(input_payload: dict[str, Any], root_dir: str) -> None:
+    override = input_payload.get("workflowRootDir") or input_payload.get("workflow_root")
+    if override:
+        override_root = guard_workflow_root(override)
+        if normalized_root(override_root) != normalized_root(root_dir):
+            raise ValueError("workflowRootDir override is not allowed through Hermers MCP; use the configured TRADING_AGENTS_WORKFLOW_ROOT")
 
 
 def clamp_timeout(value: Any) -> int | None:
@@ -86,8 +114,10 @@ def run_workflow_action(input_payload: dict[str, Any], root_dir: str | None = No
     core = package / "src" / "core.js"
     if not core.exists():
         raise RuntimeError(f"workflow core not found: {core}")
+    resolved_root = root_dir or workflow_root(input_payload)
+    guard_payload_root(input_payload, resolved_root)
     payload = {
-        "rootDir": root_dir or workflow_root(input_payload),
+        "rootDir": resolved_root,
         "input": input_payload,
     }
     code = textwrap.dedent(
@@ -123,7 +153,6 @@ WORKFLOW_ACTION_SCHEMA = {
     "properties": {
         "action": {"type": "string", "description": "Workflow action name, e.g. workflow.status or workflow.schedule.upsert."},
         "payload": {"type": "object", "description": "Action payload fields. If omitted, top-level fields are used."},
-        "rootDir": {"type": "string", "description": "Optional workflow root override."},
     },
     "required": ["action"],
     "additionalProperties": True,
@@ -145,7 +174,6 @@ SCHEDULE_UPSERT_SCHEMA = {
         "priority": {"type": "string", "description": "Priority such as normal/high/steer/flash."},
         "timeout_seconds": {"type": "integer", "description": "Dispatch timeout, max 1800."},
         "payload": {"type": "object", "description": "Optional workflow payload JSON."},
-        "rootDir": {"type": "string", "description": "Optional workflow root override."},
     },
     "required": ["schedule_id", "agent", "prompt"],
     "additionalProperties": True,
@@ -160,7 +188,6 @@ SCHEDULE_LIST_SCHEMA = {
         "runtime": {"type": "string"},
         "agent": {"type": "string"},
         "limit": {"type": "integer"},
-        "rootDir": {"type": "string"},
     },
     "additionalProperties": True,
 }
@@ -177,7 +204,6 @@ MESSAGE_FLOW_SEND_SCHEMA = {
         "workflow_id": {"type": "string"},
         "meeting_id": {"type": "string"},
         "requires_ack": {"type": "boolean"},
-        "rootDir": {"type": "string"},
     },
     "required": ["to", "body"],
     "additionalProperties": True,
@@ -188,7 +214,6 @@ STATUS_SCHEMA = {
     "type": "object",
     "properties": {
         "view": {"type": "string", "description": "status, readiness, topology, or runtime_agents."},
-        "rootDir": {"type": "string"},
     },
     "additionalProperties": True,
 }

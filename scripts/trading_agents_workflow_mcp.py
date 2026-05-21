@@ -25,6 +25,8 @@ DEFAULT_REMOTE_HOST = "106.54.53.146"
 DEFAULT_REMOTE_USER = "flashcat"
 DEFAULT_REMOTE_KEY = "/Users/Flashcat/.ssh/openclaw_server"
 DEFAULT_AUDIT_LOG = "/Users/Flashcat/.trading-agents-workflow-mcp/audit.jsonl"
+LEGACY_WORKFLOW_ROOT = Path("/home/flashcat/.openclaw/shared/trading-agents-workflow")
+ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT"
 
 
 def now_iso() -> str:
@@ -51,6 +53,35 @@ def env_first(names: tuple[str, ...], default: str) -> str:
     return default
 
 
+def env_first_or_none(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def truthy_env(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def normalized_root(value: str | Path) -> Path:
+    return Path(str(value)).expanduser().resolve(strict=False)
+
+
+def guard_workflow_root(value: str | Path) -> str:
+    root = normalized_root(value)
+    if root == normalized_root(LEGACY_WORKFLOW_ROOT) and not truthy_env(ALLOW_LEGACY_ROOT_ENV):
+        raise ValueError(
+            f"legacy trading-agents-workflow root has retired and is fail-closed: {LEGACY_WORKFLOW_ROOT}; "
+            "set TRADING_AGENTS_WORKFLOW_ROOT or pass an active workflow_root"
+        )
+    return str(root)
+
+
 def local_code_path() -> Path:
     return Path(
         env_first(
@@ -61,12 +92,31 @@ def local_code_path() -> Path:
 
 
 def local_state_root() -> Path:
-    return Path(
-        env_first(
-            ("TRADING_WORKFLOW_LOCAL_STATE_ROOT", "TRADING_WORKFLOW_LOCAL_ROOT", "TRADING_WORKFLOW_LOCAL_REPO"),
-            DEFAULT_LOCAL_REPO,
-        )
-    ).expanduser()
+    root = env_first(
+        (
+            "TRADING_AGENTS_WORKFLOW_ROOT",
+            "TRADING_WORKFLOW_LOCAL_STATE_ROOT",
+            "TRADING_WORKFLOW_LOCAL_ROOT",
+            "TRADING_WORKFLOW_LOCAL_REPO",
+        ),
+        DEFAULT_LOCAL_REPO,
+    )
+    return Path(guard_workflow_root(root))
+
+
+def local_mutation_state_root(args: dict[str, Any]) -> str:
+    explicit = args.get("workflow_root") or args.get("workflowRoot")
+    if explicit:
+        return guard_workflow_root(str(explicit))
+    configured = env_first_or_none(("TRADING_AGENTS_WORKFLOW_ROOT", "TRADING_WORKFLOW_LOCAL_STATE_ROOT", "TRADING_WORKFLOW_LOCAL_ROOT"))
+    if configured:
+        return guard_workflow_root(configured)
+    raise ValueError("workflow_root or TRADING_AGENTS_WORKFLOW_ROOT is required for local mutating workflow tools")
+
+
+def remote_mutation_state_root(args: dict[str, Any]) -> str:
+    explicit = args.get("workflow_root") or args.get("workflowRoot")
+    return guard_workflow_root(str(explicit or remote_state_root()))
 
 
 def local_repo() -> Path:
@@ -78,9 +128,11 @@ def remote_code_path() -> str:
 
 
 def remote_state_root() -> str:
-    return env_first(
-        ("TRADING_WORKFLOW_REMOTE_STATE_ROOT", "TRADING_WORKFLOW_REMOTE_ROOT", "TRADING_WORKFLOW_REMOTE_PATH"),
-        DEFAULT_REMOTE_STATE_ROOT,
+    return guard_workflow_root(
+        env_first(
+            ("TRADING_WORKFLOW_REMOTE_STATE_ROOT", "TRADING_WORKFLOW_REMOTE_ROOT", "TRADING_WORKFLOW_REMOTE_PATH"),
+            DEFAULT_REMOTE_STATE_ROOT,
+        )
     )
 
 
@@ -104,7 +156,6 @@ def run(cmd: list[str], cwd: Path | None = None, timeout: int = 30) -> dict[str,
         "stdout": (proc.stdout or "").strip(),
         "stderr": (proc.stderr or "").strip(),
     }
-
 
 def run_remote(script: str, timeout: int = 30) -> dict[str, Any]:
     host = os.environ.get("TRADING_WORKFLOW_REMOTE_HOST", DEFAULT_REMOTE_HOST)
@@ -629,10 +680,10 @@ def message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
     body = str(args.get("body") or args.get("text") or args.get("message") or "").strip()
     targets = as_str_list(args.get("to_agents") or args.get("toAgents") or args.get("targets") or args.get("to"))
     if source == "local":
-        workflow_root = str(args.get("workflow_root") or args.get("workflowRoot") or local_state_root())
+        workflow_root = local_mutation_state_root(args)
         cwd = local_code_path()
     elif source == "remote":
-        workflow_root = str(args.get("workflow_root") or args.get("workflowRoot") or remote_state_root())
+        workflow_root = remote_mutation_state_root(args)
         cwd = remote_code_path()
     else:
         raise ValueError("source must be local or remote")

@@ -15,7 +15,8 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 export const WORKFLOW_SCHEMA_VERSION = 11;
-export const DEFAULT_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
+export const LEGACY_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
+const ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
 const THESIS_STATUSES = new Set(["draft", "active", "watch", "stale", "invalidated", "closed"]);
@@ -132,11 +133,16 @@ function resolveHome(value) {
 }
 
 export function resolveWorkflowRoot(rootDir, input = {}) {
-  const explicit = input.workflowRootDir || input.workflow_root || process.env.TRADING_AGENTS_WORKFLOW_ROOT;
-  if (explicit) return resolveHome(String(explicit));
-  const candidate = rootDir || process.env.CAT_MEETING_GOVERNANCE_ROOT;
-  if (candidate) return resolveHome(String(candidate));
-  return DEFAULT_WORKFLOW_ROOT;
+  const candidate = input.workflowRootDir || input.workflow_root || rootDir || process.env.TRADING_AGENTS_WORKFLOW_ROOT || process.env.CAT_MEETING_GOVERNANCE_ROOT;
+  if (!candidate) {
+    throw new Error(`trading-agents-workflow root is required; pass --root or set TRADING_AGENTS_WORKFLOW_ROOT. Legacy root ${LEGACY_WORKFLOW_ROOT} has retired and is fail-closed.`);
+  }
+  const root = resolveHome(String(candidate));
+  const legacyRoot = path.resolve(LEGACY_WORKFLOW_ROOT);
+  if (root === legacyRoot && !boolOption(process.env[ALLOW_LEGACY_ROOT_ENV], false)) {
+    throw new Error(`legacy trading-agents-workflow root has retired and is fail-closed: ${LEGACY_WORKFLOW_ROOT}; pass --root or set TRADING_AGENTS_WORKFLOW_ROOT to an active state root. To temporarily allow it, set ${ALLOW_LEGACY_ROOT_ENV}=1.`);
+  }
+  return root;
 }
 
 export function workflowPaths(rootDir, input = {}) {
