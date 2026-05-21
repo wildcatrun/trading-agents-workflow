@@ -6,7 +6,8 @@ import { runWorkflowAction, workflowStatus } from "./workflow.js";
 
 export const PLUGIN_ID = "trading-agents-workflow";
 export const SCHEMA_VERSION = 8;
-export const DEFAULT_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
+export const LEGACY_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
+const ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT";
 
 const VALID_MEETING_ID = /^[a-z0-9][a-z0-9._-]{2,120}$/;
 const MEETING_TYPES = new Set([
@@ -99,6 +100,12 @@ function nowIso() {
 
 function nowStamp() {
   return nowIso().replace(/[-:]/g, "").replace(/\..+$/, "Z");
+}
+
+function boolEnv(name) {
+  const value = process.env[name];
+  if (value === undefined || value === null || value === "") return false;
+  return ["1", "true", "yes", "y", "on"].includes(String(value).trim().toLowerCase());
 }
 
 function sleep(ms) {
@@ -267,9 +274,16 @@ function weekKey(date = new Date()) {
 }
 
 export function resolveProtocolRoot(rootDir) {
-  const raw = rootDir || process.env.TRADING_AGENTS_WORKFLOW_ROOT || process.env.CAT_MEETING_GOVERNANCE_ROOT || DEFAULT_ROOT;
-  if (raw.startsWith("~/")) return path.resolve(os.homedir(), raw.slice(2));
-  return path.resolve(raw);
+  const raw = rootDir || process.env.TRADING_AGENTS_WORKFLOW_ROOT || process.env.CAT_MEETING_GOVERNANCE_ROOT;
+  if (!raw) {
+    throw new Error(`trading-agents-workflow root is required; pass --root or set TRADING_AGENTS_WORKFLOW_ROOT. Legacy root ${LEGACY_ROOT} has retired and is fail-closed.`);
+  }
+  const root = String(raw).startsWith("~/") ? path.resolve(os.homedir(), String(raw).slice(2)) : path.resolve(String(raw));
+  const legacyRoot = path.resolve(LEGACY_ROOT);
+  if (root === legacyRoot && !boolEnv(ALLOW_LEGACY_ROOT_ENV)) {
+    throw new Error(`legacy trading-agents-workflow root has retired and is fail-closed: ${LEGACY_ROOT}; pass --root or set TRADING_AGENTS_WORKFLOW_ROOT to an active state root. To temporarily allow it, set ${ALLOW_LEGACY_ROOT_ENV}=1.`);
+  }
+  return root;
 }
 
 export function protocolPaths(rootDir, meetingId) {

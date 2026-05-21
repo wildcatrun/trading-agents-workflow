@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 import { runAction } from "../src/core.js";
+import path from "node:path";
+import os from "node:os";
 
 function usage() {
   console.log(`Usage:
-  trading-agents-workflow status [--root DIR]
+  trading-agents-workflow status [--root DIR | --workflow-root DIR]
+  All commands accept --root DIR or --workflow-root DIR. If both are provided, they must point to the same directory.
   trading-agents-workflow workflow-status [--asset TYPE --symbol SYMBOL] [--root DIR]
   trading-agents-workflow workflow-readiness [--active-checks] [--root DIR]
   trading-agents-workflow workflow-topology [--root DIR]
@@ -89,14 +92,39 @@ function listOption(value) {
   return Array.isArray(value) ? value : [value];
 }
 
+function singleOption(options, key) {
+  const value = options[key];
+  if (Array.isArray(value)) throw new Error(`--${key} must be provided at most once`);
+  return value;
+}
+
+function normalizeRootValue(value) {
+  const text = String(value || "");
+  if (text.startsWith("~/")) return path.resolve(os.homedir(), text.slice(2));
+  return path.resolve(text);
+}
+
+function commandRoot(options) {
+  const workflowRoot = singleOption(options, "workflow-root") || singleOption(options, "workflowRoot");
+  const root = singleOption(options, "root");
+  if (workflowRoot && root && normalizeRootValue(workflowRoot) !== normalizeRootValue(root)) {
+    throw new Error("--workflow-root and --root point to different directories; pass only one workflow root");
+  }
+  return workflowRoot || root;
+}
+
 function toAction({ command, positional, options }) {
-  const root = options.root;
   switch (command) {
     case "help":
     case "--help":
     case "-h":
       usage();
       return null;
+    default:
+      break;
+  }
+  const root = commandRoot(options);
+  switch (command) {
     case "status":
       return { root, input: { action: "status" } };
     case "init":

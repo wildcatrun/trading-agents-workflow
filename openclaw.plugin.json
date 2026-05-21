@@ -18,7 +18,7 @@
     "properties": {
       "rootDir": {
         "type": "string",
-        "description": "Optional workflow root. Defaults to /home/flashcat/.openclaw/shared/trading-agents-workflow."
+        "description": "Workflow state root. Required through plugin config or TRADING_AGENTS_WORKFLOW_ROOT; the legacy shared root is retired."
       },
       "humanGate": {
         "type": "object",

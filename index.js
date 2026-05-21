@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runAction } from "./src/core.js";
+import { LEGACY_ROOT, runAction } from "./src/core.js";
 
 const PLUGIN_ID = "trading-agents-workflow";
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -63,6 +63,34 @@ function pluginConfig(api) {
 function resolveRoot(api) {
   const configured = typeof pluginConfig(api).rootDir === "string" ? pluginConfig(api).rootDir : undefined;
   return configured || process.env.TRADING_AGENTS_WORKFLOW_ROOT || process.env.CAT_MEETING_GOVERNANCE_ROOT;
+}
+
+function requireRoot(api) {
+  const root = resolveRoot(api);
+  if (!root) throw new Error("trading-agents-workflow root is required; configure plugin rootDir or set TRADING_AGENTS_WORKFLOW_ROOT.");
+  return root;
+}
+
+function normalizeRootValue(value) {
+  const text = String(value || "");
+  if (text.startsWith("~/") && process.env.HOME) return path.resolve(process.env.HOME, text.slice(2));
+  return path.resolve(text);
+}
+
+function commandRoot(options = {}, api) {
+  if (options.workflowRoot && options.root && normalizeRootValue(options.workflowRoot) !== normalizeRootValue(options.root)) {
+    throw new Error("--workflow-root and --root point to different directories; pass only one workflow root.");
+  }
+  return options.workflowRoot || options.root || resolveRoot(api);
+}
+
+function guardWorkflowRootOverride(input, root) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const override = input.workflowRootDir || input.workflow_root;
+  if (override && root && normalizeRootValue(override) !== normalizeRootValue(root)) {
+    throw new Error("workflowRootDir override is not allowed through the OpenClaw tool; configure plugin rootDir instead.");
+  }
+  return input;
 }
 
 function boolConfig(value, fallback = false) {
@@ -283,7 +311,6 @@ const toolParameters = {
     kind: { type: "string" },
     name: { type: "string" },
     content: { type: "string" },
-    workflowRootDir: { type: "string" },
     instrumentId: { type: "string" },
     assetType: { type: "string" },
     symbol: { type: "string" },
@@ -509,9 +536,13 @@ function registerCli(api) {
   api.registerCli(({ program }) => {
     const command = program.command("trading-agents-workflow").description("Manage OpenClaw trading agents workflow files and SQLite tracking state");
 
-    command.command("status").option("--root <dir>", "Protocol root directory").action(async (options) => {
-      console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), { action: "status" }), null, 2));
-    });
+    command.command("status")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Protocol root directory")
+      .action(async (options) => {
+        const root = commandRoot(options, api);
+        console.log(JSON.stringify(await runAction(root, { action: "status", workflowRootDir: root }), null, 2));
+      });
 
     command.command("create")
       .requiredOption("--id <meetingId>", "Meeting id")
@@ -527,7 +558,7 @@ function registerCli(api) {
       .option("--mode <mode>", "silent, digest, transparent, command_only", "transparent")
       .option("--root <dir>", "Protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.create",
           meetingId: options.id,
           title: options.title,
@@ -550,7 +581,7 @@ function registerCli(api) {
       .option("--actor <agent>", "Actor")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.append",
           meetingId,
           section: options.section,
@@ -569,7 +600,7 @@ function registerCli(api) {
       .option("--priority <priority>", "normal or steer", "normal")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.command",
           meetingId,
           type: options.type,
@@ -587,7 +618,7 @@ function registerCli(api) {
       .option("--telegram <text>", "Telegram summary")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.summary",
           meetingId,
           summary: options.text,
@@ -603,7 +634,7 @@ function registerCli(api) {
       .option("--summary <summary>", "Artifact summary")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.artifact",
           meetingId,
           name: options.name,
@@ -621,7 +652,7 @@ function registerCli(api) {
       .option("--from <name>", "Human actor", "闪电猫")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "human_gate.record",
           meetingId,
           gateType: options.gate,
@@ -640,7 +671,7 @@ function registerCli(api) {
       .option("--message <messageId>", "Telegram message id")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "telegram.bridge",
           meetingId,
           type: options.type,
@@ -659,7 +690,7 @@ function registerCli(api) {
       .option("--priority <priority>", "normal or steer", "normal")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.handoff",
           meetingId,
           to: options.to,
@@ -676,7 +707,7 @@ function registerCli(api) {
       .option("--human-gate", "Mark Human Gate required")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.state",
           meetingId,
           status: options.status,
@@ -695,7 +726,7 @@ function registerCli(api) {
       .option("--required-artifact <path>", "Required artifact")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.action_item",
           meetingId,
           operation: options.op,
@@ -718,7 +749,7 @@ function registerCli(api) {
       .option("--human-gate", "Human Gate required")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.decision",
           meetingId,
           operation: options.op,
@@ -737,7 +768,7 @@ function registerCli(api) {
       .option("--mode <mode>", "write or append", "write")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.minutes",
           meetingId,
           text: options.text,
@@ -753,7 +784,7 @@ function registerCli(api) {
       .option("--human-gate", "Human Gate required")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.notify",
           meetingId,
           summary: options.summary,
@@ -767,7 +798,7 @@ function registerCli(api) {
       .argument("<meetingId>")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.validate",
           meetingId
         }), null, 2));
@@ -778,7 +809,7 @@ function registerCli(api) {
       .option("--text <text>", "Observation text")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "cat_claw.observe",
           meetingId,
           text: options.text
@@ -790,7 +821,7 @@ function registerCli(api) {
       .option("--date <date>", "Date")
       .option("--root <dir>", "Protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "cat_claw.digest",
           period: options.period,
           date: options.date
@@ -803,7 +834,7 @@ function registerCli(api) {
       .option("--symbol <symbol>", "Instrument symbol")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.status",
           workflowRootDir: options.workflowRoot,
           assetType: options.asset,
@@ -815,7 +846,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.topology",
           workflowRootDir: options.workflowRoot
         }), null, 2));
@@ -837,7 +868,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.run.upsert",
           workflowRootDir: options.workflowRoot,
           workflowId: options.workflow,
@@ -871,7 +902,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.task.create",
           workflowRootDir: options.workflowRoot,
           workflowId: options.workflow,
@@ -899,7 +930,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.task.update",
           workflowRootDir: options.workflowRoot,
           taskId: options.task,
@@ -918,7 +949,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.task.list",
           workflowRootDir: options.workflowRoot,
           workflowId: options.workflow,
@@ -936,7 +967,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.advance",
           workflowRootDir: options.workflowRoot,
           workflowId: options.workflow,
@@ -954,7 +985,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.advance.preview",
           workflowRootDir: options.workflowRoot,
           workflowId: options.workflow,
@@ -982,7 +1013,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.supervise",
           workflowRootDir: options.workflowRoot,
           workflowId: options.workflow,
@@ -1014,7 +1045,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.supervise.preview",
           workflowRootDir: options.workflowRoot,
           workflowId: options.workflow,
@@ -1059,7 +1090,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.control_loop.tick",
           workflowRootDir: options.workflowRoot,
           tickMs: Number(options.tickMs),
@@ -1117,7 +1148,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.schedule.upsert",
           workflowRootDir: options.workflowRoot,
           scheduleId: options.id,
@@ -1154,7 +1185,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.schedule.list",
           workflowRootDir: options.workflowRoot,
           scheduleId: options.id,
@@ -1171,7 +1202,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.schedule.pause",
           workflowRootDir: options.workflowRoot,
           scheduleId: options.id
@@ -1184,7 +1215,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.schedule.resume",
           workflowRootDir: options.workflowRoot,
           scheduleId: options.id,
@@ -1197,7 +1228,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.schedule.disable",
           workflowRootDir: options.workflowRoot,
           scheduleId: options.id
@@ -1215,7 +1246,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.checkpoint",
           workflowRootDir: options.workflowRoot,
           workflowId: options.workflow,
@@ -1248,7 +1279,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "runtime.agent.upsert",
           workflowRootDir: options.workflowRoot,
           runtime: options.runtime,
@@ -1288,7 +1319,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "route_shell.ingest",
           workflowRootDir: options.workflowRoot,
           routeAgentId: options.agent,
@@ -1321,7 +1352,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.runtime_participant",
           workflowRootDir: options.workflowRoot,
           meetingId: options.meeting,
@@ -1346,7 +1377,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "telegram.live",
           workflowRootDir: options.workflowRoot,
           meetingId: options.meeting,
@@ -1376,7 +1407,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.dispatch",
           workflowRootDir: options.workflowRoot,
           meetingId: options.meeting,
@@ -1406,7 +1437,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.ingest",
           workflowRootDir: options.workflowRoot,
           meetingId: options.meeting,
@@ -1431,7 +1462,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "human_gate.request",
           workflowRootDir: options.workflowRoot,
           meetingId: options.meeting,
@@ -1456,7 +1487,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "human_gate.inbox",
           workflowRootDir: options.workflowRoot,
           workflowId: options.workflow,
@@ -1478,7 +1509,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "human_gate.console",
           workflowRootDir: options.workflowRoot,
           workflowId: options.workflow,
@@ -1501,7 +1532,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "human_gate.button_callback",
           workflowRootDir: options.workflowRoot,
           token: options.token,
@@ -1523,7 +1554,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "human_gate.feedback",
           workflowRootDir: options.workflowRoot,
           token: options.token,
@@ -1542,7 +1573,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.resume",
           workflowRootDir: options.workflowRoot,
           meetingId: options.meeting,
@@ -1559,7 +1590,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.disperse",
           workflowRootDir: options.workflowRoot,
           meetingId: options.meeting,
@@ -1579,7 +1610,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "telegram.outbox",
           workflowRootDir: options.workflowRoot,
           operation: options.mark ? "mark" : options.deliver ? "deliver" : "list",
@@ -1609,7 +1640,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.message_flow.send",
           workflowRootDir: options.workflowRoot,
           fromAgent: options.from,
@@ -1637,7 +1668,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "message_flow.list",
           workflowRootDir: options.workflowRoot,
           flowId: options.flow,
@@ -1660,7 +1691,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "trade.proposal",
           workflowRootDir: options.workflowRoot,
           assetType: options.asset,
@@ -1687,7 +1718,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "risk.decision",
           workflowRootDir: options.workflowRoot,
           assetType: options.asset,
@@ -1712,7 +1743,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "human_gate.record",
           workflowRootDir: options.workflowRoot,
           humanGateId: options.humanGateId,
@@ -1744,7 +1775,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "trade.intent",
           workflowRootDir: options.workflowRoot,
           assetType: options.asset,
@@ -1775,7 +1806,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "trading_core.receipt",
           workflowRootDir: options.workflowRoot,
           intentId: options.intent,
@@ -1797,7 +1828,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "instrument.upsert",
           workflowRootDir: options.workflowRoot,
           assetType: options.asset,
@@ -1821,7 +1852,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "radar.update",
           workflowRootDir: options.workflowRoot,
           assetType: options.asset,
@@ -1848,7 +1879,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "thesis.update",
           workflowRootDir: options.workflowRoot,
           assetType: options.asset,
@@ -1876,7 +1907,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "research.evidence",
           workflowRootDir: options.workflowRoot,
           assetType: options.asset,
@@ -1901,7 +1932,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "research.memo",
           workflowRootDir: options.workflowRoot,
           assetType: options.asset,
@@ -1924,7 +1955,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "gate.review",
           workflowRootDir: options.workflowRoot,
           assetType: options.asset,
@@ -1942,7 +1973,7 @@ function registerCli(api) {
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "cat_claw.audit",
           workflowRootDir: options.workflowRoot,
           staleDays: options.staleDays
@@ -1955,7 +1986,7 @@ function registerCli(api) {
       .option("--by <agent>", "Closer", "main")
       .option("--root <dir>", "Protocol root directory")
       .action(async (meetingId, options) => {
-        console.log(JSON.stringify(await runAction(options.root || resolveRoot(api), {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.close",
           meetingId,
           summary: options.summary,
@@ -2082,9 +2113,24 @@ function signalControlLoopWorker(child, signal) {
   }
 }
 
+function controlLoopWorkerEnv(root) {
+  const env = {
+    ...process.env,
+    TRADING_AGENTS_WORKFLOW_CONTROL_LOOP_WORKER: "1",
+    TRADING_AGENTS_WORKFLOW_ROOT: root,
+    CAT_MEETING_GOVERNANCE_ROOT: root
+  };
+  delete env.TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT;
+  return env;
+}
+
 function runControlLoopWorker(api, config, reason) {
+  const root = requireRoot(api);
+  if (normalizeRootValue(root) === normalizeRootValue(LEGACY_ROOT)) {
+    throw new Error(`control loop refused retired workflow root: ${LEGACY_ROOT}`);
+  }
   if (config.workerMode === "inline") {
-    return runAction(resolveRoot(api), {
+    return runAction(root, {
       action: "workflow.control_loop.tick",
       tickMs: config.tickMs,
       maxWorkflows: config.maxWorkflows,
@@ -2116,13 +2162,10 @@ function runControlLoopWorker(api, config, reason) {
     });
   }
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, controlLoopWorkerArgs(config, resolveRoot(api), reason), {
+    const child = spawn(process.execPath, controlLoopWorkerArgs(config, root, reason), {
       cwd: PLUGIN_DIR,
       detached: process.platform !== "win32",
-      env: {
-        ...process.env,
-        TRADING_AGENTS_WORKFLOW_CONTROL_LOOP_WORKER: "1"
-      },
+      env: controlLoopWorkerEnv(root),
       stdio: ["ignore", "ignore", "pipe"]
     });
     let stderr = "";
@@ -2687,7 +2730,7 @@ export default definePluginEntry({
     properties: {
       rootDir: {
         type: "string",
-        description: "Optional workflow root. Defaults to /home/flashcat/.openclaw/shared/trading-agents-workflow."
+        description: "Workflow state root. Required through plugin config or TRADING_AGENTS_WORKFLOW_ROOT; the legacy shared root is retired."
       },
       humanGate: {
         type: "object",
@@ -2760,7 +2803,7 @@ export default definePluginEntry({
         name: "workflow_message_flow_send",
         description: "Send a governed internal message through trading-agents-workflow message_flow. This is the limited OpenClaw agent surface and does not expose workflow scheduling or state mutation actions.",
         parameters: messageFlowSendParameters,
-        execute: async (_id, params) => jsonText(await runAction(resolveRoot(api), messageFlowSendInput(params || {}, toolContext)))
+        execute: async (_id, params) => jsonText(await runAction(requireRoot(api), messageFlowSendInput(params || {}, toolContext)))
       };
       if (mode !== "full") return messageFlowTool;
       return [
@@ -2768,7 +2811,10 @@ export default definePluginEntry({
           name: "trading_agents_workflow",
           description: "Manage trading agents workflow records, schedules, dispatches, receipts, message flows, Human Gate, incidents, and cat_claw audits. Full surface is limited to configured governance agents.",
           parameters: toolParameters,
-          execute: async (_id, params) => jsonText(await runAction(resolveRoot(api), params || {}))
+          execute: async (_id, params) => {
+            const root = requireRoot(api);
+            return jsonText(await runAction(root, guardWorkflowRootOverride(params || {}, root)));
+          }
         },
         messageFlowTool
       ];

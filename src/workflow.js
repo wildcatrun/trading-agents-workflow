@@ -15,7 +15,8 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 export const WORKFLOW_SCHEMA_VERSION = 11;
-export const DEFAULT_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
+export const LEGACY_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
+const ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
 const THESIS_STATUSES = new Set(["draft", "active", "watch", "stale", "invalidated", "closed"]);
@@ -42,6 +43,8 @@ const INCIDENT_STATUSES = new Set(["active", "mitigating", "monitoring", "resolv
 const INCIDENT_MODES = new Set(["normal", "degraded", "critical-only", "paper-only", "frozen"]);
 const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout", "acp_unavailable", "transient_runtime"]);
 const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_report"]);
+const TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES = new Set(["human_gate_request", "human_gate_report", "workflow_secretary_report", "message_flow_reply", "meeting_live"]);
+const INTERNAL_HUMAN_GATE_RECORD = Symbol("internal_human_gate_record");
 const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = "8390724843";
 const CONTROL_LOOP_WORKFLOW_STATUSES = new Set(["active", "waiting_human", "blocked"]);
 const CONTROL_LOOP_ACTIVE_JOB_STATUSES = new Set(["queued", "running", "retry_scheduled"]);
@@ -132,11 +135,24 @@ function resolveHome(value) {
 }
 
 export function resolveWorkflowRoot(rootDir, input = {}) {
-  const explicit = input.workflowRootDir || input.workflow_root || process.env.TRADING_AGENTS_WORKFLOW_ROOT;
-  if (explicit) return resolveHome(String(explicit));
-  const candidate = rootDir || process.env.CAT_MEETING_GOVERNANCE_ROOT;
-  if (candidate) return resolveHome(String(candidate));
-  return DEFAULT_WORKFLOW_ROOT;
+  const inputRoot = input.workflowRootDir || input.workflow_root;
+  if (rootDir && inputRoot) {
+    const resolvedRootDir = resolveHome(String(rootDir));
+    const resolvedInputRoot = resolveHome(String(inputRoot));
+    if (resolvedRootDir !== resolvedInputRoot) {
+      throw new Error(`workflow root mismatch: rootDir=${resolvedRootDir} input.workflowRootDir=${resolvedInputRoot}; pass one active workflow root only`);
+    }
+  }
+  const candidate = inputRoot || rootDir || process.env.TRADING_AGENTS_WORKFLOW_ROOT || process.env.CAT_MEETING_GOVERNANCE_ROOT;
+  if (!candidate) {
+    throw new Error(`trading-agents-workflow root is required; pass --root or set TRADING_AGENTS_WORKFLOW_ROOT. Legacy root ${LEGACY_WORKFLOW_ROOT} has retired and is fail-closed.`);
+  }
+  const root = resolveHome(String(candidate));
+  const legacyRoot = path.resolve(LEGACY_WORKFLOW_ROOT);
+  if (root === legacyRoot && !boolOption(process.env[ALLOW_LEGACY_ROOT_ENV], false)) {
+    throw new Error(`legacy trading-agents-workflow root has retired and is fail-closed: ${LEGACY_WORKFLOW_ROOT}; pass --root or set TRADING_AGENTS_WORKFLOW_ROOT to an active state root. To temporarily allow it, set ${ALLOW_LEGACY_ROOT_ENV}=1.`);
+  }
+  return root;
 }
 
 export function workflowPaths(rootDir, input = {}) {
@@ -330,7 +346,7 @@ async function humanGateWebAppConfig(input = {}) {
     input.verify_telegram_init_data,
     humanGate.verifyTelegramInitData,
     humanGate.verify_telegram_init_data,
-    "if_present"
+    "required"
   );
   const maxInitDataAgeSeconds = Math.max(60, Math.min(7 * 24 * 3600, Number(firstText(
     input.webAppInitDataMaxAgeSeconds,
@@ -348,7 +364,7 @@ async function humanGateWebAppConfig(input = {}) {
     enabled: Boolean(baseUrl),
     baseUrl,
     routePath,
-    verifyTelegramInitData: String(verifyTelegramInitData || "if_present").trim().toLowerCase(),
+    verifyTelegramInitData: String(verifyTelegramInitData || "required").trim().toLowerCase(),
     maxInitDataAgeSeconds,
     allowedTelegramUserIds
   };
@@ -2570,12 +2586,18 @@ ORDER BY updated_at;`, { json: true });
     const taskRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_tasks WHERE task_id=${sqlValue(taskId)} AND workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
     const task = taskRows[0];
     if (!task || ["done", "failed", "cancelled"].includes(task.status)) continue;
-    const completedAt = dispatch.completed_at || dispatch.acked_at || dispatch.updated_at || nowIso();
-    const status = dispatch.status === "acked" ? "done" : dispatch.status === "cancelled" ? "cancelled" : "failed";
-    const artifactRef = dispatch.status === "acked"
+    const flow = dispatch.status === "acked" ? await messageFlowForDispatch(paths, dispatch) : null;
+    const deliveryBlocked = flow
+      && flow.return_policy !== "silent"
+      && !(String(flow.status || "") === "telegram_sent" && Number(flow.delivery_receipt_present || 0) === 1);
+    const completedAt = deliveryBlocked ? "" : (dispatch.completed_at || dispatch.acked_at || dispatch.updated_at || nowIso());
+    const status = deliveryBlocked ? "blocked" : dispatch.status === "acked" ? "done" : dispatch.status === "cancelled" ? "cancelled" : "failed";
+    const artifactRef = dispatch.status === "acked" && !deliveryBlocked
       ? `bridge/messages/${cleanFileSegment(dispatch.meeting_id)}.messages.jsonl#${dispatch.dispatch_id}`
       : task.actual_artifact_ref || "";
-    const blockedReason = dispatch.status === "failed"
+    const blockedReason = deliveryBlocked
+      ? `message_flow_delivery_pending: ${flow.flow_id} status=${flow.status || "unknown"} outbox=${flow.outbox_id || ""}`
+      : dispatch.status === "failed"
       ? `${dispatch.failure_type || "runtime_failed"}: ${String(dispatch.last_error || "").slice(0, 300)}`
       : task.blocked_reason || "";
     updates.push({
@@ -2601,7 +2623,7 @@ UPDATE workflow_tasks
 SET status=${sqlValue(update.status)},
     actual_artifact_ref=${sqlValue(update.actualArtifactRef || "")},
     blocked_reason=${sqlValue(update.blockedReason || "")},
-    completed_at=${sqlValue(update.completedAt || nowIso())},
+    completed_at=${update.status === "blocked" ? "NULL" : sqlValue(update.completedAt || nowIso())},
     updated_at=${sqlValue(nowIso())}
 WHERE task_id=${sqlValue(update.taskId)} AND workflow_id=${sqlValue(workflowId)};`);
   }
@@ -4369,7 +4391,13 @@ LIMIT ${limit};`, { json: true });
   for (const item of items) {
     if (item.sourceType !== "human_gate_record") continue;
     const buttons = buttonGroups.get(item.sourceId) || [];
-    if (!buttons.length) continue;
+    if (!buttons.length) {
+      item.status = "blocked_missing_buttons";
+      item.blocked = true;
+      item.actionHint = "blocked: human_gate_record has no active buttons; cat_claw must not approve it and cat_brain must regenerate a button-first Human Gate";
+      item.payload = { ...item.payload, buttons: [] };
+      continue;
+    }
     item.buttons = buttons;
     item.payload = { ...item.payload, buttons };
     item.actionHint = "select one recorded button; do not infer intent from natural language";
@@ -4668,21 +4696,27 @@ async function enqueueTelegramOutbox(paths, input) {
   if (existing[0]) return { outboxId, status: existing[0].status, deduped: true };
   const createdAt = nowIso();
   const payload = parseJsonValue(input.payload, input.payload || {});
+  const messageType = input.messageType || input.message_type || "meeting_live";
+  const status = input.status || "queued";
+  const targetRef = input.targetRef || input.target_ref || "";
+  if (TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES.has(String(messageType)) && ["queued", "delivering"].includes(String(status)) && !String(targetRef || "").trim()) {
+    throw new Error(`telegram_outbox target_ref is required for ${messageType}`);
+  }
   await sqlite(paths.dbFile, `
 INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
-VALUES (${sqlValue(outboxId)}, ${sqlValue(input.meetingId || input.meeting_id || "")}, ${sqlValue(input.targetKind || input.target_kind || "group")}, ${sqlValue(input.targetRef || input.target_ref || "")}, ${sqlValue(input.messageType || input.message_type || "meeting_live")}, ${sqlValue(input.status || "queued")}, ${sqlValue(input.text || "")}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
+VALUES (${sqlValue(outboxId)}, ${sqlValue(input.meetingId || input.meeting_id || "")}, ${sqlValue(input.targetKind || input.target_kind || "group")}, ${sqlValue(targetRef)}, ${sqlValue(messageType)}, ${sqlValue(status)}, ${sqlValue(input.text || "")}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
   await writeJsonArtifact(paths.root, path.join(paths.telegramDir, "outbox"), outboxId, {
     outboxId,
     meetingId: input.meetingId || input.meeting_id || "",
     targetKind: input.targetKind || input.target_kind || "group",
-    targetRef: input.targetRef || input.target_ref || "",
-    messageType: input.messageType || input.message_type || "meeting_live",
-    status: input.status || "queued",
+    targetRef,
+    messageType,
+    status,
     text: input.text || "",
     payload,
     createdAt
   });
-  return { outboxId, status: input.status || "queued" };
+  return { outboxId, status };
 }
 
 function telegramChunks(text, limit = 3500) {
@@ -4889,9 +4923,11 @@ async function deliverTelegramOutboxRowViaWebApp(paths, row, input, context) {
   const token = await resolveTelegramBotToken(account, input);
   if (!token) return null;
   const deliveredAt = nowIso();
-  const receipts = [];
+  const receipts = Array.isArray(payload.delivery?.receipts) ? [...payload.delivery.receipts] : [];
+  const startIndex = Math.min(receipts.length, context.chunks.length);
   try {
     for (const [index, chunk] of context.chunks.entries()) {
+      if (index < startIndex) continue;
       const receipt = await telegramBotApiPost(token, "sendMessage", {
         chat_id: target,
         text: chunk,
@@ -4986,7 +5022,8 @@ WHERE outbox_id=${sqlValue(row.outbox_id)};`);
   const timeoutSeconds = Math.max(5, Math.min(120, Number(input.timeoutSeconds || input.timeout_seconds || 30)));
   const chunks = telegramChunks(row.text);
   const deliveredAt = nowIso();
-  const receipts = [];
+  const receipts = Array.isArray(payload.delivery?.receipts) ? [...payload.delivery.receipts] : [];
+  const startIndex = Math.min(receipts.length, chunks.length);
   try {
     const webAppDelivery = await deliverTelegramOutboxRowViaWebApp(paths, row, input, { payload, account, target, chunks, timeoutSeconds });
     if (webAppDelivery?.status === "sent" || webAppDelivery?.status === "failed") {
@@ -5001,6 +5038,7 @@ WHERE outbox_id=${sqlValue(row.outbox_id)};`);
       };
     }
     for (const [index, chunk] of chunks.entries()) {
+      if (index < startIndex) continue;
       const args = [
         "message",
         "send",
@@ -5167,7 +5205,11 @@ ON CONFLICT(flow_id) DO UPDATE SET
   im_identity=CASE WHEN excluded.im_identity != '' THEN excluded.im_identity ELSE message_flows.im_identity END,
   execution_identity=CASE WHEN excluded.execution_identity != '' THEN excluded.execution_identity ELSE message_flows.execution_identity END,
   return_policy=CASE WHEN excluded.return_policy != 'silent' OR message_flows.return_policy='' THEN excluded.return_policy ELSE message_flows.return_policy END,
-  status=excluded.status,
+  status=CASE
+    WHEN message_flows.status='telegram_sent' AND excluded.status!='telegram_sent' THEN message_flows.status
+    WHEN message_flows.status='telegram_failed' AND excluded.status NOT IN ('telegram_failed','telegram_sent') THEN message_flows.status
+    ELSE excluded.status
+  END,
   inbound_received_at=CASE WHEN excluded.inbound_received_at != '' THEN excluded.inbound_received_at ELSE message_flows.inbound_received_at END,
   route_registered_at=CASE WHEN excluded.route_registered_at != '' THEN excluded.route_registered_at ELSE message_flows.route_registered_at END,
   runtime_dispatched_at=CASE WHEN excluded.runtime_dispatched_at != '' THEN excluded.runtime_dispatched_at ELSE message_flows.runtime_dispatched_at END,
@@ -5207,8 +5249,20 @@ async function messageFlowForDispatch(paths, row = {}) {
 
 async function updateMessageFlow(paths, flowId, status, patch = {}) {
   if (!flowId || !MESSAGE_FLOW_STATUSES.has(status)) return null;
-  const rows = await sqlite(paths.dbFile, `SELECT payload_json FROM message_flows WHERE flow_id=${sqlValue(flowId)} LIMIT 1;`, { json: true });
+  const rows = await sqlite(paths.dbFile, `SELECT status, payload_json FROM message_flows WHERE flow_id=${sqlValue(flowId)} LIMIT 1;`, { json: true });
   if (!rows[0]) return null;
+  const currentStatus = String(rows[0].status || "").trim();
+  if (
+    (currentStatus === "telegram_sent" && status !== "telegram_sent") ||
+    (currentStatus === "telegram_failed" && !["telegram_failed", "telegram_sent"].includes(status))
+  ) {
+    await appendMessageFlowEvent(paths, flowId, currentStatus, "state_regression_blocked", {
+      attemptedStatus: status,
+      reason: "terminal_message_flow_status_is_monotonic",
+      payload: patch.payload || {}
+    });
+    return readMessageFlow(paths, flowId);
+  }
   const existingPayload = parseJsonValue(rows[0].payload_json, {});
   const payload = { ...existingPayload, ...parseJsonValue(patch.payload, patch.payload || {}), updatedAt: nowIso() };
   const updatedAt = patch.updatedAt || patch.updated_at || nowIso();
@@ -5469,6 +5523,9 @@ export async function protocolRecord(rootDir, input) {
   const objectType = PROTOCOL_OBJECT_TYPES.has(objectTypeRaw) ? objectTypeRaw : "generic";
   const objectId = input.objectId || input.object_id || safeId(objectType.replace(/_/g, "-"));
   const status = String(input.status || "recorded").trim();
+  if (objectType === "human_gate_record" && input[INTERNAL_HUMAN_GATE_RECORD] !== true) {
+    throw new Error("human_gate_record writes are button-first only; use human_gate.request to create pending gates and human_gate.button_callback or human_gate.feedback to close them");
+  }
   const sourceSystem = String(input.sourceSystem || input.source_system || input.source || "openclaw").trim();
   const sourceAgent = String(input.sourceAgent || input.source_agent || input.createdBy || input.from || "cat_claw").trim();
   const payload = {
@@ -6593,10 +6650,64 @@ async function updateDispatch(paths, dispatchId, status, patch = {}) {
   if (patch.error) assignments.push(`last_error=${sqlValue(String(patch.error).slice(0, 2000))}`);
   if (patch.nextRetryAt) assignments.push(`next_retry_at=${sqlValue(patch.nextRetryAt)}`);
   if (patch.attempt !== undefined) assignments.push(`attempt=${sqlValue(Number(patch.attempt) || 0)}`);
+  if (status === "queued") assignments.push("sent_at=NULL", "acked_at=NULL", "completed_at=NULL");
+  if (status === "sent") assignments.push("acked_at=NULL", "completed_at=NULL", "failure_type=NULL", "last_error=NULL", "next_retry_at=NULL");
+  if (status === "acked") assignments.push("failure_type=NULL", "last_error=NULL", "next_retry_at=NULL");
+  if (["failed", "cancelled"].includes(status) && !patch.nextRetryAt) assignments.push("next_retry_at=NULL");
   await sqlite(paths.dbFile, `
 UPDATE mixed_meeting_dispatches
 SET ${assignments.join(", ")}
 WHERE dispatch_id=${sqlValue(dispatchId)};`);
+}
+
+async function claimQueuedDispatch(paths, row, input = {}) {
+  if (String(row.status || "") !== "queued") return { claimed: false, row, reason: `status_${row.status || "unknown"}` };
+  const claimedAt = nowIso();
+  const attempt = Number(row.attempt || 0) || 0;
+  const currentPayload = parseJsonValue(row.payload_json, {});
+  const claim = {
+    claimId: safeId("dispatch_claim"),
+    claimedAt,
+    owner: firstText(input.owner, input.from, "workflow"),
+    runtime: row.runtime || "",
+    attempt
+  };
+  const payload = { ...currentPayload, bridge: { ...(currentPayload.bridge || {}), claim, claimedAt, updatedAt: claimedAt } };
+  const changed = await sqlite(paths.dbFile, `
+UPDATE mixed_meeting_dispatches
+SET status='sent',
+    sent_at=${sqlValue(claimedAt)},
+    acked_at=NULL,
+    completed_at=NULL,
+    failure_type=NULL,
+    last_error=NULL,
+    next_retry_at=NULL,
+    payload_json=${sqlValue(JSON.stringify(payload))},
+    updated_at=${sqlValue(claimedAt)}
+WHERE dispatch_id=${sqlValue(row.dispatch_id)}
+  AND status='queued'
+  AND attempt=${sqlValue(attempt)};
+SELECT changes() AS changed;`, { json: true });
+  if (Number(changed?.[0]?.changed || 0) !== 1) {
+    const rows = await sqlite(paths.dbFile, `SELECT * FROM mixed_meeting_dispatches WHERE dispatch_id=${sqlValue(row.dispatch_id)} LIMIT 1;`, { json: true });
+    return { claimed: false, row: rows[0] || row, reason: "not_claimed" };
+  }
+  return {
+    claimed: true,
+    row: {
+      ...row,
+      status: "sent",
+      sent_at: claimedAt,
+      acked_at: null,
+      completed_at: null,
+      failure_type: null,
+      last_error: null,
+      next_retry_at: null,
+      payload_json: JSON.stringify(payload),
+      updated_at: claimedAt
+    },
+    claim
+  };
 }
 
 function classifyRuntimeError(error) {
@@ -7389,23 +7500,29 @@ LIMIT ${limit};`, { json: true });
   if (dryRun) return { runtime, dryRun: true, count: rows.length, dispatches: rows.map((row) => ({ dispatchId: row.dispatch_id, meetingId: row.meeting_id, workflowId: row.workflow_id, traceId: row.trace_id, agentId: row.agent_id, attempt: row.attempt, maxAttempts: row.max_attempts, endpointRef: row.endpoint_ref })) };
   const results = [];
   for (const row of rows) {
+    const claim = await claimQueuedDispatch(paths, row, input);
+    if (!claim.claimed) {
+      results.push({ dispatchId: row.dispatch_id, runtime, agentId: row.agent_id, status: "skipped", reason: claim.reason, currentStatus: claim.row?.status || "" });
+      continue;
+    }
+    const claimedRow = claim.row;
     if (runtime === "openclaw_route_shell") {
-      results.push(await redirectQueuedRouteShellDispatch(paths, row, input));
+      results.push(await redirectQueuedRouteShellDispatch(paths, claimedRow, input));
     } else if (runtime === "hermers") {
-      const adapter = normalizeWorkflowIngressAdapter(row.workflow_ingress_adapter || row.execution_adapter || "acp", row.platform || "hermers", runtime);
+      const adapter = normalizeWorkflowIngressAdapter(claimedRow.workflow_ingress_adapter || claimedRow.execution_adapter || "acp", claimedRow.platform || "hermers", runtime);
       if (adapter === "acp") {
-        results.push(await runHermesAcpDispatch(paths, row, input));
+        results.push(await runHermesAcpDispatch(paths, claimedRow, input));
       } else if (adapter === "cli") {
-        results.push(await runHermesDispatch(paths, row, { ...input, adapterName: "cli" }));
+        results.push(await runHermesDispatch(paths, claimedRow, { ...input, adapterName: "cli" }));
       } else {
-        await updateDispatch(paths, row.dispatch_id, "failed", { adapter, failedAt: nowIso(), error: `hermers adapter not implemented: ${adapter}` });
-        results.push({ dispatchId: row.dispatch_id, runtime, agentId: row.agent_id, status: "failed", error: `hermers adapter not implemented: ${adapter}` });
+        await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter, failedAt: nowIso(), error: `hermers adapter not implemented: ${adapter}` });
+        results.push({ dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `hermers adapter not implemented: ${adapter}` });
       }
     } else if (runtime === "openclaw") {
-      results.push(await runOpenClawDispatch(paths, row, input));
+      results.push(await runOpenClawDispatch(paths, claimedRow, input));
     } else {
-      await updateDispatch(paths, row.dispatch_id, "failed", { adapter: "none", failedAt: nowIso(), error: `runtime adapter not implemented: ${runtime}` });
-      results.push({ dispatchId: row.dispatch_id, runtime, agentId: row.agent_id, status: "failed", error: `runtime adapter not implemented: ${runtime}` });
+      await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "none", failedAt: nowIso(), error: `runtime adapter not implemented: ${runtime}` });
+      results.push({ dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `runtime adapter not implemented: ${runtime}` });
     }
   }
   return { runtime, count: rows.length, results, dbFile: paths.dbFile };
@@ -7421,6 +7538,7 @@ export async function staleDispatchReconcile(rootDir, input = {}) {
 SELECT d.*,
   (SELECT rr.status FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_status,
   (SELECT rr.completed_at FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_completed_at,
+  (SELECT rr.attempt FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_attempt,
   (SELECT rr.message_id FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_message_id,
   (SELECT rr.failure_type FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_failure_type,
   (SELECT rr.error FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_error
@@ -7443,19 +7561,21 @@ LIMIT ${limit};`, { json: true });
       continue;
     }
     if (terminalStatus === "failed" || terminalStatus === "retry_scheduled") {
-      const shouldRetry = terminalStatus === "retry_scheduled" && Number(row.attempt || 0) < Number(row.max_attempts || 1);
+      const attempt = Math.max(Number(row.attempt || 0) + 1, Number(row.terminal_attempt || 0) || 0);
+      const shouldRetry = terminalStatus === "retry_scheduled" && attempt < Number(row.max_attempts || 1);
       await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", {
         adapter: "stale_dispatch_reconcile",
         failedAt: row.terminal_completed_at || nowIso(),
         failureType: row.terminal_failure_type || "runtime_stale",
         error: row.terminal_error || "stale sent dispatch reconciled from terminal runtime receipt",
-        nextRetryAt: shouldRetry ? nextRetryAt(Number(row.attempt || 0) || 1) : ""
+        attempt,
+        nextRetryAt: shouldRetry ? nextRetryAt(attempt) : ""
       });
       results.push({ dispatchId: row.dispatch_id, status: shouldRetry ? "queued" : "failed", reason: "terminal_runtime_receipt" });
       continue;
     }
-    const attempt = Number(row.attempt || 0);
     const maxAttempts = Number(row.max_attempts || 1);
+    const attempt = Number(row.attempt || 0) + 1;
     const retry = attempt < maxAttempts;
     const completedAt = nowIso();
     const error = `stale sent dispatch exceeded ${Math.round(staleAfterMs / 1000)}s without terminal runtime receipt`;
@@ -7464,7 +7584,8 @@ LIMIT ${limit};`, { json: true });
       failedAt: completedAt,
       failureType: "runtime_stale",
       error,
-      nextRetryAt: retry ? nextRetryAt(Math.max(1, attempt)) : ""
+      attempt,
+      nextRetryAt: retry ? nextRetryAt(attempt) : ""
     });
     const staleRuntimeRunId = await recordRuntimeRun(paths, row, {
       runtimeRunId: safeId(retry ? "runtime_run_retry" : "runtime_run_failed"),
@@ -7732,6 +7853,7 @@ export async function humanGateRequest(rootDir, input) {
   const requester = normalizeRequester(input.from || input.sourceAgent || input.source_agent || input.ownerAgent || input.owner_agent, "cat_claw");
   const workflowId = firstText(input.workflowId, input.workflow_id, input.parentObjectId, input.parent_object_id, meetingId);
   const gateType = firstText(input.gateType, input.gate_type, "workflow_continuation");
+  const parentObjectId = input.parentObjectId || input.parent_object_id || workflowId;
   const requestPayload = parseJsonValue(input.payload, input.payload || {});
   const buttonSpecs = humanGateButtonSpecs(
     { object_id: input.humanGateId || input.human_gate_id || "", path: "" },
@@ -7742,25 +7864,52 @@ export async function humanGateRequest(rootDir, input) {
   if (!buttonAudit.ok) {
     throw new Error(`Human Gate request blocked: ${buttonAudit.reason}; cat-brain main must provide Chinese plan A/B/C details before cat_claw submits to Flashcat`);
   }
-  const gate = await workflowHumanGateRecord(rootDir, {
-    ...input,
-    workflowId,
-    parentObjectId: input.parentObjectId || input.parent_object_id || workflowId,
-    gateType,
-    actor: input.actor || requester,
-    status: "pending",
-    sourceSystem: input.sourceSystem || input.source_system || "openclaw",
-    sourceAgent: requester
-  });
-  const buttons = await createHumanGateButtons(paths, {
-    ...input,
-    buttons: buttonSpecs,
-    addDefaultControls: false,
-    workflowId,
-    meetingId,
-    humanGateId: gate.objectId,
-    createdBy: requester
-  });
+  let gate = null;
+  const existingGateRows = await sqlite(paths.dbFile, `
+SELECT object_id, payload_json
+FROM protocol_objects
+WHERE object_type='human_gate_record'
+  AND status='pending'
+  AND parent_object_id=${sqlValue(parentObjectId)}
+ORDER BY created_at DESC
+LIMIT 20;`, { json: true });
+  for (const row of existingGateRows) {
+    const payload = parseJsonValue(row.payload_json, {});
+    const body = humanGateBody(payload);
+    if (String(body.workflowId || payload.workflowId || parentObjectId || "") === String(workflowId) && String(body.gateType || payload.gateType || "workflow_continuation") === String(gateType)) {
+      gate = { objectId: row.object_id, objectType: "human_gate_record", status: "pending", idempotentReplay: true };
+      break;
+    }
+  }
+  if (!gate) {
+    gate = await workflowHumanGateRecord(rootDir, {
+      ...input,
+      [INTERNAL_HUMAN_GATE_RECORD]: true,
+      workflowId,
+      parentObjectId,
+      gateType,
+      actor: input.actor || requester,
+      status: "pending",
+      sourceSystem: input.sourceSystem || input.source_system || "openclaw",
+      sourceAgent: requester
+    });
+  }
+  let buttons = (await sqlite(paths.dbFile, `
+SELECT *
+FROM human_gate_buttons
+WHERE human_gate_id=${sqlValue(gate.objectId)} AND status='active'
+ORDER BY created_at ASC;`, { json: true })).map((buttonRow) => humanGateButtonFromRow(buttonRow, paths.root));
+  if (!buttons.length) {
+    buttons = await createHumanGateButtons(paths, {
+      ...input,
+      buttons: buttonSpecs,
+      addDefaultControls: false,
+      workflowId,
+      meetingId,
+      humanGateId: gate.objectId,
+      createdBy: requester
+    });
+  }
   const { webApp, presentation, telegramReplyMarkup, text } = await humanGateTelegramArtifacts(input, buttons);
   const eventId = safeId("control");
   const createdAt = nowIso();
@@ -7775,6 +7924,7 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
   const targetKind = firstText(input.targetKind, input.target_kind) || (channelTarget || targetRef.startsWith("-") ? "channel" : "private");
   const deliveryAccount = normalizeRequester(input.account || input.telegramAccount || input.telegram_account, "cat_claw");
   const telegramOutbox = await enqueueTelegramOutbox(paths, {
+    outboxId: `hgate-${cleanFileSegment(gate.objectId)}`,
     meetingId,
     targetKind,
     targetRef,
@@ -8344,74 +8494,29 @@ WHERE human_gate_id=${sqlValue(button.human_gate_id)} AND (button_id=${sqlValue(
 
 export async function humanGateResume(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
-  const workflowId = String(input.workflowId || input.workflow_id || input.parentObjectId || input.parent_object_id || "").trim();
-  if (!workflowId) throw new Error("workflowId is required");
-  const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id || workflowId);
-  const status = HUMAN_GATE_STATUSES.has(String(input.status || "approved")) ? String(input.status || "approved") : "approved";
-  const actor = String(input.actor || input.from || "flashcat").trim();
-  const text = String(input.text || input.summary || "").trim();
-  const gate = await workflowHumanGateRecord(rootDir, {
+  const token = normalizeHumanGateCallbackToken(input);
+  const humanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
+  const buttonId = String(input.buttonId || input.button_id || "").trim();
+  const feedbackText = humanGateFeedbackText(input);
+  if (!token || !humanGateId || !buttonId) {
+    throw new Error("human_gate.resume is button-first only; humanGateId, buttonId, and callbackToken are required");
+  }
+  if (!feedbackText) {
+    throw new Error("human_gate.resume requires Flashcat original words or review feedback");
+  }
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} LIMIT 1;`, { json: true });
+  const button = rows[0];
+  if (!button) throw new Error("human_gate.resume callback token was not found");
+  if (String(button.human_gate_id || "") !== humanGateId || String(button.button_id || "") !== buttonId) {
+    throw new Error("human_gate.resume token does not match the supplied humanGateId/buttonId");
+  }
+  return humanGateButtonCallback(rootDir, {
     ...input,
     workflowRootDir: paths.root,
-    workflowId,
-    parentObjectId: input.parentObjectId || input.parent_object_id || workflowId,
-    status,
-    actor,
-    sourceSystem: input.sourceSystem || input.source_system || "telegram",
-    sourceAgent: actor,
-    gateType: input.gateType || input.gate_type || "workflow_continuation",
-    summary: text
+    token,
+    feedbackText,
+    sourceSystem: input.sourceSystem || input.source_system || "human_gate.resume"
   });
-  const resume = await meetingResume(rootDir, {
-    workflowRootDir: paths.root,
-    meetingId,
-    from: actor,
-    status,
-    text: text || `Human Gate ${status} by ${actor}`,
-    payload: {
-      workflowId,
-      humanGateId: gate.objectId,
-      status,
-      source: input.source || "human_gate.resume"
-    }
-  });
-  let dispatch = null;
-  if (["approved", "rejected"].includes(status)) {
-    const nextAction = status === "approved"
-      ? "Continue the next workflow round under the approved boundary."
-      : "Revise the plan according to the rejected Human Gate and prepare a new next-action package.";
-    dispatch = await meetingDispatch(rootDir, {
-      workflowRootDir: paths.root,
-      meetingId,
-      workflowId,
-      traceId: `${workflowId}:human_gate_${status}:${Date.now()}`,
-      idempotencyKey: `workflow:${workflowId}:human_gate_resume:${gate.objectId}`,
-      runtime: input.runtime || "openclaw",
-      agentId: input.agentId || input.agent_id || "main",
-      dispatchType: "human_gate_resume",
-      priority: "steer",
-      createdBy: actor,
-      prompt: [
-        `Human Gate status: ${status}`,
-        `Workflow ID: ${workflowId}`,
-        `Meeting ID: ${meetingId}`,
-        `Human Gate ID: ${gate.objectId}`,
-        `Flashcat confirmation: ${text || "(no extra text)"}`,
-        "",
-        "You are cat-brain main. Resume the workflow from this Human Gate decision.",
-        nextAction,
-        "Create or update concrete workflow tasks for the next round, preserve Cat Claw as the secretary/Human Gate reporting path, and do not execute high-impact operations without a new Human Gate."
-      ].join("\n"),
-      payload: {
-        workflowId,
-        meetingId,
-        humanGateId: gate.objectId,
-        status,
-        humanGateResume: true
-      }
-    });
-  }
-  return { workflowId, meetingId, humanGateId: gate.objectId, status, resume, dispatch, dbFile: paths.dbFile };
 }
 
 export async function meetingResume(rootDir, input) {
@@ -8478,8 +8583,20 @@ LIMIT ${limit};`, { json: true });
     const outboxId = String(input.outboxId || input.outbox_id || "").trim();
     if (!outboxId) throw new Error("outboxId is required");
     const status = String(input.status || "sent").trim();
-    await sqlite(paths.dbFile, `UPDATE telegram_outbox SET status=${sqlValue(status)}, updated_at=${sqlValue(nowIso())} WHERE outbox_id=${sqlValue(outboxId)};`);
-    return { outboxId, status, dbFile: paths.dbFile };
+    const updatedAt = nowIso();
+    await sqlite(paths.dbFile, `UPDATE telegram_outbox SET status=${sqlValue(status)}, updated_at=${sqlValue(updatedAt)} WHERE outbox_id=${sqlValue(outboxId)};`);
+    const rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`, { json: true });
+    let messageFlowSync = null;
+    if (rows[0] && ["sent", "failed"].includes(status)) {
+      messageFlowSync = await updateMessageFlowFromTelegramDelivery(paths, rows[0], {
+        outboxId,
+        status,
+        target: rows[0].target_ref || "",
+        manual: true,
+        updatedAt
+      });
+    }
+    return { outboxId, status, messageFlowSync, dbFile: paths.dbFile };
   }
   const limit = Math.max(1, Math.min(200, Number(input.limit || 20)));
   const status = String(input.status || "queued").trim();
@@ -8705,7 +8822,7 @@ WHERE mf.final_output_present=1
   AND mf.runtime_completed_at IS NOT NULL
   AND mf.runtime_completed_at != ''
   AND mf.runtime_completed_at < ${sqlValue(cutoff)}
-  AND mf.status != 'telegram_sent'
+  AND mf.status NOT IN ('telegram_sent','telegram_failed')
 ORDER BY mf.runtime_completed_at
 LIMIT ${limit};`, { json: true });
   const incidents = [];
