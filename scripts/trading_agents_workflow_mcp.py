@@ -68,8 +68,11 @@ def truthy_env(name: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def normalized_root(value: str | Path) -> Path:
-    return Path(str(value)).expanduser().resolve(strict=False)
+def normalized_root(value: str | Path) -> str:
+    text = str(value).strip()
+    if text.startswith("~/"):
+        text = str(Path.home() / text[2:])
+    return os.path.normpath(text)
 
 
 def guard_workflow_root(value: str | Path) -> str:
@@ -79,7 +82,7 @@ def guard_workflow_root(value: str | Path) -> str:
             f"legacy trading-agents-workflow root has retired and is fail-closed: {LEGACY_WORKFLOW_ROOT}; "
             "set TRADING_AGENTS_WORKFLOW_ROOT or pass an active workflow_root"
         )
-    return str(root)
+    return root
 
 
 def local_code_path() -> Path:
