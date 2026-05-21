@@ -44,6 +44,7 @@ const INCIDENT_MODES = new Set(["normal", "degraded", "critical-only", "paper-on
 const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout", "acp_unavailable", "transient_runtime"]);
 const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_report"]);
 const TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES = new Set(["human_gate_request", "human_gate_report", "workflow_secretary_report", "message_flow_reply", "meeting_live"]);
+const INTERNAL_HUMAN_GATE_RECORD = Symbol("internal_human_gate_record");
 const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = "8390724843";
 const CONTROL_LOOP_WORKFLOW_STATUSES = new Set(["active", "waiting_human", "blocked"]);
 const CONTROL_LOOP_ACTIVE_JOB_STATUSES = new Set(["queued", "running", "retry_scheduled"]);
@@ -5205,9 +5206,8 @@ ON CONFLICT(flow_id) DO UPDATE SET
   execution_identity=CASE WHEN excluded.execution_identity != '' THEN excluded.execution_identity ELSE message_flows.execution_identity END,
   return_policy=CASE WHEN excluded.return_policy != 'silent' OR message_flows.return_policy='' THEN excluded.return_policy ELSE message_flows.return_policy END,
   status=CASE
-    WHEN message_flows.status IN ('telegram_sent','telegram_failed')
-      AND excluded.status NOT IN ('telegram_sent','telegram_failed')
-      THEN message_flows.status
+    WHEN message_flows.status='telegram_sent' AND excluded.status!='telegram_sent' THEN message_flows.status
+    WHEN message_flows.status='telegram_failed' AND excluded.status NOT IN ('telegram_failed','telegram_sent') THEN message_flows.status
     ELSE excluded.status
   END,
   inbound_received_at=CASE WHEN excluded.inbound_received_at != '' THEN excluded.inbound_received_at ELSE message_flows.inbound_received_at END,
@@ -5249,8 +5249,20 @@ async function messageFlowForDispatch(paths, row = {}) {
 
 async function updateMessageFlow(paths, flowId, status, patch = {}) {
   if (!flowId || !MESSAGE_FLOW_STATUSES.has(status)) return null;
-  const rows = await sqlite(paths.dbFile, `SELECT payload_json FROM message_flows WHERE flow_id=${sqlValue(flowId)} LIMIT 1;`, { json: true });
+  const rows = await sqlite(paths.dbFile, `SELECT status, payload_json FROM message_flows WHERE flow_id=${sqlValue(flowId)} LIMIT 1;`, { json: true });
   if (!rows[0]) return null;
+  const currentStatus = String(rows[0].status || "").trim();
+  if (
+    (currentStatus === "telegram_sent" && status !== "telegram_sent") ||
+    (currentStatus === "telegram_failed" && !["telegram_failed", "telegram_sent"].includes(status))
+  ) {
+    await appendMessageFlowEvent(paths, flowId, currentStatus, "state_regression_blocked", {
+      attemptedStatus: status,
+      reason: "terminal_message_flow_status_is_monotonic",
+      payload: patch.payload || {}
+    });
+    return readMessageFlow(paths, flowId);
+  }
   const existingPayload = parseJsonValue(rows[0].payload_json, {});
   const payload = { ...existingPayload, ...parseJsonValue(patch.payload, patch.payload || {}), updatedAt: nowIso() };
   const updatedAt = patch.updatedAt || patch.updated_at || nowIso();
@@ -5511,7 +5523,7 @@ export async function protocolRecord(rootDir, input) {
   const objectType = PROTOCOL_OBJECT_TYPES.has(objectTypeRaw) ? objectTypeRaw : "generic";
   const objectId = input.objectId || input.object_id || safeId(objectType.replace(/_/g, "-"));
   const status = String(input.status || "recorded").trim();
-  if (objectType === "human_gate_record" && !boolOption(input.internalHumanGateRecord ?? input.internal_human_gate_record, false)) {
+  if (objectType === "human_gate_record" && input[INTERNAL_HUMAN_GATE_RECORD] !== true) {
     throw new Error("human_gate_record writes are button-first only; use human_gate.request to create pending gates and human_gate.button_callback or human_gate.feedback to close them");
   }
   const sourceSystem = String(input.sourceSystem || input.source_system || input.source || "openclaw").trim();
@@ -7526,6 +7538,7 @@ export async function staleDispatchReconcile(rootDir, input = {}) {
 SELECT d.*,
   (SELECT rr.status FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_status,
   (SELECT rr.completed_at FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_completed_at,
+  (SELECT rr.attempt FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_attempt,
   (SELECT rr.message_id FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_message_id,
   (SELECT rr.failure_type FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_failure_type,
   (SELECT rr.error FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_error
@@ -7548,19 +7561,21 @@ LIMIT ${limit};`, { json: true });
       continue;
     }
     if (terminalStatus === "failed" || terminalStatus === "retry_scheduled") {
-      const shouldRetry = terminalStatus === "retry_scheduled" && Number(row.attempt || 0) < Number(row.max_attempts || 1);
+      const attempt = Math.max(Number(row.attempt || 0) + 1, Number(row.terminal_attempt || 0) || 0);
+      const shouldRetry = terminalStatus === "retry_scheduled" && attempt < Number(row.max_attempts || 1);
       await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", {
         adapter: "stale_dispatch_reconcile",
         failedAt: row.terminal_completed_at || nowIso(),
         failureType: row.terminal_failure_type || "runtime_stale",
         error: row.terminal_error || "stale sent dispatch reconciled from terminal runtime receipt",
-        nextRetryAt: shouldRetry ? nextRetryAt(Number(row.attempt || 0) || 1) : ""
+        attempt,
+        nextRetryAt: shouldRetry ? nextRetryAt(attempt) : ""
       });
       results.push({ dispatchId: row.dispatch_id, status: shouldRetry ? "queued" : "failed", reason: "terminal_runtime_receipt" });
       continue;
     }
-    const attempt = Number(row.attempt || 0);
     const maxAttempts = Number(row.max_attempts || 1);
+    const attempt = Number(row.attempt || 0) + 1;
     const retry = attempt < maxAttempts;
     const completedAt = nowIso();
     const error = `stale sent dispatch exceeded ${Math.round(staleAfterMs / 1000)}s without terminal runtime receipt`;
@@ -7569,7 +7584,8 @@ LIMIT ${limit};`, { json: true });
       failedAt: completedAt,
       failureType: "runtime_stale",
       error,
-      nextRetryAt: retry ? nextRetryAt(Math.max(1, attempt)) : ""
+      attempt,
+      nextRetryAt: retry ? nextRetryAt(attempt) : ""
     });
     const staleRuntimeRunId = await recordRuntimeRun(paths, row, {
       runtimeRunId: safeId(retry ? "runtime_run_retry" : "runtime_run_failed"),
@@ -7868,7 +7884,7 @@ LIMIT 20;`, { json: true });
   if (!gate) {
     gate = await workflowHumanGateRecord(rootDir, {
       ...input,
-      internalHumanGateRecord: true,
+      [INTERNAL_HUMAN_GATE_RECORD]: true,
       workflowId,
       parentObjectId,
       gateType,
