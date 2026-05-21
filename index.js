@@ -84,6 +84,13 @@ function normalizeAgentId(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function isPluginInspectionProcess() {
+  const args = process.argv.map((arg) => String(arg || ""));
+  const pluginsIndex = args.indexOf("plugins");
+  if (pluginsIndex < 0) return false;
+  return args.slice(pluginsIndex + 1).some((arg) => arg === "inspect" || arg === "doctor");
+}
+
 const toolParameters = {
   type: "object",
   additionalProperties: true,
@@ -2076,6 +2083,7 @@ function runControlLoopWorker(api, config, reason) {
 }
 
 function registerControlLoop(api) {
+  if (isPluginInspectionProcess()) return;
   const config = controlLoopConfig(api);
   if (!config.enabled) return;
   const singletonKey = "__tradingAgentsWorkflowControlLoop";
@@ -2095,8 +2103,10 @@ function registerControlLoop(api) {
     }
   };
   state.timer = setInterval(() => runTick("interval"), config.tickMs);
+  if (typeof state.timer.unref === "function") state.timer.unref();
   if (config.startupTick) {
     state.startupTimer = setTimeout(() => runTick("startup"), config.startupDelayMs);
+    if (typeof state.startupTimer.unref === "function") state.startupTimer.unref();
   }
   const stop = () => {
     state.stopped = true;
