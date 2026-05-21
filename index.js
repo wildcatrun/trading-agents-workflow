@@ -1051,6 +1051,9 @@ function registerCli(api) {
       .option("--create-human-gate-inbox <trueOrFalse>", "Create Human Gate inbox when no recent batch exists", "true")
       .option("--enable-schedules <trueOrFalse>", "Seed due workflow schedules", "true")
       .option("--schedule-limit <count>", "Max due schedules to seed per tick", "20")
+      .option("--retention <trueOrFalse>", "Prune workflow runtime logs and stale control-loop rows", "true")
+      .option("--retention-hours <hours>", "Runtime retention horizon", "72")
+      .option("--retention-interval-ms <ms>", "Minimum interval between retention sweeps", "3600000")
       .option("--dry-run <trueOrFalse>", "Do not drain runtime or deliver outbox", "false")
       .option("--owner <owner>", "Lease owner", "openclaw-plugin")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
@@ -1081,6 +1084,9 @@ function registerCli(api) {
           createHumanGateInbox: options.createHumanGateInbox !== "false",
           enableSchedules: options.enableSchedules !== "false",
           scheduleLimit: Number(options.scheduleLimit),
+          retention: options.retention !== "false",
+          retentionHours: Number(options.retentionHours),
+          retentionIntervalMs: Number(options.retentionIntervalMs),
           dryRun: options.dryRun === "true",
           owner: options.owner
         }), null, 2));
@@ -1975,6 +1981,8 @@ function controlLoopConfig(api) {
   const timeoutSeconds = numberValue(configured.timeoutSeconds, 45, 5, 900);
   const messageFlowStuckAfterMs = numberValue(configured.messageFlowStuckAfterMs ?? configured.message_flow_stuck_after_ms, 5 * 60_000, 60_000, 24 * 3600_000);
   const messageFlowReconcileLimit = numberValue(configured.messageFlowReconcileLimit ?? configured.message_flow_reconcile_limit, 20, 1, 200);
+  const retentionHours = numberValue(configured.retentionHours ?? configured.retention_hours ?? process.env.TRADING_AGENTS_WORKFLOW_RETENTION_HOURS, 72, 1, 30 * 24);
+  const retentionIntervalMs = numberValue(configured.retentionIntervalMs ?? configured.retention_interval_ms ?? process.env.TRADING_AGENTS_WORKFLOW_RETENTION_INTERVAL_MS, 60 * 60_000, 60_000, 24 * 3600_000);
   const requestedJobLeaseMs = numberValue(configured.jobLeaseMs, 120_000, 10_000, 60 * 60_000);
   const minSafeJobLeaseMs = Math.max(tickBudgetMs + 30_000, (timeoutSeconds + 30) * 1000);
   const jobLeaseMs = Math.max(requestedJobLeaseMs, minSafeJobLeaseMs);
@@ -2005,7 +2013,10 @@ function controlLoopConfig(api) {
     ensureHumanGateRequests: configured.ensureHumanGateRequests !== false,
     createHumanGateInbox: configured.createHumanGateInbox !== false,
     enableSchedules: configured.enableSchedules !== false,
-    scheduleLimit: numberValue(configured.scheduleLimit, 20, 1, 100)
+    scheduleLimit: numberValue(configured.scheduleLimit, 20, 1, 100),
+    retention: configured.retention !== false,
+    retentionHours,
+    retentionIntervalMs
   };
 }
 
@@ -2040,7 +2051,10 @@ function controlLoopWorkerArgs(config, root, reason) {
     "--ensure-human-gate-requests", boolArg(config.ensureHumanGateRequests),
     "--create-human-gate-inbox", boolArg(config.createHumanGateInbox),
     "--enable-schedules", boolArg(config.enableSchedules),
-    "--schedule-limit", String(config.scheduleLimit)
+    "--schedule-limit", String(config.scheduleLimit),
+    "--retention", boolArg(config.retention),
+    "--retention-hours", String(config.retentionHours),
+    "--retention-interval-ms", String(config.retentionIntervalMs)
   ];
   if (root) args.splice(2, 0, "--root", root);
   if (reason) args.push("--reason", reason);
@@ -2095,6 +2109,9 @@ function runControlLoopWorker(api, config, reason) {
       createHumanGateInbox: config.createHumanGateInbox,
       enableSchedules: config.enableSchedules,
       scheduleLimit: config.scheduleLimit,
+      retention: config.retention,
+      retentionHours: config.retentionHours,
+      retentionIntervalMs: config.retentionIntervalMs,
       payload: { reason }
     });
   }

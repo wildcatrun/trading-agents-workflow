@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
 import https from "node:https";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import tls from "node:tls";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -43,6 +45,8 @@ const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_r
 const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = "8390724843";
 const CONTROL_LOOP_WORKFLOW_STATUSES = new Set(["active", "waiting_human", "blocked"]);
 const CONTROL_LOOP_ACTIVE_JOB_STATUSES = new Set(["queued", "running", "retry_scheduled"]);
+const DEFAULT_WORKFLOW_RETENTION_HOURS = 72;
+const DEFAULT_WORKFLOW_RETENTION_INTERVAL_MS = 60 * 60_000;
 const HUMAN_GATE_TEXT_POLICY_VERSION = "human_gate_chinese_feedback_style_v1";
 const HUMAN_GATE_WEB_APP_ROUTE_PATH = "/plugins/trading-agents-workflow/human-gate";
 const ROUTE_SHELL_TARGET_PLATFORM_ORDER = ["hermers", "openclaw", "other"];
@@ -3399,6 +3403,203 @@ async function writeTextArtifact(root, dir, id, extension, content) {
 async function appendJsonl(filePath, record) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, `${JSON.stringify(record)}\n`, "utf8");
+}
+
+function numberOption(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, number));
+}
+
+function retentionConfig(input = {}) {
+  return {
+    enabled: boolOption(
+      input.retention ?? input.enableRetention ?? input.enable_retention ?? process.env.TRADING_AGENTS_WORKFLOW_RETENTION,
+      true
+    ),
+    retentionHours: numberOption(
+      input.retentionHours ?? input.retention_hours ?? process.env.TRADING_AGENTS_WORKFLOW_RETENTION_HOURS,
+      DEFAULT_WORKFLOW_RETENTION_HOURS,
+      1,
+      30 * 24
+    ),
+    intervalMs: numberOption(
+      input.retentionIntervalMs ?? input.retention_interval_ms ?? process.env.TRADING_AGENTS_WORKFLOW_RETENTION_INTERVAL_MS,
+      DEFAULT_WORKFLOW_RETENTION_INTERVAL_MS,
+      60_000,
+      24 * 3600_000
+    )
+  };
+}
+
+function extractJsonlRecordTimestamp(record = {}) {
+  return firstText(
+    record.ts,
+    record.startedAt,
+    record.checkedAt,
+    record.createdAt,
+    record.updatedAt,
+    record.completedAt,
+    record.dispatchedAt,
+    record.receivedAt
+  );
+}
+
+function extractJsonlLineTimestamp(line) {
+  try {
+    return extractJsonlRecordTimestamp(JSON.parse(line));
+  } catch {
+    const match = String(line || "").match(/"(ts|startedAt|checkedAt|createdAt|updatedAt|completedAt|dispatchedAt|receivedAt)":"([^"]+)"/);
+    return match ? match[2] : "";
+  }
+}
+
+function isTimestampBefore(timestamp, cutoffMs) {
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) && parsed < cutoffMs;
+}
+
+async function firstJsonlTimestamp(filePath) {
+  const stream = createReadStream(filePath, { encoding: "utf8" });
+  const reader = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of reader) {
+      if (!String(line).trim()) continue;
+      return extractJsonlLineTimestamp(line);
+    }
+  } finally {
+    reader.close();
+    stream.destroy();
+  }
+  return "";
+}
+
+async function pruneJsonlFile(filePath, cutoffMs) {
+  const firstTimestamp = await firstJsonlTimestamp(filePath);
+  if (!firstTimestamp || !isTimestampBefore(firstTimestamp, cutoffMs)) {
+    return { file: path.basename(filePath), status: "kept", firstTimestamp };
+  }
+
+  const tmpFile = `${filePath}.tmp-retention-${process.pid}`;
+  let total = 0;
+  let kept = 0;
+  let pruned = 0;
+  let missingTimestamp = 0;
+  const input = createReadStream(filePath, { encoding: "utf8" });
+  const reader = createInterface({ input, crlfDelay: Infinity });
+  const output = createWriteStream(tmpFile, { encoding: "utf8" });
+  const waitForDrain = () => new Promise((resolve) => output.once("drain", resolve));
+  try {
+    for await (const line of reader) {
+      if (!String(line).trim()) continue;
+      total += 1;
+      const timestamp = extractJsonlLineTimestamp(line);
+      if (timestamp && isTimestampBefore(timestamp, cutoffMs)) {
+        pruned += 1;
+        continue;
+      }
+      if (!timestamp) missingTimestamp += 1;
+      kept += 1;
+      if (!output.write(`${line}\n`)) await waitForDrain();
+    }
+    await new Promise((resolve, reject) => {
+      output.once("error", reject);
+      output.end(resolve);
+    });
+    await fs.rename(tmpFile, filePath);
+    return { file: path.basename(filePath), status: "pruned", firstTimestamp, total, kept, pruned, missingTimestamp };
+  } catch (error) {
+    output.destroy();
+    await fs.rm(tmpFile, { force: true }).catch(() => {});
+    throw error;
+  } finally {
+    reader.close();
+    input.destroy();
+  }
+}
+
+async function pruneWorkflowBackups(paths) {
+  const removed = [];
+  const backupDir = path.join(paths.root, "backups");
+  for (const dir of [backupDir]) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const filePath = path.join(dir, entry.name);
+      await fs.rm(filePath, { force: true });
+      removed.push(relativeTo(paths.root, filePath));
+    }
+  }
+
+  let rootEntries = [];
+  try {
+    rootEntries = await fs.readdir(paths.root, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  for (const entry of rootEntries) {
+    if (!entry.isFile() || !entry.name.startsWith("tracking.db.bak-")) continue;
+    const filePath = path.join(paths.root, entry.name);
+    await fs.rm(filePath, { force: true });
+    removed.push(relativeTo(paths.root, filePath));
+  }
+  return { removedCount: removed.length, removed };
+}
+
+async function pruneWorkflowBridgeJsonl(paths, cutoffMs) {
+  let entries = [];
+  try {
+    entries = await fs.readdir(paths.bridgeDir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const results = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+    results.push(await pruneJsonlFile(path.join(paths.bridgeDir, entry.name), cutoffMs));
+  }
+  return results;
+}
+
+async function pruneWorkflowDatabase(paths, cutoffIso) {
+  const activeStatuses = [...CONTROL_LOOP_ACTIVE_JOB_STATUSES].map(sqlValue).join(",");
+  const before = await sqlite(paths.dbFile, `
+SELECT 'readiness_snapshots' AS name, COUNT(*) AS count FROM readiness_snapshots WHERE checked_at < ${sqlValue(cutoffIso)}
+UNION ALL SELECT 'control_loop_jobs', COUNT(*) FROM control_loop_jobs WHERE created_at < ${sqlValue(cutoffIso)} AND status NOT IN (${activeStatuses});`, { json: true });
+  await sqlite(paths.dbFile, `
+PRAGMA busy_timeout=10000;
+DELETE FROM readiness_snapshots WHERE checked_at < ${sqlValue(cutoffIso)};
+DELETE FROM control_loop_jobs WHERE created_at < ${sqlValue(cutoffIso)} AND status NOT IN (${activeStatuses});`);
+  return Object.fromEntries(before.map((row) => [row.name, Number(row.count || 0)]));
+}
+
+async function maybeRunWorkflowRetention(paths, input = {}) {
+  const config = retentionConfig(input);
+  if (!config.enabled) return { status: "disabled" };
+  const markerFile = path.join(paths.bridgeDir, "control-loop-retention.json");
+  const previous = await readOptionalJson(markerFile).catch(() => null);
+  const lastRunMs = Date.parse(previous?.lastRunAt || "");
+  if (Number.isFinite(lastRunMs) && Date.now() - lastRunMs < config.intervalMs) {
+    return { status: "skipped_recent", lastRunAt: previous.lastRunAt, retentionHours: config.retentionHours, intervalMs: config.intervalMs };
+  }
+
+  const startedAt = nowIso();
+  const cutoffMs = Date.now() - config.retentionHours * 3600_000;
+  const cutoffIso = new Date(cutoffMs).toISOString();
+  const backups = await pruneWorkflowBackups(paths);
+  const database = await pruneWorkflowDatabase(paths, cutoffIso);
+  const bridgeJsonl = await pruneWorkflowBridgeJsonl(paths, cutoffMs);
+  const completedAt = nowIso();
+  const summary = { status: "ok", startedAt, completedAt, cutoffIso, retentionHours: config.retentionHours, intervalMs: config.intervalMs, backups, database, bridgeJsonl };
+  await fs.writeFile(markerFile, `${JSON.stringify({ ...summary, lastRunAt: completedAt }, null, 2)}\n`, "utf8");
+  return summary;
 }
 
 async function appendTranscript(paths, meetingId, line) {
@@ -9429,6 +9630,20 @@ export async function workflowControlLoopTick(rootDir, input = {}) {
     await appendControlLoopEvent(paths, tickId, "readiness_after_started");
     result.readinessAfter = await workflowReadinessSnapshot(paths, { ...input, activeChecks: false });
     await appendControlLoopEvent(paths, tickId, "readiness_after_completed", { status: result.readinessAfter?.status || "" });
+    if (!dryRun) {
+      try {
+        result.retention = await maybeRunWorkflowRetention(paths, input);
+        await appendControlLoopEvent(paths, tickId, "retention_completed", {
+          status: result.retention?.status || "",
+          cutoffIso: result.retention?.cutoffIso || "",
+          backupRemovedCount: result.retention?.backups?.removedCount || 0,
+          database: result.retention?.database || {}
+        });
+      } catch (error) {
+        result.retention = { status: "failed", error: String(error?.message || error).slice(0, 1000) };
+        await appendControlLoopEvent(paths, tickId, "retention_failed", { error: result.retention.error });
+      }
+    }
     result.status = "ok";
     result.completedAt = nowIso();
     await appendJsonl(path.join(paths.bridgeDir, "control-loop.jsonl"), result);
