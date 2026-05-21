@@ -92,15 +92,15 @@ def local_code_path() -> Path:
 
 
 def local_state_root() -> Path:
-    root = env_first(
+    root = env_first_or_none(
         (
             "TRADING_AGENTS_WORKFLOW_ROOT",
             "TRADING_WORKFLOW_LOCAL_STATE_ROOT",
             "TRADING_WORKFLOW_LOCAL_ROOT",
-            "TRADING_WORKFLOW_LOCAL_REPO",
-        ),
-        DEFAULT_LOCAL_REPO,
+        )
     )
+    if not root:
+        raise ValueError("local workflow state root is not configured; set TRADING_AGENTS_WORKFLOW_ROOT or TRADING_WORKFLOW_LOCAL_STATE_ROOT")
     return Path(guard_workflow_root(root))
 
 
@@ -309,22 +309,31 @@ def paths_status(args: dict[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {"source": source}
     if source in ("local", "both"):
         code = local_code_path()
-        state = local_state_root()
-        db = state / "tracking.db"
-        local_payload: dict[str, Any] = {
-            "codePath": str(code),
-            "stateRoot": str(state),
-            "database": str(db),
-            "codeEqualsState": code.resolve() == state.resolve() if code.exists() and state.exists() else str(code) == str(state),
-            "codePathExists": code.exists(),
-            "stateRootExists": state.exists(),
-            "gitDirExists": (code / ".git").exists(),
-            "messageFlowCliExists": (code / "bin" / "cat-meeting-governance.mjs").is_file(),
-            "databaseExists": db.is_file(),
-        }
-        if local_payload["gitDirExists"]:
-            local_payload["head"] = run(["git", "rev-parse", "HEAD"], cwd=code).get("stdout")
-            local_payload["status"] = run(["git", "status", "--short", "--branch"], cwd=code).get("stdout")
+        try:
+            state = local_state_root()
+            db = state / "tracking.db"
+            local_payload: dict[str, Any] = {
+                "codePath": str(code),
+                "stateRoot": str(state),
+                "database": str(db),
+                "codeEqualsState": code.resolve() == state.resolve() if code.exists() and state.exists() else str(code) == str(state),
+                "codePathExists": code.exists(),
+                "stateRootExists": state.exists(),
+                "gitDirExists": (code / ".git").exists(),
+                "messageFlowCliExists": (code / "bin" / "cat-meeting-governance.mjs").is_file(),
+                "databaseExists": db.is_file(),
+            }
+            if local_payload["gitDirExists"]:
+                local_payload["head"] = run(["git", "rev-parse", "HEAD"], cwd=code).get("stdout")
+                local_payload["status"] = run(["git", "status", "--short", "--branch"], cwd=code).get("stdout")
+        except ValueError as exc:
+            local_payload = {
+                "codePath": str(code),
+                "codePathExists": code.exists(),
+                "gitDirExists": (code / ".git").exists(),
+                "stateRootConfigured": False,
+                "error": str(exc),
+            }
         payload["local"] = local_payload
 
     if source in ("remote", "both"):

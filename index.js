@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runAction } from "./src/core.js";
+import { LEGACY_ROOT, runAction } from "./src/core.js";
 
 const PLUGIN_ID = "trading-agents-workflow";
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -2113,9 +2113,24 @@ function signalControlLoopWorker(child, signal) {
   }
 }
 
+function controlLoopWorkerEnv(root) {
+  const env = {
+    ...process.env,
+    TRADING_AGENTS_WORKFLOW_CONTROL_LOOP_WORKER: "1",
+    TRADING_AGENTS_WORKFLOW_ROOT: root,
+    CAT_MEETING_GOVERNANCE_ROOT: root
+  };
+  delete env.TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT;
+  return env;
+}
+
 function runControlLoopWorker(api, config, reason) {
+  const root = requireRoot(api);
+  if (normalizeRootValue(root) === normalizeRootValue(LEGACY_ROOT)) {
+    throw new Error(`control loop refused retired workflow root: ${LEGACY_ROOT}`);
+  }
   if (config.workerMode === "inline") {
-    return runAction(resolveRoot(api), {
+    return runAction(root, {
       action: "workflow.control_loop.tick",
       tickMs: config.tickMs,
       maxWorkflows: config.maxWorkflows,
@@ -2147,13 +2162,10 @@ function runControlLoopWorker(api, config, reason) {
     });
   }
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, controlLoopWorkerArgs(config, resolveRoot(api), reason), {
+    const child = spawn(process.execPath, controlLoopWorkerArgs(config, root, reason), {
       cwd: PLUGIN_DIR,
       detached: process.platform !== "win32",
-      env: {
-        ...process.env,
-        TRADING_AGENTS_WORKFLOW_CONTROL_LOOP_WORKER: "1"
-      },
+      env: controlLoopWorkerEnv(root),
       stdio: ["ignore", "ignore", "pipe"]
     });
     let stderr = "";

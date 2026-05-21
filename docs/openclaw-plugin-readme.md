@@ -160,10 +160,12 @@ Minimum operational contracts:
 - `side_effect.record` exists for file writes, memory writes, external notification, trading-core handoff, or any action that must not be blindly retried.
 - `incident.state` records active incident state with affected planes, current mode, timeline, mitigation, rollback options, and exit criteria; it writes both JSON and Markdown artifacts under `bridge/incidents/`.
 
-## Default Root
+## Active State Root
+
+The workflow state root must be configured explicitly. The current development-server state root is:
 
 ```text
-/home/flashcat/.openclaw/shared/trading-agents-workflow/
+/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow/
   tracking.db
   meetings/
   commands/
@@ -196,6 +198,8 @@ Minimum operational contracts:
   templates/
   index/
 ```
+
+The retired legacy root `/home/flashcat/.openclaw/shared/trading-agents-workflow/` is fail-closed by default and must not be recreated as an operational state directory.
 
 ## SQLite Role
 
