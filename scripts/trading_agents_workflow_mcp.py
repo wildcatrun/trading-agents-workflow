@@ -15,10 +15,12 @@ from typing import Any
 
 
 SERVER_NAME = "trading-agents-workflow"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.1.1"
 
 DEFAULT_LOCAL_REPO = str(Path(__file__).resolve().parents[1])
-DEFAULT_REMOTE_PATH = "/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow"
+DEFAULT_REMOTE_STATE_ROOT = "/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow"
+DEFAULT_REMOTE_CODE_PATH = "/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout"
+DEFAULT_REMOTE_PATH = DEFAULT_REMOTE_STATE_ROOT
 DEFAULT_REMOTE_HOST = "106.54.53.146"
 DEFAULT_REMOTE_USER = "flashcat"
 DEFAULT_REMOTE_KEY = "/Users/Flashcat/.ssh/openclaw_server"
@@ -41,12 +43,49 @@ def audit(event: dict[str, Any]) -> None:
         return
 
 
+def env_first(names: tuple[str, ...], default: str) -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return default
+
+
+def local_code_path() -> Path:
+    return Path(
+        env_first(
+            ("TRADING_WORKFLOW_LOCAL_CODE_PATH", "TRADING_WORKFLOW_LOCAL_REPO"),
+            DEFAULT_LOCAL_REPO,
+        )
+    ).expanduser()
+
+
+def local_state_root() -> Path:
+    return Path(
+        env_first(
+            ("TRADING_WORKFLOW_LOCAL_STATE_ROOT", "TRADING_WORKFLOW_LOCAL_ROOT", "TRADING_WORKFLOW_LOCAL_REPO"),
+            DEFAULT_LOCAL_REPO,
+        )
+    ).expanduser()
+
+
 def local_repo() -> Path:
-    return Path(os.environ.get("TRADING_WORKFLOW_LOCAL_REPO", DEFAULT_LOCAL_REPO)).expanduser()
+    return local_code_path()
+
+
+def remote_code_path() -> str:
+    return env_first(("TRADING_WORKFLOW_REMOTE_CODE_PATH", "TRADING_WORKFLOW_REMOTE_REPO"), DEFAULT_REMOTE_CODE_PATH)
+
+
+def remote_state_root() -> str:
+    return env_first(
+        ("TRADING_WORKFLOW_REMOTE_STATE_ROOT", "TRADING_WORKFLOW_REMOTE_ROOT", "TRADING_WORKFLOW_REMOTE_PATH"),
+        DEFAULT_REMOTE_STATE_ROOT,
+    )
 
 
 def remote_path() -> str:
-    return os.environ.get("TRADING_WORKFLOW_REMOTE_PATH", DEFAULT_REMOTE_PATH)
+    return remote_state_root()
 
 
 def run(cmd: list[str], cwd: Path | None = None, timeout: int = 30) -> dict[str, Any]:
@@ -98,8 +137,8 @@ def as_str_list(value: Any) -> list[str]:
 
 def workflow_db_path(source: str) -> str:
     if source == "local":
-        return str(local_repo() / "tracking.db")
-    return f"{remote_path().rstrip('/')}/tracking.db"
+        return str(local_state_root() / "tracking.db")
+    return f"{remote_state_root().rstrip('/')}/tracking.db"
 
 
 def db_query(source: str, query: str, params: list[Any] | None = None, timeout: int = 30) -> dict[str, Any]:
@@ -194,7 +233,7 @@ def select_table(
 
 
 def git_status(args: dict[str, Any]) -> dict[str, Any]:
-    repo = local_repo()
+    repo = local_code_path()
     status = run(["git", "status", "--short", "--branch"], cwd=repo)
     head = run(["git", "rev-parse", "HEAD"], cwd=repo)
     remote = run(["git", "remote", "-v"], cwd=repo)
@@ -211,8 +250,79 @@ def git_status(args: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def paths_status(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "both").strip()
+    if source not in ("local", "remote", "both"):
+        raise ValueError("source must be local, remote, or both")
+
+    payload: dict[str, Any] = {"source": source}
+    if source in ("local", "both"):
+        code = local_code_path()
+        state = local_state_root()
+        db = state / "tracking.db"
+        local_payload: dict[str, Any] = {
+            "codePath": str(code),
+            "stateRoot": str(state),
+            "database": str(db),
+            "codeEqualsState": code.resolve() == state.resolve() if code.exists() and state.exists() else str(code) == str(state),
+            "codePathExists": code.exists(),
+            "stateRootExists": state.exists(),
+            "gitDirExists": (code / ".git").exists(),
+            "messageFlowCliExists": (code / "bin" / "cat-meeting-governance.mjs").is_file(),
+            "databaseExists": db.is_file(),
+        }
+        if local_payload["gitDirExists"]:
+            local_payload["head"] = run(["git", "rev-parse", "HEAD"], cwd=code).get("stdout")
+            local_payload["status"] = run(["git", "status", "--short", "--branch"], cwd=code).get("stdout")
+        payload["local"] = local_payload
+
+    if source in ("remote", "both"):
+        code_path = remote_code_path()
+        state_root = remote_state_root()
+        remote_input = json.dumps({"codePath": code_path, "stateRoot": state_root}, ensure_ascii=False)
+        remote_code = "\n".join(
+            [
+                "import json, os, subprocess, sys",
+                "p = json.loads(sys.stdin.read())",
+                "code = p['codePath']",
+                "state = p['stateRoot']",
+                "db = os.path.join(state, 'tracking.db')",
+                "def git(args):",
+                "    try:",
+                "        r = subprocess.run(['git'] + args, cwd=code, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10, check=False)",
+                "        return {'ok': r.returncode == 0, 'returncode': r.returncode, 'stdout': (r.stdout or '').strip(), 'stderr': (r.stderr or '').strip()}",
+                "    except Exception as exc:",
+                "        return {'ok': False, 'error': type(exc).__name__ + ': ' + str(exc)}",
+                "out = {",
+                "    'codePath': code,",
+                "    'stateRoot': state,",
+                "    'database': db,",
+                "    'codeEqualsState': os.path.abspath(code) == os.path.abspath(state),",
+                "    'codePathExists': os.path.isdir(code),",
+                "    'stateRootExists': os.path.isdir(state),",
+                "    'gitDirExists': os.path.isdir(os.path.join(code, '.git')),",
+                "    'messageFlowCliExists': os.path.isfile(os.path.join(code, 'bin', 'cat-meeting-governance.mjs')),",
+                "    'databaseExists': os.path.isfile(db),",
+                "}",
+                "out['head'] = git(['rev-parse', 'HEAD'])",
+                "out['status'] = git(['status', '--short', '--branch'])",
+                "print(json.dumps(out, ensure_ascii=False))",
+            ]
+        )
+        result = run_remote(f"printf %s {shlex.quote(remote_input)} | python3 -c {shlex.quote(remote_code)}", timeout=30)
+        try:
+            remote_payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
+        except json.JSONDecodeError:
+            remote_payload = {}
+        remote_payload["remote"] = result
+        payload["remote"] = remote_payload
+
+    audit({"event": "paths_status", "source": source})
+    return payload
+
+
 def server_snapshot(args: dict[str, Any]) -> dict[str, Any]:
-    path = remote_path()
+    path = remote_state_root()
     max_files = max(1, min(int(args.get("max_files") or 120), 500))
     script = (
         "set -e; "
@@ -235,12 +345,12 @@ def latest_jsonl(args: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("path must be a safe relative path")
 
     if source == "remote":
-        full = f"{remote_path().rstrip('/')}/{relative_path}"
+        full = f"{remote_state_root().rstrip('/')}/{relative_path}"
         result = run_remote(f"test -f {shlex.quote(full)} && tail -n {limit} {shlex.quote(full)}", timeout=30)
         lines = result.get("stdout", "").splitlines() if result.get("ok") else []
         payload = {"source": source, "path": relative_path, "limit": limit, "lines": lines, "remote": result}
     elif source == "local":
-        full_path = local_repo() / relative_path
+        full_path = local_state_root() / relative_path
         if not full_path.exists():
             lines = []
         else:
@@ -268,7 +378,7 @@ def runtime_agents(args: dict[str, Any]) -> dict[str, Any]:
     params.append(limit)
 
     if source == "local":
-        db = local_repo() / "tracking.db"
+        db = Path(workflow_db_path(source))
         if not db.exists():
             return {"source": source, "database": str(db), "exists": False, "agents": []}
         conn = sqlite3.connect(str(db))
@@ -286,7 +396,7 @@ def runtime_agents(args: dict[str, Any]) -> dict[str, Any]:
             f"select agent_id, runtime, display_name, role, status, endpoint_ref, updated_at "
             f"from runtime_agents{where} order by runtime, agent_id limit {limit};\n"
         )
-        db_path = f"{remote_path().rstrip('/')}/tracking.db"
+        db_path = workflow_db_path(source)
         script = f"printf %s {shlex.quote(remote_query)} | sqlite3 {shlex.quote(db_path)}"
         result = run_remote(script, timeout=30)
         try:
@@ -518,6 +628,14 @@ def message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
     from_agent = str(args.get("from_agent") or args.get("fromAgent") or args.get("from") or "").strip()
     body = str(args.get("body") or args.get("text") or args.get("message") or "").strip()
     targets = as_str_list(args.get("to_agents") or args.get("toAgents") or args.get("targets") or args.get("to"))
+    if source == "local":
+        workflow_root = str(args.get("workflow_root") or args.get("workflowRoot") or local_state_root())
+        cwd = local_code_path()
+    elif source == "remote":
+        workflow_root = str(args.get("workflow_root") or args.get("workflowRoot") or remote_state_root())
+        cwd = remote_code_path()
+    else:
+        raise ValueError("source must be local or remote")
     if not from_agent:
         raise ValueError("from_agent is required")
     if not body and not str(args.get("subject") or "").strip():
@@ -545,7 +663,7 @@ def message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
         ("--requires-ack", str(bool(args.get("requires_ack") or args.get("requiresAck"))).lower() if ("requires_ack" in args or "requiresAck" in args) else None),
         ("--priority", args.get("priority")),
         ("--return-policy", args.get("return_policy") or args.get("returnPolicy")),
-        ("--root", args.get("workflow_root") or args.get("workflowRoot")),
+        ("--root", workflow_root),
     ]
     for target in targets:
         cli_args.extend(["--to", target])
@@ -556,17 +674,23 @@ def message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
             cli_args.extend([key, str(value)])
 
     if source == "local":
-        result = run(cli_args, cwd=local_repo(), timeout=60)
+        result = run(cli_args, cwd=cwd, timeout=60)
     elif source == "remote":
         quoted = " ".join(shlex.quote(part) for part in cli_args)
-        result = run_remote(f"cd {shlex.quote(remote_path())} && {quoted}", timeout=90)
-    else:
-        raise ValueError("source must be local or remote")
+        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90)
     try:
         payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
     except json.JSONDecodeError:
         payload = {}
-    response = {"source": source, "ok": result.get("ok"), "result": payload, "command": cli_args[:3] + ["..."], "runner": result}
+    response = {
+        "source": source,
+        "ok": result.get("ok"),
+        "codePath": str(cwd),
+        "workflowRoot": workflow_root,
+        "result": payload,
+        "command": cli_args[:3] + ["..."],
+        "runner": result,
+    }
     audit({"event": "message_flow_send", "source": source, "ok": result.get("ok"), "target_count": len(targets)})
     return response
 
@@ -575,6 +699,14 @@ TOOLS: dict[str, dict[str, Any]] = {
     "workflow_git_status": {
         "description": "Return local Git status for the trading-agents-workflow repository.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "workflow_paths_status": {
+        "description": "Report local and remote workflow code paths, state roots, database paths, and key file checks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"source": {"type": "string", "enum": ["local", "remote", "both"]}},
+            "additionalProperties": False,
+        },
     },
     "workflow_server_snapshot": {
         "description": "Read-only snapshot of the development-server trading-agents-workflow directory.",
@@ -756,6 +888,8 @@ def handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
         try:
             if name == "workflow_git_status":
                 payload = git_status(arguments)
+            elif name == "workflow_paths_status":
+                payload = paths_status(arguments)
             elif name == "workflow_server_snapshot":
                 payload = server_snapshot(arguments)
             elif name == "workflow_latest_jsonl":
