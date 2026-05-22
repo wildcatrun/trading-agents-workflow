@@ -278,7 +278,9 @@ async function testScheduleResumeSemantics() {
 
 async function makeFakeOpenClaw(root, name, mode) {
   const file = path.join(root, name);
-  const body = mode === "success"
+  const body = mode === "health-degraded"
+    ? `#!/usr/bin/env node\nif (process.argv.includes("health")) { console.log("Gateway event loop: degraded reasons=event_loop_delay max=1374ms p99=32ms util=0.241 cpu=0.313"); process.exit(0); }\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output"}]}}));\n`
+    : mode === "success"
     ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output"}]}}));\n`
     : `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"error",summary:"fake runtime failure"}));\n`;
   await fs.writeFile(file, body, "utf8");
@@ -426,6 +428,18 @@ async function testTradeIntentFailClosed() {
   assert.ok(intent.rejectionReasons.includes("missing_risk_limits"));
 }
 
+async function testReadinessGatewayDegraded() {
+  const root = await tempRoot("readiness-gateway");
+  const degradedBin = await makeFakeOpenClaw(root, "fake-openclaw-health-degraded.mjs", "health-degraded");
+  const status = await runAction(root, {
+    action: "workflow.readiness",
+    activeChecks: true,
+    openclawBin: degradedBin
+  });
+  assert.equal(status.status, "degraded");
+  assert.ok(status.findings.some((finding) => finding.key === "openclaw_gateway_event_loop_degraded"));
+}
+
 try {
   requireSqliteCli();
   const tests = [
@@ -433,7 +447,8 @@ try {
     ["human_gate pending cleanup/retry", testHumanGatePendingCleanupAndRetryRedaction],
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
-    ["trade_intent fail-closed", testTradeIntentFailClosed]
+    ["trade_intent fail-closed", testTradeIntentFailClosed],
+    ["readiness gateway degraded", testReadinessGatewayDegraded]
   ];
 
   for (const [name, fn] of tests) {

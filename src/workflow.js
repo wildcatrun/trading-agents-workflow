@@ -2134,6 +2134,18 @@ async function commandProbe(command, args, options = {}) {
   }
 }
 
+function gatewayHealthFinding(probe = {}) {
+  if (!probe.ok) return { severity: "warning", key: "openclaw_gateway_health_failed", plane: "control", error: probe.error };
+  const text = `${probe.stdout || ""}\n${probe.stderr || ""}`.toLowerCase();
+  if (text.includes("gateway event loop: degraded")) {
+    return { severity: "warning", key: "openclaw_gateway_event_loop_degraded", plane: "control", error: "openclaw health reported degraded Gateway event loop" };
+  }
+  if (text.includes("gateway event loop: critical")) {
+    return { severity: "critical", key: "openclaw_gateway_event_loop_critical", plane: "control", error: "openclaw health reported critical Gateway event loop" };
+  }
+  return null;
+}
+
 async function activeReadinessChecks(paths, input, findings) {
   const checks = {};
   const proxyEnv = {
@@ -2141,12 +2153,14 @@ async function activeReadinessChecks(paths, input, findings) {
     HTTPS_PROXY: input.httpsProxy || input.https_proxy || process.env.HTTPS_PROXY || "http://127.0.0.1:7890",
     ALL_PROXY: input.allProxy || input.all_proxy || process.env.ALL_PROXY || "socks5://127.0.0.1:7890"
   };
-  checks.openclawGateway = await commandProbe("openclaw", ["health"], {
+  const openclawBin = String(input.openclawBin || input.openclaw_bin || process.env.OPENCLAW_BIN || "openclaw").trim();
+  checks.openclawGateway = await commandProbe(openclawBin, ["health"], {
     cwd: paths.root,
     timeoutMs: 60000,
     env: { OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: "1", ...proxyEnv }
   });
-  if (!checks.openclawGateway.ok) findings.push({ severity: "warning", key: "openclaw_gateway_health_failed", plane: "control", error: checks.openclawGateway.error });
+  const gatewayFinding = gatewayHealthFinding(checks.openclawGateway);
+  if (gatewayFinding) findings.push(gatewayFinding);
 
   const hermesBin = resolveHome(input.hermesBin || input.hermes_bin || process.env.HERMES_BIN || "/home/flashcat/hermes-agent/venv/bin/hermes");
   const hermersRows = await sqlite(paths.dbFile, `
