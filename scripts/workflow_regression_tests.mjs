@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -34,6 +35,10 @@ function requireSqliteCli() {
   } catch (error) {
     throw new Error(`sqlite3 CLI is required for workflow regression tests: ${error?.message || error}`);
   }
+}
+
+function sha256Text(value) {
+  return createHash("sha256").update(String(value || "")).digest("hex");
 }
 
 async function assertRejectsMessage(fn, expected) {
@@ -527,9 +532,11 @@ async function testTradeIntentFailClosed() {
   assert.equal(intent.status, "rejected");
   assert.ok(intent.rejectionReasons.includes("missing_idempotency_key"));
   assert.ok(intent.rejectionReasons.includes("invalid_trade_quantity"));
+  assert.ok(intent.rejectionReasons.includes("missing_workflow_id"));
+  assert.ok(intent.rejectionReasons.includes("missing_trace_id"));
   assert.ok(intent.rejectionReasons.includes("missing_or_expired_intent_expiry"));
-  assert.ok(intent.rejectionReasons.includes("missing_price_constraints"));
-  assert.ok(intent.rejectionReasons.includes("missing_risk_limits"));
+  assert.ok(intent.rejectionReasons.includes("missing_positive_reference_price"));
+  assert.ok(intent.rejectionReasons.includes("missing_numeric_risk_guardrail"));
 }
 
 async function createApprovedHumanGate(root, input = {}) {
@@ -592,6 +599,8 @@ async function testTradeIntentChainAndReceiptGuardrails() {
   const ready = await runAction(root, {
     action: "trade.intent",
     intentId: "intent-ready",
+    workflowId: "workflow-trade-chain",
+    traceId: "trace-trade-chain-ready",
     assetType: "crypto",
     symbol: "BTC/USDT",
     side: "buy",
@@ -606,15 +615,40 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     clientCertFingerprint: "test-cert",
     idempotencyKey: "idem-ready",
     expiresAt,
-    priceConstraints: { maxPrice: 100000 },
-    riskLimits: { maxNotional: 20000 },
+    executionMode: "paper",
+    marketType: "spot",
+    exchange: "paper_exchange",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
+    clientOrderId: "idem-ready",
+    timeInForce: "gtc",
+    priceConstraints: { referencePrice: 68000, limitPrice: 69000, maxSlippageBps: 20 },
+    riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 },
     payload: { privateKey: "should-not-persist" }
   });
   assert.equal(ready.status, "ready_for_trading_core");
+  const readyArtifact = JSON.parse(await fs.readFile(ready.path, "utf8"));
+  assert.equal(readyArtifact.schemaVersion, 1);
+  assert.equal(readyArtifact.objectType, "executable_trade_intent");
+  assert.equal(readyArtifact.workflowId, "workflow-trade-chain");
+  assert.equal(readyArtifact.traceId, "trace-trade-chain-ready");
+  assert.equal(readyArtifact.executionMode, "paper");
+  assert.equal(readyArtifact.marketType, "spot");
+  assert.equal(readyArtifact.exchange, "paper_exchange");
+  assert.equal(readyArtifact.baseAsset, "BTC");
+  assert.equal(readyArtifact.quoteAsset, "USDT");
+  assert.equal(readyArtifact.timeInForce, "gtc");
+  assert.equal(readyArtifact.priceConstraints.referencePrice, 68000);
+  assert.equal(readyArtifact.riskLimits.maxNotionalUsd, 20000);
+  assert.equal(readyArtifact.clientOrderId, "idem-ready");
+  assert.ok(readyArtifact.intentHash);
+  assert.equal(readyArtifact.rejectionReasons.length, 0);
 
   const replay = await runAction(root, {
     action: "trade.intent",
     intentId: "intent-ready",
+    workflowId: "workflow-trade-chain",
+    traceId: "trace-trade-chain-ready",
     assetType: "crypto",
     symbol: "BTC/USDT",
     side: "buy",
@@ -629,14 +663,87 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     clientCertFingerprint: "test-cert",
     idempotencyKey: "idem-ready",
     expiresAt,
-    priceConstraints: { maxPrice: 100000 },
-    riskLimits: { maxNotional: 20000 },
+    executionMode: "paper",
+    marketType: "spot",
+    exchange: "paper_exchange",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
+    clientOrderId: "idem-ready",
+    timeInForce: "gtc",
+    priceConstraints: { referencePrice: 68000, limitPrice: 69000, maxSlippageBps: 20 },
+    riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 },
     payload: { privateKey: "should-not-persist" }
   });
   assert.equal(replay.idempotentReplay, true);
+  const aliasReplay = await runAction(root, {
+    action: "trade.intent",
+    intentId: "intent-ready",
+    workflowId: "workflow-trade-chain",
+    traceId: "trace-trade-chain-ready",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "0.2",
+    orderType: "limit",
+    proposalId: "proposal-A",
+    riskDecisionId: "risk-A",
+    humanGateId,
+    actor: "flashcat",
+    assurance: "mtls",
+    sourceSystem: "codex_mtls",
+    clientCertFingerprint: "test-cert",
+    idempotencyKey: "idem-ready",
+    expiresAt,
+    executionMode: "paper",
+    marketType: "spot",
+    exchange: "paper_exchange",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
+    clientOrderId: "idem-ready",
+    timeInForce: "gtc",
+    priceConstraints: { reference_price: 68000, limit_price: 69000, max_slippage_bps: 20 },
+    riskLimits: { max_notional: 20000, max_loss: 500 },
+    payload: { privateKey: "should-not-persist" }
+  });
+  assert.equal(aliasReplay.idempotentReplay, true);
   await assertRejectsMessage(
     () => runAction(root, {
       action: "trade.intent",
+      intentId: "intent-ready",
+      workflowId: "workflow-trade-chain",
+      traceId: "trace-trade-chain-ready",
+      assetType: "crypto",
+      symbol: "BTC/USDT",
+      side: "buy",
+      quantity: "0.2",
+      orderType: "limit",
+      proposalId: "proposal-A",
+      riskDecisionId: "risk-A",
+      humanGateId,
+      actor: "flashcat",
+      assurance: "mtls",
+      sourceSystem: "codex_mtls",
+      clientCertFingerprint: "test-cert",
+      idempotencyKey: "idem-ready",
+      expiresAt,
+      executionMode: "simulation",
+      marketType: "spot",
+      exchange: "paper_exchange",
+      baseAsset: "BTC",
+      quoteAsset: "USDT",
+      clientOrderId: "idem-ready",
+      timeInForce: "gtc",
+      priceConstraints: { referencePrice: 68000, limitPrice: 69000, maxSlippageBps: 20 },
+      riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 },
+      payload: { privateKey: "should-not-persist" }
+    }),
+    /idempotency_key_conflict/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "trade.intent",
+      workflowId: "workflow-trade-chain",
+      traceId: "trace-trade-chain-conflict",
       assetType: "crypto",
       symbol: "BTC/USDT",
       side: "sell",
@@ -651,14 +758,119 @@ async function testTradeIntentChainAndReceiptGuardrails() {
       clientCertFingerprint: "test-cert",
       idempotencyKey: "idem-ready",
       expiresAt,
-      priceConstraints: { maxPrice: 100000 },
-      riskLimits: { maxNotional: 20000 }
+      priceConstraints: { referencePrice: 68000, limitPrice: 69000 },
+      riskLimits: { maxNotionalUsd: 20000 }
     }),
     /idempotency_key_conflict/
   );
 
+  const missingCryptoField = await runAction(root, {
+    action: "trade.intent",
+    intentId: "intent-missing-crypto-field",
+    workflowId: "workflow-trade-chain",
+    traceId: "trace-trade-chain-missing-crypto-field",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "0.2",
+    orderType: "limit",
+    proposalId: "proposal-A",
+    riskDecisionId: "risk-A",
+    humanGateId,
+    actor: "flashcat",
+    assurance: "mtls",
+    sourceSystem: "codex_mtls",
+    clientCertFingerprint: "test-cert",
+    idempotencyKey: "idem-missing-crypto-field",
+    expiresAt,
+    executionMode: "paper",
+    marketType: "spot",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
+    clientOrderId: "idem-missing-crypto-field",
+    timeInForce: "gtc",
+    priceConstraints: { referencePrice: 68000, limitPrice: 69000 },
+    riskLimits: { maxNotionalUsd: 20000 }
+  });
+  assert.equal(missingCryptoField.status, "rejected");
+  assert.ok(missingCryptoField.rejectionReasons.includes("crypto_exchange_required"));
+
+  const liveIntent = await runAction(root, {
+    action: "trade.intent",
+    intentId: "intent-live-disabled",
+    workflowId: "workflow-trade-chain",
+    traceId: "trace-trade-chain-live-disabled",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "0.2",
+    orderType: "limit",
+    proposalId: "proposal-A",
+    riskDecisionId: "risk-A",
+    humanGateId,
+    actor: "flashcat",
+    assurance: "mtls",
+    sourceSystem: "codex_mtls",
+    clientCertFingerprint: "test-cert",
+    idempotencyKey: "idem-live-disabled",
+    expiresAt,
+    executionMode: "live",
+    marketType: "spot",
+    exchange: "paper_exchange",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
+    clientOrderId: "idem-live-disabled",
+    timeInForce: "gtc",
+    priceConstraints: { referencePrice: 68000, limitPrice: 69000 },
+    riskLimits: { maxNotionalUsd: 20000 }
+  });
+  assert.equal(liveIntent.status, "rejected");
+  assert.ok(liveIntent.rejectionReasons.includes("invalid_execution_mode"));
+
+  const fallbackHumanGateId = await createApprovedHumanGate(root, {
+    workflowId: "workflow-trade-fallback",
+    meetingId: "workflow-trade-fallback",
+    traceId: "trace-hgate-fallback",
+    parentObjectId: "risk-A",
+    expiresAt,
+    payload: { riskDecisionId: "risk-A", proposalId: "proposal-A" }
+  });
+  const fallbackReady = await runAction(root, {
+    action: "trade.intent",
+    intentId: "intent-fallback",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "0.2",
+    orderType: "limit",
+    proposalId: "proposal-A",
+    riskDecisionId: "risk-A",
+    humanGateId: fallbackHumanGateId,
+    actor: "flashcat",
+    assurance: "mtls",
+    sourceSystem: "codex_mtls",
+    clientCertFingerprint: "test-cert",
+    idempotencyKey: "idem-fallback",
+    expiresAt,
+    executionMode: "paper",
+    marketType: "spot",
+    exchange: "paper_exchange",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
+    clientOrderId: "idem-fallback",
+    timeInForce: "gtc",
+    priceConstraints: { referencePrice: 68000, limitPrice: 69000 },
+    riskLimits: { maxNotionalUsd: 20000 }
+  });
+  assert.equal(fallbackReady.status, "ready_for_trading_core");
+  const fallbackArtifact = JSON.parse(await fs.readFile(fallbackReady.path, "utf8"));
+  assert.equal(fallbackArtifact.workflowId, "workflow-trade-fallback");
+  assert.equal(fallbackArtifact.traceId, "trace-hgate-fallback");
+
   const badChain = await runAction(root, {
     action: "trade.intent",
+    workflowId: "workflow-trade-chain",
+    traceId: "trace-trade-chain-bad",
     assetType: "crypto",
     symbol: "BTC/USDT",
     side: "buy",
@@ -673,8 +885,8 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     clientCertFingerprint: "test-cert",
     idempotencyKey: "idem-bad-chain",
     expiresAt,
-    priceConstraints: { maxPrice: 100000 },
-    riskLimits: { maxNotional: 20000 }
+    priceConstraints: { referencePrice: 68000, limitPrice: 69000 },
+    riskLimits: { maxNotionalUsd: 20000 }
   });
   assert.equal(badChain.status, "rejected");
   assert.ok(badChain.rejectionReasons.includes("risk_decision_not_bound_to_trade_proposal"));
@@ -713,6 +925,8 @@ async function testTradeIntentChainAndReceiptGuardrails() {
   const rejectedIntent = await runAction(root, {
     action: "trade.intent",
     intentId: "intent-rejected",
+    workflowId: "workflow-trade-chain",
+    traceId: "trace-trade-chain-rejected",
     assetType: "crypto",
     symbol: "BTC/USDT",
     side: "buy",
@@ -727,8 +941,8 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     clientCertFingerprint: "test-cert",
     idempotencyKey: "idem-rejected",
     expiresAt,
-    priceConstraints: { maxPrice: 100000 },
-    riskLimits: { maxNotional: 20000 }
+    priceConstraints: { referencePrice: 68000, limitPrice: 69000 },
+    riskLimits: { maxNotionalUsd: 20000 }
   });
   assert.equal(rejectedIntent.status, "rejected");
   await assertRejectsMessage(
@@ -741,6 +955,26 @@ async function testTradeIntentChainAndReceiptGuardrails() {
   );
 
   const dbFile = path.join(root, "tracking.db");
+  const certRow = sqliteJson(dbFile, `
+SELECT client_cert_fingerprint AS certFingerprint
+FROM executable_trade_intents
+WHERE intent_id='intent-ready'
+LIMIT 1;`)[0];
+  assert.equal(certRow.certFingerprint, sha256Text("test-cert"));
+  const intentStored = sqliteJson(dbFile, `
+SELECT payload_json AS payloadJson
+FROM executable_trade_intents
+WHERE intent_id='intent-ready'
+LIMIT 1;`)[0].payloadJson;
+  assert.equal(intentStored.includes("\"clientCertFingerprint\":\"test-cert\""), false);
+  assert.equal(intentStored.includes(sha256Text("test-cert")), true);
+  const protocolIntentStored = sqliteJson(dbFile, `
+SELECT payload_json AS payloadJson
+FROM protocol_objects
+WHERE object_id='intent-ready'
+LIMIT 1;`)[0].payloadJson;
+  assert.equal(protocolIntentStored.includes("\"clientCertFingerprint\":\"test-cert\""), false);
+  assert.equal(protocolIntentStored.includes(sha256Text("test-cert")), true);
   const stored = sqliteJson(dbFile, `
 SELECT payload_json AS payloadJson
 FROM protocol_objects

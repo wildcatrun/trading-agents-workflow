@@ -477,6 +477,13 @@ const toolParameters = {
     clientCertFingerprint: { type: "string" },
     idempotencyKey: { type: "string" },
     expiresAt: { type: "string" },
+    executionMode: { type: "string" },
+    marketType: { type: "string" },
+    exchange: { type: "string" },
+    baseAsset: { type: "string" },
+    quoteAsset: { type: "string" },
+    clientOrderId: { type: "string" },
+    timeInForce: { type: "string" },
     tradingCoreRef: { type: "string" }
     ,
     runtime: { type: "string" },
@@ -1820,13 +1827,25 @@ function registerCli(api) {
       .requiredOption("--risk <riskDecisionId>", "Risk decision id")
       .requiredOption("--human-gate <humanGateId>", "Human Gate id")
       .option("--intent-id <intentId>", "Intent id")
+      .requiredOption("--workflow-id <workflowId>", "Workflow id bound to this executable intent")
+      .requiredOption("--trace-id <traceId>", "Trace id bound to this executable intent")
       .option("--quantity <quantity>", "Quantity")
-      .option("--order-type <orderType>", "market, limit, stop, stop_limit, twap, vwap", "limit")
+      .option("--order-type <orderType>", "market, limit", "limit")
       .option("--actor <actor>", "Actor", "flashcat")
       .option("--assurance <assurance>", "Auth assurance", "mtls")
       .option("--cert <fingerprint>", "mTLS client certificate fingerprint")
       .option("--source <sourceSystem>", "Source system", "codex_mtls")
       .option("--idempotency-key <key>", "Idempotency key")
+      .requiredOption("--expires-at <expiresAt>", "Intent expiry ISO timestamp")
+      .requiredOption("--price-constraints <json>", "Canonical priceConstraints JSON with referencePrice")
+      .requiredOption("--risk-limits <json>", "Canonical riskLimits JSON with numeric guardrail")
+      .option("--execution-mode <mode>", "paper, simulation")
+      .option("--market-type <marketType>", "Market type, for example spot")
+      .option("--exchange <exchange>", "Exchange id")
+      .option("--base-asset <baseAsset>", "Base asset for crypto spot")
+      .option("--quote-asset <quoteAsset>", "Quote asset for crypto spot")
+      .option("--client-order-id <clientOrderId>", "Client order id")
+      .option("--time-in-force <timeInForce>", "Time in force")
       .option("--payload <json>", "Extra JSON payload")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
@@ -1843,11 +1862,23 @@ function registerCli(api) {
           riskDecisionId: options.risk,
           humanGateId: options.humanGate,
           intentId: options.intentId,
+          workflowId: options.workflowId,
+          traceId: options.traceId,
           actor: options.actor,
           assurance: options.assurance,
           clientCertFingerprint: options.cert,
           sourceSystem: options.source,
           idempotencyKey: options.idempotencyKey,
+          expiresAt: options.expiresAt,
+          priceConstraints: options.priceConstraints,
+          riskLimits: options.riskLimits,
+          executionMode: options.executionMode,
+          marketType: options.marketType,
+          exchange: options.exchange,
+          baseAsset: options.baseAsset,
+          quoteAsset: options.quoteAsset,
+          clientOrderId: options.clientOrderId,
+          timeInForce: options.timeInForce,
           payload: options.payload
         }), null, 2));
       });
