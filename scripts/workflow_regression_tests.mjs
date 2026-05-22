@@ -400,11 +400,115 @@ LIMIT 1;`)[0];
   assert.deepEqual(failedNoticeAfterDelivery, {
     status: "runtime_failed",
     finalOutputPresent: 0,
-    deliveryReceiptPresent: 1
+    deliveryReceiptPresent: 0
   });
   const readiness = await runAction(root, { action: "workflow.status" });
   const findingKeys = readiness.readiness.findings.map((finding) => finding.key);
   assert.equal(findingKeys.includes("message_flow_failed_output_marked_sent"), false);
+
+  const outboxPayload = sqliteJson(dbFile, `
+SELECT payload_json AS payloadJson
+FROM telegram_outbox
+WHERE outbox_id='${failedNoticeFlow.outboxId}'
+LIMIT 1;`)[0].payloadJson;
+  const reconciledPayload = {
+    ...JSON.parse(outboxPayload),
+    delivery: {
+      status: "sent",
+      receipts: [{ provider: "telegram", messageId: "verified-message-id" }]
+    }
+  };
+  sqliteExec(dbFile, `
+UPDATE telegram_outbox
+SET status='sent',
+    payload_json='${JSON.stringify(reconciledPayload).replaceAll("'", "''")}',
+    updated_at='${new Date(Date.now() - 10 * 60_000).toISOString()}'
+WHERE outbox_id='${failedNoticeFlow.outboxId}';`);
+  sqliteExec(dbFile, `
+UPDATE message_flows
+SET runtime_failed_at='${new Date(Date.now() - 10 * 60_000).toISOString()}'
+WHERE dispatch_id='${failedNoticeDispatchId}';`);
+  const reconciled = await runAction(root, {
+    action: "message_flow.reconcile",
+    messageFlowStuckAfterMs: 60_000
+  });
+  assert.equal(reconciled.count >= 1, true);
+  const reconciledFlow = sqliteJson(dbFile, `
+SELECT status, delivery_receipt_present AS deliveryReceiptPresent
+FROM message_flows
+WHERE dispatch_id='${failedNoticeDispatchId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(reconciledFlow, {
+    status: "runtime_failed",
+    deliveryReceiptPresent: 1
+  });
+
+  const failedDelivery = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "message_flow failed delivery regression body",
+    workflowId: "workflow-message-flow-failed-delivery",
+    meetingId: "meeting-message-flow-failed-delivery",
+    returnPolicy: "report_to_flashcat"
+  });
+  const failedDeliveryDispatchId = failedDelivery.dispatches[0].dispatchId;
+  await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: failedDeliveryDispatchId,
+    openclawBin: failBin,
+    reportDelivery: false,
+    deliverMessageFlowOutbox: false
+  });
+  const failedDeliveryFlow = sqliteJson(dbFile, `
+SELECT outbox_id AS outboxId
+FROM message_flows
+WHERE dispatch_id='${failedDeliveryDispatchId}'
+LIMIT 1;`)[0];
+  sqliteExec(dbFile, `
+UPDATE telegram_outbox
+SET status='failed',
+    updated_at='${new Date(Date.now() - 10 * 60_000).toISOString()}'
+WHERE outbox_id='${failedDeliveryFlow.outboxId}';
+UPDATE message_flows
+SET runtime_failed_at='${new Date(Date.now() - 10 * 60_000).toISOString()}'
+WHERE dispatch_id='${failedDeliveryDispatchId}';`);
+  await runAction(root, {
+    action: "message_flow.reconcile",
+    messageFlowStuckAfterMs: 60_000
+  });
+  const failedDeliveryReconciled = sqliteJson(dbFile, `
+SELECT status, delivery_receipt_present AS deliveryReceiptPresent
+FROM message_flows
+WHERE dispatch_id='${failedDeliveryDispatchId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(failedDeliveryReconciled, {
+    status: "telegram_failed",
+    deliveryReceiptPresent: 0
+  });
+}
+
+async function testControlLoopSeedsStaleDeliveringOutbox() {
+  const root = await tempRoot("stale-delivering-outbox");
+  const request = await requestHumanGate(root, { workflowId: "workflow-stale-delivering", meetingId: "meeting-stale-delivering" });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+UPDATE telegram_outbox
+SET status='delivering',
+    updated_at='${new Date(Date.now() - 10 * 60_000).toISOString()}'
+WHERE outbox_id='${request.telegramOutbox.outboxId}';`);
+  const tick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    deliverOutbox: true,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    drainQueued: false,
+    autoDispatch: false
+  });
+  assert.equal(tick.claimedJobs?.[0]?.jobType, "telegram_outbox_deliver");
 }
 
 async function testTradeIntentFailClosed() {
@@ -428,6 +532,263 @@ async function testTradeIntentFailClosed() {
   assert.ok(intent.rejectionReasons.includes("missing_risk_limits"));
 }
 
+async function createApprovedHumanGate(root, input = {}) {
+  const request = await requestHumanGate(root, input);
+  const approved = approvedButtons(request)[0];
+  await runAction(root, {
+    action: "human_gate.resume",
+    token: approved.callbackToken,
+    text: "闪电猫原话：批准 A，用于交易链路回归测试。"
+  });
+  return request.humanGateId;
+}
+
+async function testTradeIntentChainAndReceiptGuardrails() {
+  const root = await tempRoot("trade-chain");
+  const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+  const proposalA = await runAction(root, {
+    action: "trade.proposal",
+    proposalId: "proposal-A",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "1",
+    orderType: "limit",
+    payload: { apiKey: "should-not-persist" }
+  });
+  await runAction(root, {
+    action: "trade.proposal",
+    proposalId: "proposal-B",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "1",
+    orderType: "limit"
+  });
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "risk.decision",
+      riskDecisionId: "risk-missing",
+      proposalId: "proposal-missing",
+      status: "approved"
+    }),
+    /approved risk\.decision requires an existing trade_proposal parent/
+  );
+  await runAction(root, {
+    action: "risk.decision",
+    riskDecisionId: "risk-A",
+    proposalId: "proposal-A",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    status: "approved"
+  });
+  const humanGateId = await createApprovedHumanGate(root, {
+    workflowId: "risk-A",
+    meetingId: "risk-A",
+    parentObjectId: "risk-A",
+    expiresAt,
+    payload: { riskDecisionId: "risk-A", proposalId: "proposal-A" }
+  });
+  const ready = await runAction(root, {
+    action: "trade.intent",
+    intentId: "intent-ready",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "0.2",
+    orderType: "limit",
+    proposalId: "proposal-A",
+    riskDecisionId: "risk-A",
+    humanGateId,
+    actor: "flashcat",
+    assurance: "mtls",
+    sourceSystem: "codex_mtls",
+    clientCertFingerprint: "test-cert",
+    idempotencyKey: "idem-ready",
+    expiresAt,
+    priceConstraints: { maxPrice: 100000 },
+    riskLimits: { maxNotional: 20000 },
+    payload: { privateKey: "should-not-persist" }
+  });
+  assert.equal(ready.status, "ready_for_trading_core");
+
+  const replay = await runAction(root, {
+    action: "trade.intent",
+    intentId: "intent-ready",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "0.2",
+    orderType: "limit",
+    proposalId: "proposal-A",
+    riskDecisionId: "risk-A",
+    humanGateId,
+    actor: "flashcat",
+    assurance: "mtls",
+    sourceSystem: "codex_mtls",
+    clientCertFingerprint: "test-cert",
+    idempotencyKey: "idem-ready",
+    expiresAt,
+    priceConstraints: { maxPrice: 100000 },
+    riskLimits: { maxNotional: 20000 },
+    payload: { privateKey: "should-not-persist" }
+  });
+  assert.equal(replay.idempotentReplay, true);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "trade.intent",
+      assetType: "crypto",
+      symbol: "BTC/USDT",
+      side: "sell",
+      quantity: "0.2",
+      orderType: "limit",
+      proposalId: "proposal-A",
+      riskDecisionId: "risk-A",
+      humanGateId,
+      actor: "flashcat",
+      assurance: "mtls",
+      sourceSystem: "codex_mtls",
+      clientCertFingerprint: "test-cert",
+      idempotencyKey: "idem-ready",
+      expiresAt,
+      priceConstraints: { maxPrice: 100000 },
+      riskLimits: { maxNotional: 20000 }
+    }),
+    /idempotency_key_conflict/
+  );
+
+  const badChain = await runAction(root, {
+    action: "trade.intent",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "0.2",
+    orderType: "limit",
+    proposalId: "proposal-B",
+    riskDecisionId: "risk-A",
+    humanGateId,
+    actor: "flashcat",
+    assurance: "mtls",
+    sourceSystem: "codex_mtls",
+    clientCertFingerprint: "test-cert",
+    idempotencyKey: "idem-bad-chain",
+    expiresAt,
+    priceConstraints: { maxPrice: 100000 },
+    riskLimits: { maxNotional: 20000 }
+  });
+  assert.equal(badChain.status, "rejected");
+  assert.ok(badChain.rejectionReasons.includes("risk_decision_not_bound_to_trade_proposal"));
+
+  const receipt = await runAction(root, {
+    action: "trading_core.receipt",
+    intentId: "intent-ready",
+    status: "accepted",
+    tradingCoreRef: "paper-order-1",
+    payload: { apiSecret: "should-not-persist" }
+  });
+  assert.equal(receipt.status, "accepted");
+  const filledReceipt = await runAction(root, {
+    action: "trading_core.receipt",
+    intentId: "intent-ready",
+    status: "filled"
+  });
+  assert.equal(filledReceipt.status, "filled");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "trading_core.receipt",
+      intentId: "intent-ready",
+      status: "mystery"
+    }),
+    /unknown trading_core receipt status/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "trading_core.receipt",
+      intentId: "intent-ready",
+      status: "submitted"
+    }),
+    /invalid trading_core receipt transition/
+  );
+
+  const rejectedIntent = await runAction(root, {
+    action: "trade.intent",
+    intentId: "intent-rejected",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "0",
+    orderType: "limit",
+    proposalId: "proposal-A",
+    riskDecisionId: "risk-A",
+    humanGateId,
+    actor: "flashcat",
+    assurance: "mtls",
+    sourceSystem: "codex_mtls",
+    clientCertFingerprint: "test-cert",
+    idempotencyKey: "idem-rejected",
+    expiresAt,
+    priceConstraints: { maxPrice: 100000 },
+    riskLimits: { maxNotional: 20000 }
+  });
+  assert.equal(rejectedIntent.status, "rejected");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "trading_core.receipt",
+      intentId: "intent-rejected",
+      status: "filled"
+    }),
+    /invalid trading_core receipt transition/
+  );
+
+  const dbFile = path.join(root, "tracking.db");
+  const stored = sqliteJson(dbFile, `
+SELECT payload_json AS payloadJson
+FROM protocol_objects
+WHERE object_id='${proposalA.objectId}'
+LIMIT 1;`)[0].payloadJson;
+  assert.equal(stored.includes("should-not-persist"), false);
+  assert.equal(stored.includes("[redacted]"), true);
+}
+
+async function testExpiredHumanGateBlocked() {
+  const root = await tempRoot("expired-hgate");
+  const request = await requestHumanGate(root, {
+    workflowId: "workflow-expired",
+    meetingId: "meeting-expired",
+    expiresAt: "2000-01-01T00:00:00.000Z"
+  });
+  const result = await runAction(root, {
+    action: "human_gate.resume",
+    token: approvedButtons(request)[0].callbackToken,
+    text: "闪电猫原话：这条过期选择不应生效。"
+  });
+  assert.equal(result.status, "expired");
+}
+
+async function testHumanGateRejectsWrongTelegramUser() {
+  const root = await tempRoot("hgate-wrong-user");
+  const request = await requestHumanGate(root);
+  const result = await runAction(root, {
+    action: "human_gate.button_callback",
+    token: approvedButtons(request)[0].callbackToken,
+    senderId: "123456",
+    feedbackText: "非闪电猫用户不应完成 Human Gate。"
+  });
+  assert.equal(result.status, "telegram_user_not_allowed");
+}
+
+async function testHumanGateRejectsMissingTelegramSender() {
+  const root = await tempRoot("hgate-missing-sender");
+  const request = await requestHumanGate(root);
+  const result = await runAction(root, {
+    action: "human_gate.button_callback",
+    token: approvedButtons(request)[0].callbackToken,
+    sourceSystem: "telegram_callback_query",
+    feedbackText: "缺少 senderId 的 Telegram 回调不应完成 Human Gate。"
+  });
+  assert.equal(result.status, "telegram_sender_id_required");
+}
+
 async function testReadinessGatewayDegraded() {
   const root = await tempRoot("readiness-gateway");
   const degradedBin = await makeFakeOpenClaw(root, "fake-openclaw-health-degraded.mjs", "health-degraded");
@@ -447,7 +808,12 @@ try {
     ["human_gate pending cleanup/retry", testHumanGatePendingCleanupAndRetryRedaction],
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
+    ["control_loop stale delivering outbox", testControlLoopSeedsStaleDeliveringOutbox],
     ["trade_intent fail-closed", testTradeIntentFailClosed],
+    ["trade chain and receipt guardrails", testTradeIntentChainAndReceiptGuardrails],
+    ["expired human_gate blocked", testExpiredHumanGateBlocked],
+    ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],
+    ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],
     ["readiness gateway degraded", testReadinessGatewayDegraded]
   ];
 

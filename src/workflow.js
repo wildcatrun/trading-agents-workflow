@@ -28,6 +28,16 @@ const HUMAN_GATE_STATUSES = new Set(["pending", "approved", "rejected", "paused"
 const TRADE_SIDES = new Set(["buy", "sell", "short", "cover", "reduce", "close"]);
 const ORDER_TYPES = new Set(["market", "limit", "stop", "stop_limit", "twap", "vwap"]);
 const RECEIPT_STATUSES = new Set(["accepted", "rejected", "submitted", "filled", "partial", "cancelled", "failed"]);
+const TRADING_CORE_RECEIPT_TRANSITIONS = {
+  ready_for_trading_core: new Set(["accepted", "submitted", "partial", "filled", "cancelled", "rejected", "failed"]),
+  trading_core_accepted: new Set(["submitted", "partial", "filled", "cancelled", "rejected", "failed"]),
+  trading_core_submitted: new Set(["partial", "filled", "cancelled", "failed", "rejected"]),
+  trading_core_partial: new Set(["partial", "filled", "cancelled", "failed"]),
+  trading_core_rejected: new Set([]),
+  trading_core_failed: new Set([]),
+  trading_core_cancelled: new Set([]),
+  trading_core_filled: new Set([])
+};
 const RUNTIMES = new Set(["openclaw", "openclaw_route_shell", "hermers", "telegram", "local_codex", "codex", "claude_code", "claude-code", "opencode", "trading_sim", "trading_core", "system", "other"]);
 const DISPATCH_STATUSES = new Set(["queued", "sent", "acked", "failed", "cancelled"]);
 const MESSAGE_FLOW_STATUSES = new Set(["inbound_received", "route_registered", "runtime_dispatched", "runtime_completed", "runtime_failed", "outbound_queued", "telegram_sent", "telegram_failed"]);
@@ -569,6 +579,57 @@ function redactSensitiveForPersistence(value, depth = 0) {
     redacted[key] = isSensitivePersistenceKey(key) ? "[redacted]" : redactSensitiveForPersistence(item, depth + 1);
   }
   return redacted;
+}
+
+function nestedProtocolPayload(protocolObject = {}) {
+  const outer = parseJsonValue(protocolObject.payload || protocolObject.payload_json, {});
+  return parseJsonValue(outer.payload, outer.payload || {});
+}
+
+function protocolPayloadField(protocolObject = {}, keys = []) {
+  const body = nestedProtocolPayload(protocolObject);
+  const raw = parseJsonValue(body.raw, body.raw || {});
+  for (const key of keys) {
+    const value = firstText(body[key], raw[key]);
+    if (value) return String(value).trim();
+  }
+  return "";
+}
+
+function protocolObjectReferences(protocolObject = {}, objectId = "") {
+  const needle = String(objectId || "").trim();
+  if (!needle) return false;
+  if (String(protocolObject.parent_object_id || "").trim() === needle) return true;
+  const body = nestedProtocolPayload(protocolObject);
+  const raw = parseJsonValue(body.raw, body.raw || {});
+  const fields = [
+    body.proposalId,
+    body.proposal_id,
+    body.riskDecisionId,
+    body.risk_decision_id,
+    body.humanGateId,
+    body.human_gate_id,
+    body.workflowId,
+    body.workflow_id,
+    raw.proposalId,
+    raw.proposal_id,
+    raw.riskDecisionId,
+    raw.risk_decision_id,
+    raw.humanGateId,
+    raw.human_gate_id,
+    raw.workflowId,
+    raw.workflow_id
+  ];
+  return fields.some((value) => String(value || "").trim() === needle);
+}
+
+function protocolObjectExpiresAt(protocolObject = {}) {
+  return protocolPayloadField(protocolObject, ["expiresAt", "expires_at"]);
+}
+
+function receiptIntentStatus(status) {
+  if (status === "rejected" || status === "failed") return `trading_core_${status}`;
+  return `trading_core_${status}`;
 }
 
 function normalizeRuntime(value) {
@@ -2254,6 +2315,15 @@ SELECT
   COUNT(*) AS total
 FROM runtime_runs
 WHERE started_at >= ${sqlValue(new Date(Date.now() - 6 * 3600000).toISOString())};`, { json: true });
+  const staleStartedRuntimeAfterMs = Math.max(5 * 60_000, Math.min(24 * 3600_000, Number(input.staleRuntimeRunAfterMs || input.stale_runtime_run_after_ms || 30 * 60_000)));
+  const staleStartedRuntimeCutoff = new Date(Date.now() - staleStartedRuntimeAfterMs).toISOString();
+  const staleStartedRuntimeRows = await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM runtime_runs
+WHERE status='started'
+  AND started_at IS NOT NULL
+  AND started_at != ''
+  AND started_at < ${sqlValue(staleStartedRuntimeCutoff)};`, { json: true });
   const messageFlowIntegrityRows = await sqlite(paths.dbFile, `
 SELECT
   SUM(CASE WHEN final_output_present=0 AND status='telegram_sent' THEN 1 ELSE 0 END) AS failed_output_marked_sent,
@@ -2265,6 +2335,7 @@ FROM message_flows;`, { json: true });
   const humanGate = humanGateRows[0] || {};
   const dataFreshness = dataFreshnessRows[0] || {};
   const recentRuntime = recentRuntimeRows[0] || {};
+  const staleStartedRuntime = staleStartedRuntimeRows[0] || {};
   const messageFlowIntegrity = messageFlowIntegrityRows[0] || {};
   const findings = [];
   if (Number(dispatch.stale_sent || 0) > 0) findings.push({ severity: "critical", key: "stale_sent_dispatches", count: Number(dispatch.stale_sent || 0), plane: "orchestration" });
@@ -2273,6 +2344,7 @@ FROM message_flows;`, { json: true });
   if (Number(humanGate.stale || 0) > 0) findings.push({ severity: "warning", key: "stale_human_gate", count: Number(humanGate.stale || 0), plane: "orchestration" });
   if (Number(dataFreshness.stale || 0) > 0) findings.push({ severity: "warning", key: "stale_tracking_data", count: Number(dataFreshness.stale || 0), plane: "data" });
   if (Number(recentRuntime.failed || 0) > 0) findings.push({ severity: "warning", key: "recent_runtime_failures", count: Number(recentRuntime.failed || 0), plane: "runtime" });
+  if (Number(staleStartedRuntime.count || 0) > 0) findings.push({ severity: "warning", key: "stale_started_runtime_runs", count: Number(staleStartedRuntime.count || 0), plane: "runtime" });
   if (Number(messageFlowIntegrity.failed_output_marked_sent || 0) > 0) findings.push({ severity: "critical", key: "message_flow_failed_output_marked_sent", count: Number(messageFlowIntegrity.failed_output_marked_sent || 0), plane: "communication" });
   if (Number(messageFlowIntegrity.sent_without_receipt || 0) > 0) findings.push({ severity: "critical", key: "message_flow_sent_without_receipt", count: Number(messageFlowIntegrity.sent_without_receipt || 0), plane: "communication" });
   const activeChecks = Boolean(input.activeChecks || input.active_checks);
@@ -2280,7 +2352,7 @@ FROM message_flows;`, { json: true });
   const planes = {
     control: active ? { openclawGateway: active.openclawGateway } : {},
     orchestration: { dispatch },
-    runtime: { runtimes: runtimeRows, recentRuntime, hermersProfiles: active?.hermersProfiles || [], acpBackend: active?.acpBackend || null },
+    runtime: { runtimes: runtimeRows, recentRuntime, staleStartedRuntime, hermersProfiles: active?.hermersProfiles || [], acpBackend: active?.acpBackend || null },
     communication: { telegramOutbox: outbox, messageFlowIntegrity },
     data: { trackingFreshness: dataFreshness },
     humanGate: humanGate
@@ -5598,16 +5670,19 @@ async function updateMessageFlowFromTelegramDelivery(paths, row, result = {}) {
   if (!flowId) return null;
   const flow = await readMessageFlow(paths, flowId);
   const hasFinalOutput = Number(flow?.final_output_present || 0) === 1;
+  const payloadReceipts = Array.isArray(payload.delivery?.receipts) ? payload.delivery.receipts : [];
+  const resultReceipts = Array.isArray(result.receipts) ? result.receipts : [];
+  const deliveryReceiptVerified = result.status === "sent" && (payloadReceipts.length > 0 || resultReceipts.length > 0);
   const status = result.status === "sent"
     ? (hasFinalOutput ? "telegram_sent" : "runtime_failed")
-    : (hasFinalOutput ? "telegram_failed" : "runtime_failed");
+    : "telegram_failed";
   const messageId = String(payload.messageId || payload.message_id || "").trim();
   if (messageId) {
     await sqlite(paths.dbFile, `UPDATE mixed_meeting_messages SET telegram_live_status=${sqlValue(status === "telegram_sent" ? "sent" : "failed")} WHERE message_id=${sqlValue(messageId)};`);
   }
   return updateMessageFlow(paths, flowId, status, {
     outboxId: row.outbox_id,
-    deliveryReceiptPresent: result.status === "sent",
+    deliveryReceiptPresent: deliveryReceiptVerified,
     lastError: result.error || "",
     payload: { delivery: result }
   });
@@ -5638,6 +5713,21 @@ async function finishMessageFlowRuntime(paths, row, data = {}, input = {}) {
     }
   });
   const latest = updated || await readMessageFlow(paths, flow.flow_id);
+  if (String(latest?.status || "") !== status || Boolean(Number(latest?.final_output_present || 0)) !== Boolean(finalOutputPresent)) {
+    await appendMessageFlowEvent(paths, flow.flow_id, latest?.status || flow.status || "", "delivery_skipped_after_state_regression_block", {
+      attemptedStatus: status,
+      attemptedFinalOutputPresent: Boolean(finalOutputPresent),
+      persistedStatus: latest?.status || "",
+      persistedFinalOutputPresent: Boolean(Number(latest?.final_output_present || 0))
+    });
+    return {
+      status: "state_regression_blocked",
+      flowId: flow.flow_id,
+      attemptedStatus: status,
+      persistedStatus: latest?.status || "",
+      deliverySkipped: true
+    };
+  }
   const deliveryText = finalOutputPresent ? text : formatMessageFlowFailureText(latest || flow, { failureType, lastError });
   return enqueueMessageFlowOutbound(paths, latest || flow, deliveryText, input, {
     runtimeStatus: status,
@@ -5755,7 +5845,7 @@ export async function protocolRecord(rootDir, input) {
     sourceSystem,
     sourceAgent,
     summary: input.summary || input.text || "",
-    payload: parseJsonValue(input.payload, input.payload || {}),
+    payload: redactSensitiveForPersistence(parseJsonValue(input.payload, input.payload || {})),
     createdAt: input.createdAt || input.created_at || nowIso()
   };
   const hash = jsonHash(payload);
@@ -5800,18 +5890,26 @@ export async function tradeProposal(rootDir, input) {
 }
 
 export async function riskDecision(rootDir, input) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
   const statusRaw = String(input.status || "pending").trim();
   const status = RISK_DECISION_STATUSES.has(statusRaw) ? statusRaw : "pending";
+  const proposalId = String(input.proposalId || input.proposal_id || input.parentObjectId || input.parent_object_id || "").trim();
+  if (status === "approved") {
+    const proposal = await readProtocolObject(paths, proposalId);
+    if (!proposalId || !proposal || proposal.object_type !== "trade_proposal") {
+      throw new Error("approved risk.decision requires an existing trade_proposal parent");
+    }
+  }
   return protocolRecord(rootDir, {
     ...input,
     objectType: "risk_decision",
     objectId: input.riskDecisionId || input.risk_decision_id || input.decisionId || input.decision_id || input.objectId || input.object_id,
-    parentObjectId: input.proposalId || input.proposal_id || input.parentObjectId || input.parent_object_id || "",
+    parentObjectId: proposalId,
     status,
     sourceSystem: input.sourceSystem || input.source_system || "openclaw",
     sourceAgent: input.sourceAgent || input.source_agent || input.reviewerAgent || input.reviewer_agent || "cat_tail",
     payload: {
-      proposalId: input.proposalId || input.proposal_id || "",
+      proposalId,
       reviewerAgent: input.reviewerAgent || input.reviewer_agent || "cat_tail",
       riskBudgetImpact: input.riskBudgetImpact || input.risk_budget_impact || "",
       decision: status,
@@ -5850,9 +5948,10 @@ export async function workflowHumanGateRecord(rootDir, input) {
 export async function tradeIntent(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const idempotencyKey = String(input.idempotencyKey || input.idempotency_key || "").trim();
+  let existingIntent = null;
   if (idempotencyKey) {
     const existing = await sqlite(paths.dbFile, `SELECT * FROM executable_trade_intents WHERE idempotency_key=${sqlValue(idempotencyKey)} LIMIT 1;`, { json: true });
-    if (existing[0]) return { ...existing[0], idempotentReplay: true, dbFile: paths.dbFile };
+    existingIntent = existing[0] || null;
   }
 
   const instrument = await upsertInstrumentRecord(paths, input);
@@ -5876,11 +5975,23 @@ export async function tradeIntent(rootDir, input) {
   const proposal = await readProtocolObject(paths, proposalId);
   const risk = await readProtocolObject(paths, riskDecisionId);
   const humanGate = await readProtocolObject(paths, humanGateId);
+  const humanGateExpiresAt = protocolObjectExpiresAt(humanGate || {});
+  const humanGateExpiresAtMs = humanGateExpiresAt ? Date.parse(humanGateExpiresAt) : NaN;
   const rejectionReasons = [];
 
   if (!proposalId || !proposal || proposal.object_type !== "trade_proposal") rejectionReasons.push("missing_valid_trade_proposal");
   if (!riskDecisionId || !risk || risk.object_type !== "risk_decision" || risk.status !== "approved") rejectionReasons.push("missing_approved_cat_tail_risk_decision");
   if (!humanGateId || !humanGate || humanGate.object_type !== "human_gate_record" || humanGate.status !== "approved") rejectionReasons.push("missing_approved_flashcat_human_gate");
+  if (proposal && proposal.object_type === "trade_proposal" && risk && risk.object_type === "risk_decision" && !protocolObjectReferences(risk, proposalId)) {
+    rejectionReasons.push("risk_decision_not_bound_to_trade_proposal");
+  }
+  if (humanGate && humanGate.object_type === "human_gate_record") {
+    if (!protocolObjectReferences(humanGate, riskDecisionId)) rejectionReasons.push("human_gate_not_bound_to_risk_decision");
+    if (humanGateExpiresAt && (!Number.isFinite(humanGateExpiresAtMs) || humanGateExpiresAtMs <= Date.now())) rejectionReasons.push("human_gate_expired");
+  }
+  if (proposal?.instrument_id && proposal.instrument_id !== instrument.instrumentId) rejectionReasons.push("proposal_instrument_mismatch");
+  if (risk?.instrument_id && risk.instrument_id !== instrument.instrumentId) rejectionReasons.push("risk_decision_instrument_mismatch");
+  if (humanGate?.instrument_id && humanGate.instrument_id !== instrument.instrumentId) rejectionReasons.push("human_gate_instrument_mismatch");
   if (actor !== "flashcat") rejectionReasons.push("actor_must_be_flashcat");
   if (!["mtls", "codex_mtls", "local_codex_mtls"].includes(assurance) && sourceSystem !== "codex_mtls") rejectionReasons.push("local_codex_mtls_required");
   if (!clientCertFingerprint) rejectionReasons.push("client_cert_fingerprint_required");
@@ -5908,14 +6019,21 @@ export async function tradeIntent(rootDir, input) {
     sourceSystem,
     actor,
     assurance,
-    clientCertFingerprint,
-    priceConstraints,
-    riskLimits,
+    clientCertFingerprint: clientCertFingerprint ? "[redacted]" : "",
+    clientCertFingerprintHash: clientCertFingerprint ? textHash(clientCertFingerprint) : "",
+    priceConstraints: redactSensitiveForPersistence(priceConstraints),
+    riskLimits: redactSensitiveForPersistence(riskLimits),
     expiresAt,
     rejectionReasons,
-    raw: parseJsonValue(input.payload, input.payload || {})
+    raw: redactSensitiveForPersistence(parseJsonValue(input.payload, input.payload || {}))
   };
   const intentHash = jsonHash(payload);
+  if (existingIntent) {
+    if (String(existingIntent.intent_hash || "") === intentHash) {
+      return { ...existingIntent, idempotentReplay: true, dbFile: paths.dbFile };
+    }
+    throw new Error("idempotency_key_conflict: existing executable_trade_intent payload differs from this request");
+  }
   const relPath = await writeJsonArtifact(paths.root, paths.intentsDir, intentId, { ...payload, intentHash });
   await sqlite(paths.dbFile, `
 INSERT INTO executable_trade_intents(intent_id, status, instrument_id, asset_type, symbol, side, quantity, order_type, proposal_id, risk_decision_id, human_gate_id, source_system, actor, assurance, client_cert_fingerprint, idempotency_key, intent_hash, payload_json, rejection_reason, created_at, updated_at)
@@ -5941,9 +6059,16 @@ export async function tradingCoreReceipt(rootDir, input) {
   const intentId = String(input.intentId || input.intent_id || "").trim();
   if (!intentId) throw new Error("intentId is required");
   const intents = await sqlite(paths.dbFile, `SELECT * FROM executable_trade_intents WHERE intent_id=${sqlValue(intentId)} LIMIT 1;`, { json: true });
-  if (!intents[0]) throw new Error(`unknown intentId: ${intentId}`);
+  const intent = intents[0];
+  if (!intent) throw new Error(`unknown intentId: ${intentId}`);
   const statusRaw = String(input.status || "accepted").trim();
-  const status = RECEIPT_STATUSES.has(statusRaw) ? statusRaw : "accepted";
+  if (!RECEIPT_STATUSES.has(statusRaw)) throw new Error(`unknown trading_core receipt status: ${statusRaw || "<empty>"}`);
+  const status = statusRaw;
+  const currentIntentStatus = String(intent.status || "").trim();
+  const allowedTransitions = TRADING_CORE_RECEIPT_TRANSITIONS[currentIntentStatus];
+  if (!allowedTransitions || !allowedTransitions.has(status)) {
+    throw new Error(`invalid trading_core receipt transition: ${currentIntentStatus || "<unknown>"} -> ${status}`);
+  }
   const receiptId = input.receiptId || input.receipt_id || safeId("receipt");
   const createdAt = nowIso();
   const payload = {
@@ -5953,14 +6078,14 @@ export async function tradingCoreReceipt(rootDir, input) {
     tradingCoreRef: input.tradingCoreRef || input.trading_core_ref || "",
     sourceSystem: input.sourceSystem || input.source_system || "trading_core",
     summary: input.summary || input.text || "",
-    raw: parseJsonValue(input.payload, input.payload || {})
+    raw: redactSensitiveForPersistence(parseJsonValue(input.payload, input.payload || {}))
   };
   const relPath = await writeJsonArtifact(paths.root, paths.receiptsDir, receiptId, payload);
   await sqlite(paths.dbFile, `
 INSERT INTO trading_core_receipts(receipt_id, intent_id, status, trading_core_ref, source_system, payload_json, created_at)
 VALUES (${sqlValue(receiptId)}, ${sqlValue(intentId)}, ${sqlValue(status)}, ${sqlValue(payload.tradingCoreRef)}, ${sqlValue(payload.sourceSystem)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)});
 UPDATE executable_trade_intents
-SET status=${sqlValue(status === "rejected" || status === "failed" ? "trading_core_rejected" : `trading_core_${status}`)}, updated_at=${sqlValue(createdAt)}
+SET status=${sqlValue(receiptIntentStatus(status))}, updated_at=${sqlValue(createdAt)}
 WHERE intent_id=${sqlValue(intentId)};`);
   await protocolRecord(rootDir, {
     objectType: "trading_core_receipt",
@@ -8368,24 +8493,65 @@ async function humanGateButtonRowByToken(paths, input = {}) {
   return rows[0] || null;
 }
 
+async function humanGateRecordById(paths, humanGateId) {
+  const rows = await sqlite(paths.dbFile, `
+SELECT object_id, status, source_agent, parent_object_id, path, payload_json, created_at, updated_at
+FROM protocol_objects
+WHERE object_id=${sqlValue(humanGateId)} AND object_type='human_gate_record'
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+function humanGateRecordExpiry(record = {}) {
+  const expiresAt = protocolObjectExpiresAt(record);
+  const expiresAtMs = expiresAt ? Date.parse(expiresAt) : NaN;
+  return {
+    expiresAt,
+    expired: Boolean(expiresAt && (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()))
+  };
+}
+
+async function humanGateCallbackIdentityAllowed(input = {}) {
+  const senderId = String(firstText(
+    input.senderId,
+    input.sender_id,
+    input.fromUserId,
+    input.from_user_id,
+    input.userId,
+    input.user_id,
+    input.payload?.senderId,
+    input.payload?.sender_id,
+    input.payload?.fromUserId,
+    input.payload?.from_user_id,
+    input.payload?.userId,
+    input.payload?.user_id,
+    input.payload?.telegramWebApp?.userId,
+    input.payload?.telegram_web_app?.userId
+  )).trim();
+  const sourceSystem = String(firstText(input.sourceSystem, input.source_system, input.source, input.payload?.source)).trim().toLowerCase();
+  const requiresSender = /(telegram|web[_-]?app|callback[_-]?query|bot|wecom|im_adapter)/.test(sourceSystem);
+  if (!senderId && requiresSender) return { ok: false, senderId: "", reason: "telegram_sender_id_required" };
+  if (!senderId) return { ok: true, senderId: "", reason: "no_sender_id_supplied" };
+  const webApp = await humanGateWebAppConfig(input);
+  const allowed = webApp.allowedTelegramUserIds.length ? webApp.allowedTelegramUserIds : [DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID];
+  if (!allowed.includes(senderId)) return { ok: false, senderId, reason: "telegram_user_not_allowed", allowedTelegramUserIds: allowed };
+  return { ok: true, senderId, reason: "" };
+}
+
 export async function humanGateWebAppReview(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const button = await humanGateButtonRowByToken(paths, input);
   if (!button) return { handled: true, status: "not_found", token: normalizeHumanGateCallbackToken(input), replyText: "Human Gate 按钮已失效或不存在。", dbFile: paths.dbFile };
-  const recordRows = await sqlite(paths.dbFile, `
-SELECT object_id, status, source_agent, parent_object_id, path, payload_json, created_at, updated_at
-FROM protocol_objects
-WHERE object_id=${sqlValue(button.human_gate_id)} AND object_type='human_gate_record'
-LIMIT 1;`, { json: true });
-  const record = recordRows[0] || {};
+  const record = await humanGateRecordById(paths, button.human_gate_id) || {};
+  const expiry = humanGateRecordExpiry(record);
   const recordPayload = parseJsonValue(record.payload_json, {});
   const body = humanGateBody(recordPayload);
   const webApp = await humanGateWebAppConfig(input);
   const publicButton = humanGateButtonFromRow(button, paths.root);
-  const canSubmit = ["active", "feedback_pending"].includes(button.status);
+  const canSubmit = ["active", "feedback_pending"].includes(button.status) && !expiry.expired;
   return {
     handled: true,
-    status: canSubmit ? "ready" : button.status,
+    status: expiry.expired ? "expired" : canSubmit ? "ready" : button.status,
     canSubmit,
     token: button.callback_token,
     humanGateId: button.human_gate_id,
@@ -8412,7 +8578,8 @@ LIMIT 1;`, { json: true });
       gateType: body.gateType || body.gate_type || recordPayload.gateType || recordPayload.gate_type || "",
       artifactRef: humanGateArtifactRef(record, recordPayload, body),
       createdAt: record.created_at || "",
-      updatedAt: record.updated_at || ""
+      updatedAt: record.updated_at || "",
+      expiresAt: expiry.expiresAt
     },
     webApp,
     dbFile: paths.dbFile
@@ -8501,6 +8668,27 @@ export async function humanGateButtonCallback(rootDir, input = {}) {
   const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} LIMIT 1;`, { json: true });
   const button = rows[0];
   if (!button) return { handled: true, status: "unknown", token, replyText: "Human Gate 按钮已失效或不存在。" };
+  const identity = await humanGateCallbackIdentityAllowed(input);
+  if (!identity.ok) {
+    const replyText = identity.reason === "telegram_sender_id_required"
+      ? "Human Gate Telegram 回调缺少发送者身份，已拒绝处理；请通过绑定 token 的 Web App 或带 senderId 的受治理入口提交。"
+      : "该 Telegram 用户不在 Human Gate 允许提交名单中。";
+    return { handled: true, status: identity.reason, token, telegramAuth: identity, replyText };
+  }
+  const record = await humanGateRecordById(paths, button.human_gate_id);
+  const expiry = humanGateRecordExpiry(record || {});
+  if (expiry.expired) {
+    const expiredAt = nowIso();
+    await sqlite(paths.dbFile, `
+UPDATE human_gate_buttons
+SET status='expired', updated_at=${sqlValue(expiredAt)}
+WHERE human_gate_id=${sqlValue(button.human_gate_id)} AND status IN ('active','feedback_pending');`);
+    await sqlite(paths.dbFile, `
+UPDATE protocol_objects
+SET status='expired', updated_at=${sqlValue(expiredAt)}
+WHERE object_id=${sqlValue(button.human_gate_id)} AND object_type='human_gate_record' AND status='pending';`);
+    return { handled: true, status: "expired", token, workflowId: button.workflow_id, meetingId: button.meeting_id, humanGateId: button.human_gate_id, buttonId: button.button_id, expiresAt: expiry.expiresAt, replyText: "Human Gate 已过期，请让猫爪重新提交最新证据包和按钮。" };
+  }
   const feedbackText = humanGateFeedbackText(input);
   if (button.status === "feedback_pending" && !feedbackText) return { handled: true, status: "feedback_pending", token, replyText: humanGateFeedbackRequiredReply(button) };
   if (button.status !== "active" && !(button.status === "feedback_pending" && feedbackText)) return { handled: true, status: button.status, token, replyText: "Human Gate 按钮已经处理过。" };
@@ -9150,22 +9338,67 @@ export async function messageFlowReconcile(rootDir, input = {}) {
   const limit = Math.max(1, Math.min(200, Number(input.messageFlowReconcileLimit || input.message_flow_reconcile_limit || input.limit || 20)));
   const cutoff = new Date(Date.now() - stuckAfterMs).toISOString();
   const rows = await sqlite(paths.dbFile, `
-SELECT mf.*, o.status AS outbox_status, o.updated_at AS outbox_updated_at, o.target_kind, o.target_ref
+SELECT mf.*, o.status AS outbox_status, o.updated_at AS outbox_updated_at, o.target_kind, o.target_ref, o.payload_json AS outbox_payload_json
 FROM message_flows mf
 LEFT JOIN telegram_outbox o ON o.outbox_id=mf.outbox_id
-WHERE mf.final_output_present=1
-  AND mf.delivery_receipt_present=0
-  AND mf.runtime_completed_at IS NOT NULL
-  AND mf.runtime_completed_at != ''
-  AND mf.runtime_completed_at < ${sqlValue(cutoff)}
-  AND mf.status NOT IN ('telegram_sent','telegram_failed')
+WHERE (
+    mf.final_output_present=1
+    AND mf.delivery_receipt_present=0
+    AND mf.runtime_completed_at IS NOT NULL
+    AND mf.runtime_completed_at != ''
+    AND mf.runtime_completed_at < ${sqlValue(cutoff)}
+    AND mf.status NOT IN ('telegram_sent','telegram_failed')
+  )
+  OR (
+    mf.final_output_present=0
+    AND mf.delivery_receipt_present=0
+    AND mf.status='runtime_failed'
+    AND mf.outbox_id IS NOT NULL
+    AND mf.outbox_id != ''
+    AND mf.runtime_failed_at IS NOT NULL
+    AND mf.runtime_failed_at != ''
+    AND mf.runtime_failed_at < ${sqlValue(cutoff)}
+  )
 ORDER BY mf.runtime_completed_at
 LIMIT ${limit};`, { json: true });
   const incidents = [];
   for (const row of rows) {
+    if (["sent", "failed"].includes(String(row.outbox_status || ""))) {
+      const outboxPayload = parseJsonValue(row.outbox_payload_json, {});
+      const synced = await updateMessageFlowFromTelegramDelivery(paths, {
+        outbox_id: row.outbox_id,
+        target_ref: row.target_ref || "",
+        payload_json: JSON.stringify({
+          ...outboxPayload,
+          messageFlowId: outboxPayload.messageFlowId || row.flow_id
+        })
+      }, {
+        status: row.outbox_status,
+        target: row.target_ref || "",
+        reconciled: true,
+        receipts: Array.isArray(outboxPayload.delivery?.receipts) ? outboxPayload.delivery.receipts : [],
+        error: outboxPayload.delivery?.error || ""
+      });
+      await appendMessageFlowEvent(paths, row.flow_id, synced?.status || row.status, "outbox_terminal_state_reconciled", {
+        outboxId: row.outbox_id,
+        outboxStatus: row.outbox_status,
+        deliveryReceiptPresent: Number(synced?.delivery_receipt_present || 0) === 1
+      });
+      incidents.push({
+        flowId: row.flow_id,
+        dispatchId: row.dispatch_id || "",
+        status: "reconciled_from_outbox",
+        outboxId: row.outbox_id,
+        outboxStatus: row.outbox_status,
+        messageFlowStatus: synced?.status || ""
+      });
+      continue;
+    }
     const incidentId = `message-flow-stuck-${cleanFileSegment(row.flow_id)}`;
     const minutes = Math.round(stuckAfterMs / 60_000);
-    const summary = `message_flow ${row.flow_id} runtime completed but Telegram delivery receipt is still missing after ${minutes}m`;
+    const summary = Number(row.final_output_present || 0) === 1
+      ? `message_flow ${row.flow_id} runtime completed but Telegram delivery receipt is still missing after ${minutes}m`
+      : `message_flow ${row.flow_id} runtime failed but failure-notice delivery receipt is still missing after ${minutes}m`;
     const incident = await incidentState(paths.root, {
       incidentId,
       status: "active",
@@ -9173,7 +9406,9 @@ LIMIT ${limit};`, { json: true });
       commander: "trading-agents-workflow",
       affectedPlanes: ["workflow", "runtime_bridge", "telegram"],
       summary,
-      impact: "A non-OpenClaw agent produced runtime output, but the user-visible reply has not been confirmed by Telegram delivery receipt.",
+      impact: Number(row.final_output_present || 0) === 1
+        ? "A non-OpenClaw agent produced runtime output, but the user-visible reply has not been confirmed by Telegram delivery receipt."
+        : "A non-OpenClaw agent failed, and the user-visible failure notice has not been confirmed by Telegram delivery receipt.",
       currentHypothesis: row.outbox_id
         ? `telegram_outbox ${row.outbox_id} status=${row.outbox_status || "missing"}`
         : "message_flow has no outbound outbox id after runtime completion",
@@ -9768,12 +10003,24 @@ WHERE status='sent' AND updated_at < ${sqlValue(staleDispatchCutoff)};`, { json:
   const stuckMessageFlowRows = await sqlite(paths.dbFile, `
 SELECT COUNT(*) AS count
 FROM message_flows
-WHERE final_output_present=1
-  AND delivery_receipt_present=0
-  AND runtime_completed_at IS NOT NULL
-  AND runtime_completed_at != ''
-  AND runtime_completed_at < ${sqlValue(messageFlowStuckCutoff)}
-  AND status != 'telegram_sent';`, { json: true });
+WHERE (
+    final_output_present=1
+    AND delivery_receipt_present=0
+    AND runtime_completed_at IS NOT NULL
+    AND runtime_completed_at != ''
+    AND runtime_completed_at < ${sqlValue(messageFlowStuckCutoff)}
+    AND status NOT IN ('telegram_sent','telegram_failed')
+  )
+  OR (
+    final_output_present=0
+    AND delivery_receipt_present=0
+    AND status='runtime_failed'
+    AND outbox_id IS NOT NULL
+    AND outbox_id != ''
+    AND runtime_failed_at IS NOT NULL
+    AND runtime_failed_at != ''
+    AND runtime_failed_at < ${sqlValue(messageFlowStuckCutoff)}
+  );`, { json: true });
   if (Number(stuckMessageFlowRows[0]?.count || 0) > 0) {
     seeded.push(await enqueueControlLoopJob(paths, {
       jobType: "message_flow_reconcile",
@@ -9832,7 +10079,12 @@ WHERE object_type='human_gate_record' AND status='pending'
   }
 
   if (deliverOutbox) {
-    const rows = await sqlite(paths.dbFile, `SELECT COUNT(*) AS count FROM telegram_outbox WHERE status='queued';`, { json: true });
+    const staleDeliveringBefore = new Date(Date.now() - TELEGRAM_OUTBOX_DELIVERY_LEASE_MS).toISOString();
+    const rows = await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM telegram_outbox
+WHERE status='queued'
+   OR (status='delivering' AND updated_at <= ${sqlValue(staleDeliveringBefore)});`, { json: true });
     if (Number(rows[0]?.count || 0) > 0) {
       seeded.push(await enqueueControlLoopJob(paths, {
         jobType: "telegram_outbox_deliver",
@@ -9866,7 +10118,7 @@ SELECT
 }
 
 async function claimControlLoopJobs(paths, input = {}) {
-  const owner = String(input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}`).trim();
+  const owner = String(input.claimOwner || input.claim_owner || input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}:${safeId("claim")}`).trim();
   const limit = Math.max(1, Math.min(20, Number(input.jobLimit || input.job_limit || 4)));
   const leaseMs = controlLoopJobLeaseMs(input);
   const now = nowIso();
@@ -9885,7 +10137,7 @@ ORDER BY
 LIMIT ${limit};`, { json: true });
   const claimed = [];
   for (const row of rows) {
-    await sqlite(paths.dbFile, `
+    const changed = await sqliteChangeCount(paths.dbFile, `
 UPDATE control_loop_jobs
 SET status='running',
     attempt=attempt+1,
@@ -9897,6 +10149,7 @@ WHERE job_id=${sqlValue(row.job_id)}
     status IN ('queued','retry_scheduled')
     OR (status='running' AND lease_until <= ${sqlValue(now)})
   );`);
+    if (changed !== 1) continue;
     const latest = await sqlite(paths.dbFile, `SELECT * FROM control_loop_jobs WHERE job_id=${sqlValue(row.job_id)} AND status='running' AND lease_owner=${sqlValue(owner)} LIMIT 1;`, { json: true });
     if (latest[0]) claimed.push(latest[0]);
   }
@@ -9904,7 +10157,7 @@ WHERE job_id=${sqlValue(row.job_id)}
 }
 
 async function completeControlLoopJob(paths, job, result = {}) {
-  await sqlite(paths.dbFile, `
+  const changed = await sqliteChangeCount(paths.dbFile, `
 UPDATE control_loop_jobs
 SET status='done',
     result_json=${sqlValue(JSON.stringify(result))},
@@ -9912,7 +10165,13 @@ SET status='done',
     lease_until='',
     completed_at=${sqlValue(nowIso())},
     updated_at=${sqlValue(nowIso())}
-WHERE job_id=${sqlValue(job.job_id)};`);
+WHERE job_id=${sqlValue(job.job_id)}
+  AND status='running'
+  AND lease_owner=${sqlValue(job.lease_owner || "")}
+  AND lease_until=${sqlValue(job.lease_until || "")};`);
+  return changed === 1
+    ? { status: "done", completed: true }
+    : { status: "lease_lost", completed: false, reason: "control_loop_job_lease_owner_changed" };
 }
 
 async function failControlLoopJob(paths, job, error) {
@@ -9922,7 +10181,7 @@ async function failControlLoopJob(paths, job, error) {
   const retry = attempt < maxAttempts;
   const delayMs = Math.min(5 * 60_000, 5_000 * Math.max(1, attempt));
   const nextRunAt = retry ? new Date(Date.now() + delayMs).toISOString() : "";
-  await sqlite(paths.dbFile, `
+  const changed = await sqliteChangeCount(paths.dbFile, `
 UPDATE control_loop_jobs
 SET status=${sqlValue(retry ? "retry_scheduled" : "failed")},
     last_error=${sqlValue(message)},
@@ -9930,7 +10189,11 @@ SET status=${sqlValue(retry ? "retry_scheduled" : "failed")},
     lease_owner='',
     lease_until='',
     updated_at=${sqlValue(nowIso())}
-WHERE job_id=${sqlValue(job.job_id)};`);
+WHERE job_id=${sqlValue(job.job_id)}
+  AND status='running'
+  AND lease_owner=${sqlValue(job.lease_owner || "")}
+  AND lease_until=${sqlValue(job.lease_until || "")};`);
+  if (changed !== 1) return { status: "lease_lost", error: message, nextRunAt: "", reason: "control_loop_job_lease_owner_changed" };
   return { status: retry ? "retry_scheduled" : "failed", error: message, nextRunAt };
 }
 
@@ -9963,7 +10226,7 @@ async function runControlLoopJob(rootDir, paths, job, input = {}) {
       ...input,
       workflowRootDir: paths.root,
       runtime: payload.runtime || job.runtime,
-      limit: payload.limit || input.runtimeLimit || input.runtime_limit || 1,
+      limit: 1,
       timeoutSeconds: payload.timeoutSeconds || payload.timeout_seconds || input.timeoutSeconds || input.timeout_seconds || 45,
       dryRun: false
     });
@@ -10045,6 +10308,7 @@ export async function workflowControlLoopTick(rootDir, input = {}) {
     const tickBudgetMs = controlLoopTickBudgetMs(input);
     const timeoutSeconds = controlLoopTimeoutSeconds(input);
     const jobLeaseMs = controlLoopJobLeaseMs(input);
+    const claimOwner = `${input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}`}:${tickId}`;
     const dryRun = boolOption(input.dryRun ?? input.dry_run, false);
     const jobLimit = Math.max(1, Math.min(20, Number(input.jobLimit || input.job_limit || input.maxJobs || input.max_jobs || 4)));
     const startedAtMs = Date.now();
@@ -10061,7 +10325,7 @@ export async function workflowControlLoopTick(rootDir, input = {}) {
       await appendControlLoopEvent(paths, tickId, "job_seed_completed", { count: result.seededJobs.length });
 
       for (let index = 0; index < jobLimit && withinBudget(); index += 1) {
-        const [job] = await claimControlLoopJobs(paths, { ...input, jobLimit: 1, jobLeaseMs, tickBudgetMs, timeoutSeconds });
+        const [job] = await claimControlLoopJobs(paths, { ...input, claimOwner, jobLimit: 1, jobLeaseMs, tickBudgetMs, timeoutSeconds });
         if (!job) break;
         const jobSummary = {
           jobId: job.job_id,
@@ -10076,13 +10340,13 @@ export async function workflowControlLoopTick(rootDir, input = {}) {
         await appendControlLoopEvent(paths, tickId, "job_started", jobSummary);
         try {
           const jobResult = await runControlLoopJob(rootDir, paths, job, input);
-          await completeControlLoopJob(paths, job, jobResult);
-          result.jobResults.push({ ...jobSummary, status: "done", result: jobResult });
-          await appendControlLoopEvent(paths, tickId, "job_completed", { ...jobSummary, status: "done" });
+          const completed = await completeControlLoopJob(paths, job, jobResult);
+          result.jobResults.push({ ...jobSummary, status: completed.status, result: jobResult, reason: completed.reason || "" });
+          await appendControlLoopEvent(paths, tickId, completed.completed ? "job_completed" : "job_completion_skipped", { ...jobSummary, ...completed });
         } catch (error) {
           const failed = await failControlLoopJob(paths, job, error);
           result.jobResults.push({ ...jobSummary, ...failed });
-          await appendControlLoopEvent(paths, tickId, "job_failed", { ...jobSummary, ...failed });
+          await appendControlLoopEvent(paths, tickId, failed.status === "lease_lost" ? "job_failure_skipped" : "job_failed", { ...jobSummary, ...failed });
         }
       }
     } else {
