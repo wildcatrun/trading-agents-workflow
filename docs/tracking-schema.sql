@@ -182,6 +182,50 @@ CREATE TABLE workflow_checkpoints (
   FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_workflow_checkpoints_workflow ON workflow_checkpoints(workflow_id, created_at DESC);
+CREATE TABLE workflow_session_packs (
+  session_id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active',
+  owner_agent TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  runtime_target TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  system_brief TEXT NOT NULL DEFAULT '',
+  working_context_json TEXT NOT NULL DEFAULT '{}',
+  tool_policy_json TEXT NOT NULL DEFAULT '{}',
+  input_schema_json TEXT NOT NULL DEFAULT '{}',
+  output_schema_json TEXT NOT NULL DEFAULT '{}',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  checkpoint_refs_json TEXT NOT NULL DEFAULT '[]',
+  resource_budget_json TEXT NOT NULL DEFAULT '{}',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  pack_hash TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_session_packs_owner ON workflow_session_packs(owner_agent, status, updated_at DESC);
+CREATE INDEX idx_session_packs_task_type ON workflow_session_packs(task_type, status, updated_at DESC);
+CREATE TABLE workflow_session_runs (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES workflow_session_packs(session_id) ON DELETE RESTRICT,
+  pack_version INTEGER NOT NULL,
+  workflow_id TEXT,
+  task_id TEXT,
+  worker_id TEXT,
+  status TEXT NOT NULL,
+  input_json TEXT NOT NULL DEFAULT '{}',
+  worker_input_json TEXT NOT NULL DEFAULT '{}',
+  output_json TEXT NOT NULL DEFAULT '{}',
+  receipt_ref TEXT,
+  error TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_session_runs_session ON workflow_session_runs(session_id, status, created_at DESC);
+CREATE INDEX idx_session_runs_workflow ON workflow_session_runs(workflow_id, task_id, created_at DESC);
 CREATE TABLE artifact_index (
   artifact_id TEXT PRIMARY KEY,
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,

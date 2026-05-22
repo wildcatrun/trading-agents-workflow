@@ -41,6 +41,11 @@ function sha256Text(value) {
   return createHash("sha256").update(String(value || "")).digest("hex");
 }
 
+function workflowCliJson(args) {
+  const output = execFileSync("node", [path.resolve("bin/cat-meeting-governance.mjs"), ...args], { encoding: "utf8" }).trim();
+  return output ? JSON.parse(output) : {};
+}
+
 async function assertRejectsMessage(fn, expected) {
   try {
     await fn();
@@ -984,6 +989,260 @@ LIMIT 1;`)[0].payloadJson;
   assert.equal(stored.includes("[redacted]"), true);
 }
 
+async function testWorkflowSessionStore() {
+  const root = await tempRoot("session-store");
+  const firstPack = await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId: "session-pack-contract-smoke",
+    ownerAgent: "cat_body",
+    taskType: "trading_core_contract_smoke",
+    runtimeTarget: "worker:local_codex",
+    purpose: "Run the trading_core contract smoke with a minimal prepared context.",
+    systemBrief: "Validate schema-bound paper execution contracts only. Never submit a live order.",
+    workingContext: {
+      workflowId: "workflow-session-store",
+      currentPhase: "contract_smoke",
+      longTermHistory: "do-not-copy-full-history"
+    },
+    toolPolicy: {
+      allowedActions: ["validate_intent", "bridge_submit"],
+      forbiddenActions: ["live_order", "gateway_restart"]
+    },
+    inputSchema: { type: "object", required: ["intentPath"] },
+    outputSchema: { type: "object", required: ["status"] },
+    evidenceRefs: ["artifact://workflow/contracts/trading-core"],
+    checkpointRefs: ["checkpoint://workflow-session-store/latest"],
+    resourceBudget: { maxTokens: 4000, maxWallSeconds: 120 },
+    metadata: { apiKey: "should-not-persist" },
+    createdBy: "local_codex"
+  });
+  assert.equal(firstPack.version, 1);
+  assert.ok(firstPack.packHash);
+  assert.equal(firstPack.metadata.apiKey, "[redacted]");
+
+  const secondPack = await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId: "session-pack-contract-smoke",
+    ownerAgent: "cat_body",
+    taskType: "trading_core_contract_smoke",
+    runtimeTarget: "worker:local_codex",
+    purpose: "Run the trading_core contract smoke with updated output expectations.",
+    metadata: { refreshToken: "also-should-not-persist" }
+  });
+  assert.equal(secondPack.version, 2);
+  assert.notEqual(secondPack.packHash, firstPack.packHash);
+  assert.equal(secondPack.metadata.refreshToken, "[redacted]");
+
+  const retryPack = await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId: "session-pack-contract-smoke",
+    ownerAgent: "cat_body",
+    taskType: "trading_core_contract_smoke",
+    runtimeTarget: "worker:local_codex",
+    purpose: "Run the trading_core contract smoke with updated output expectations.",
+    metadata: { refreshToken: "also-should-not-persist" }
+  });
+  assert.equal(retryPack.deduped, true);
+  assert.equal(retryPack.version, 2);
+  assert.equal(retryPack.packHash, secondPack.packHash);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.session_pack.upsert",
+      sessionId: "session-pack-contract-smoke",
+      purpose: "Invalid status should not silently become active.",
+      status: "disbaled"
+    }),
+    /unknown workflow session pack status/
+  );
+
+  const pack = await runAction(root, {
+    action: "workflow.session_pack.get",
+    sessionId: "session-pack-contract-smoke"
+  });
+  assert.equal(pack.sessionId, "session-pack-contract-smoke");
+  assert.equal(pack.workerInputTemplate.sessionVersion, 2);
+  assert.equal(pack.workerInputTemplate.instructions.loadOnlyReferencedArtifacts, true);
+  assert.deepEqual(pack.workerInputTemplate.evidenceRefs, ["artifact://workflow/contracts/trading-core"]);
+  assert.equal(JSON.stringify(pack.workerInputTemplate).includes("should-not-persist"), false);
+
+  const started = await runAction(root, {
+    action: "workflow.session_run.start",
+    runId: "session-run-contract-smoke",
+    sessionId: "session-pack-contract-smoke",
+    workflowId: "workflow-session-store",
+    taskId: "task-contract-smoke",
+    traceId: "trace-session-store",
+    dispatchId: "dispatch-session-store",
+    workerId: "worker-1",
+    input: { intentPath: "/tmp/intent.json", apiSecret: "run-secret" }
+  });
+  assert.equal(started.status, "running");
+  assert.equal(started.workerInput.sessionId, "session-pack-contract-smoke");
+  assert.equal(started.workerInput.input.intentPath, "/tmp/intent.json");
+  assert.equal(started.workerInput.input.apiSecret, "[redacted]");
+  assert.ok(started.workerInput.toolPolicy.forbiddenActions.includes("live_order"));
+  assert.equal(JSON.stringify(started.workerInput).includes("run-secret"), false);
+
+  const duplicateStart = await runAction(root, {
+    action: "workflow.session_run.start",
+    runId: "session-run-contract-smoke",
+    sessionId: "session-pack-contract-smoke"
+  });
+  assert.equal(duplicateStart.deduped, true);
+  assert.equal(duplicateStart.runId, "session-run-contract-smoke");
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.session_run.start",
+      runId: "session-run-contract-smoke",
+      sessionId: "session-pack-contract-smoke",
+      input: { intentPath: "/tmp/other.json" }
+    }),
+    /workflow session run id conflict/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.session_run.start",
+      sessionId: "session-pack-contract-smoke",
+      status: "runnning"
+    }),
+    /unknown workflow session run status/
+  );
+
+  const completed = await runAction(root, {
+    action: "workflow.session_run.complete",
+    runId: "session-run-contract-smoke",
+    output: { status: "contract_valid", accessKey: "output-secret" },
+    receiptRef: "artifact://receipts/session-run-contract-smoke"
+  });
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.output.status, "contract_valid");
+  assert.equal(completed.output.accessKey, "[redacted]");
+  assert.equal(completed.receiptRef, "artifact://receipts/session-run-contract-smoke");
+
+  const duplicateComplete = await runAction(root, {
+    action: "workflow.session_run.complete",
+    runId: "session-run-contract-smoke"
+  });
+  assert.equal(duplicateComplete.deduped, true);
+  assert.deepEqual(duplicateComplete.output, completed.output);
+  assert.equal(duplicateComplete.receiptRef, completed.receiptRef);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.session_run.complete",
+      runId: "session-run-contract-smoke",
+      output: { status: "different" }
+    }),
+    /workflow session run terminal conflict/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.session_run.complete",
+      runId: "session-run-contract-smoke",
+      status: "faild"
+    }),
+    /unknown workflow session run status/
+  );
+
+  const status = await runAction(root, { action: "workflow.status" });
+  assert.equal(status.counts.workflow_session_packs, 1);
+  assert.equal(status.counts.workflow_session_runs, 1);
+
+  const dbFile = path.join(root, "tracking.db");
+  const storedRun = sqliteJson(dbFile, `
+SELECT input_json AS inputJson, worker_input_json AS workerInputJson, output_json AS outputJson
+FROM workflow_session_runs
+WHERE run_id='session-run-contract-smoke'
+LIMIT 1;`)[0];
+  assert.equal(storedRun.inputJson.includes("run-secret"), false);
+  assert.equal(storedRun.workerInputJson.includes("run-secret"), false);
+  assert.equal(storedRun.outputJson.includes("output-secret"), false);
+  assert.equal(storedRun.inputJson.includes("[redacted]"), true);
+  assert.equal(storedRun.outputJson.includes("[redacted]"), true);
+}
+
+async function testWorkflowSessionStoreCli() {
+  const root = await tempRoot("session-store-cli");
+  const pack = workflowCliJson([
+    "workflow-session-pack-upsert",
+    "--root", root,
+    "--session", "cli-session",
+    "--owner-agent", "cat_body",
+    "--task-type", "contract_smoke",
+    "--purpose", "CLI session pack smoke",
+    "--runtime-target", "worker:local_codex",
+    "--working-context", "{\"workflowId\":\"wf-cli\"}",
+    "--tool-policy", "{\"forbiddenActions\":[\"live_order\"]}",
+    "--metadata", "{\"apiKey\":\"secret\"}"
+  ]);
+  assert.equal(pack.version, 1);
+  assert.equal(pack.metadata.apiKey, "[redacted]");
+
+  const retryPack = workflowCliJson([
+    "workflow-session-pack-upsert",
+    "--root", root,
+    "--session", "cli-session",
+    "--owner-agent", "cat_body",
+    "--task-type", "contract_smoke",
+    "--purpose", "CLI session pack smoke",
+    "--runtime-target", "worker:local_codex",
+    "--working-context", "{\"workflowId\":\"wf-cli\"}",
+    "--tool-policy", "{\"forbiddenActions\":[\"live_order\"]}",
+    "--metadata", "{\"apiKey\":\"secret\"}"
+  ]);
+  assert.equal(retryPack.deduped, true);
+  assert.equal(retryPack.version, 1);
+
+  const started = workflowCliJson([
+    "workflow-session-run-start",
+    "--root", root,
+    "--session", "cli-session",
+    "--run", "cli-run",
+    "--workflow", "wf-cli",
+    "--task", "task-cli",
+    "--input", "{\"intentPath\":\"/tmp/intent.json\",\"apiSecret\":\"secret\"}"
+  ]);
+  assert.equal(started.status, "running");
+  assert.equal(started.workerInput.input.apiSecret, "[redacted]");
+
+  const completed = workflowCliJson([
+    "workflow-session-run-complete",
+    "--root", root,
+    "--run", "cli-run",
+    "--output", "{\"status\":\"contract_valid\",\"accessKey\":\"secret\"}",
+    "--receipt", "artifact://cli-run"
+  ]);
+  assert.equal(completed.output.accessKey, "[redacted]");
+  assert.equal(completed.receiptRef, "artifact://cli-run");
+
+  const duplicateComplete = workflowCliJson([
+    "workflow-session-run-complete",
+    "--root", root,
+    "--run", "cli-run"
+  ]);
+  assert.equal(duplicateComplete.deduped, true);
+  assert.deepEqual(duplicateComplete.output, completed.output);
+  assert.equal(duplicateComplete.receiptRef, completed.receiptRef);
+
+  await assertRejectsMessage(
+    () => {
+      try {
+        execFileSync("node", [
+          path.resolve("bin/cat-meeting-governance.mjs"),
+          "workflow-session-run-complete",
+          "--root", root,
+          "--run", "cli-run",
+          "--status", "faild"
+        ], { encoding: "utf8", stdio: "pipe" });
+      } catch (error) {
+        throw new Error(error.stderr || error.message);
+      }
+    },
+    /unknown workflow session run status/
+  );
+}
+
 async function testExpiredHumanGateBlocked() {
   const root = await tempRoot("expired-hgate");
   const request = await requestHumanGate(root, {
@@ -1045,6 +1304,8 @@ try {
     ["control_loop stale delivering outbox", testControlLoopSeedsStaleDeliveringOutbox],
     ["trade_intent fail-closed", testTradeIntentFailClosed],
     ["trade chain and receipt guardrails", testTradeIntentChainAndReceiptGuardrails],
+    ["workflow session store", testWorkflowSessionStore],
+    ["workflow session store cli", testWorkflowSessionStoreCli],
     ["expired human_gate blocked", testExpiredHumanGateBlocked],
     ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],
     ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],

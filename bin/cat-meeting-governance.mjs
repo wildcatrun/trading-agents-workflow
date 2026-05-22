@@ -26,6 +26,11 @@ function usage() {
   trading-agents-workflow workflow-schedule-resume --id ID [--reset-next-run true|false] [--root DIR]
   trading-agents-workflow workflow-schedule-disable --id ID [--root DIR]
   trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
+  trading-agents-workflow workflow-session-pack-upsert --session ID --owner-agent AGENT --task-type TYPE --purpose TEXT [--runtime-target TARGET] [--working-context JSON] [--tool-policy JSON] [--input-schema JSON] [--output-schema JSON] [--evidence-refs JSON] [--checkpoint-refs JSON] [--resource-budget JSON] [--metadata JSON] [--root DIR]
+  trading-agents-workflow workflow-session-pack-get --session ID [--root DIR]
+  trading-agents-workflow workflow-session-pack-list [--status active|draft|disabled|archived] [--owner-agent AGENT] [--task-type TYPE] [--limit N] [--root DIR]
+  trading-agents-workflow workflow-session-run-start --session ID [--run ID] [--workflow ID] [--task ID] [--trace ID] [--dispatch ID] [--worker ID] [--input JSON] [--root DIR]
+  trading-agents-workflow workflow-session-run-complete --run ID [--status completed|failed|cancelled] [--output JSON] [--receipt REF] [--error TEXT] [--root DIR]
   trading-agents-workflow runtime-agent --platform PLATFORM --agent AGENT [--runtime RUNTIME_KEY] [--execution-adapter ADAPTER] [--im-ingress-owner OWNER] [--im-ingress-adapter ADAPTER] [--workflow-ingress-adapter ADAPTER] [--im-identity ID] [--execution-identity ID] [--return-policy reply_to_source_chat|report_to_flashcat|silent] [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
   trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--source-channel CHANNEL] [--account-id ACCOUNT] [--chat-id ID] [--sender-id ID] [--return-policy POLICY] [--target-platform PLATFORM] [--target-adapter ADAPTER] [--drain-now true|false] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
@@ -363,6 +368,71 @@ function toAction({ command, positional, options }) {
           tokenBudget: options["token-budget"],
           compactAtPercent: options["compact-at"],
           restorePolicy: options["restore-policy"]
+        }
+      };
+    case "workflow-session-pack-upsert":
+      return {
+        root,
+        input: {
+          action: "workflow.session_pack.upsert",
+          sessionId: options.session,
+          ownerAgent: options["owner-agent"],
+          taskType: options["task-type"],
+          runtimeTarget: options["runtime-target"],
+          status: options.status,
+          version: options.version,
+          purpose: options.purpose,
+          systemBrief: options["system-brief"],
+          workingContext: options["working-context"],
+          toolPolicy: options["tool-policy"],
+          inputSchema: options["input-schema"],
+          outputSchema: options["output-schema"],
+          evidenceRefs: options["evidence-refs"],
+          checkpointRefs: options["checkpoint-refs"],
+          resourceBudget: options["resource-budget"],
+          metadata: options.metadata,
+          createdBy: options.from
+        }
+      };
+    case "workflow-session-pack-get":
+      return { root, input: { action: "workflow.session_pack.get", sessionId: options.session } };
+    case "workflow-session-pack-list":
+      return {
+        root,
+        input: {
+          action: "workflow.session_pack.list",
+          status: options.status,
+          ownerAgent: options["owner-agent"],
+          taskType: options["task-type"],
+          limit: options.limit
+        }
+      };
+    case "workflow-session-run-start":
+      return {
+        root,
+        input: {
+          action: "workflow.session_run.start",
+          sessionId: options.session,
+          runId: options.run,
+          workflowId: options.workflow,
+          taskId: options.task,
+          traceId: options.trace,
+          dispatchId: options.dispatch,
+          workerId: options.worker,
+          status: options.status,
+          input: options.input
+        }
+      };
+    case "workflow-session-run-complete":
+      return {
+        root,
+        input: {
+          action: "workflow.session_run.complete",
+          runId: options.run,
+          status: options.status,
+          output: options.output,
+          receiptRef: options.receipt,
+          error: options.error
         }
       };
     case "runtime-agent":

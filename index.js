@@ -130,6 +130,15 @@ function compactObject(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== ""));
 }
 
+function parseCliJson(value, fallback = undefined) {
+  if (value === undefined || value === null || value === "") return fallback;
+  try {
+    return JSON.parse(String(value));
+  } catch (error) {
+    throw new Error(`invalid JSON option: ${error?.message || error}`);
+  }
+}
+
 function messageFlowSendInput(params = {}, toolContext = {}) {
   const sourceAgent = normalizeAgentId(params.fromAgent ?? params.from_agent ?? toolContext.agentId ?? "unknown");
   return compactObject({
@@ -223,6 +232,21 @@ const toolParameters = {
         "workflow.checkpoint",
         "workflow.context_checkpoint",
         "context.checkpoint",
+        "workflow.session_pack.upsert",
+        "workflow.session.pack.upsert",
+        "session_pack.upsert",
+        "workflow.session_pack.get",
+        "workflow.session.pack.get",
+        "session_pack.get",
+        "workflow.session_pack.list",
+        "workflow.session.pack.list",
+        "session_pack.list",
+        "workflow.session_run.start",
+        "workflow.session.run.start",
+        "session_run.start",
+        "workflow.session_run.complete",
+        "workflow.session.run.complete",
+        "session_run.complete",
         "protocol.record",
         "protocol.object",
         "runtime.agent",
@@ -337,6 +361,7 @@ const toolParameters = {
     kind: { type: "string" },
     name: { type: "string" },
     content: { type: "string" },
+    purpose: { type: "string" },
     instrumentId: { type: "string" },
     assetType: { type: "string" },
     symbol: { type: "string" },
@@ -414,6 +439,38 @@ const toolParameters = {
     tokenBudget: { type: "number" },
     compactAtPercent: { type: "number" },
     restorePolicy: { type: "string" },
+    sessionId: { type: "string" },
+    session_id: { type: "string" },
+    runId: { type: "string" },
+    run_id: { type: "string" },
+    version: { type: "number" },
+    runtimeTarget: { type: "string" },
+    runtime_target: { type: "string" },
+    systemBrief: { type: "string" },
+    system_brief: { type: "string" },
+    workingContext: {},
+    working_context: {},
+    toolPolicy: {},
+    tool_policy: {},
+    inputSchema: {},
+    input_schema: {},
+    outputSchema: {},
+    output_schema: {},
+    evidenceRefs: { type: "array", items: { type: "string" } },
+    evidence_refs: { type: "array", items: { type: "string" } },
+    checkpointRefs: { type: "array", items: { type: "string" } },
+    checkpoint_refs: { type: "array", items: { type: "string" } },
+    resourceBudget: {},
+    resource_budget: {},
+    input: {},
+    output: {},
+    result: {},
+    workerId: { type: "string" },
+    worker_id: { type: "string" },
+    receiptRef: { type: "string" },
+    receipt_ref: { type: "string" },
+    createdBy: { type: "string" },
+    created_by: { type: "string" },
     traceId: { type: "string" },
     flowId: { type: "string" },
     messageFlowId: { type: "string" },
@@ -1289,6 +1346,128 @@ function registerCli(api) {
           tokenBudget: Number(options.tokenBudget),
           compactAtPercent: Number(options.compactAt),
           restorePolicy: options.restorePolicy
+        }), null, 2));
+      });
+
+    command.command("workflow-session-pack-upsert")
+      .requiredOption("--session <sessionId>", "Session pack id")
+      .requiredOption("--owner-agent <agentId>", "Owner agent for the reusable task context")
+      .requiredOption("--task-type <taskType>", "Task type this pack prepares")
+      .requiredOption("--purpose <purpose>", "Short purpose of the session pack")
+      .option("--runtime-target <runtimeTarget>", "Runtime target hint", "hermers")
+      .option("--status <status>", "draft, active, disabled, archived", "active")
+      .option("--version <version>", "Explicit pack version")
+      .option("--system-brief <text>", "System brief for the worker")
+      .option("--working-context <json>", "Minimal working context JSON")
+      .option("--tool-policy <json>", "Allowed/forbidden tool policy JSON")
+      .option("--input-schema <json>", "Expected input schema JSON")
+      .option("--output-schema <json>", "Expected output schema JSON")
+      .option("--evidence-refs <json>", "Evidence refs JSON array")
+      .option("--checkpoint-refs <json>", "Checkpoint refs JSON array")
+      .option("--resource-budget <json>", "Resource budget JSON")
+      .option("--metadata <json>", "Metadata JSON")
+      .option("--from <createdBy>", "Creator", "local_codex")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
+          action: "workflow.session_pack.upsert",
+          workflowRootDir: options.workflowRoot,
+          sessionId: options.session,
+          ownerAgent: options.ownerAgent,
+          taskType: options.taskType,
+          runtimeTarget: options.runtimeTarget,
+          status: options.status,
+          version: options.version ? Number(options.version) : undefined,
+          purpose: options.purpose,
+          systemBrief: options.systemBrief,
+          workingContext: parseCliJson(options.workingContext),
+          toolPolicy: parseCliJson(options.toolPolicy),
+          inputSchema: parseCliJson(options.inputSchema),
+          outputSchema: parseCliJson(options.outputSchema),
+          evidenceRefs: parseCliJson(options.evidenceRefs),
+          checkpointRefs: parseCliJson(options.checkpointRefs),
+          resourceBudget: parseCliJson(options.resourceBudget),
+          metadata: parseCliJson(options.metadata),
+          createdBy: options.from
+        }), null, 2));
+      });
+
+    command.command("workflow-session-pack-get")
+      .requiredOption("--session <sessionId>", "Session pack id")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
+          action: "workflow.session_pack.get",
+          workflowRootDir: options.workflowRoot,
+          sessionId: options.session
+        }), null, 2));
+      });
+
+    command.command("workflow-session-pack-list")
+      .option("--status <status>", "Pack status")
+      .option("--owner-agent <agentId>", "Owner agent")
+      .option("--task-type <taskType>", "Task type")
+      .option("--limit <limit>", "Limit", "100")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
+          action: "workflow.session_pack.list",
+          workflowRootDir: options.workflowRoot,
+          status: options.status,
+          ownerAgent: options.ownerAgent,
+          taskType: options.taskType,
+          limit: Number(options.limit)
+        }), null, 2));
+      });
+
+    command.command("workflow-session-run-start")
+      .requiredOption("--session <sessionId>", "Session pack id")
+      .option("--run <runId>", "Run id")
+      .option("--workflow <workflowId>", "Workflow id")
+      .option("--task <taskId>", "Task id")
+      .option("--trace <traceId>", "Trace id")
+      .option("--dispatch <dispatchId>", "Dispatch id")
+      .option("--worker <workerId>", "Worker id")
+      .option("--status <status>", "queued or running", "running")
+      .option("--input <json>", "Per-run input JSON")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
+          action: "workflow.session_run.start",
+          workflowRootDir: options.workflowRoot,
+          sessionId: options.session,
+          runId: options.run,
+          workflowId: options.workflow,
+          taskId: options.task,
+          traceId: options.trace,
+          dispatchId: options.dispatch,
+          workerId: options.worker,
+          status: options.status,
+          input: parseCliJson(options.input)
+        }), null, 2));
+      });
+
+    command.command("workflow-session-run-complete")
+      .requiredOption("--run <runId>", "Run id")
+      .option("--status <status>", "completed, failed, or cancelled", "completed")
+      .option("--output <json>", "Structured output JSON")
+      .option("--receipt <receiptRef>", "Receipt or artifact reference")
+      .option("--error <message>", "Failure message")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
+          action: "workflow.session_run.complete",
+          workflowRootDir: options.workflowRoot,
+          runId: options.run,
+          status: options.status,
+          output: parseCliJson(options.output),
+          receiptRef: options.receipt,
+          error: options.error
         }), null, 2));
       });
 

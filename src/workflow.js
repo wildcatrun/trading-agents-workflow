@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 11;
+export const WORKFLOW_SCHEMA_VERSION = 12;
 export const LEGACY_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 const ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT";
 
@@ -49,6 +49,8 @@ const MESSAGE_FLOW_RETURN_POLICIES = new Set(["reply_to_source_chat", "report_to
 const WORKFLOW_RUN_STATUSES = new Set(["active", "waiting_human", "blocked", "paused", "completed", "stopped", "cancelled"]);
 const WORKFLOW_TASK_STATUSES = new Set(["pending", "in_progress", "done", "blocked", "failed", "cancelled"]);
 const WORKFLOW_TASK_PRIORITIES = new Set(["flash", "steer", "high", "normal", "low"]);
+const WORKFLOW_SESSION_PACK_STATUSES = new Set(["draft", "active", "disabled", "archived"]);
+const WORKFLOW_SESSION_RUN_STATUSES = new Set(["queued", "running", "completed", "failed", "cancelled"]);
 const WORKFLOW_SCHEDULE_STATUSES = new Set(["active", "paused", "disabled"]);
 const WORKFLOW_SCHEDULE_KINDS = new Set(["cron", "interval"]);
 const WORKFLOW_SCHEDULE_CONCURRENCY_POLICIES = new Set(["skip", "allow"]);
@@ -1441,6 +1443,50 @@ CREATE TABLE IF NOT EXISTS workflow_checkpoints (
   FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_checkpoints_workflow ON workflow_checkpoints(workflow_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_session_packs (
+  session_id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active',
+  owner_agent TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  runtime_target TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  system_brief TEXT NOT NULL DEFAULT '',
+  working_context_json TEXT NOT NULL DEFAULT '{}',
+  tool_policy_json TEXT NOT NULL DEFAULT '{}',
+  input_schema_json TEXT NOT NULL DEFAULT '{}',
+  output_schema_json TEXT NOT NULL DEFAULT '{}',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  checkpoint_refs_json TEXT NOT NULL DEFAULT '[]',
+  resource_budget_json TEXT NOT NULL DEFAULT '{}',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  pack_hash TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_packs_owner ON workflow_session_packs(owner_agent, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_packs_task_type ON workflow_session_packs(task_type, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_session_runs (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES workflow_session_packs(session_id) ON DELETE RESTRICT,
+  pack_version INTEGER NOT NULL,
+  workflow_id TEXT,
+  task_id TEXT,
+  worker_id TEXT,
+  status TEXT NOT NULL,
+  input_json TEXT NOT NULL DEFAULT '{}',
+  worker_input_json TEXT NOT NULL DEFAULT '{}',
+  output_json TEXT NOT NULL DEFAULT '{}',
+  receipt_ref TEXT,
+  error TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_runs_session ON workflow_session_runs(session_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_runs_workflow ON workflow_session_runs(workflow_id, task_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS artifact_index (
   artifact_id TEXT PRIMARY KEY,
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,
@@ -2169,6 +2215,50 @@ CREATE TABLE IF NOT EXISTS control_loop_jobs (
 CREATE INDEX IF NOT EXISTS idx_control_loop_jobs_status ON control_loop_jobs(status, next_run_at, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_control_loop_jobs_workflow ON control_loop_jobs(workflow_id, status, updated_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_control_loop_jobs_active_dedupe ON control_loop_jobs(dedupe_key) WHERE status IN ('queued','running','retry_scheduled');
+CREATE TABLE IF NOT EXISTS workflow_session_packs (
+  session_id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active',
+  owner_agent TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  runtime_target TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  system_brief TEXT NOT NULL DEFAULT '',
+  working_context_json TEXT NOT NULL DEFAULT '{}',
+  tool_policy_json TEXT NOT NULL DEFAULT '{}',
+  input_schema_json TEXT NOT NULL DEFAULT '{}',
+  output_schema_json TEXT NOT NULL DEFAULT '{}',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  checkpoint_refs_json TEXT NOT NULL DEFAULT '[]',
+  resource_budget_json TEXT NOT NULL DEFAULT '{}',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  pack_hash TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_packs_owner ON workflow_session_packs(owner_agent, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_packs_task_type ON workflow_session_packs(task_type, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_session_runs (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES workflow_session_packs(session_id) ON DELETE RESTRICT,
+  pack_version INTEGER NOT NULL,
+  workflow_id TEXT,
+  task_id TEXT,
+  worker_id TEXT,
+  status TEXT NOT NULL,
+  input_json TEXT NOT NULL DEFAULT '{}',
+  worker_input_json TEXT NOT NULL DEFAULT '{}',
+  output_json TEXT NOT NULL DEFAULT '{}',
+  receipt_ref TEXT,
+  error TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_runs_session ON workflow_session_runs(session_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_runs_workflow ON workflow_session_runs(workflow_id, task_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS human_gate_buttons (
   button_id TEXT PRIMARY KEY,
   callback_token TEXT NOT NULL UNIQUE,
@@ -2534,6 +2624,8 @@ UNION ALL SELECT 'workflows', COUNT(*) FROM workflow_runs
 UNION ALL SELECT 'workflow_tasks', COUNT(*) FROM workflow_tasks
 UNION ALL SELECT 'workflow_task_dependencies', COUNT(*) FROM workflow_task_dependencies
 UNION ALL SELECT 'workflow_checkpoints', COUNT(*) FROM workflow_checkpoints
+UNION ALL SELECT 'workflow_session_packs', COUNT(*) FROM workflow_session_packs
+UNION ALL SELECT 'workflow_session_runs', COUNT(*) FROM workflow_session_runs
 UNION ALL SELECT 'protocol_objects', COUNT(*) FROM protocol_objects
 UNION ALL SELECT 'trade_intents', COUNT(*) FROM executable_trade_intents
 UNION ALL SELECT 'trading_core_receipts', COUNT(*) FROM trading_core_receipts
@@ -3463,6 +3555,316 @@ ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summ
     resumePayload,
     dbFile: paths.dbFile
   };
+}
+
+function sessionJsonObject(value, fallback = {}) {
+  const parsed = parseJsonValue(value, value === undefined ? fallback : value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fallback;
+  return redactSensitiveForPersistence(parsed);
+}
+
+function sessionJsonArray(value) {
+  const parsed = parseJsonValue(value, value || []);
+  if (Array.isArray(parsed)) return redactSensitiveForPersistence(parsed);
+  return toList(parsed);
+}
+
+function requireWorkflowSessionPackStatus(value, fallback = "active") {
+  const status = String(value || fallback).trim();
+  if (!WORKFLOW_SESSION_PACK_STATUSES.has(status)) throw new Error(`unknown workflow session pack status: ${status}`);
+  return status;
+}
+
+function requireWorkflowSessionRunStatus(value, fallback = "running") {
+  const status = String(value || fallback).trim();
+  if (!WORKFLOW_SESSION_RUN_STATUSES.has(status)) throw new Error(`unknown workflow session run status: ${status}`);
+  return status;
+}
+
+function isTerminalWorkflowSessionRunStatus(status) {
+  return ["completed", "failed", "cancelled"].includes(status);
+}
+
+function sessionPackHash(record) {
+  return jsonHash({
+    sessionId: record.sessionId,
+    status: record.status,
+    ownerAgent: record.ownerAgent,
+    taskType: record.taskType,
+    runtimeTarget: record.runtimeTarget,
+    purpose: record.purpose,
+    systemBrief: record.systemBrief,
+    workingContext: record.workingContext,
+    toolPolicy: record.toolPolicy,
+    inputSchema: record.inputSchema,
+    outputSchema: record.outputSchema,
+    evidenceRefs: record.evidenceRefs,
+    checkpointRefs: record.checkpointRefs,
+    resourceBudget: record.resourceBudget,
+    metadata: record.metadata
+  });
+}
+
+function sessionPackFromRow(row) {
+  if (!row) return null;
+  return {
+    sessionId: row.session_id,
+    version: Number(row.version || 1),
+    status: row.status,
+    ownerAgent: row.owner_agent,
+    taskType: row.task_type,
+    runtimeTarget: row.runtime_target,
+    purpose: row.purpose,
+    systemBrief: row.system_brief || "",
+    workingContext: parseJsonValue(row.working_context_json, {}),
+    toolPolicy: parseJsonValue(row.tool_policy_json, {}),
+    inputSchema: parseJsonValue(row.input_schema_json, {}),
+    outputSchema: parseJsonValue(row.output_schema_json, {}),
+    evidenceRefs: parseJsonValue(row.evidence_refs_json, []),
+    checkpointRefs: parseJsonValue(row.checkpoint_refs_json, []),
+    resourceBudget: parseJsonValue(row.resource_budget_json, {}),
+    metadata: parseJsonValue(row.metadata_json, {}),
+    packHash: row.pack_hash,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function sessionRunFromRow(row) {
+  if (!row) return null;
+  return {
+    runId: row.run_id,
+    sessionId: row.session_id,
+    packVersion: Number(row.pack_version || 1),
+    workflowId: row.workflow_id || "",
+    taskId: row.task_id || "",
+    workerId: row.worker_id || "",
+    status: row.status,
+    input: parseJsonValue(row.input_json, {}),
+    workerInput: parseJsonValue(row.worker_input_json, {}),
+    output: parseJsonValue(row.output_json, {}),
+    receiptRef: row.receipt_ref || "",
+    error: row.error || "",
+    startedAt: row.started_at || "",
+    completedAt: row.completed_at || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function workerInputFromSessionPack(pack, inputPayload = {}, context = {}) {
+  return {
+    schemaVersion: 1,
+    objectType: "workflow_session_worker_input",
+    sessionId: pack.sessionId,
+    sessionVersion: pack.version,
+    packHash: pack.packHash,
+    purpose: pack.purpose,
+    ownerAgent: pack.ownerAgent,
+    taskType: pack.taskType,
+    runtimeTarget: pack.runtimeTarget,
+    systemBrief: pack.systemBrief,
+    workingContext: pack.workingContext,
+    toolPolicy: pack.toolPolicy,
+    inputSchema: pack.inputSchema,
+    outputSchema: pack.outputSchema,
+    evidenceRefs: pack.evidenceRefs,
+    checkpointRefs: pack.checkpointRefs,
+    resourceBudget: pack.resourceBudget,
+    input: inputPayload,
+    context,
+    instructions: {
+      loadOnlyReferencedArtifacts: true,
+      doNotInferMissingHumanApproval: true,
+      writeStructuredOutputOnly: Object.keys(pack.outputSchema || {}).length > 0
+    }
+  };
+}
+
+export async function workflowSessionPackUpsert(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const sessionId = String(input.sessionId || input.session_id || safeId("session-pack")).trim();
+  const existingRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_packs WHERE session_id=${sqlValue(sessionId)} LIMIT 1;`, { json: true });
+  const existing = existingRows[0] || null;
+  const requestedVersion = numberOrNull(input.version);
+  const version = requestedVersion !== null && requestedVersion > 0
+    ? Math.trunc(requestedVersion)
+    : (existing ? Number(existing.version || 1) : 1);
+  const status = requireWorkflowSessionPackStatus(input.status || existing?.status || "active");
+  const ownerAgent = normalizeAgentId(input.ownerAgent || input.owner_agent || input.agentId || input.agent_id || existing?.owner_agent || "main");
+  const taskType = String(input.taskType || input.task_type || input.type || existing?.task_type || "task").trim();
+  const runtimeTarget = String(input.runtimeTarget || input.runtime_target || input.runtime || existing?.runtime_target || "hermers").trim();
+  const purpose = String(input.purpose || input.summary || input.text || existing?.purpose || "").trim();
+  if (!purpose) throw new Error("session pack purpose is required");
+  const record = {
+    sessionId,
+    version,
+    status,
+    ownerAgent,
+    taskType,
+    runtimeTarget,
+    purpose,
+    systemBrief: String(input.systemBrief || input.system_brief || existing?.system_brief || "").trim(),
+    workingContext: input.workingContext !== undefined || input.working_context !== undefined
+      ? sessionJsonObject(input.workingContext ?? input.working_context)
+      : parseJsonValue(existing?.working_context_json, {}),
+    toolPolicy: input.toolPolicy !== undefined || input.tool_policy !== undefined
+      ? sessionJsonObject(input.toolPolicy ?? input.tool_policy)
+      : parseJsonValue(existing?.tool_policy_json, {}),
+    inputSchema: input.inputSchema !== undefined || input.input_schema !== undefined
+      ? sessionJsonObject(input.inputSchema ?? input.input_schema)
+      : parseJsonValue(existing?.input_schema_json, {}),
+    outputSchema: input.outputSchema !== undefined || input.output_schema !== undefined
+      ? sessionJsonObject(input.outputSchema ?? input.output_schema)
+      : parseJsonValue(existing?.output_schema_json, {}),
+    evidenceRefs: input.evidenceRefs !== undefined || input.evidence_refs !== undefined
+      ? sessionJsonArray(input.evidenceRefs ?? input.evidence_refs)
+      : parseJsonValue(existing?.evidence_refs_json, []),
+    checkpointRefs: input.checkpointRefs !== undefined || input.checkpoint_refs !== undefined
+      ? sessionJsonArray(input.checkpointRefs ?? input.checkpoint_refs)
+      : parseJsonValue(existing?.checkpoint_refs_json, []),
+    resourceBudget: input.resourceBudget !== undefined || input.resource_budget !== undefined
+      ? sessionJsonObject(input.resourceBudget ?? input.resource_budget)
+      : parseJsonValue(existing?.resource_budget_json, {}),
+    metadata: input.metadata !== undefined
+      ? sessionJsonObject(input.metadata)
+      : parseJsonValue(existing?.metadata_json, {}),
+    createdBy: input.createdBy || input.created_by || input.from || existing?.created_by || "main",
+    createdAt: existing?.created_at || now,
+    updatedAt: now
+  };
+  record.packHash = sessionPackHash(record);
+  if (existing && requestedVersion === null && record.packHash === existing.pack_hash) {
+    return { ...sessionPackFromRow(existing), deduped: true, dbFile: paths.dbFile };
+  }
+  if (existing && requestedVersion === null) record.version = Number(existing.version || 1) + 1;
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_session_packs(session_id, version, status, owner_agent, task_type, runtime_target, purpose, system_brief, working_context_json, tool_policy_json, input_schema_json, output_schema_json, evidence_refs_json, checkpoint_refs_json, resource_budget_json, metadata_json, pack_hash, created_by, created_at, updated_at)
+VALUES (${sqlValue(record.sessionId)}, ${sqlValue(record.version)}, ${sqlValue(record.status)}, ${sqlValue(record.ownerAgent)}, ${sqlValue(record.taskType)}, ${sqlValue(record.runtimeTarget)}, ${sqlValue(record.purpose)}, ${sqlValue(record.systemBrief)}, ${sqlValue(JSON.stringify(record.workingContext))}, ${sqlValue(JSON.stringify(record.toolPolicy))}, ${sqlValue(JSON.stringify(record.inputSchema))}, ${sqlValue(JSON.stringify(record.outputSchema))}, ${sqlValue(JSON.stringify(record.evidenceRefs))}, ${sqlValue(JSON.stringify(record.checkpointRefs))}, ${sqlValue(JSON.stringify(record.resourceBudget))}, ${sqlValue(JSON.stringify(record.metadata))}, ${sqlValue(record.packHash)}, ${sqlValue(record.createdBy)}, ${sqlValue(record.createdAt)}, ${sqlValue(record.updatedAt)})
+ON CONFLICT(session_id) DO UPDATE SET
+  version=excluded.version,
+  status=excluded.status,
+  owner_agent=excluded.owner_agent,
+  task_type=excluded.task_type,
+  runtime_target=excluded.runtime_target,
+  purpose=excluded.purpose,
+  system_brief=excluded.system_brief,
+  working_context_json=excluded.working_context_json,
+  tool_policy_json=excluded.tool_policy_json,
+  input_schema_json=excluded.input_schema_json,
+  output_schema_json=excluded.output_schema_json,
+  evidence_refs_json=excluded.evidence_refs_json,
+  checkpoint_refs_json=excluded.checkpoint_refs_json,
+  resource_budget_json=excluded.resource_budget_json,
+  metadata_json=excluded.metadata_json,
+  pack_hash=excluded.pack_hash,
+  updated_at=excluded.updated_at;`);
+  return { ...record, dbFile: paths.dbFile };
+}
+
+export async function workflowSessionPackGet(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const sessionId = String(input.sessionId || input.session_id || "").trim();
+  if (!sessionId) throw new Error("sessionId is required");
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_packs WHERE session_id=${sqlValue(sessionId)} LIMIT 1;`, { json: true });
+  const pack = sessionPackFromRow(rows[0]);
+  if (!pack) throw new Error(`workflow session pack not found: ${sessionId}`);
+  return { ...pack, workerInputTemplate: workerInputFromSessionPack(pack), dbFile: paths.dbFile };
+}
+
+export async function workflowSessionPackList(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const filters = [];
+  if (input.status) filters.push(`status=${sqlValue(requireWorkflowSessionPackStatus(input.status))}`);
+  if (input.ownerAgent || input.owner_agent) filters.push(`owner_agent=${sqlValue(normalizeAgentId(input.ownerAgent || input.owner_agent))}`);
+  if (input.taskType || input.task_type) filters.push(`task_type=${sqlValue(input.taskType || input.task_type)}`);
+  const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const requestedLimit = Number(input.limit || 100);
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(500, requestedLimit)) : 100;
+  const rows = await sqlite(paths.dbFile, `
+SELECT * FROM workflow_session_packs
+${where}
+ORDER BY updated_at DESC
+LIMIT ${limit};`, { json: true });
+  return { count: rows.length, packs: rows.map(sessionPackFromRow), dbFile: paths.dbFile };
+}
+
+export async function workflowSessionRunStart(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const sessionId = String(input.sessionId || input.session_id || "").trim();
+  if (!sessionId) throw new Error("sessionId is required");
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_packs WHERE session_id=${sqlValue(sessionId)} LIMIT 1;`, { json: true });
+  const pack = sessionPackFromRow(rows[0]);
+  if (!pack) throw new Error(`workflow session pack not found: ${sessionId}`);
+  if (!["active", "draft"].includes(pack.status)) throw new Error(`workflow session pack is not runnable: ${pack.status}`);
+  const runId = String(input.runId || input.run_id || safeId("session-run")).trim();
+  const status = requireWorkflowSessionRunStatus(input.status || "running");
+  const inputPayload = sessionJsonObject(input.input ?? input.payload ?? {});
+  const context = {
+    workflowId: String(input.workflowId || input.workflow_id || "").trim(),
+    taskId: String(input.taskId || input.task_id || "").trim(),
+    traceId: String(input.traceId || input.trace_id || "").trim(),
+    dispatchId: String(input.dispatchId || input.dispatch_id || "").trim()
+  };
+  const workerId = String(input.workerId || input.worker_id || "").trim();
+  const existingRunRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_runs WHERE run_id=${sqlValue(runId)} LIMIT 1;`, { json: true });
+  if (existingRunRows[0]) {
+    const existingRun = sessionRunFromRow(existingRunRows[0]);
+    const conflicts = [];
+    if (existingRun.sessionId !== sessionId) conflicts.push("sessionId");
+    if ((input.status || input.status === "") && existingRun.status !== status) conflicts.push("status");
+    if (context.workflowId && existingRun.workflowId !== context.workflowId) conflicts.push("workflowId");
+    if (context.taskId && existingRun.taskId !== context.taskId) conflicts.push("taskId");
+    if (workerId && existingRun.workerId !== workerId) conflicts.push("workerId");
+    if ((input.input !== undefined || input.payload !== undefined) && jsonHash(existingRun.input) !== jsonHash(inputPayload)) conflicts.push("input");
+    if (conflicts.length) throw new Error(`workflow session run id conflict: ${runId} fields=${conflicts.join(",")}`);
+    return { ...existingRun, deduped: true, dbFile: paths.dbFile };
+  }
+  const workerInput = workerInputFromSessionPack(pack, inputPayload, context);
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_session_runs(run_id, session_id, pack_version, workflow_id, task_id, worker_id, status, input_json, worker_input_json, output_json, receipt_ref, error, started_at, completed_at, created_at, updated_at)
+VALUES (${sqlValue(runId)}, ${sqlValue(sessionId)}, ${sqlValue(pack.version)}, ${sqlValue(context.workflowId)}, ${sqlValue(context.taskId)}, ${sqlValue(workerId)}, ${sqlValue(status)}, ${sqlValue(JSON.stringify(inputPayload))}, ${sqlValue(JSON.stringify(workerInput))}, '{}', '', '', ${sqlValue(status === "running" ? now : "")}, '', ${sqlValue(now)}, ${sqlValue(now)});`);
+  return { runId, sessionId, packVersion: pack.version, status, workerInput, dbFile: paths.dbFile };
+}
+
+export async function workflowSessionRunComplete(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const runId = String(input.runId || input.run_id || "").trim();
+  if (!runId) throw new Error("runId is required");
+  const currentRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_runs WHERE run_id=${sqlValue(runId)} LIMIT 1;`, { json: true });
+  if (!currentRows[0]) throw new Error(`workflow session run not found: ${runId}`);
+  const current = sessionRunFromRow(currentRows[0]);
+  const now = nowIso();
+  const status = requireWorkflowSessionRunStatus(input.status || "completed", "completed");
+  const outputProvided = input.output !== undefined || input.result !== undefined || input.payload !== undefined;
+  const receiptProvided = input.receiptRef !== undefined || input.receipt_ref !== undefined || input.artifactRef !== undefined || input.artifact_ref !== undefined;
+  const errorProvided = input.error !== undefined;
+  const output = outputProvided ? sessionJsonObject(input.output ?? input.result ?? input.payload ?? {}) : current.output;
+  const receiptRef = receiptProvided ? String(input.receiptRef || input.receipt_ref || input.artifactRef || input.artifact_ref || "") : current.receiptRef;
+  const errorText = errorProvided ? String(input.error || "") : current.error;
+  if (isTerminalWorkflowSessionRunStatus(current.status)) {
+    const conflicts = [];
+    if (status !== current.status) conflicts.push("status");
+    if (outputProvided && jsonHash(output) !== jsonHash(current.output)) conflicts.push("output");
+    if (receiptProvided && receiptRef !== current.receiptRef) conflicts.push("receiptRef");
+    if (errorProvided && errorText !== current.error) conflicts.push("error");
+    if (conflicts.length) throw new Error(`workflow session run terminal conflict: ${runId} fields=${conflicts.join(",")}`);
+    return { ...current, deduped: true, dbFile: paths.dbFile };
+  }
+  await sqlite(paths.dbFile, `
+UPDATE workflow_session_runs
+SET status=${sqlValue(status)},
+    output_json=${sqlValue(JSON.stringify(output))},
+    receipt_ref=${sqlValue(receiptRef)},
+    error=${sqlValue(errorText)},
+    completed_at=${sqlValue(isTerminalWorkflowSessionRunStatus(status) ? now : current.completedAt)},
+    updated_at=${sqlValue(now)}
+WHERE run_id=${sqlValue(runId)};`);
+  const rows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_runs WHERE run_id=${sqlValue(runId)} LIMIT 1;`, { json: true });
+  return { ...sessionRunFromRow(rows[0]), dbFile: paths.dbFile };
 }
 
 export async function instrumentUpsert(rootDir, input) {
@@ -10708,6 +11110,26 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.context_checkpoint":
     case "context.checkpoint":
       return workflowCheckpoint(rootDir, input);
+    case "workflow.session_pack.upsert":
+    case "workflow.session.pack.upsert":
+    case "session_pack.upsert":
+      return workflowSessionPackUpsert(rootDir, input);
+    case "workflow.session_pack.get":
+    case "workflow.session.pack.get":
+    case "session_pack.get":
+      return workflowSessionPackGet(rootDir, input);
+    case "workflow.session_pack.list":
+    case "workflow.session.pack.list":
+    case "session_pack.list":
+      return workflowSessionPackList(rootDir, input);
+    case "workflow.session_run.start":
+    case "workflow.session.run.start":
+    case "session_run.start":
+      return workflowSessionRunStart(rootDir, input);
+    case "workflow.session_run.complete":
+    case "workflow.session.run.complete":
+    case "session_run.complete":
+      return workflowSessionRunComplete(rootDir, input);
     case "runtime.agent":
     case "runtime.agent.upsert":
       return runtimeAgentUpsert(rootDir, input);
