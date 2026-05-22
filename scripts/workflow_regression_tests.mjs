@@ -298,6 +298,12 @@ async function makeFakeOpenClaw(root, name, mode) {
   return file;
 }
 
+async function writeHermersProfileModes(root, profiles) {
+  const file = path.join(root, "hermers-profile-modes.json");
+  await fs.writeFile(file, `${JSON.stringify({ updatedAt: new Date().toISOString(), profiles }, null, 2)}\n`, "utf8");
+  return file;
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -1294,6 +1300,128 @@ async function testReadinessGatewayDegraded() {
   assert.ok(status.findings.some((finding) => finding.key === "openclaw_gateway_event_loop_degraded"));
 }
 
+async function testHermersProfileModeReadinessAndRegistry() {
+  const root = await tempRoot("profile-mode-readiness");
+  const modesPath = await writeHermersProfileModes(root, {
+    catears: {
+      targetMode: "cold",
+      expectedActive: true,
+      managed: true,
+      protected: false,
+      activeWork: false,
+      reason: "idle profile held cold for regression"
+    }
+  });
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    displayName: "猫之耳",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "acp",
+    endpointRef: "hermers-profile:catears"
+  });
+  await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-profile-readiness",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    prompt: "profile mode readiness regression",
+    dispatchType: "cron_heartbeat",
+    priority: "normal"
+  });
+  const registry = await runAction(root, {
+    action: "workflow.runtime_agents",
+    stabilityProfileModesPath: modesPath
+  });
+  const catEars = registry.runtimeRegistry.hermers.find((agent) => agent.agentId === "cat_ears");
+  assert.equal(catEars.profile, "catears");
+  assert.equal(catEars.profileMode, "cold");
+  assert.equal(catEars.profileExpectedActive, true);
+
+  const readiness = await runAction(root, {
+    action: "workflow.readiness",
+    stabilityProfileModesPath: modesPath
+  });
+  assert.equal(readiness.planes.runtime.hermersProfileModes.profiles.catears.targetMode, "cold");
+  assert.ok(readiness.findings.some((finding) => finding.key === "runtime_profile_mode_deferred_dispatches"));
+}
+
+async function testHermersProfileModeDefersDrainBeforeClaim() {
+  const root = await tempRoot("profile-mode-drain");
+  const modesPath = await writeHermersProfileModes(root, {
+    catears: {
+      targetMode: "hibernate",
+      expectedActive: false,
+      managed: true,
+      protected: false,
+      activeWork: false,
+      reason: "idle profile hibernated for regression"
+    }
+  });
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    displayName: "猫之耳",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "acp",
+    endpointRef: "hermers-profile:catears"
+  });
+  const dispatch = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-profile-drain",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    prompt: "profile mode drain regression",
+    dispatchType: "cron_heartbeat",
+    priority: "normal"
+  });
+  const drained = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    limit: 1,
+    stabilityProfileModesPath: modesPath,
+    hibernateProfileDeferSeconds: 60
+  });
+  assert.equal(drained.results[0].status, "deferred");
+  assert.equal(drained.results[0].reason, "runtime_profile_hibernated");
+
+  const dbFile = path.join(root, "tracking.db");
+  const row = sqliteJson(dbFile, `
+SELECT status, sent_at AS sentAt, failure_type AS failureType, next_retry_at AS nextRetryAt
+FROM mixed_meeting_dispatches
+WHERE dispatch_id='${dispatch.dispatchId}';`)[0];
+  assert.equal(row.status, "queued");
+  assert.equal(row.sentAt, null);
+  assert.equal(row.failureType, "runtime_profile_hibernated");
+  assert.ok(row.nextRetryAt);
+  assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}'`), 0);
+
+  sqliteExec(dbFile, `UPDATE mixed_meeting_dispatches SET created_at='2000-01-01T00:00:00.000Z' WHERE dispatch_id='${dispatch.dispatchId}';`);
+  const readiness = await runAction(root, {
+    action: "workflow.readiness",
+    stabilityProfileModesPath: modesPath
+  });
+  assert.equal(Number(readiness.planes.orchestration.dispatch.stale_queued || 0), 0);
+  assert.equal(readiness.findings.some((finding) => finding.key === "runtime_profile_mode_deferred_dispatches"), false);
+}
+
+async function testHermersProfileModeMalformedFileReadiness() {
+  const root = await tempRoot("profile-mode-malformed");
+  const modesPath = path.join(root, "bad-profile-modes.json");
+  await fs.writeFile(modesPath, "{not-json", "utf8");
+  const readiness = await runAction(root, {
+    action: "workflow.readiness",
+    stabilityProfileModesPath: modesPath
+  });
+  assert.equal(readiness.planes.runtime.hermersProfileModes.ok, false);
+  assert.equal(readiness.planes.runtime.hermersProfileModes.unavailable, false);
+  assert.ok(readiness.findings.some((finding) => finding.key === "hermers_profile_modes_unreadable"));
+}
+
 try {
   requireSqliteCli();
   const tests = [
@@ -1309,7 +1437,10 @@ try {
     ["expired human_gate blocked", testExpiredHumanGateBlocked],
     ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],
     ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],
-    ["readiness gateway degraded", testReadinessGatewayDegraded]
+    ["readiness gateway degraded", testReadinessGatewayDegraded],
+    ["hermers profile mode readiness/registry", testHermersProfileModeReadinessAndRegistry],
+    ["hermers profile mode defers drain before claim", testHermersProfileModeDefersDrainBeforeClaim],
+    ["hermers profile mode malformed file readiness", testHermersProfileModeMalformedFileReadiness]
   ];
 
   for (const [name, fn] of tests) {

@@ -8,7 +8,7 @@ function usage() {
   trading-agents-workflow status [--root DIR | --workflow-root DIR]
   All commands accept --root DIR or --workflow-root DIR. If both are provided, they must point to the same directory.
   trading-agents-workflow workflow-status [--asset TYPE --symbol SYMBOL] [--root DIR]
-  trading-agents-workflow workflow-readiness [--active-checks] [--root DIR]
+  trading-agents-workflow workflow-readiness [--active-checks] [--stability-profile-modes-path PATH] [--root DIR]
   trading-agents-workflow workflow-topology [--root DIR]
   trading-agents-workflow workflow-run --workflow ID [--objective TEXT] [--acceptance-criteria TEXT] [--stop-condition TEXT] [--phase PHASE] [--flash-lane true|false] [--root DIR]
   trading-agents-workflow workflow-swarm --workflow ID --objective TEXT [--target TEXT] [--worker runtime:agent] [--reducer runtime:agent] [--fanout-limit N] [--root DIR]
@@ -37,7 +37,7 @@ function usage() {
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
   trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--return-policy POLICY] [--source-channel CHANNEL] [--account-id ACCOUNT] [--chat-id ID] [--sender-id ID] [--source-message-id ID] [--root DIR]
   trading-agents-workflow meeting-ingest --meeting ID --runtime RUNTIME --agent AGENT --text TEXT [--type TYPE] [--phase PHASE] [--root DIR]
-  trading-agents-workflow runtime-bridge [--runtime openclaw|hermers|openclaw_route_shell] [--dispatch ID] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--openclaw-bin PATH] [--dry-run] [--report-delivery false] [--root DIR]
+  trading-agents-workflow runtime-bridge [--runtime openclaw|hermers|openclaw_route_shell] [--dispatch ID] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--stability-profile-modes-path PATH] [--cold-profile-defer-seconds N] [--hibernate-profile-defer-seconds N] [--allow-hibernated-profiles true|false] [--openclaw-bin PATH] [--dry-run] [--report-delivery false] [--root DIR]
   trading-agents-workflow dispatch-reconcile [--limit N] [--stale-after-ms N] [--timeout-seconds N] [--root DIR]
   trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--button JSON_OR_LABEL] [--from AGENT] [--target CHAT_ID] [--channel CHANNEL_ID] [--deliver true|false] [--root DIR]
   trading-agents-workflow human-gate-inbox [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
@@ -137,7 +137,7 @@ function toAction({ command, positional, options }) {
     case "workflow-status":
       return { root, input: { action: "workflow.status", assetType: options.asset, symbol: options.symbol } };
     case "workflow-readiness":
-      return { root, input: { action: "workflow.readiness", activeChecks: options["active-checks"] === "true" } };
+      return { root, input: { action: "workflow.readiness", activeChecks: options["active-checks"] === "true", stabilityProfileModesPath: options["stability-profile-modes-path"] || options["hermers-profile-modes-path"] } };
     case "workflow-topology":
       return { root, input: { action: "workflow.topology" } };
     case "workflow-run":
@@ -489,7 +489,7 @@ function toAction({ command, positional, options }) {
     case "meeting-ingest":
       return { root, input: { action: "meeting.ingest", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, text: options.text, messageType: options.type, phase: options.phase } };
     case "runtime-bridge":
-      return { root, input: { action: "runtime.bridge.drain", runtime: options.runtime, dispatchId: options.dispatch || options["dispatch-id"], limit: options.limit, timeoutSeconds: options["timeout-seconds"], sessionMode: options["session-mode"], acpBackend: options["acp-backend"], acpAgent: options["acp-agent"], sessionKey: options["session-key"], dryRun: options["dry-run"] === "true", hermesBin: options["hermes-bin"], openclawBin: options["openclaw-bin"], reportDelivery: options["report-delivery"] } };
+      return { root, input: { action: "runtime.bridge.drain", runtime: options.runtime, dispatchId: options.dispatch || options["dispatch-id"], limit: options.limit, timeoutSeconds: options["timeout-seconds"], sessionMode: options["session-mode"], acpBackend: options["acp-backend"], acpAgent: options["acp-agent"], sessionKey: options["session-key"], dryRun: options["dry-run"] === "true", hermesBin: options["hermes-bin"], openclawBin: options["openclaw-bin"], reportDelivery: options["report-delivery"], stabilityProfileModesPath: options["stability-profile-modes-path"] || options["hermers-profile-modes-path"], coldProfileDeferSeconds: options["cold-profile-defer-seconds"], hibernateProfileDeferSeconds: options["hibernate-profile-defer-seconds"], allowHibernatedProfiles: options["allow-hibernated-profiles"] === "true" } };
     case "dispatch-reconcile":
       return { root, input: { action: "workflow.dispatch.reconcile", limit: options.limit, staleDispatchAfterMs: options["stale-after-ms"], timeoutSeconds: options["timeout-seconds"] } };
     case "message-flow-send":

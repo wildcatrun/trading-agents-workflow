@@ -69,6 +69,8 @@ const DEFAULT_WORKFLOW_RETENTION_INTERVAL_MS = 60 * 60_000;
 const HUMAN_GATE_TEXT_POLICY_VERSION = "human_gate_chinese_feedback_style_v1";
 const HUMAN_GATE_WEB_APP_ROUTE_PATH = "/plugins/trading-agents-workflow/human-gate";
 const ROUTE_SHELL_TARGET_PLATFORM_ORDER = ["hermers", "openclaw", "other"];
+const DEFAULT_HERMERS_PROFILE_MODES_PATH = "/home/flashcat/.openclaw/stability/hermers-profile-modes.json";
+const COLD_PROFILE_ALLOWED_PRIORITIES = new Set(["flash", "steer", "high"]);
 const TELEGRAM_BUTTON_STYLES = new Set(["danger", "success", "primary"]);
 const HUMAN_GATE_PLAN_STYLE = "success";
 const HUMAN_GATE_CONTROL_STYLES = {
@@ -2528,7 +2530,7 @@ SELECT
   SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued,
   SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent,
   SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
-  SUM(CASE WHEN status='queued' AND created_at < ${sqlValue(new Date(Date.now() - 15 * 60000).toISOString())} THEN 1 ELSE 0 END) AS stale_queued,
+  SUM(CASE WHEN status='queued' AND created_at < ${sqlValue(new Date(Date.now() - 15 * 60000).toISOString())} AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(checkedAt)}) THEN 1 ELSE 0 END) AS stale_queued,
   SUM(CASE WHEN status='sent' AND updated_at < ${sqlValue(new Date(Date.now() - 30 * 60000).toISOString())} THEN 1 ELSE 0 END) AS stale_sent
 FROM mixed_meeting_dispatches;`, { json: true });
   const runtimeRows = await sqlite(paths.dbFile, `
@@ -2576,6 +2578,14 @@ SELECT
   SUM(CASE WHEN final_output_present=1 AND status='telegram_sent' AND delivery_receipt_present=0 THEN 1 ELSE 0 END) AS sent_without_receipt,
   COUNT(*) AS total
 FROM message_flows;`, { json: true });
+  const hermersModes = await loadHermersProfileModes(input);
+  const queuedHermersRows = hermersModes.ok ? await sqlite(paths.dbFile, `
+SELECT d.*, a.endpoint_ref, a.platform, a.execution_adapter, a.workflow_ingress_adapter
+FROM mixed_meeting_dispatches d
+LEFT JOIN runtime_agents a ON a.agent_key=d.agent_key
+WHERE d.status='queued' AND d.runtime='hermers'
+  AND (d.next_retry_at IS NULL OR d.next_retry_at='' OR d.next_retry_at <= ${sqlValue(checkedAt)})
+LIMIT 200;`, { json: true }) : [];
   const dispatch = dispatchRows[0] || {};
   const outbox = outboxRows[0] || {};
   const humanGate = humanGateRows[0] || {};
@@ -2593,12 +2603,24 @@ FROM message_flows;`, { json: true });
   if (Number(staleStartedRuntime.count || 0) > 0) findings.push({ severity: "warning", key: "stale_started_runtime_runs", count: Number(staleStartedRuntime.count || 0), plane: "runtime" });
   if (Number(messageFlowIntegrity.failed_output_marked_sent || 0) > 0) findings.push({ severity: "critical", key: "message_flow_failed_output_marked_sent", count: Number(messageFlowIntegrity.failed_output_marked_sent || 0), plane: "communication" });
   if (Number(messageFlowIntegrity.sent_without_receipt || 0) > 0) findings.push({ severity: "critical", key: "message_flow_sent_without_receipt", count: Number(messageFlowIntegrity.sent_without_receipt || 0), plane: "communication" });
+  if (!hermersModes.ok && !hermersModes.unavailable) findings.push({ severity: "warning", key: "hermers_profile_modes_unreadable", plane: "runtime", path: hermersModes.path, error: hermersModes.error });
+  const profileAdmissionBlocks = queuedHermersRows
+    .map((row) => classifyHermersProfileAdmission(row, hermersModes, input))
+    .filter((admission) => !admission.allowed);
+  if (profileAdmissionBlocks.length > 0) {
+    const byMode = profileAdmissionBlocks.reduce((acc, item) => {
+      const key = item.targetMode || "unknown";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    findings.push({ severity: "warning", key: "runtime_profile_mode_deferred_dispatches", count: profileAdmissionBlocks.length, byMode, plane: "runtime" });
+  }
   const activeChecks = Boolean(input.activeChecks || input.active_checks);
   const active = activeChecks ? await activeReadinessChecks(paths, input, findings) : null;
   const planes = {
     control: active ? { openclawGateway: active.openclawGateway } : {},
     orchestration: { dispatch },
-    runtime: { runtimes: runtimeRows, recentRuntime, staleStartedRuntime, hermersProfiles: active?.hermersProfiles || [], acpBackend: active?.acpBackend || null },
+    runtime: { runtimes: runtimeRows, recentRuntime, staleStartedRuntime, hermersProfiles: active?.hermersProfiles || [], hermersProfileModes: profileModesReadinessPayload(hermersModes), acpBackend: active?.acpBackend || null },
     communication: { telegramOutbox: outbox, messageFlowIntegrity },
     data: { trackingFreshness: dataFreshness },
     humanGate: humanGate
@@ -4042,6 +4064,7 @@ export async function workflowTopology(rootDir, input = {}) {
 SELECT runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, endpoint_ref
 FROM runtime_agents
 ORDER BY platform, agent_id;`, { json: true });
+  const hermersModes = await loadHermersProfileModes(input);
   const activeAgentIds = [
     ...new Set(
       registeredAgents
@@ -4053,6 +4076,7 @@ ORDER BY platform, agent_id;`, { json: true });
   const runtimeRegistry = registeredAgents.reduce((acc, row) => {
     const snap = registrySnapshot(row);
     if (!acc[snap.platform]) acc[snap.platform] = [];
+    const profileModeEvidence = snap.platform === "hermers" ? profileModeEvidenceForRow(row, hermersModes) : {};
     acc[snap.platform].push({
       agentId: row.agent_id,
       displayName: row.display_name,
@@ -4069,7 +4093,8 @@ ORDER BY platform, agent_id;`, { json: true });
       canReceiveDispatch: snap.canReceiveDispatch,
       canStartWorkflow: snap.canStartWorkflow,
       gatewayProxyAllowed: snap.gatewayProxyAllowed,
-      endpointRef: row.endpoint_ref
+      endpointRef: row.endpoint_ref,
+      ...profileModeEvidence
     });
     return acc;
   }, {});
@@ -7533,6 +7558,228 @@ function hermesProfileFromEndpoint(endpointRef, agentId) {
   return String(agentId || "").replace(/_/g, "").trim();
 }
 
+function hermersProfileModesPath(input = {}) {
+  const value = firstText(
+    input.hermersProfileModesPath,
+    input.hermers_profile_modes_path,
+    input.stabilityProfileModesPath,
+    input.stability_profile_modes_path,
+    process.env.TRADING_AGENTS_WORKFLOW_PROFILE_MODES_PATH,
+    process.env.CAT_AGENTS_STABILITY_PROFILE_MODES_PATH,
+    process.env.OPENCLAW_STABILITY_PROFILE_MODES_PATH,
+    DEFAULT_HERMERS_PROFILE_MODES_PATH
+  );
+  return resolveHome(value);
+}
+
+async function loadHermersProfileModes(input = {}) {
+  const filePath = hermersProfileModesPath(input);
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("profile modes payload must be a JSON object");
+    if (parsed.profiles !== undefined && (!parsed.profiles || typeof parsed.profiles !== "object" || Array.isArray(parsed.profiles))) {
+      throw new Error("profile modes payload profiles must be an object");
+    }
+    const profiles = parsed.profiles || {};
+    return {
+      ok: true,
+      path: filePath,
+      updatedAt: parsed.updatedAt || parsed.updated_at || parsed.generatedAt || parsed.generated_at || "",
+      profiles,
+      raw: parsed
+    };
+  } catch (error) {
+    const code = error && typeof error === "object" ? error.code : "";
+    return {
+      ok: false,
+      unavailable: code === "ENOENT",
+      path: filePath,
+      profiles: {},
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+function hermersProfileModeForRow(row, modes = {}) {
+  const profile = hermesProfileFromEndpoint(row.endpoint_ref, row.agent_id);
+  const profiles = modes?.profiles || {};
+  const entry = profile ? (profiles[profile] || profiles[profile.replace(/_/g, "")] || null) : null;
+  const targetMode = String(entry?.targetMode || entry?.target_mode || entry?.mode || "").trim().toLowerCase();
+  return {
+    profile,
+    entry,
+    targetMode,
+    expectedActive: entry?.expectedActive ?? entry?.expected_active ?? null,
+    managed: entry?.managed ?? null,
+    protected: entry?.protected ?? null,
+    activeWork: entry?.activeWork ?? entry?.active_work ?? null,
+    reason: entry?.reason || entry?.lastReason || entry?.last_reason || ""
+  };
+}
+
+function profileModeEvidenceForRow(row, modes = {}) {
+  const data = hermersProfileModeForRow(row, modes);
+  if (!data.profile && !data.entry && !data.targetMode) return {};
+  return {
+    profile: data.profile,
+    profileMode: data.targetMode || "",
+    profileExpectedActive: data.expectedActive,
+    profileManaged: data.managed,
+    profileProtected: data.protected,
+    profileActiveWork: data.activeWork,
+    profileAdmissionReason: data.reason
+  };
+}
+
+function profileModesReadinessPayload(modes = {}) {
+  const profiles = Object.fromEntries(Object.entries(modes.profiles || {}).map(([profile, entry]) => [profile, {
+    targetMode: entry?.targetMode || entry?.target_mode || entry?.mode || "",
+    expectedActive: entry?.expectedActive ?? entry?.expected_active ?? null,
+    managed: entry?.managed ?? null,
+    protected: entry?.protected ?? null,
+    activeWork: entry?.activeWork ?? entry?.active_work ?? null,
+    reason: entry?.reason || entry?.lastReason || entry?.last_reason || ""
+  }]));
+  return {
+    ok: Boolean(modes.ok),
+    unavailable: Boolean(modes.unavailable),
+    path: modes.path || "",
+    updatedAt: modes.updatedAt || "",
+    profileCount: Object.keys(profiles).length,
+    profiles,
+    error: modes.ok ? "" : (modes.error || "")
+  };
+}
+
+function classifyHermersProfileAdmission(row, modes = {}, input = {}) {
+  const mode = hermersProfileModeForRow(row, modes);
+  const targetMode = mode.targetMode;
+  const payload = parseJsonValue(row.payload_json, {});
+  const dispatchType = row.dispatch_type || payload.dispatchType || payload.dispatch_type || "";
+  const priority = String(row.priority || payload.priority || "normal").trim().toLowerCase();
+  const humanGateContext = isHumanGateDispatchContext(row, payload, dispatchType);
+  const allowHibernate = boolOption(input.allowHibernatedProfiles ?? input.allow_hibernated_profiles ?? input.allowHibernateWake ?? input.allow_hibernate_wake, false);
+  if (!modes?.ok || !targetMode || targetMode === "hot" || targetMode === "warm") {
+    return { allowed: true, action: "allow", ...mode, priority, dispatchType, humanGateContext };
+  }
+  if (targetMode === "cold") {
+    if (COLD_PROFILE_ALLOWED_PRIORITIES.has(priority) || humanGateContext) {
+      return { allowed: true, action: "allow_cold_priority", ...mode, priority, dispatchType, humanGateContext };
+    }
+    return {
+      allowed: false,
+      action: "defer",
+      deferSeconds: Math.max(30, Math.min(3600, Number(input.coldProfileDeferSeconds || input.cold_profile_defer_seconds || 120))),
+      failureType: "runtime_profile_cold",
+      ...mode,
+      reason: mode.reason || `profile ${mode.profile || row.agent_id} is cold`,
+      priority,
+      dispatchType,
+      humanGateContext
+    };
+  }
+  if (targetMode === "hibernate") {
+    if (allowHibernate) {
+      return { allowed: true, action: "allow_hibernate_override", ...mode, priority, dispatchType, humanGateContext };
+    }
+    return {
+      allowed: false,
+      action: "defer",
+      deferSeconds: Math.max(60, Math.min(8 * 3600, Number(input.hibernateProfileDeferSeconds || input.hibernate_profile_defer_seconds || 600))),
+      failureType: "runtime_profile_hibernated",
+      ...mode,
+      reason: mode.reason || `profile ${mode.profile || row.agent_id} is hibernated`,
+      priority,
+      dispatchType,
+      humanGateContext
+    };
+  }
+  return { allowed: true, action: "allow_unknown_mode", ...mode, priority, dispatchType, humanGateContext };
+}
+
+async function deferRuntimeDispatchForProfileMode(paths, row, admission, input = {}) {
+  const deferredAt = nowIso();
+  const nextRetryAtValue = new Date(Date.now() + Number(admission.deferSeconds || 300) * 1000).toISOString();
+  const attempt = Number(row.attempt || 0) || 0;
+  const currentPayload = parseJsonValue(row.payload_json, {});
+  const bridge = {
+    ...(currentPayload.bridge || {}),
+    adapter: "profile_mode_admission",
+    profile: admission.profile,
+    profileMode: admission.targetMode,
+    failureType: admission.failureType,
+    error: admission.reason,
+    nextRetryAt: nextRetryAtValue,
+    deferredAt,
+    admission: {
+      action: admission.action,
+      priority: admission.priority,
+      dispatchType: admission.dispatchType,
+      humanGateContext: admission.humanGateContext,
+      expectedActive: admission.expectedActive,
+      managed: admission.managed,
+      protected: admission.protected,
+      activeWork: admission.activeWork
+    },
+    updatedAt: deferredAt
+  };
+  const payload = { ...currentPayload, bridge };
+  const changed = await sqlite(paths.dbFile, `
+UPDATE mixed_meeting_dispatches
+SET status='queued',
+    sent_at=NULL,
+    acked_at=NULL,
+    completed_at=NULL,
+    failure_type=${sqlValue(admission.failureType)},
+    last_error=${sqlValue(String(admission.reason || "").slice(0, 2000))},
+    next_retry_at=${sqlValue(nextRetryAtValue)},
+    payload_json=${sqlValue(JSON.stringify(payload))},
+    updated_at=${sqlValue(deferredAt)}
+WHERE dispatch_id=${sqlValue(row.dispatch_id)}
+  AND status='queued'
+  AND attempt=${sqlValue(attempt)}
+  AND COALESCE(updated_at,'')=${sqlValue(row.updated_at || "")}
+  AND COALESCE(next_retry_at,'')=${sqlValue(row.next_retry_at || "")};
+SELECT changes() AS changed;`, { json: true });
+  if (Number(changed?.[0]?.changed || 0) !== 1) {
+    const rows = await sqlite(paths.dbFile, `SELECT status FROM mixed_meeting_dispatches WHERE dispatch_id=${sqlValue(row.dispatch_id)} LIMIT 1;`, { json: true });
+    return {
+      dispatchId: row.dispatch_id,
+      runtime: row.runtime,
+      agentId: row.agent_id,
+      status: "skipped",
+      reason: "not_deferred",
+      currentStatus: rows[0]?.status || ""
+    };
+  }
+  await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
+    ts: deferredAt,
+    event: "runtime_dispatch_deferred",
+    dispatchId: row.dispatch_id,
+    meetingId: row.meeting_id,
+    runtime: row.runtime,
+    agentId: row.agent_id,
+    adapter: "profile_mode_admission",
+    profile: admission.profile,
+    profileMode: admission.targetMode,
+    failureType: admission.failureType,
+    reason: admission.reason,
+    nextRetryAt: nextRetryAtValue,
+    owner: firstText(input.owner, input.from, "workflow")
+  });
+  return {
+    dispatchId: row.dispatch_id,
+    runtime: row.runtime,
+    agentId: row.agent_id,
+    status: "deferred",
+    reason: admission.failureType,
+    profile: admission.profile,
+    profileMode: admission.targetMode,
+    nextRetryAt: nextRetryAtValue
+  };
+}
+
 function isHumanGateDispatchContext(row, payload, dispatchType) {
   const flagCandidates = [
     row.human_gate_required,
@@ -8474,6 +8721,7 @@ export async function runtimeBridgeDrain(rootDir, input = {}) {
   const dryRun = Boolean(input.dryRun || input.dry_run);
   const dispatchId = String(input.dispatchId || input.dispatch_id || "").trim();
   const dispatchFilter = dispatchId ? `AND d.dispatch_id=${sqlValue(dispatchId)}` : "";
+  const hermersModes = runtime === "hermers" ? await loadHermersProfileModes(input) : null;
   const rows = await sqlite(paths.dbFile, `
 SELECT d.*, a.display_name, a.role, a.endpoint_ref, a.platform, a.execution_adapter, a.im_ingress_owner, a.im_ingress_adapter, a.workflow_ingress_adapter
 FROM mixed_meeting_dispatches d
@@ -8485,9 +8733,19 @@ ORDER BY
   CASE d.priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
   d.created_at
 LIMIT ${limit};`, { json: true });
-  if (dryRun) return { runtime, dryRun: true, count: rows.length, dispatches: rows.map((row) => ({ dispatchId: row.dispatch_id, meetingId: row.meeting_id, workflowId: row.workflow_id, traceId: row.trace_id, agentId: row.agent_id, attempt: row.attempt, maxAttempts: row.max_attempts, endpointRef: row.endpoint_ref })) };
+  if (dryRun) return { runtime, dryRun: true, count: rows.length, profileModes: hermersModes ? profileModesReadinessPayload(hermersModes) : null, dispatches: rows.map((row) => {
+    const admission = runtime === "hermers" ? classifyHermersProfileAdmission(row, hermersModes, input) : { allowed: true, action: "allow" };
+    return { dispatchId: row.dispatch_id, meetingId: row.meeting_id, workflowId: row.workflow_id, traceId: row.trace_id, agentId: row.agent_id, attempt: row.attempt, maxAttempts: row.max_attempts, endpointRef: row.endpoint_ref, admission };
+  }) };
   const results = [];
   for (const row of rows) {
+    if (runtime === "hermers") {
+      const admission = classifyHermersProfileAdmission(row, hermersModes, input);
+      if (!admission.allowed) {
+        results.push(await deferRuntimeDispatchForProfileMode(paths, row, admission, input));
+        continue;
+      }
+    }
     const claim = await claimQueuedDispatch(paths, row, input);
     if (!claim.claimed) {
       results.push({ dispatchId: row.dispatch_id, runtime, agentId: row.agent_id, status: "skipped", reason: claim.reason, currentStatus: claim.row?.status || "" });

@@ -93,6 +93,7 @@ Hermers ACP dispatch.
 - `docs/governance-records.md` - policy for recording workflow incidents, fixes, delivery failures, and Human Gate packages inside this plugin.
 - `docs/agent-registry-routing.md` - routing contract for platform, adapter, IM ingress, workflow ingress, and route-shell behavior.
 - `docs/companion-stability-plugin.md` - boundary contract with `cat-agents-stability`.
+- `docs/runtime-profile-modes.md` - development notes for stabilityd profile-mode evidence, workflow admission, readiness, and resource-pressure behavior.
 - `docs/workflow-session-store.md` - development notes for session packs, session runs, worker input, CLI, invariants, and roadmap.
 - `docs/tracking-schema.sql` - schema export for `tracking.db`.
 - `scripts/trading_agents_workflow_mcp.py` - local Codex MCP server.
