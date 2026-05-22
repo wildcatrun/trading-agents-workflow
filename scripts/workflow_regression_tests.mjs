@@ -353,6 +353,77 @@ SELECT COUNT(*) AS count
 FROM message_flow_events
 WHERE event_type='state_regression_blocked';`)[0];
   assert.ok(blocked.count >= 1);
+
+  const failedNotice = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "message_flow failure notice regression body",
+    workflowId: "workflow-message-flow-failed-notice",
+    meetingId: "meeting-message-flow-failed-notice",
+    returnPolicy: "report_to_flashcat"
+  });
+  const failedNoticeDispatchId = failedNotice.dispatches[0].dispatchId;
+  const failedNoticeDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: failedNoticeDispatchId,
+    openclawBin: failBin,
+    reportDelivery: false,
+    deliverMessageFlowOutbox: false
+  });
+  assert.equal(failedNoticeDrain.results?.[0]?.status, "failed");
+  const failedNoticeFlow = sqliteJson(dbFile, `
+SELECT status, final_output_present AS finalOutputPresent, delivery_receipt_present AS deliveryReceiptPresent, outbox_id AS outboxId
+FROM message_flows
+WHERE dispatch_id='${failedNoticeDispatchId}'
+LIMIT 1;`)[0];
+  assert.equal(failedNoticeFlow.status, "runtime_failed");
+  assert.equal(failedNoticeFlow.finalOutputPresent, 0);
+  assert.equal(failedNoticeFlow.deliveryReceiptPresent, 0);
+  assert.ok(failedNoticeFlow.outboxId);
+
+  await runAction(root, {
+    action: "telegram.outbox",
+    operation: "mark",
+    outboxId: failedNoticeFlow.outboxId,
+    status: "sent"
+  });
+  const failedNoticeAfterDelivery = sqliteJson(dbFile, `
+SELECT status, final_output_present AS finalOutputPresent, delivery_receipt_present AS deliveryReceiptPresent
+FROM message_flows
+WHERE dispatch_id='${failedNoticeDispatchId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(failedNoticeAfterDelivery, {
+    status: "runtime_failed",
+    finalOutputPresent: 0,
+    deliveryReceiptPresent: 1
+  });
+  const readiness = await runAction(root, { action: "workflow.status" });
+  const findingKeys = readiness.readiness.findings.map((finding) => finding.key);
+  assert.equal(findingKeys.includes("message_flow_failed_output_marked_sent"), false);
+}
+
+async function testTradeIntentFailClosed() {
+  const root = await tempRoot("trade-intent");
+  const intent = await runAction(root, {
+    action: "trade.intent",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    side: "buy",
+    quantity: "0",
+    orderType: "limit",
+    actor: "flashcat",
+    assurance: "mtls",
+    clientCertFingerprint: "test-cert"
+  });
+  assert.equal(intent.status, "rejected");
+  assert.ok(intent.rejectionReasons.includes("missing_idempotency_key"));
+  assert.ok(intent.rejectionReasons.includes("invalid_trade_quantity"));
+  assert.ok(intent.rejectionReasons.includes("missing_or_expired_intent_expiry"));
+  assert.ok(intent.rejectionReasons.includes("missing_price_constraints"));
+  assert.ok(intent.rejectionReasons.includes("missing_risk_limits"));
 }
 
 try {
@@ -361,7 +432,8 @@ try {
     ["human_gate language/resume", testHumanGateLanguageAndResume],
     ["human_gate pending cleanup/retry", testHumanGatePendingCleanupAndRetryRedaction],
     ["schedule resume semantics", testScheduleResumeSemantics],
-    ["message_flow runtime bridge", testMessageFlowRuntimeBridge]
+    ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
+    ["trade_intent fail-closed", testTradeIntentFailClosed]
   ];
 
   for (const [name, fn] of tests) {

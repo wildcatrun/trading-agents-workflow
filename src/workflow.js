@@ -2157,6 +2157,19 @@ ORDER BY agent_id;`, { json: true });
   checks.hermersProfiles = [];
   for (const row of hermersRows) {
     const profile = hermesProfileFromEndpoint(row.endpoint_ref, row.agent_id);
+    if (!profile || profile.includes(":") || !/^[a-zA-Z0-9_-]+$/.test(profile)) {
+      const result = {
+        agentId: row.agent_id,
+        profile,
+        ok: false,
+        checkedAt: nowIso(),
+        skipped: true,
+        error: "invalid Hermers profile resolved from runtime_agents registry"
+      };
+      checks.hermersProfiles.push(result);
+      findings.push({ severity: "warning", key: "hermers_registry_profile_invalid", plane: "runtime", agentId: row.agent_id, profile, endpointRef: row.endpoint_ref || "", error: result.error });
+      continue;
+    }
     const result = await commandProbe(hermesBin, ["-p", profile, "acp", "--check"], {
       cwd: "/home/flashcat/hermes-agent",
       timeoutMs: 20000,
@@ -2168,12 +2181,20 @@ ORDER BY agent_id;`, { json: true });
   }
 
   const backendId = String(input.acpBackend || input.acp_backend || process.env.TRADING_AGENTS_ACP_BACKEND || "acpx").trim();
+  let acpBackendCleanup = async () => {};
   try {
-    await resolveAcpBackend(backendId);
-    checks.acpBackend = { ok: true, backend: backendId, checkedAt: nowIso() };
+    const resolvedBackend = await resolveAcpBackend(backendId, input, paths);
+    acpBackendCleanup = resolvedBackend.cleanup || acpBackendCleanup;
+    checks.acpBackend = { ok: true, backend: backendId, source: resolvedBackend.source || "", checkedAt: nowIso() };
   } catch (error) {
     checks.acpBackend = { ok: false, backend: backendId, checkedAt: nowIso(), error: error instanceof Error ? error.message : String(error) };
     findings.push({ severity: "warning", key: "acp_backend_unavailable", plane: "runtime", backend: backendId, error: checks.acpBackend.error });
+  } finally {
+    try {
+      await acpBackendCleanup();
+    } catch (error) {
+      findings.push({ severity: "warning", key: "acp_backend_cleanup_failed", plane: "runtime", backend: backendId, error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   return checks;
@@ -2219,11 +2240,18 @@ SELECT
   COUNT(*) AS total
 FROM runtime_runs
 WHERE started_at >= ${sqlValue(new Date(Date.now() - 6 * 3600000).toISOString())};`, { json: true });
+  const messageFlowIntegrityRows = await sqlite(paths.dbFile, `
+SELECT
+  SUM(CASE WHEN final_output_present=0 AND status='telegram_sent' THEN 1 ELSE 0 END) AS failed_output_marked_sent,
+  SUM(CASE WHEN final_output_present=1 AND status='telegram_sent' AND delivery_receipt_present=0 THEN 1 ELSE 0 END) AS sent_without_receipt,
+  COUNT(*) AS total
+FROM message_flows;`, { json: true });
   const dispatch = dispatchRows[0] || {};
   const outbox = outboxRows[0] || {};
   const humanGate = humanGateRows[0] || {};
   const dataFreshness = dataFreshnessRows[0] || {};
   const recentRuntime = recentRuntimeRows[0] || {};
+  const messageFlowIntegrity = messageFlowIntegrityRows[0] || {};
   const findings = [];
   if (Number(dispatch.stale_sent || 0) > 0) findings.push({ severity: "critical", key: "stale_sent_dispatches", count: Number(dispatch.stale_sent || 0), plane: "orchestration" });
   if (Number(dispatch.stale_queued || 0) > 0) findings.push({ severity: "warning", key: "stale_queued_dispatches", count: Number(dispatch.stale_queued || 0), plane: "orchestration" });
@@ -2231,13 +2259,15 @@ WHERE started_at >= ${sqlValue(new Date(Date.now() - 6 * 3600000).toISOString())
   if (Number(humanGate.stale || 0) > 0) findings.push({ severity: "warning", key: "stale_human_gate", count: Number(humanGate.stale || 0), plane: "orchestration" });
   if (Number(dataFreshness.stale || 0) > 0) findings.push({ severity: "warning", key: "stale_tracking_data", count: Number(dataFreshness.stale || 0), plane: "data" });
   if (Number(recentRuntime.failed || 0) > 0) findings.push({ severity: "warning", key: "recent_runtime_failures", count: Number(recentRuntime.failed || 0), plane: "runtime" });
+  if (Number(messageFlowIntegrity.failed_output_marked_sent || 0) > 0) findings.push({ severity: "critical", key: "message_flow_failed_output_marked_sent", count: Number(messageFlowIntegrity.failed_output_marked_sent || 0), plane: "communication" });
+  if (Number(messageFlowIntegrity.sent_without_receipt || 0) > 0) findings.push({ severity: "critical", key: "message_flow_sent_without_receipt", count: Number(messageFlowIntegrity.sent_without_receipt || 0), plane: "communication" });
   const activeChecks = Boolean(input.activeChecks || input.active_checks);
   const active = activeChecks ? await activeReadinessChecks(paths, input, findings) : null;
   const planes = {
     control: active ? { openclawGateway: active.openclawGateway } : {},
     orchestration: { dispatch },
     runtime: { runtimes: runtimeRows, recentRuntime, hermersProfiles: active?.hermersProfiles || [], acpBackend: active?.acpBackend || null },
-    communication: { telegramOutbox: outbox },
+    communication: { telegramOutbox: outbox, messageFlowIntegrity },
     data: { trackingFreshness: dataFreshness },
     humanGate: humanGate
   };
@@ -5526,12 +5556,23 @@ async function enqueueMessageFlowOutbound(paths, flow, text, input = {}, extraPa
         flowDeliveryRequired: true
       }
     });
-    await updateMessageFlow(paths, flow.flow_id, "outbound_queued", { outboxId, payload: { outboxId, targetRef: target.targetRef, account: target.account } });
+    const flowFailedWithoutOutput = Number(flow.final_output_present || 0) === 0
+      && String(flow.status || "") === "runtime_failed"
+      && (extraPayload.finalOutputPresent === false || extraPayload.final_output_present === false);
+    await updateMessageFlow(paths, flow.flow_id, flowFailedWithoutOutput ? "runtime_failed" : "outbound_queued", { outboxId, payload: { outboxId, targetRef: target.targetRef, account: target.account } });
     rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`, { json: true });
   }
   const row = rows[0];
   if (!row) return { status: "missing_outbox", outboxId };
-  if (row.status === "sent") return updateMessageFlow(paths, flow.flow_id, "telegram_sent", { outboxId, deliveryReceiptPresent: true });
+  if (row.status === "sent") {
+    return updateMessageFlowFromTelegramDelivery(paths, row, {
+      outboxId,
+      status: "sent",
+      account: target.account,
+      target: target.targetRef,
+      alreadySent: true
+    });
+  }
   const deliverNow = boolOption(input.autoDeliverMessageFlowOutbox ?? input.auto_deliver_message_flow_outbox ?? input.deliverMessageFlowOutbox ?? input.deliver_message_flow_outbox, true);
   if (!deliverNow || row.status !== "queued") return { status: row.status, outboxId, queued: true };
   return deliverTelegramOutboxRow(paths, row, { ...input, account: target.account, target: target.targetRef });
@@ -5541,14 +5582,18 @@ async function updateMessageFlowFromTelegramDelivery(paths, row, result = {}) {
   const payload = parseJsonValue(row.payload_json, {});
   const flowId = String(payload.messageFlowId || payload.message_flow_id || "").trim();
   if (!flowId) return null;
-  const status = result.status === "sent" ? "telegram_sent" : "telegram_failed";
+  const flow = await readMessageFlow(paths, flowId);
+  const hasFinalOutput = Number(flow?.final_output_present || 0) === 1;
+  const status = result.status === "sent"
+    ? (hasFinalOutput ? "telegram_sent" : "runtime_failed")
+    : (hasFinalOutput ? "telegram_failed" : "runtime_failed");
   const messageId = String(payload.messageId || payload.message_id || "").trim();
   if (messageId) {
     await sqlite(paths.dbFile, `UPDATE mixed_meeting_messages SET telegram_live_status=${sqlValue(status === "telegram_sent" ? "sent" : "failed")} WHERE message_id=${sqlValue(messageId)};`);
   }
   return updateMessageFlow(paths, flowId, status, {
     outboxId: row.outbox_id,
-    deliveryReceiptPresent: status === "telegram_sent",
+    deliveryReceiptPresent: result.status === "sent",
     lastError: result.error || "",
     payload: { delivery: result }
   });
@@ -5809,6 +5854,11 @@ export async function tradeIntent(rootDir, input) {
   const assurance = String(input.assurance || input.authAssurance || input.auth_assurance || input.auth?.assurance || "").trim().toLowerCase();
   const sourceSystem = String(input.sourceSystem || input.source_system || input.source || "unknown").trim();
   const clientCertFingerprint = String(input.clientCertFingerprint || input.client_cert_fingerprint || input.cert || "").trim();
+  const quantity = numberOrNull(input.quantity);
+  const expiresAt = String(input.expiresAt || input.expires_at || "").trim();
+  const expiresAtMs = expiresAt ? Date.parse(expiresAt) : NaN;
+  const priceConstraints = parseJsonValue(input.priceConstraints || input.price_constraints, input.priceConstraints || input.price_constraints || {});
+  const riskLimits = parseJsonValue(input.riskLimits || input.risk_limits, input.riskLimits || input.risk_limits || {});
   const proposal = await readProtocolObject(paths, proposalId);
   const risk = await readProtocolObject(paths, riskDecisionId);
   const humanGate = await readProtocolObject(paths, humanGateId);
@@ -5821,6 +5871,11 @@ export async function tradeIntent(rootDir, input) {
   if (!["mtls", "codex_mtls", "local_codex_mtls"].includes(assurance) && sourceSystem !== "codex_mtls") rejectionReasons.push("local_codex_mtls_required");
   if (!clientCertFingerprint) rejectionReasons.push("client_cert_fingerprint_required");
   if (!side) rejectionReasons.push("invalid_trade_side");
+  if (!idempotencyKey) rejectionReasons.push("missing_idempotency_key");
+  if (quantity === null || quantity <= 0) rejectionReasons.push("invalid_trade_quantity");
+  if (!expiresAt || !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) rejectionReasons.push("missing_or_expired_intent_expiry");
+  if (!priceConstraints || typeof priceConstraints !== "object" || Array.isArray(priceConstraints) || !Object.keys(priceConstraints).length) rejectionReasons.push("missing_price_constraints");
+  if (!riskLimits || typeof riskLimits !== "object" || Array.isArray(riskLimits) || !Object.keys(riskLimits).length) rejectionReasons.push("missing_risk_limits");
 
   const status = rejectionReasons.length ? "rejected" : "ready_for_trading_core";
   const createdAt = nowIso();
@@ -5831,7 +5886,7 @@ export async function tradeIntent(rootDir, input) {
     assetType: instrument.assetType,
     symbol: instrument.symbol,
     side,
-    quantity: numberOrNull(input.quantity),
+    quantity,
     orderType,
     proposalId,
     riskDecisionId,
@@ -5840,9 +5895,9 @@ export async function tradeIntent(rootDir, input) {
     actor,
     assurance,
     clientCertFingerprint,
-    priceConstraints: parseJsonValue(input.priceConstraints || input.price_constraints, input.priceConstraints || input.price_constraints || {}),
-    riskLimits: parseJsonValue(input.riskLimits || input.risk_limits, input.riskLimits || input.risk_limits || {}),
-    expiresAt: input.expiresAt || input.expires_at || "",
+    priceConstraints,
+    riskLimits,
+    expiresAt,
     rejectionReasons,
     raw: parseJsonValue(input.payload, input.payload || {})
   };
@@ -5850,7 +5905,7 @@ export async function tradeIntent(rootDir, input) {
   const relPath = await writeJsonArtifact(paths.root, paths.intentsDir, intentId, { ...payload, intentHash });
   await sqlite(paths.dbFile, `
 INSERT INTO executable_trade_intents(intent_id, status, instrument_id, asset_type, symbol, side, quantity, order_type, proposal_id, risk_decision_id, human_gate_id, source_system, actor, assurance, client_cert_fingerprint, idempotency_key, intent_hash, payload_json, rejection_reason, created_at, updated_at)
-VALUES (${sqlValue(intentId)}, ${sqlValue(status)}, ${sqlValue(instrument.instrumentId)}, ${sqlValue(instrument.assetType)}, ${sqlValue(instrument.symbol)}, ${sqlValue(side || sideRaw)}, ${sqlValue(numberOrNull(input.quantity))}, ${sqlValue(orderType)}, ${sqlValue(proposalId)}, ${sqlValue(riskDecisionId)}, ${sqlValue(humanGateId)}, ${sqlValue(sourceSystem)}, ${sqlValue(actor)}, ${sqlValue(assurance)}, ${sqlValue(clientCertFingerprint)}, ${sqlValue(idempotencyKey)}, ${sqlValue(intentHash)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(rejectionReasons.join(","))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
+VALUES (${sqlValue(intentId)}, ${sqlValue(status)}, ${sqlValue(instrument.instrumentId)}, ${sqlValue(instrument.assetType)}, ${sqlValue(instrument.symbol)}, ${sqlValue(side || sideRaw)}, ${sqlValue(quantity)}, ${sqlValue(orderType)}, ${sqlValue(proposalId)}, ${sqlValue(riskDecisionId)}, ${sqlValue(humanGateId)}, ${sqlValue(sourceSystem)}, ${sqlValue(actor)}, ${sqlValue(assurance)}, ${sqlValue(clientCertFingerprint)}, ${sqlValue(idempotencyKey)}, ${sqlValue(intentHash)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(rejectionReasons.join(","))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
   await protocolRecord(rootDir, {
     ...input,
     objectType: "executable_trade_intent",
