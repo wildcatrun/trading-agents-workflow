@@ -1225,8 +1225,11 @@ export async function runAction(rootDir, input = {}) {
     action.startsWith("runtime.") ||
     action.startsWith("route_shell.") ||
     action.startsWith("route-shell.") ||
+    action === "dispatch.reconcile" ||
+    action === "stale_dispatch.reconcile" ||
     action.startsWith("side_effect.") ||
     action.startsWith("incident.") ||
+    action === "context.checkpoint" ||
     action === "telegram.live" ||
     action === "telegram.live.configure" ||
     action === "telegram.outbox" ||
@@ -1243,7 +1246,9 @@ export async function runAction(rootDir, input = {}) {
     action === "meeting.disperse" ||
     action === "human_gate.request" ||
     action === "human_gate.web_app_review" ||
+    action === "human_gate.review_form" ||
     action === "human_gate.web_app_submit" ||
+    action === "human_gate.submit_form" ||
     action === "human_gate.button_callback" ||
     action === "human_gate.callback" ||
     action === "human_gate.feedback" ||

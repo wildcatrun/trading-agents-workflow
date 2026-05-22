@@ -86,7 +86,7 @@ function commandRoot(options = {}, api) {
 
 function guardWorkflowRootOverride(input, root) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return input;
-  const override = input.workflowRootDir || input.workflow_root;
+  const override = input.workflowRootDir || input.workflow_root || input.workflowRoot || input.rootDir || input.root;
   if (override && root && normalizeRootValue(override) !== normalizeRootValue(root)) {
     throw new Error("workflowRootDir override is not allowed through the OpenClaw tool; configure plugin rootDir instead.");
   }
@@ -187,17 +187,25 @@ const toolParameters = {
         "workflow.status",
         "workflow.readiness",
         "workflow.topology",
+        "workflow.runtime_agents",
+        "workflow.runtime-agents",
+        "workflow.runtime.registry",
         "workflow.run.upsert",
         "workflow.initiative.upsert",
         "workflow.swarm.plan",
+        "workflow.swarm",
         "workflow.task.create",
         "workflow.task.update",
         "workflow.task.list",
         "workflow.tasks",
         "workflow.advance",
         "workflow.advance.preview",
+        "workflow.preview.advance",
         "workflow.supervise",
+        "workflow.supervisor",
         "workflow.supervise.preview",
+        "workflow.supervisor.preview",
+        "workflow.preview.supervise",
         "workflow.control_loop.tick",
         "workflow.loop.tick",
         "workflow.reconciler.tick",
@@ -207,18 +215,27 @@ const toolParameters = {
         "workflow.schedules",
         "workflow.scheduler.list",
         "workflow.schedule.pause",
+        "workflow.scheduler.pause",
         "workflow.schedule.resume",
+        "workflow.scheduler.resume",
         "workflow.schedule.disable",
+        "workflow.scheduler.disable",
         "workflow.checkpoint",
         "workflow.context_checkpoint",
         "context.checkpoint",
         "protocol.record",
+        "protocol.object",
+        "runtime.agent",
         "runtime.agent.upsert",
         "route_shell.ingest",
+        "route-shell.ingest",
+        "route_shell.route",
         "runtime.bridge",
         "runtime.bridge.drain",
         "meeting.runtime_participant",
+        "runtime.participant",
         "telegram.live",
+        "telegram.live.configure",
         "meeting.dispatch",
         "meeting.ingest",
         "workflow.dispatch.reconcile",
@@ -234,6 +251,10 @@ const toolParameters = {
         "human_gate.inbox",
         "human_gate.console",
         "human_gate.batch_inbox",
+        "human_gate.review_form",
+        "human_gate.submit_form",
+        "human_gate.resume",
+        "human_gate.confirm",
         "meeting.resume",
         "meeting.disperse",
         "telegram.outbox",
@@ -255,11 +276,16 @@ const toolParameters = {
         "trade.proposal",
         "risk.decision",
         "trade.intent",
+        "execution.intent",
         "trading_core.receipt",
+        "execution.receipt",
         "side_effect.record",
+        "side_effect.ledger",
         "incident.state",
+        "workflow.incident",
         "gate.review",
         "human_gate.record",
+        "workflow.human_gate",
         "human_gate.review",
         "telegram.bridge",
         "meeting.show",
@@ -1211,7 +1237,7 @@ function registerCli(api) {
 
     command.command("workflow-schedule-resume")
       .requiredOption("--id <scheduleId>", "Schedule id")
-      .option("--reset-next-run <trueOrFalse>", "Recompute next_run_at", "true")
+      .option("--reset-next-run <trueOrFalse>", "Recompute next_run_at", "false")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
       .option("--root <dir>", "Meeting protocol root directory")
       .action(async (options) => {
@@ -1219,7 +1245,7 @@ function registerCli(api) {
           action: "workflow.schedule.resume",
           workflowRootDir: options.workflowRoot,
           scheduleId: options.id,
-          resetNextRun: options.resetNextRun !== "false"
+          resetNextRun: options.resetNextRun === "true"
         }), null, 2));
       });
 
@@ -1557,6 +1583,36 @@ function registerCli(api) {
         console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "human_gate.feedback",
           workflowRootDir: options.workflowRoot,
+          token: options.token,
+          actor: options.actor || options.from,
+          text: options.text,
+          runtime: options.runtime,
+          agentId: options.agent,
+          sourceSystem: "human_gate_console"
+        }), null, 2));
+      });
+
+    command.command("human-gate-resume")
+      .requiredOption("--token <token>", "Human Gate button callback token")
+      .requiredOption("--human-gate-id <id>", "Human Gate id")
+      .requiredOption("--button-id <id>", "Human Gate button id")
+      .requiredOption("--text <text>", "Flashcat original words or review feedback")
+      .option("--workflow <id>", "Workflow id")
+      .option("--meeting <id>", "Meeting id")
+      .option("--actor <actor>", "Actor", "flashcat")
+      .option("--from <actor>", "Actor fallback")
+      .option("--runtime <runtime>", "Resume dispatch runtime", "openclaw")
+      .option("--agent <agent>", "Resume dispatch agent", "main")
+      .option("--workflow-root <dir>", "Trading agents workflow root directory")
+      .option("--root <dir>", "Meeting protocol root directory")
+      .action(async (options) => {
+        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
+          action: "human_gate.resume",
+          workflowRootDir: options.workflowRoot,
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          humanGateId: options.humanGateId,
+          buttonId: options.buttonId,
           token: options.token,
           actor: options.actor || options.from,
           text: options.text,

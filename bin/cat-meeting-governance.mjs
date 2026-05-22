@@ -39,7 +39,7 @@ function usage() {
   trading-agents-workflow human-gate-console [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
   trading-agents-workflow human-gate-callback --token TOKEN [--actor flashcat] [--feedback TEXT] [--runtime openclaw] [--agent main] [--root DIR]
   trading-agents-workflow human-gate-feedback --text TEXT [--token TOKEN] [--actor flashcat] [--runtime openclaw] [--agent main] [--root DIR]
-  trading-agents-workflow human-gate-resume --workflow ID [--meeting ID] [--status approved|rejected|paused|terminated] [--text TEXT] [--human-gate-id ID] [--root DIR]
+  trading-agents-workflow human-gate-resume --token TOKEN --human-gate-id ID --button-id ID --text TEXT [--workflow ID] [--meeting ID] [--root DIR]
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
   trading-agents-workflow telegram-outbox [--status queued|sent|failed] [--limit N] [--mark OUTBOX_ID] [--deliver] [--account cat_claw] [--target CHAT_ID] [--root DIR]
@@ -348,7 +348,7 @@ function toAction({ command, positional, options }) {
     case "workflow-schedule-pause":
       return { root, input: { action: "workflow.schedule.pause", scheduleId: options.id } };
     case "workflow-schedule-resume":
-      return { root, input: { action: "workflow.schedule.resume", scheduleId: options.id, resetNextRun: options["reset-next-run"] !== "false" } };
+      return { root, input: { action: "workflow.schedule.resume", scheduleId: options.id, resetNextRun: options["reset-next-run"] === "true" } };
     case "workflow-schedule-disable":
       return { root, input: { action: "workflow.schedule.disable", scheduleId: options.id } };
     case "workflow-checkpoint":
@@ -495,12 +495,15 @@ function toAction({ command, positional, options }) {
           workflowId: options.workflow,
           meetingId: options.meeting,
           humanGateId: options["human-gate-id"],
+          buttonId: options["button-id"],
+          token: options.token,
           status: options.status,
           text: options.text,
           gateType: options.gate,
           actor: options.actor || options.from,
           runtime: options.runtime,
-          agentId: options.agent
+          agentId: options.agent,
+          sourceSystem: "human_gate_console"
         }
       };
     case "meeting-resume":

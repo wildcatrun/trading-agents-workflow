@@ -21,7 +21,9 @@ from typing import Any
 SERVER_NAME = "trading-agents-workflow-hermes"
 SERVER_VERSION = "0.1.0"
 
-DEFAULT_WORKFLOW_PACKAGE = Path("/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout")
+SCRIPT_WORKFLOW_PACKAGE = Path(__file__).resolve().parents[1]
+SERVER_WORKFLOW_PACKAGE = Path("/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout")
+DEFAULT_WORKFLOW_PACKAGE = SCRIPT_WORKFLOW_PACKAGE if (SCRIPT_WORKFLOW_PACKAGE / "src" / "core.js").exists() else SERVER_WORKFLOW_PACKAGE
 DEFAULT_ACTIVE_WORKFLOW_ROOT = Path("/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow")
 LEGACY_WORKFLOW_ROOT = Path("/home/flashcat/.openclaw/shared/trading-agents-workflow")
 ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT"
@@ -79,7 +81,7 @@ def guard_workflow_root(value: str | Path) -> str:
 def workflow_root(args: dict[str, Any] | None = None) -> str:
     args = args or {}
     configured = guard_workflow_root(os.environ.get("TRADING_AGENTS_WORKFLOW_ROOT") or DEFAULT_ACTIVE_WORKFLOW_ROOT)
-    override = args.get("rootDir") or args.get("root")
+    override = args.get("rootDir") or args.get("root") or args.get("workflowRoot") or args.get("workflow_root") or args.get("workflowRootDir")
     if override:
         override_root = guard_workflow_root(override)
         if normalized_root(override_root) != normalized_root(configured):
@@ -88,7 +90,13 @@ def workflow_root(args: dict[str, Any] | None = None) -> str:
 
 
 def guard_payload_root(input_payload: dict[str, Any], root_dir: str) -> None:
-    override = input_payload.get("workflowRootDir") or input_payload.get("workflow_root")
+    override = (
+        input_payload.get("workflowRootDir")
+        or input_payload.get("workflow_root")
+        or input_payload.get("workflowRoot")
+        or input_payload.get("rootDir")
+        or input_payload.get("root")
+    )
     if override:
         override_root = guard_workflow_root(override)
         if normalized_root(override_root) != normalized_root(root_dir):
@@ -213,7 +221,7 @@ MESSAGE_FLOW_SEND_SCHEMA = {
 STATUS_SCHEMA = {
     "type": "object",
     "properties": {
-        "view": {"type": "string", "description": "status, readiness, topology, or runtime_agents."},
+        "view": {"type": "string", "description": "status, readiness, topology, runtime_agents, or runtime-agents."},
     },
     "additionalProperties": True,
 }
@@ -224,7 +232,7 @@ def handle_workflow_action(args: dict[str, Any]) -> dict[str, Any]:
     if not action:
         raise ValueError("action is required")
     payload = args.get("payload") if isinstance(args.get("payload"), dict) else {
-        key: value for key, value in args.items() if key not in {"payload", "rootDir", "root"}
+        key: value for key, value in args.items() if key not in {"payload", "rootDir", "root", "workflowRoot", "workflow_root", "workflowRootDir"}
     }
     payload["action"] = action
     timeout_seconds = clamp_timeout(payload.get("timeoutSeconds") or payload.get("timeout_seconds"))
@@ -305,12 +313,12 @@ def handle_status(args: dict[str, Any]) -> dict[str, Any]:
         "status": "status",
         "readiness": "workflow.readiness",
         "topology": "workflow.topology",
-        "runtime_agents": "workflow.topology",
-        "runtime-agents": "workflow.topology",
+        "runtime_agents": "workflow.runtime_agents",
+        "runtime-agents": "workflow.runtime_agents",
     }
     action = action_by_view.get(view)
     if not action:
-        raise ValueError("view must be one of: status, readiness, topology, runtime_agents")
+        raise ValueError("view must be one of: status, readiness, topology, runtime_agents, runtime-agents")
     return run_workflow_action({"action": action, "sourceSystem": "hermers_mcp", "sourceAgent": profile_id()}, root_dir=workflow_root(args))
 
 

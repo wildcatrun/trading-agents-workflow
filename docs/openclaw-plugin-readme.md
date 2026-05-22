@@ -544,14 +544,16 @@ After Flashcat confirms, rejects, or selects an option for a Human Gate, record 
 
 ```bash
 node bin/cat-meeting-governance.mjs human-gate-resume \
+  --token CALLBACK_TOKEN \
+  --human-gate-id HUMAN_GATE_ID \
+  --button-id BUTTON_ID \
   --workflow demo-initiative \
   --meeting demo-initiative \
-  --status approved \
-  --text "Flashcat approved B plan; continue dry-run manifest phase" \
+  --text "闪电猫原话：批准 B 方案，继续 dry-run manifest phase" \
   --root "$ROOT"
 ```
 
-Cat Claw must preserve the original confirmation timestamp, source channel, and Flashcat text in the resume text or payload, then verify the generated dispatch id. If `human_gate.resume` is not available in the current session, Cat Claw must report `human_gate_resume_blocked` with the missing tool or runtime reason instead of treating the decision as complete.
+Cat Claw must preserve the original confirmation timestamp, source channel, button id, Human Gate id, and Flashcat text in the resume text or payload, then verify the generated dispatch id or retry job. If `human_gate.resume` is not available in the current session, Cat Claw must report `human_gate_resume_blocked` with the missing tool or runtime reason instead of treating the decision as complete.
 
 ## Workflow Checkpoints
 
