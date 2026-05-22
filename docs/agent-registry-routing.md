@@ -26,6 +26,8 @@ Hermers is the platform. ACP is an adapter/mechanism used by Hermers instances t
 
 `workflow_ingress_adapter=acp` must use the ACP backend. If the ACP backend is unavailable, dispatch fails closed with `failure_type=acp_unavailable`; it must not silently run the Hermers CLI path. The Hermers CLI path is a separate explicit adapter, `workflow_ingress_adapter=cli`, for reviewed fallback or recovery use only.
 
+Cat Claw `cat_claw` is an OpenClaw-only secretary and Human Gate agent. Its valid registry row is `openclaw:cat_claw` with `platform=openclaw` and `workflow_ingress_adapter=openclaw_native`. It must not be registered as a Hermers ACP profile, route-shell executor, or generic external adapter unless a future migration explicitly creates and documents a real non-OpenClaw Cat Claw runtime.
+
 ## Ingress Classes
 
 Class A: IM ingress is OpenClaw Gateway and execution is OpenClaw.

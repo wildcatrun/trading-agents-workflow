@@ -55,6 +55,7 @@ const WORKFLOW_SCHEDULE_STATUSES = new Set(["active", "paused", "disabled"]);
 const WORKFLOW_SCHEDULE_KINDS = new Set(["cron", "interval"]);
 const WORKFLOW_SCHEDULE_CONCURRENCY_POLICIES = new Set(["skip", "allow"]);
 const WORKFLOW_SCHEDULE_MISFIRE_POLICIES = new Set(["skip", "run_once"]);
+const RETIRED_RUNTIME_AGENT_STATUSES = new Set(["retired", "archived"]);
 const INCIDENT_STATUSES = new Set(["active", "mitigating", "monitoring", "resolved", "cancelled"]);
 const INCIDENT_MODES = new Set(["normal", "degraded", "critical-only", "paper-only", "frozen"]);
 const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout", "acp_unavailable", "transient_runtime"]);
@@ -942,6 +943,31 @@ function normalizeAgentId(value) {
 
 function runtimeAgentKey(runtime, agentId) {
   return `${normalizeRuntime(runtime)}:${normalizeAgentId(agentId)}`;
+}
+
+function assertRuntimeAgentRegistrationAllowed(runtime, agentId, registry = {}) {
+  const normalizedRuntime = normalizeRuntime(runtime);
+  const normalizedAgentId = normalizeAgentId(agentId);
+  if (normalizedAgentId !== "cat_claw") return;
+  const normalizedPlatform = normalizeAgentPlatform(registry.platform, normalizedRuntime);
+  const executionAdapter = normalizeExecutionAdapter(registry.executionAdapter, normalizedPlatform, normalizedRuntime);
+  const workflowIngressAdapter = normalizeWorkflowIngressAdapter(registry.workflowIngressAdapter, normalizedPlatform, normalizedRuntime);
+  const imIngressOwner = normalizeImIngressOwner(registry.imIngressOwner, normalizedPlatform, normalizedRuntime);
+  const imIngressAdapter = normalizeImIngressAdapter(registry.imIngressAdapter, imIngressOwner, normalizedRuntime);
+  const imIdentity = normalizeImIdentity(registry.imIdentity, imIngressOwner, imIngressAdapter, normalizedRuntime);
+  const executionIdentity = normalizeExecutionIdentity(registry.executionIdentity, normalizedPlatform, workflowIngressAdapter, normalizedRuntime);
+  if (
+    normalizedRuntime !== "openclaw" ||
+    normalizedPlatform !== "openclaw" ||
+    executionAdapter !== "native" ||
+    workflowIngressAdapter !== "openclaw_native" ||
+    imIngressOwner !== "openclaw_gateway" ||
+    imIngressAdapter !== "openclaw_native" ||
+    imIdentity !== "openclaw_native" ||
+    executionIdentity !== "openclaw_native"
+  ) {
+    throw new Error("cat_claw is an OpenClaw-only secretary agent; register and dispatch it as openclaw:cat_claw with openclaw_native adapters");
+  }
 }
 
 function normalizeMeetingRef(value) {
@@ -4063,6 +4089,7 @@ export async function workflowTopology(rootDir, input = {}) {
   const registeredAgents = await sqlite(paths.dbFile, `
 SELECT runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, endpoint_ref
 FROM runtime_agents
+WHERE status NOT IN (${Array.from(RETIRED_RUNTIME_AGENT_STATUSES).map(sqlValue).join(", ")})
 ORDER BY platform, agent_id;`, { json: true });
   const hermersModes = await loadHermersProfileModes(input);
   const activeAgentIds = [
@@ -6358,6 +6385,15 @@ async function ensureRuntimeAgent(paths, input) {
   const capabilitiesJson = JSON.stringify(parseJsonValue(input.capabilities, input.capabilities || {}));
   const metadataJson = JSON.stringify(parseJsonValue(input.metadata, input.metadata || {}));
   const preserveExisting = Boolean(input.preserveExisting || input.preserve_existing);
+  assertRuntimeAgentRegistrationAllowed(runtime, agentId, {
+    platform,
+    executionAdapter,
+    workflowIngressAdapter,
+    imIngressOwner,
+    imIngressAdapter,
+    imIdentity,
+    executionIdentity
+  });
   const conflictUpdate = preserveExisting ? `
   display_name=CASE WHEN ${sqlValue(displayName)} != '' THEN excluded.display_name ELSE runtime_agents.display_name END,
   role=CASE WHEN ${sqlValue(role)} != '' THEN excluded.role ELSE runtime_agents.role END,
@@ -7059,10 +7095,23 @@ LIMIT 1;`, { json: true });
 }
 
 async function findActiveRegisteredAgentInstances(paths, agentId) {
+  const normalizedAgentId = normalizeAgentId(agentId);
+  if (normalizedAgentId === "cat_claw") {
+    const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM runtime_agents
+WHERE agent_id='cat_claw'
+  AND runtime='openclaw'
+  AND platform='openclaw'
+  AND workflow_ingress_adapter='openclaw_native'
+  AND status='active'
+ORDER BY updated_at DESC;`, { json: true });
+    return rows;
+  }
   const rows = await sqlite(paths.dbFile, `
 SELECT *
 FROM runtime_agents
-WHERE agent_id=${sqlValue(normalizeAgentId(agentId))}
+WHERE agent_id=${sqlValue(normalizedAgentId)}
   AND status='active'
 ORDER BY
   CASE platform WHEN 'hermers' THEN 0 WHEN 'openclaw' THEN 1 ELSE 2 END,

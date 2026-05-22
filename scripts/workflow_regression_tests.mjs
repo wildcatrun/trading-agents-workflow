@@ -1422,6 +1422,60 @@ async function testHermersProfileModeMalformedFileReadiness() {
   assert.ok(readiness.findings.some((finding) => finding.key === "hermers_profile_modes_unreadable"));
 }
 
+async function testCatClawOpenClawOnlyRegistryGuard() {
+  const root = await tempRoot("cat-claw-registry");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "runtime.agent.upsert",
+      platform: "hermers",
+      runtime: "hermers",
+      agentId: "cat_claw",
+      workflowIngressAdapter: "acp"
+    }),
+    /cat_claw is an OpenClaw-only secretary agent/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "runtime.agent.upsert",
+      platform: "openclaw",
+      runtime: "openclaw",
+      agentId: "cat_claw",
+      executionAdapter: "acp",
+      workflowIngressAdapter: "acp"
+    }),
+    /openclaw_native adapters/
+  );
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "cat_claw",
+    displayName: "猫爪",
+    workflowIngressAdapter: "openclaw_native",
+    endpointRef: "openclaw-agent:cat_claw"
+  });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, routing_policy_json, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
+VALUES ('hermers:cat_claw', 'hermers', 'cat_claw', 'cat_claw', '', 'retired', 'hermers', 'acp', 'openclaw_gateway', 'openclaw_route_shell', 'acp', 'openclaw_route_shell', 'hermers_acp', 'reply_to_source_chat', 0, 0, 0, '{}', '', '{}', '{}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');`);
+  const registry = await runAction(root, { action: "workflow.runtime_agents" });
+  assert.equal(Boolean(registry.runtimeRegistry.hermers?.some((agent) => agent.agentId === "cat_claw")), false);
+  assert.equal(Boolean(registry.runtimeRegistry.openclaw?.some((agent) => agent.agentId === "cat_claw")), true);
+
+  sqliteExec(dbFile, `
+UPDATE runtime_agents
+SET status='active', can_receive_dispatch=1, can_start_workflow=1
+WHERE agent_key='hermers:cat_claw';`);
+  const dispatch = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-cat-claw-default",
+    agentId: "cat_claw",
+    prompt: "cat_claw should resolve to openclaw despite active legacy row"
+  });
+  assert.equal(dispatch.runtime, "openclaw");
+  assert.equal(dispatch.workflowIngressAdapter, "openclaw_native");
+}
+
 try {
   requireSqliteCli();
   const tests = [
@@ -1440,7 +1494,8 @@ try {
     ["readiness gateway degraded", testReadinessGatewayDegraded],
     ["hermers profile mode readiness/registry", testHermersProfileModeReadinessAndRegistry],
     ["hermers profile mode defers drain before claim", testHermersProfileModeDefersDrainBeforeClaim],
-    ["hermers profile mode malformed file readiness", testHermersProfileModeMalformedFileReadiness]
+    ["hermers profile mode malformed file readiness", testHermersProfileModeMalformedFileReadiness],
+    ["cat_claw openclaw-only registry guard", testCatClawOpenClawOnlyRegistryGuard]
   ];
 
   for (const [name, fn] of tests) {
