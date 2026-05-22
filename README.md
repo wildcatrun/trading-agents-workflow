@@ -16,6 +16,8 @@ Agent routing is registry-driven. `runtime_agents` records `platform`, `executio
 
 `workflow.checkpoint` creates the session-overflow recovery package. It snapshots objective, acceptance criteria, phase, decision, active tasks, blocked tasks, artifact refs, Human Gate pressure, and next actions into `workflow_checkpoints` plus JSON/Markdown artifacts under `workflows/checkpoints/`. New agent sessions should restore from the latest checkpoint and referenced artifacts instead of replaying the full chat history.
 
+`workflow.session_pack.*` and `workflow.session_run.*` provide the first workflow-native session store. They let the workflow prepare compact, task-specific worker input from stored context, tool policy, evidence refs, checkpoint refs, and per-run input. This is for repeatable worker execution and retry safety; it does not replace workflows, checkpoints, receipts, artifacts, or Human Gate records. Development notes are in `docs/workflow-session-store.md`.
+
 `human_gate.inbox` creates the secretary-facing approval table for complex workflows. It gathers pending Human Gate records, review gates, gated tasks, and Cat Claw delivery failures into `human_gate_batches`, `human_gate_batch_items`, and HTML/JSON artifacts under `human-gates/inbox/` so Flashcat can review multiple low-risk items together while P0/P1 items remain individual approvals.
 
 ## OpenClaw Plugin
@@ -91,6 +93,7 @@ Hermers ACP dispatch.
 - `docs/governance-records.md` - policy for recording workflow incidents, fixes, delivery failures, and Human Gate packages inside this plugin.
 - `docs/agent-registry-routing.md` - routing contract for platform, adapter, IM ingress, workflow ingress, and route-shell behavior.
 - `docs/companion-stability-plugin.md` - boundary contract with `cat-agents-stability`.
+- `docs/workflow-session-store.md` - development notes for session packs, session runs, worker input, CLI, invariants, and roadmap.
 - `docs/tracking-schema.sql` - schema export for `tracking.db`.
 - `scripts/trading_agents_workflow_mcp.py` - local Codex MCP server.
 - `skills/trading-agents-workflow/` - Codex skill instructions for this integration.
