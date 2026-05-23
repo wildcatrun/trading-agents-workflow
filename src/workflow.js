@@ -69,9 +69,7 @@ const DEFAULT_WORKFLOW_RETENTION_HOURS = 72;
 const DEFAULT_WORKFLOW_RETENTION_INTERVAL_MS = 60 * 60_000;
 const HUMAN_GATE_TEXT_POLICY_VERSION = "human_gate_chinese_feedback_style_v1";
 const HUMAN_GATE_WEB_APP_ROUTE_PATH = "/plugins/trading-agents-workflow/human-gate";
-const ROUTE_SHELL_TARGET_PLATFORM_ORDER = ["hermers", "openclaw", "other"];
 const DEFAULT_HERMERS_PROFILE_MODES_PATH = "/home/flashcat/.openclaw/stability/hermers-profile-modes.json";
-const COLD_PROFILE_ALLOWED_PRIORITIES = new Set(["flash", "steer", "high"]);
 const TELEGRAM_BUTTON_STYLES = new Set(["danger", "success", "primary"]);
 const HUMAN_GATE_PLAN_STYLE = "success";
 const HUMAN_GATE_CONTROL_STYLES = {
@@ -2605,13 +2603,6 @@ SELECT
   COUNT(*) AS total
 FROM message_flows;`, { json: true });
   const hermersModes = await loadHermersProfileModes(input);
-  const queuedHermersRows = hermersModes.ok ? await sqlite(paths.dbFile, `
-SELECT d.*, a.endpoint_ref, a.platform, a.execution_adapter, a.workflow_ingress_adapter
-FROM mixed_meeting_dispatches d
-LEFT JOIN runtime_agents a ON a.agent_key=d.agent_key
-WHERE d.status='queued' AND d.runtime='hermers'
-  AND (d.next_retry_at IS NULL OR d.next_retry_at='' OR d.next_retry_at <= ${sqlValue(checkedAt)})
-LIMIT 200;`, { json: true }) : [];
   const dispatch = dispatchRows[0] || {};
   const outbox = outboxRows[0] || {};
   const humanGate = humanGateRows[0] || {};
@@ -2630,17 +2621,6 @@ LIMIT 200;`, { json: true }) : [];
   if (Number(messageFlowIntegrity.failed_output_marked_sent || 0) > 0) findings.push({ severity: "critical", key: "message_flow_failed_output_marked_sent", count: Number(messageFlowIntegrity.failed_output_marked_sent || 0), plane: "communication" });
   if (Number(messageFlowIntegrity.sent_without_receipt || 0) > 0) findings.push({ severity: "critical", key: "message_flow_sent_without_receipt", count: Number(messageFlowIntegrity.sent_without_receipt || 0), plane: "communication" });
   if (!hermersModes.ok && !hermersModes.unavailable) findings.push({ severity: "warning", key: "hermers_profile_modes_unreadable", plane: "runtime", path: hermersModes.path, error: hermersModes.error });
-  const profileAdmissionBlocks = queuedHermersRows
-    .map((row) => classifyHermersProfileAdmission(row, hermersModes, input))
-    .filter((admission) => !admission.allowed);
-  if (profileAdmissionBlocks.length > 0) {
-    const byMode = profileAdmissionBlocks.reduce((acc, item) => {
-      const key = item.targetMode || "unknown";
-      acc[key] = (acc[key] || 0) + 1;
-      return acc;
-    }, {});
-    findings.push({ severity: "warning", key: "runtime_profile_mode_deferred_dispatches", count: profileAdmissionBlocks.length, byMode, plane: "runtime" });
-  }
   const activeChecks = Boolean(input.activeChecks || input.active_checks);
   const active = activeChecks ? await activeReadinessChecks(paths, input, findings) : null;
   const planes = {
@@ -7113,9 +7093,7 @@ SELECT *
 FROM runtime_agents
 WHERE agent_id=${sqlValue(normalizedAgentId)}
   AND status='active'
-ORDER BY
-  CASE platform WHEN 'hermers' THEN 0 WHEN 'openclaw' THEN 1 ELSE 2 END,
-  updated_at DESC;`, { json: true });
+ORDER BY updated_at DESC;`, { json: true });
   return rows;
 }
 
@@ -7135,11 +7113,16 @@ function canRouteToRegisteredInstance(row) {
 }
 
 function sortRegisteredTargets(left, right) {
-  const a = registrySnapshot(left);
-  const b = registrySnapshot(right);
-  const aIndex = ROUTE_SHELL_TARGET_PLATFORM_ORDER.indexOf(a.platform);
-  const bIndex = ROUTE_SHELL_TARGET_PLATFORM_ORDER.indexOf(b.platform);
-  return (aIndex >= 0 ? aIndex : 99) - (bIndex >= 0 ? bIndex : 99);
+  const policyFor = (row) => parseJsonValue(row.routing_policy_json, {});
+  const rankFor = (row) => {
+    const policy = policyFor(row);
+    const primary = boolOption(policy.primary ?? row.primary, false) ? -1000 : 0;
+    const rank = Number(policy.routingRank ?? policy.routing_rank ?? policy.dispatchPriority ?? policy.dispatch_priority ?? row.routing_rank ?? 100);
+    return primary + (Number.isFinite(rank) ? rank : 100);
+  };
+  const rankDelta = rankFor(left) - rankFor(right);
+  if (rankDelta !== 0) return rankDelta;
+  return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
 }
 
 async function resolveRegisteredDispatchTarget(paths, input = {}) {
@@ -7284,7 +7267,7 @@ async function resolveRouteShellTarget(paths, input = {}) {
     gatewayIngress,
     reason: explicitPlatform || explicitAdapter
       ? `active registered target not found for ${routeAgentId}; requested platform=${explicitPlatform || "*"} adapter=${explicitAdapter || "*"}`
-      : `active registered target not found for ${routeAgentId}; checked platforms ${ROUTE_SHELL_TARGET_PLATFORM_ORDER.join(", ")}`
+      : `active registered target not found for ${routeAgentId}; registry routing policy produced no dispatch-capable target`
   };
 }
 
@@ -7604,7 +7587,7 @@ function hermesProfileFromEndpoint(endpointRef, agentId) {
   if (endpoint.startsWith("hermers-profile:")) return endpoint.slice("hermers-profile:".length).trim();
   if (endpoint.startsWith("hermes-profile:")) return endpoint.slice("hermes-profile:".length).trim();
   if (endpoint.startsWith("profile:")) return endpoint.slice("profile:".length).trim();
-  return String(agentId || "").replace(/_/g, "").trim();
+  return "";
 }
 
 function hermersProfileModesPath(input = {}) {
@@ -7654,12 +7637,11 @@ function hermersProfileModeForRow(row, modes = {}) {
   const profile = hermesProfileFromEndpoint(row.endpoint_ref, row.agent_id);
   const profiles = modes?.profiles || {};
   const entry = profile ? (profiles[profile] || profiles[profile.replace(/_/g, "")] || null) : null;
-  const targetMode = String(entry?.targetMode || entry?.target_mode || entry?.mode || "").trim().toLowerCase();
+  const observedMode = String(entry?.observedMode || entry?.observed_mode || entry?.readinessObservation || entry?.readiness_observation || entry?.targetMode || entry?.target_mode || entry?.mode || "").trim().toLowerCase();
   return {
     profile,
     entry,
-    targetMode,
-    expectedActive: entry?.expectedActive ?? entry?.expected_active ?? null,
+    observedMode,
     managed: entry?.managed ?? null,
     protected: entry?.protected ?? null,
     activeWork: entry?.activeWork ?? entry?.active_work ?? null,
@@ -7669,11 +7651,10 @@ function hermersProfileModeForRow(row, modes = {}) {
 
 function profileModeEvidenceForRow(row, modes = {}) {
   const data = hermersProfileModeForRow(row, modes);
-  if (!data.profile && !data.entry && !data.targetMode) return {};
+  if (!data.profile && !data.entry && !data.observedMode) return {};
   return {
     profile: data.profile,
-    profileMode: data.targetMode || "",
-    profileExpectedActive: data.expectedActive,
+    profileMode: data.observedMode || "",
     profileManaged: data.managed,
     profileProtected: data.protected,
     profileActiveWork: data.activeWork,
@@ -7683,8 +7664,7 @@ function profileModeEvidenceForRow(row, modes = {}) {
 
 function profileModesReadinessPayload(modes = {}) {
   const profiles = Object.fromEntries(Object.entries(modes.profiles || {}).map(([profile, entry]) => [profile, {
-    targetMode: entry?.targetMode || entry?.target_mode || entry?.mode || "",
-    expectedActive: entry?.expectedActive ?? entry?.expected_active ?? null,
+    observedMode: entry?.observedMode || entry?.observed_mode || entry?.readinessObservation || entry?.readiness_observation || entry?.targetMode || entry?.target_mode || entry?.mode || "",
     managed: entry?.managed ?? null,
     protected: entry?.protected ?? null,
     activeWork: entry?.activeWork ?? entry?.active_work ?? null,
@@ -7703,129 +7683,77 @@ function profileModesReadinessPayload(modes = {}) {
 
 function classifyHermersProfileAdmission(row, modes = {}, input = {}) {
   const mode = hermersProfileModeForRow(row, modes);
-  const targetMode = mode.targetMode;
   const payload = parseJsonValue(row.payload_json, {});
   const dispatchType = row.dispatch_type || payload.dispatchType || payload.dispatch_type || "";
   const priority = String(row.priority || payload.priority || "normal").trim().toLowerCase();
   const humanGateContext = isHumanGateDispatchContext(row, payload, dispatchType);
-  const allowHibernate = boolOption(input.allowHibernatedProfiles ?? input.allow_hibernated_profiles ?? input.allowHibernateWake ?? input.allow_hibernate_wake, false);
-  if (!modes?.ok || !targetMode || targetMode === "hot" || targetMode === "warm") {
-    return { allowed: true, action: "allow", ...mode, priority, dispatchType, humanGateContext };
-  }
-  if (targetMode === "cold") {
-    if (COLD_PROFILE_ALLOWED_PRIORITIES.has(priority) || humanGateContext) {
-      return { allowed: true, action: "allow_cold_priority", ...mode, priority, dispatchType, humanGateContext };
-    }
-    return {
-      allowed: false,
-      action: "defer",
-      deferSeconds: Math.max(30, Math.min(3600, Number(input.coldProfileDeferSeconds || input.cold_profile_defer_seconds || 120))),
-      failureType: "runtime_profile_cold",
-      ...mode,
-      reason: mode.reason || `profile ${mode.profile || row.agent_id} is cold`,
-      priority,
-      dispatchType,
-      humanGateContext
-    };
-  }
-  if (targetMode === "hibernate") {
-    if (allowHibernate) {
-      return { allowed: true, action: "allow_hibernate_override", ...mode, priority, dispatchType, humanGateContext };
-    }
-    return {
-      allowed: false,
-      action: "defer",
-      deferSeconds: Math.max(60, Math.min(8 * 3600, Number(input.hibernateProfileDeferSeconds || input.hibernate_profile_defer_seconds || 600))),
-      failureType: "runtime_profile_hibernated",
-      ...mode,
-      reason: mode.reason || `profile ${mode.profile || row.agent_id} is hibernated`,
-      priority,
-      dispatchType,
-      humanGateContext
-    };
-  }
-  return { allowed: true, action: "allow_unknown_mode", ...mode, priority, dispatchType, humanGateContext };
+  return { allowed: true, action: "observe", ...mode, priority, dispatchType, humanGateContext };
 }
 
-async function deferRuntimeDispatchForProfileMode(paths, row, admission, input = {}) {
-  const deferredAt = nowIso();
-  const nextRetryAtValue = new Date(Date.now() + Number(admission.deferSeconds || 300) * 1000).toISOString();
-  const attempt = Number(row.attempt || 0) || 0;
-  const currentPayload = parseJsonValue(row.payload_json, {});
-  const bridge = {
-    ...(currentPayload.bridge || {}),
-    adapter: "profile_mode_admission",
-    profile: admission.profile,
-    profileMode: admission.targetMode,
-    failureType: admission.failureType,
-    error: admission.reason,
-    nextRetryAt: nextRetryAtValue,
-    deferredAt,
-    admission: {
-      action: admission.action,
-      priority: admission.priority,
-      dispatchType: admission.dispatchType,
-      humanGateContext: admission.humanGateContext,
-      expectedActive: admission.expectedActive,
-      managed: admission.managed,
-      protected: admission.protected,
-      activeWork: admission.activeWork
-    },
-    updatedAt: deferredAt
-  };
-  const payload = { ...currentPayload, bridge };
-  const changed = await sqlite(paths.dbFile, `
-UPDATE mixed_meeting_dispatches
-SET status='queued',
-    sent_at=NULL,
-    acked_at=NULL,
-    completed_at=NULL,
-    failure_type=${sqlValue(admission.failureType)},
-    last_error=${sqlValue(String(admission.reason || "").slice(0, 2000))},
-    next_retry_at=${sqlValue(nextRetryAtValue)},
-    payload_json=${sqlValue(JSON.stringify(payload))},
-    updated_at=${sqlValue(deferredAt)}
-WHERE dispatch_id=${sqlValue(row.dispatch_id)}
-  AND status='queued'
-  AND attempt=${sqlValue(attempt)}
-  AND COALESCE(updated_at,'')=${sqlValue(row.updated_at || "")}
-  AND COALESCE(next_retry_at,'')=${sqlValue(row.next_retry_at || "")};
-SELECT changes() AS changed;`, { json: true });
-  if (Number(changed?.[0]?.changed || 0) !== 1) {
-    const rows = await sqlite(paths.dbFile, `SELECT status FROM mixed_meeting_dispatches WHERE dispatch_id=${sqlValue(row.dispatch_id)} LIMIT 1;`, { json: true });
-    return {
-      dispatchId: row.dispatch_id,
-      runtime: row.runtime,
-      agentId: row.agent_id,
-      status: "skipped",
-      reason: "not_deferred",
-      currentStatus: rows[0]?.status || ""
-    };
+function validateRuntimeBridgeRegistryRow(row, runtime) {
+  if (!row.agent_key || !row.registry_agent_key) {
+    return { ok: false, failureType: "runtime_registry_missing", error: "queued dispatch has no matching runtime_agents row" };
   }
-  await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
-    ts: deferredAt,
-    event: "runtime_dispatch_deferred",
-    dispatchId: row.dispatch_id,
-    meetingId: row.meeting_id,
-    runtime: row.runtime,
-    agentId: row.agent_id,
-    adapter: "profile_mode_admission",
-    profile: admission.profile,
-    profileMode: admission.targetMode,
-    failureType: admission.failureType,
-    reason: admission.reason,
-    nextRetryAt: nextRetryAtValue,
-    owner: firstText(input.owner, input.from, "workflow")
+  if (row.registry_status !== "active") {
+    return { ok: false, failureType: "runtime_registry_inactive", error: `runtime_agents row is not active: ${row.registry_status || "unknown"}` };
+  }
+  if (Number(row.can_receive_dispatch ?? 0) === 0) {
+    return { ok: false, failureType: "runtime_registry_dispatch_disabled", error: "runtime_agents row has can_receive_dispatch=0" };
+  }
+  const snap = registrySnapshot({
+    runtime: row.registry_runtime || row.runtime,
+    platform: row.platform,
+    execution_adapter: row.execution_adapter,
+    workflow_ingress_adapter: row.workflow_ingress_adapter,
+    im_ingress_owner: row.im_ingress_owner,
+    im_ingress_adapter: row.im_ingress_adapter,
+    can_receive_dispatch: row.can_receive_dispatch,
+    endpoint_ref: row.endpoint_ref
   });
+  if (!snap.workflowIngressAdapter || snap.workflowIngressAdapter === "none" || snap.workflowIngressAdapter === "route_shell") {
+    return { ok: false, failureType: "runtime_registry_adapter_unavailable", error: `workflow ingress adapter is not dispatch-capable: ${snap.workflowIngressAdapter || "missing"}` };
+  }
+  if (runtime === "hermers") {
+    if (snap.platform !== "hermers") {
+      return { ok: false, failureType: "runtime_registry_platform_mismatch", error: `expected Hermers platform, got ${snap.platform || "missing"}` };
+    }
+    if (!snap.endpointRef || !hermesProfileFromEndpoint(snap.endpointRef, row.agent_id)) {
+      return { ok: false, failureType: "runtime_registry_endpoint_missing", error: "Hermers dispatch requires a runtime_agents endpoint_ref profile" };
+    }
+  }
+  return { ok: true, adapter: snap.workflowIngressAdapter, platform: snap.platform, endpointRef: snap.endpointRef };
+}
+
+async function failRuntimeBridgeRegistryDispatch(paths, row, validation, input = {}) {
+  const failedAt = nowIso();
+  await updateDispatch(paths, row.dispatch_id, "failed", {
+    adapter: "runtime_registry",
+    failedAt,
+    failureType: validation.failureType,
+    error: validation.error
+  });
+  const runtimeRunId = await recordRuntimeRun(paths, row, {
+    adapter: "runtime_registry",
+    status: "failed",
+    failureType: validation.failureType,
+    startedAt: failedAt,
+    completedAt: failedAt,
+    error: validation.error,
+    payload: { registryValidation: validation, owner: firstText(input.owner, input.from, "workflow") }
+  });
+  await finishMessageFlowRuntime(paths, row, {
+    runtimeRunId,
+    finalOutputPresent: false,
+    failureType: validation.failureType,
+    lastError: validation.error
+  }, input);
   return {
     dispatchId: row.dispatch_id,
     runtime: row.runtime,
     agentId: row.agent_id,
-    status: "deferred",
-    reason: admission.failureType,
-    profile: admission.profile,
-    profileMode: admission.targetMode,
-    nextRetryAt: nextRetryAtValue
+    status: "failed",
+    failureType: validation.failureType,
+    error: validation.error
   };
 }
 
@@ -8374,7 +8302,12 @@ async function collectAcpTurnOutput(backend, request, timeoutSeconds, controller
 
 async function runHermesAcpDispatch(paths, row, input = {}) {
   const backendId = String(input.acpBackend || input.acp_backend || process.env.TRADING_AGENTS_ACP_BACKEND || "acpx").trim();
-  const acpAgent = String(input.acpAgent || input.acp_agent || hermesAcpAgentFromEndpoint(row.endpoint_ref, row.agent_id)).trim();
+  const registryAcpAgent = String(hermesAcpAgentFromEndpoint(row.endpoint_ref, row.agent_id)).trim();
+  const requestedAcpAgent = String(input.acpAgent || input.acp_agent || "").trim();
+  if (requestedAcpAgent && requestedAcpAgent !== registryAcpAgent) {
+    throw new Error(`Hermers ACP agent override is not registry-owned for ${row.agent_id}`);
+  }
+  const acpAgent = registryAcpAgent;
   if (!acpAgent) throw new Error(`Hermes ACP agent alias is required for ${row.agent_id}`);
   const sessionMode = String(input.sessionMode || input.session_mode || "persistent").trim() === "oneshot" ? "oneshot" : "persistent";
   const timeoutSeconds = Math.max(30, Math.min(3600, Number(input.timeoutSeconds || input.timeout_seconds || 900)));
@@ -8772,7 +8705,7 @@ export async function runtimeBridgeDrain(rootDir, input = {}) {
   const dispatchFilter = dispatchId ? `AND d.dispatch_id=${sqlValue(dispatchId)}` : "";
   const hermersModes = runtime === "hermers" ? await loadHermersProfileModes(input) : null;
   const rows = await sqlite(paths.dbFile, `
-SELECT d.*, a.display_name, a.role, a.endpoint_ref, a.platform, a.execution_adapter, a.im_ingress_owner, a.im_ingress_adapter, a.workflow_ingress_adapter
+SELECT d.*, a.agent_key AS registry_agent_key, a.runtime AS registry_runtime, a.status AS registry_status, a.display_name, a.role, a.endpoint_ref, a.platform, a.execution_adapter, a.im_ingress_owner, a.im_ingress_adapter, a.workflow_ingress_adapter, a.can_receive_dispatch
 FROM mixed_meeting_dispatches d
 LEFT JOIN runtime_agents a ON a.agent_key=d.agent_key
 WHERE d.status='queued' AND d.runtime=${sqlValue(runtime)}
@@ -8784,16 +8717,15 @@ ORDER BY
 LIMIT ${limit};`, { json: true });
   if (dryRun) return { runtime, dryRun: true, count: rows.length, profileModes: hermersModes ? profileModesReadinessPayload(hermersModes) : null, dispatches: rows.map((row) => {
     const admission = runtime === "hermers" ? classifyHermersProfileAdmission(row, hermersModes, input) : { allowed: true, action: "allow" };
-    return { dispatchId: row.dispatch_id, meetingId: row.meeting_id, workflowId: row.workflow_id, traceId: row.trace_id, agentId: row.agent_id, attempt: row.attempt, maxAttempts: row.max_attempts, endpointRef: row.endpoint_ref, admission };
+    const registryValidation = validateRuntimeBridgeRegistryRow(row, runtime);
+    return { dispatchId: row.dispatch_id, meetingId: row.meeting_id, workflowId: row.workflow_id, traceId: row.trace_id, agentId: row.agent_id, attempt: row.attempt, maxAttempts: row.max_attempts, endpointRef: row.endpoint_ref, registryValidation, admission };
   }) };
   const results = [];
   for (const row of rows) {
-    if (runtime === "hermers") {
-      const admission = classifyHermersProfileAdmission(row, hermersModes, input);
-      if (!admission.allowed) {
-        results.push(await deferRuntimeDispatchForProfileMode(paths, row, admission, input));
-        continue;
-      }
+    const validation = validateRuntimeBridgeRegistryRow(row, runtime);
+    if (!validation.ok) {
+      results.push(await failRuntimeBridgeRegistryDispatch(paths, row, validation, input));
+      continue;
     }
     const claim = await claimQueuedDispatch(paths, row, input);
     if (!claim.claimed) {
@@ -8801,23 +8733,29 @@ LIMIT ${limit};`, { json: true });
       continue;
     }
     const claimedRow = claim.row;
-    if (runtime === "openclaw_route_shell") {
-      results.push(await redirectQueuedRouteShellDispatch(paths, claimedRow, input));
-    } else if (runtime === "hermers") {
-      const adapter = normalizeWorkflowIngressAdapter(claimedRow.workflow_ingress_adapter || claimedRow.execution_adapter || "acp", claimedRow.platform || "hermers", runtime);
-      if (adapter === "acp") {
-        results.push(await runHermesAcpDispatch(paths, claimedRow, input));
-      } else if (adapter === "cli") {
-        results.push(await runHermesDispatch(paths, claimedRow, { ...input, adapterName: "cli" }));
+    try {
+      if (runtime === "openclaw_route_shell") {
+        results.push(await redirectQueuedRouteShellDispatch(paths, claimedRow, input));
+      } else if (runtime === "hermers") {
+        const adapter = normalizeWorkflowIngressAdapter(claimedRow.workflow_ingress_adapter || claimedRow.execution_adapter || "", claimedRow.platform || "", runtime);
+        if (adapter === "acp") {
+          results.push(await runHermesAcpDispatch(paths, claimedRow, input));
+        } else if (adapter === "cli") {
+          results.push(await runHermesDispatch(paths, claimedRow, { ...input, adapterName: "cli" }));
+        } else {
+          await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter, failedAt: nowIso(), error: `hermers adapter not implemented: ${adapter}` });
+          results.push({ dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `hermers adapter not implemented: ${adapter}` });
+        }
+      } else if (runtime === "openclaw") {
+        results.push(await runOpenClawDispatch(paths, claimedRow, input));
       } else {
-        await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter, failedAt: nowIso(), error: `hermers adapter not implemented: ${adapter}` });
-        results.push({ dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `hermers adapter not implemented: ${adapter}` });
+        await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "none", failedAt: nowIso(), error: `runtime adapter not implemented: ${runtime}` });
+        results.push({ dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `runtime adapter not implemented: ${runtime}` });
       }
-    } else if (runtime === "openclaw") {
-      results.push(await runOpenClawDispatch(paths, claimedRow, input));
-    } else {
-      await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "none", failedAt: nowIso(), error: `runtime adapter not implemented: ${runtime}` });
-      results.push({ dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `runtime adapter not implemented: ${runtime}` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "runtime_bridge", failedAt: nowIso(), failureType: "runtime_bridge_error", error: message.slice(0, 2000) });
+      results.push({ dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", failureType: "runtime_bridge_error", error: message });
     }
   }
   return { runtime, count: rows.length, results, dbFile: paths.dbFile };
@@ -9984,17 +9922,18 @@ INSERT INTO meeting_control_events(event_id, meeting_id, event_type, status, sum
 VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'disperse', 'queued', ${sqlValue(input.summary || input.text || "")}, ${sqlValue(JSON.stringify({ targets, payload: parseJsonValue(input.payload, input.payload || {}) }))}, ${sqlValue(input.from || "main")}, ${sqlValue(createdAt)});`);
   const dispatches = [];
   for (const target of targets) {
-    const [runtimePart, agentPart] = target.includes(":") ? target.split(":", 2) : ["openclaw", target];
-    dispatches.push(await meetingDispatch(rootDir, {
+    const [runtimePart, agentPart] = target.includes(":") ? target.split(":", 2) : ["", target];
+    const dispatchInput = {
       meetingId,
-      runtime: runtimePart,
       agentId: agentPart,
       dispatchType: "execute_meeting_conclusion",
       prompt: input.summary || input.text || "",
       priority: input.priority || "high",
       createdBy: input.from || "main",
       payload: input.payload
-    }));
+    };
+    if (runtimePart) dispatchInput.runtime = runtimePart;
+    dispatches.push(await meetingDispatch(rootDir, dispatchInput));
   }
   return { meetingId, eventId, status: "queued", dispatches, dbFile: paths.dbFile };
 }

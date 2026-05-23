@@ -12,6 +12,10 @@ Runtime SQLite databases and backup databases are intentionally excluded from Gi
 
 Agent routing is registry-driven. `runtime_agents` records `platform`, `execution_adapter`, `im_ingress_owner`, `im_ingress_adapter`, and `workflow_ingress_adapter`; `agent_id` is identity only, not an execution location. Hermers is a platform and ACP is an adapter/mechanism, so a migrated instance is registered as `platform=hermers` plus `workflow_ingress_adapter=acp`.
 
+The workflow plugin is the cat-system scheduler and evidence plane, not the runtime platform for cat-system members. Any operation involving an agent must start from `runtime_agents`, then enter the appropriate runtime adapter. OpenClaw, Hermers/Hermes, Codex, and future platforms own their own runtime residency, local cron, Telegram ingress, queue consumption, and process management.
+
+Platform-local lists such as Hermers profiles, OpenClaw agent config, Codex sessions, systemd units, or local directories are adapter evidence only. They must not define cat-system membership, protection policy, dispatch priority, or lifecycle policy.
+
 `workflow.advance` is the first supervisor loop. It inspects tasks, dependencies, receipts, artifacts, and Human Gate state, then decides whether to plan, dispatch ready work, keep collecting receipts, ask `cat_claw` for a summary package, mark the run blocked, or complete it.
 
 `workflow.checkpoint` creates the session-overflow recovery package. It snapshots objective, acceptance criteria, phase, decision, active tasks, blocked tasks, artifact refs, Human Gate pressure, and next actions into `workflow_checkpoints` plus JSON/Markdown artifacts under `workflows/checkpoints/`. New agent sessions should restore from the latest checkpoint and referenced artifacts instead of replaying the full chat history.
@@ -104,7 +108,7 @@ Hermers ACP dispatch.
 - `docs/governance-records.md` - policy for recording workflow incidents, fixes, delivery failures, and Human Gate packages inside this plugin.
 - `docs/agent-registry-routing.md` - routing contract for platform, adapter, IM ingress, workflow ingress, and route-shell behavior.
 - `docs/companion-stability-plugin.md` - boundary contract with `cat-agents-stability`.
-- `docs/runtime-profile-modes.md` - development notes for stabilityd profile-mode evidence, workflow admission, readiness, and resource-pressure behavior.
+- `docs/runtime-profile-modes.md` - registry-first notes for runtime profile-mode evidence, workflow admission, readiness, and stability boundaries.
 - `docs/workflow-session-store.md` - development notes for session packs, session runs, worker input, CLI, invariants, and roadmap.
 - `docs/tracking-schema.sql` - schema export for `tracking.db`.
 - `scripts/trading_agents_workflow_mcp.py` - local Codex MCP server.

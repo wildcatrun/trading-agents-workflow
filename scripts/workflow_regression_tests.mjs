@@ -1304,10 +1304,7 @@ async function testHermersProfileModeReadinessAndRegistry() {
   const root = await tempRoot("profile-mode-readiness");
   const modesPath = await writeHermersProfileModes(root, {
     catears: {
-      targetMode: "cold",
-      expectedActive: true,
-      managed: true,
-      protected: false,
+      observedMode: "cold",
       activeWork: false,
       reason: "idle profile held cold for regression"
     }
@@ -1338,24 +1335,20 @@ async function testHermersProfileModeReadinessAndRegistry() {
   const catEars = registry.runtimeRegistry.hermers.find((agent) => agent.agentId === "cat_ears");
   assert.equal(catEars.profile, "catears");
   assert.equal(catEars.profileMode, "cold");
-  assert.equal(catEars.profileExpectedActive, true);
 
   const readiness = await runAction(root, {
     action: "workflow.readiness",
     stabilityProfileModesPath: modesPath
   });
-  assert.equal(readiness.planes.runtime.hermersProfileModes.profiles.catears.targetMode, "cold");
-  assert.ok(readiness.findings.some((finding) => finding.key === "runtime_profile_mode_deferred_dispatches"));
+  assert.equal(readiness.planes.runtime.hermersProfileModes.profiles.catears.observedMode, "cold");
+  assert.equal(readiness.findings.some((finding) => finding.key === "runtime_profile_mode_deferred_dispatches"), false);
 }
 
-async function testHermersProfileModeDefersDrainBeforeClaim() {
+async function testHermersProfileModeDoesNotDeferDrainAdmission() {
   const root = await tempRoot("profile-mode-drain");
   const modesPath = await writeHermersProfileModes(root, {
     catears: {
-      targetMode: "hibernate",
-      expectedActive: false,
-      managed: true,
-      protected: false,
+      observedMode: "hibernate",
       activeWork: false,
       reason: "idle profile hibernated for regression"
     }
@@ -1384,10 +1377,10 @@ async function testHermersProfileModeDefersDrainBeforeClaim() {
     runtime: "hermers",
     limit: 1,
     stabilityProfileModesPath: modesPath,
-    hibernateProfileDeferSeconds: 60
+    dryRun: true
   });
-  assert.equal(drained.results[0].status, "deferred");
-  assert.equal(drained.results[0].reason, "runtime_profile_hibernated");
+  assert.equal(drained.dispatches[0].admission.allowed, true);
+  assert.equal(drained.dispatches[0].admission.action, "observe");
 
   const dbFile = path.join(root, "tracking.db");
   const row = sqliteJson(dbFile, `
@@ -1396,17 +1389,201 @@ FROM mixed_meeting_dispatches
 WHERE dispatch_id='${dispatch.dispatchId}';`)[0];
   assert.equal(row.status, "queued");
   assert.equal(row.sentAt, null);
-  assert.equal(row.failureType, "runtime_profile_hibernated");
-  assert.ok(row.nextRetryAt);
+  assert.equal(row.failureType, null);
+  assert.equal(row.nextRetryAt, null);
   assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}'`), 0);
+}
 
-  sqliteExec(dbFile, `UPDATE mixed_meeting_dispatches SET created_at='2000-01-01T00:00:00.000Z' WHERE dispatch_id='${dispatch.dispatchId}';`);
-  const readiness = await runAction(root, {
-    action: "workflow.readiness",
-    stabilityProfileModesPath: modesPath
+async function testHermersRuntimeDrainFailsClosedOnRegistryGaps() {
+  const root = await tempRoot("hermers-registry-fail-closed");
+  const dbFile = path.join(root, "tracking.db");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    displayName: "猫之耳",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "acp",
+    endpointRef: "hermers-profile:catears"
   });
-  assert.equal(Number(readiness.planes.orchestration.dispatch.stale_queued || 0), 0);
-  assert.equal(readiness.findings.some((finding) => finding.key === "runtime_profile_mode_deferred_dispatches"), false);
+  const missing = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-registry-missing",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    prompt: "missing registry row",
+    dispatchType: "cron_heartbeat"
+  });
+  sqliteExec(dbFile, "DELETE FROM runtime_agents WHERE agent_id='cat_ears';");
+  const missingDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    dispatchId: missing.dispatchId
+  });
+  assert.equal(missingDrain.results[0].failureType, "runtime_registry_missing");
+
+  sqliteExec(dbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, runtime, agent_id, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
+VALUES ('dispatch-null-agent-key', 'meeting-null-agent-key', 'hermers', 'cat_ears', 'cron_heartbeat', 'queued', 'normal', 0, 1, 'null agent key', '{}', 'test', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');`);
+  const nullKeyDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    dispatchId: "dispatch-null-agent-key"
+  });
+  assert.equal(nullKeyDrain.results[0].failureType, "runtime_registry_missing");
+
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    displayName: "猫之耳",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "acp",
+    endpointRef: "hermers-profile:catears"
+  });
+  const inactive = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-registry-inactive",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    prompt: "inactive registry",
+    dispatchType: "cron_heartbeat"
+  });
+  sqliteExec(dbFile, "UPDATE runtime_agents SET status='inactive' WHERE agent_id='cat_ears';");
+  const inactiveDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    dispatchId: inactive.dispatchId
+  });
+  assert.equal(inactiveDrain.results[0].failureType, "runtime_registry_inactive");
+
+  sqliteExec(dbFile, "UPDATE runtime_agents SET status='active', platform='hermers', workflow_ingress_adapter='acp', endpoint_ref='hermers-profile:catears' WHERE agent_id='cat_ears';");
+  const platformMismatch = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-registry-platform",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    prompt: "platform mismatch",
+    dispatchType: "cron_heartbeat"
+  });
+  sqliteExec(dbFile, "UPDATE runtime_agents SET platform='openclaw' WHERE agent_id='cat_ears';");
+  const platformDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    dispatchId: platformMismatch.dispatchId
+  });
+  assert.equal(platformDrain.results[0].failureType, "runtime_registry_platform_mismatch");
+
+  sqliteExec(dbFile, "UPDATE runtime_agents SET platform='hermers', workflow_ingress_adapter='acp', endpoint_ref='hermers-profile:catears' WHERE agent_id='cat_ears';");
+  const adapterUnavailable = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-registry-adapter",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    prompt: "adapter unavailable",
+    dispatchType: "cron_heartbeat"
+  });
+  sqliteExec(dbFile, "UPDATE runtime_agents SET workflow_ingress_adapter='none' WHERE agent_id='cat_ears';");
+  const adapterDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    dispatchId: adapterUnavailable.dispatchId
+  });
+  assert.equal(adapterDrain.results[0].failureType, "runtime_registry_adapter_unavailable");
+
+  sqliteExec(dbFile, "UPDATE runtime_agents SET workflow_ingress_adapter='acp' WHERE agent_id='cat_ears';");
+  const disabled = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-registry-disabled",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    prompt: "dispatch disabled",
+    dispatchType: "cron_heartbeat"
+  });
+  sqliteExec(dbFile, "UPDATE runtime_agents SET can_receive_dispatch=0 WHERE agent_id='cat_ears';");
+  const disabledDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    dispatchId: disabled.dispatchId
+  });
+  assert.equal(disabledDrain.results[0].failureType, "runtime_registry_dispatch_disabled");
+
+  sqliteExec(dbFile, "UPDATE runtime_agents SET can_receive_dispatch=1, endpoint_ref='' WHERE agent_id='cat_ears';");
+  const noEndpoint = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-registry-endpoint",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    prompt: "endpoint missing",
+    dispatchType: "cron_heartbeat"
+  });
+  const endpointDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    dispatchId: noEndpoint.dispatchId
+  });
+  assert.equal(endpointDrain.results[0].failureType, "runtime_registry_endpoint_missing");
+
+  sqliteExec(dbFile, "UPDATE runtime_agents SET endpoint_ref='hermers-profile:catears' WHERE agent_id='cat_ears';");
+  const overrideMismatch = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-acp-override",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    prompt: "acp override mismatch",
+    dispatchType: "cron_heartbeat"
+  });
+  const overrideDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    dispatchId: overrideMismatch.dispatchId,
+    acpAgent: "/tmp/not-registry-owned"
+  });
+  assert.equal(overrideDrain.results[0].failureType, "runtime_bridge_error");
+  assert.match(overrideDrain.results[0].error, /override is not registry-owned/);
+}
+
+async function testRegistryRoutingRankAndDisperseResolution() {
+  const root = await tempRoot("registry-routing-rank");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_nose",
+    displayName: "猫之鼻",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "acp",
+    endpointRef: "hermers-profile:catnose",
+    routingPolicy: { routingRank: 20 }
+  });
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "cat_nose",
+    displayName: "猫之鼻",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "openclaw_native",
+    endpointRef: "openclaw-agent:cat_nose",
+    routingPolicy: { routingRank: 5 }
+  });
+  const dispatch = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-routing-rank",
+    agentId: "cat_nose",
+    prompt: "routing rank should select openclaw"
+  });
+  assert.equal(dispatch.runtime, "openclaw");
+
+  const disperse = await runAction(root, {
+    action: "meeting.disperse",
+    meetingId: "meeting-disperse-rank",
+    targets: ["cat_nose"],
+    summary: "unqualified disperse target should use registry resolution"
+  });
+  assert.equal(disperse.dispatches[0].runtime, "openclaw");
 }
 
 async function testHermersProfileModeMalformedFileReadiness() {
@@ -1493,7 +1670,9 @@ try {
     ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],
     ["readiness gateway degraded", testReadinessGatewayDegraded],
     ["hermers profile mode readiness/registry", testHermersProfileModeReadinessAndRegistry],
-    ["hermers profile mode defers drain before claim", testHermersProfileModeDefersDrainBeforeClaim],
+    ["hermers profile mode does not defer drain admission", testHermersProfileModeDoesNotDeferDrainAdmission],
+    ["hermers runtime drain fails closed on registry gaps", testHermersRuntimeDrainFailsClosedOnRegistryGaps],
+    ["registry routing rank and disperse resolution", testRegistryRoutingRankAndDisperseResolution],
     ["hermers profile mode malformed file readiness", testHermersProfileModeMalformedFileReadiness],
     ["cat_claw openclaw-only registry guard", testCatClawOpenClawOnlyRegistryGuard]
   ];
