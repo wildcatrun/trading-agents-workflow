@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Stdio MCP server for Hermers profiles to call central trading-agents-workflow.
 
-This server is intentionally a thin client. It exposes the same tool surface as
-the Hermers-side local adapter, but routes every operation through the central
-workflow runAction interface and the single workflow state root.
+This server is intentionally a thin, capability-scoped control surface. The
+workflow core/CLI owns behavior; MCP exposes only a small profile-safe tool set
+unless high-risk administrative tools are explicitly enabled by environment.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Any
 
 
 SERVER_NAME = "trading-agents-workflow-hermes"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.1.1"
 
 SCRIPT_WORKFLOW_PACKAGE = Path(__file__).resolve().parents[1]
 SERVER_WORKFLOW_PACKAGE = Path("/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout")
@@ -28,6 +28,8 @@ DEFAULT_ACTIVE_WORKFLOW_ROOT = Path("/home/flashcat/multi-agent-hedge-fund-frame
 LEGACY_WORKFLOW_ROOT = Path("/home/flashcat/.openclaw/shared/trading-agents-workflow")
 ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT"
 MAX_TIMEOUT_SECONDS = 1800
+ALLOW_RAW_ACTION_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_RAW_ACTION"
+ALLOW_SCHEDULE_MUTATION_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_SCHEDULE_MUTATION"
 
 
 def now_iso() -> str:
@@ -48,9 +50,9 @@ def capability_mode() -> str:
     configured = os.environ.get("TRADING_AGENTS_WORKFLOW_CAPABILITY")
     if configured:
         mode = configured.strip().lower().replace("-", "_")
-        if mode in {"full", "message_only", "disabled"}:
+        if mode in {"full", "governance", "message_only", "disabled"}:
             return mode
-    return "full" if profile_id() == "catheart" else "message_only"
+    return "governance" if profile_id() == "catheart" else "message_only"
 
 
 def workflow_package() -> Path:
@@ -329,22 +331,8 @@ BASE_TOOLS: dict[str, dict[str, Any]] = {
     },
 }
 
-FULL_TOOLS: dict[str, dict[str, Any]] = {
+GOVERNANCE_TOOLS: dict[str, dict[str, Any]] = {
     **BASE_TOOLS,
-    "trading_agents_workflow": {
-        "description": (
-            "Call the central trading-agents-workflow public action interface from this Hermers profile. "
-            "Use only for governed workflow/message-flow/receipt/status operations; do not use it for single-agent heartbeat or lightweight cron."
-        ),
-        "inputSchema": WORKFLOW_ACTION_SCHEMA,
-    },
-    "workflow_schedule_upsert": {
-        "description": (
-            "Register or update a governed central workflow schedule. Use for cross-agent, multi-stage workflows that need receipt/Human Gate/state-machine tracking. "
-            "Do not use for this profile's ordinary heartbeat, cron, or single-agent script jobs."
-        ),
-        "inputSchema": SCHEDULE_UPSERT_SCHEMA,
-    },
     "workflow_schedule_list": {
         "description": "List central workflow schedules.",
         "inputSchema": SCHEDULE_LIST_SCHEMA,
@@ -355,13 +343,42 @@ FULL_TOOLS: dict[str, dict[str, Any]] = {
     },
 }
 
+ADMIN_TOOLS: dict[str, dict[str, Any]] = {
+    "workflow_schedule_upsert": {
+        "description": (
+            "Register or update a governed central workflow schedule. This is an administrative mutation surface; "
+            f"it is exposed only when {ALLOW_SCHEDULE_MUTATION_ENV}=1."
+        ),
+        "inputSchema": SCHEDULE_UPSERT_SCHEMA,
+    },
+}
+
+RAW_ACTION_TOOL: dict[str, dict[str, Any]] = {
+    "trading_agents_workflow": {
+        "description": (
+            "Call the central trading-agents-workflow public action interface. This raw action surface is disabled by default; "
+            f"set {ALLOW_RAW_ACTION_ENV}=1 only for controlled debugging or governance sessions."
+        ),
+        "inputSchema": WORKFLOW_ACTION_SCHEMA,
+    },
+}
+
 
 def tools_for_capability() -> dict[str, dict[str, Any]]:
     mode = capability_mode()
     if mode == "disabled":
         return {}
-    if mode == "full":
-        return FULL_TOOLS
+    if mode in {"full", "governance"}:
+        tools = dict(GOVERNANCE_TOOLS)
+        if truthy_env(ALLOW_SCHEDULE_MUTATION_ENV):
+            tools.update(ADMIN_TOOLS)
+        if truthy_env(ALLOW_RAW_ACTION_ENV):
+            tools.update(RAW_ACTION_TOOL)
+        return tools
+    if truthy_env(ALLOW_RAW_ACTION_ENV):
+        # Keep raw action opt-in independent from capability so a temporary
+        # debugging profile can be opened without widening every profile.
+        return {**BASE_TOOLS, **RAW_ACTION_TOOL}
     return BASE_TOOLS
 
 

@@ -27,9 +27,10 @@
     "openclaw": ">=2026.5.7"
   },
   "scripts": {
-    "check": "node --check index.js && node --check src/core.js && node --check src/workflow.js && node --check src/console/sqlite.js && node --check src/console/read-model.js && node --check src/console/action-gateway.js && node --check src/console/server.js && node --check bin/cat-meeting-governance.mjs && node --check bin/workflow-console.mjs && node --check scripts/workflow_regression_tests.mjs && node --check scripts/workflow_trading_core_contract_smoke.mjs && python3 -m py_compile scripts/trading_agents_workflow_mcp.py scripts/trading_agents_workflow_hermes_mcp.py",
+    "check": "node --check index.js && node --check src/core.js && node --check src/workflow.js && node --check src/console/sqlite.js && node --check src/console/read-model.js && node --check src/console/action-gateway.js && node --check src/console/server.js && node --check bin/cat-meeting-governance.mjs && node --check bin/workflow-console.mjs && node --check scripts/workflow_regression_tests.mjs && node --check scripts/workflow_trading_core_contract_smoke.mjs && python3 -m py_compile scripts/trading_agents_workflow_mcp.py scripts/trading_agents_workflow_hermes_mcp.py scripts/test_hermes_mcp_surface.py",
     "smoke": "node bin/cat-meeting-governance.mjs status --root ./.tmp-smoke",
     "smoke:mcp": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}' '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}' | python3 scripts/trading_agents_workflow_mcp.py",
+    "smoke:hermes-mcp": "python3 scripts/test_hermes_mcp_surface.py",
     "test:regression": "node scripts/workflow_regression_tests.mjs",
     "smoke:trading-core": "node scripts/workflow_trading_core_contract_smoke.mjs",
     "test": "npm run test:regression"

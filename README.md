@@ -60,7 +60,18 @@ tool_timeout_sec = 240
 enabled = true
 ```
 
-The MCP server is intentionally read-oriented. It can inspect local Git state, read governance JSONL logs, query `runtime_agents`, and take read-only development-server snapshots. Publishing changes still requires normal Git review and push.
+`trading-agents-workflow` keeps behavior in the Node core/CLI/OpenClaw plugin. MCP is only a thin control-plane wrapper for model-accessible, capability-scoped operations.
+
+The local Codex MCP server is intentionally ops-oriented. It can inspect local Git state, read governance JSONL logs, query `runtime_agents`, read receipt surfaces, and take development-server snapshots. Its mutating surface is limited to governed `message_flow` creation and still routes through the CLI/core path.
+
+The Hermers MCP server is narrower by default:
+
+- normal profiles expose only `workflow_message_flow_send`;
+- the governance profile (`catheart`, or `TRADING_AGENTS_WORKFLOW_CAPABILITY=governance|full`) exposes `workflow_message_flow_send`, `workflow_status`, and `workflow_schedule_list`;
+- `workflow_schedule_upsert` is hidden unless `TRADING_AGENTS_WORKFLOW_ALLOW_SCHEDULE_MUTATION=1`;
+- raw `trading_agents_workflow` action calls are hidden unless `TRADING_AGENTS_WORKFLOW_ALLOW_RAW_ACTION=1`.
+
+This keeps long-lived Hermers sessions from carrying the full workflow surface while preserving an explicit emergency/debug path. Publishing changes still requires normal Git review and push.
 
 ## Companion Stability Plugin
 

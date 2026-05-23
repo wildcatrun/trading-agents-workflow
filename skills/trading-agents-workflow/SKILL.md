@@ -16,12 +16,23 @@ Use this skill when working with the `trading-agents-workflow` Codex integration
 
 ## MCP Tools
 
-The plugin exposes a `trading-agents-workflow` MCP server with read-oriented tools:
+The plugin exposes a local Codex `trading-agents-workflow` MCP server with ops-oriented tools:
 
 - `workflow_git_status`: local Git status, remote, HEAD, and tracked file count.
 - `workflow_server_snapshot`: read-only development-server file and size snapshot.
 - `workflow_latest_jsonl`: latest lines from local or remote workflow JSONL logs.
 - `workflow_runtime_agents`: runtime agent registry from local or remote `tracking.db`.
+- `workflow_receipts`, `workflow_message_flows`, `workflow_incidents`, and `workflow_reconcile_dry_run`: read receipt and incident surfaces.
+- `workflow_message_flow_send`: the limited mutating MCP surface; it should route governed notices through the core/CLI workflow path.
+
+Hermers profiles use `scripts/trading_agents_workflow_hermes_mcp.py`, which is intentionally smaller:
+
+- `message_only`: `workflow_message_flow_send`.
+- `governance`/`full`: `workflow_message_flow_send`, `workflow_status`, `workflow_schedule_list`.
+- `TRADING_AGENTS_WORKFLOW_ALLOW_SCHEDULE_MUTATION=1`: additionally exposes `workflow_schedule_upsert`.
+- `TRADING_AGENTS_WORKFLOW_ALLOW_RAW_ACTION=1`: additionally exposes raw `trading_agents_workflow`.
+
+The core/library and CLI are the canonical implementation surface. MCP should stay a thin, capability-scoped wrapper.
 
 ## Update Discipline
 
