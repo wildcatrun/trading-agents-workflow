@@ -34,6 +34,12 @@ Hermers profiles use `scripts/trading_agents_workflow_hermes_mcp.py`, which is i
 
 The core/library and CLI are the canonical implementation surface. MCP should stay a thin, capability-scoped wrapper.
 
+OpenClaw agent tool exposure follows the same split:
+
+- `toolAccess.fullAgents`: normally `main` only.
+- `toolAccess.governanceAgents`: `cat_claw` for secretary/Human-Gate/status-limited workflow actions.
+- other agents: `workflow_message_flow_send` only.
+
 ## Update Discipline
 
 Before publishing updates:

@@ -121,8 +121,10 @@ function workflowToolMode(api, toolContext = {}) {
   const agentId = normalizeAgentId(toolContext.agentId);
   const disabledAgents = configuredAgentSet(api, "disabledAgents", []);
   if (disabledAgents.has(agentId)) return "disabled";
-  const fullAgents = configuredAgentSet(api, "fullAgents", ["main", "cat_claw"]);
+  const fullAgents = configuredAgentSet(api, "fullAgents", ["main"]);
   if (fullAgents.has(agentId)) return "full";
+  const governanceAgents = configuredAgentSet(api, "governanceAgents", ["cat_claw"]);
+  if (governanceAgents.has(agentId)) return "governance";
   return "message_only";
 }
 
@@ -621,6 +623,72 @@ const messageFlowSendParameters = {
   },
   required: ["to", "body"]
 };
+
+const governanceWorkflowActions = new Set([
+  "status",
+  "workflow.status",
+  "workflow.readiness",
+  "workflow.topology",
+  "workflow.runtime_agents",
+  "workflow.runtime-agents",
+  "workflow.runtime.registry",
+  "workflow.task.list",
+  "workflow.tasks",
+  "workflow.schedule.list",
+  "workflow.schedules",
+  "workflow.scheduler.list",
+  "human_gate.request",
+  "human_gate.inbox",
+  "human_gate.console",
+  "human_gate.batch_inbox",
+  "human_gate.review_form",
+  "human_gate.submit_form",
+  "message_flow.list",
+  "message_flow.status",
+  "workflow.message_flow.list",
+  "workflow.message_flow.status",
+  "telegram.outbox",
+  "cat_claw.audit"
+]);
+
+const governanceToolParameters = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    action: {
+      type: "string",
+      enum: [...governanceWorkflowActions]
+    },
+    workflowId: { type: "string" },
+    workflow_id: { type: "string" },
+    meetingId: { type: "string" },
+    meeting_id: { type: "string" },
+    dispatchId: { type: "string" },
+    dispatch_id: { type: "string" },
+    flowId: { type: "string" },
+    flow_id: { type: "string" },
+    humanGateId: { type: "string" },
+    human_gate_id: { type: "string" },
+    limit: { type: "number" },
+    status: { type: "string" },
+    text: { type: "string" },
+    summary: { type: "string" },
+    target: { type: "string" },
+    account: { type: "string" },
+    deliver: { type: "boolean" },
+    staleDays: { type: "number" },
+    stale_days: { type: "number" }
+  },
+  required: ["action"]
+};
+
+function guardGovernanceWorkflowAction(input = {}) {
+  const action = String(input.action || "status").trim();
+  if (!governanceWorkflowActions.has(action)) {
+    throw new Error(`workflow action is not available to governance tool mode: ${action || "<empty>"}`);
+  }
+  return input;
+}
 
 function registerCli(api) {
   api.registerCli(({ program }) => {
@@ -3071,7 +3139,18 @@ export default definePluginEntry({
         parameters: messageFlowSendParameters,
         execute: async (_id, params) => jsonText(await runAction(requireRoot(api), messageFlowSendInput(params || {}, toolContext)))
       };
-      if (mode !== "full") return messageFlowTool;
+      if (mode === "message_only") return messageFlowTool;
+      const governanceWorkflowTool = {
+        name: "trading_agents_workflow",
+        description: "Read and submit secretary-governance workflow surfaces: readiness/status, Human Gate inbox/request, message_flow status, Telegram outbox, and cat_claw audit. Scheduling, dispatch, runtime bridge, registry mutation, trade, and side-effect actions are not available in this mode.",
+        parameters: governanceToolParameters,
+        execute: async (_id, params) => {
+          const root = requireRoot(api);
+          const guarded = guardGovernanceWorkflowAction(params || {});
+          return jsonText(await runAction(root, guardWorkflowRootOverride(guarded, root)));
+        }
+      };
+      if (mode === "governance") return [governanceWorkflowTool, messageFlowTool];
       return [
         {
           name: "trading_agents_workflow",

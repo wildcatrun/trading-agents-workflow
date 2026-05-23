@@ -77,6 +77,12 @@ The Hermers MCP server is narrower by default:
 
 This keeps long-lived Hermers sessions from carrying the full workflow surface while preserving an explicit emergency/debug path. Publishing changes still requires normal Git review and push.
 
+The OpenClaw plugin uses the same least-surface rule for agent tools:
+
+- `toolAccess.fullAgents` should normally contain only `main`;
+- `toolAccess.governanceAgents` should contain `cat_claw` for secretary/Human-Gate/status actions;
+- all other OpenClaw agents receive only `workflow_message_flow_send`.
+
 ## Companion Stability Plugin
 
 `cat-agents-stability` is the companion governance package for this workflow plugin. It owns stability probes, lane policy, findings, runbooks, desired-state drift checks, and guarded low-risk diagnostics. It does not embed `trading-agents-workflow`, replace the 10s queue, or directly mutate workflow tables.

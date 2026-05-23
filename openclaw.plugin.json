@@ -48,9 +48,15 @@
       "toolAccess": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Per-agent OpenClaw tool exposure. Full agents receive trading_agents_workflow plus workflow_message_flow_send; all other agents receive only workflow_message_flow_send unless disabled.",
+        "description": "Per-agent OpenClaw tool exposure. Full agents receive the full trading_agents_workflow tool plus workflow_message_flow_send; governance agents receive a secretary/Human-Gate/status-limited trading_agents_workflow tool plus workflow_message_flow_send; all other agents receive only workflow_message_flow_send unless disabled.",
         "properties": {
           "fullAgents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "governanceAgents": {
             "type": "array",
             "items": {
               "type": "string"
