@@ -16,16 +16,24 @@ const STATUS_TONES = {
   sent: "ok",
   acked: "ok",
   success: "ok",
+  runtime_completed: "ok",
+  telegram_sent: "ok",
+  local_codex_inbox_received: "ok",
   pending: "warning",
   queued: "warning",
   waiting_human: "warning",
+  route_registered: "warning",
+  runtime_dispatched: "warning",
+  outbound_queued: "warning",
   paused: "warning",
   blocked: "critical",
   failed: "critical",
   rejected: "critical",
   cancelled: "critical",
   expired: "critical",
-  uncertain: "critical"
+  uncertain: "critical",
+  runtime_failed: "critical",
+  telegram_failed: "critical"
 };
 
 function $(selector) {
@@ -301,6 +309,7 @@ function renderCurrentTab(data) {
   if (state.tab === "tasks") return renderTasks(data);
   if (state.tab === "dispatches") return renderDispatches(data);
   if (state.tab === "runtime-runs") return renderRuntimeRuns(data);
+  if (state.tab === "message-flows") return renderMessageFlows(data);
   if (state.tab === "timeline") return renderTimeline(data);
   if (state.tab === "human-gates") return renderHumanGates(data);
   if (state.tab === "outbox") return renderOutbox(data);
@@ -391,6 +400,64 @@ function renderRuntimeRuns(data) {
     { label: "Completed", render: (row) => formatDate(row.completed_at) },
     { label: "Error", render: (row) => short(row.error, 120) }
   ], data.runtimeRuns || [], "No runtime runs recorded."));
+}
+
+function messageFlowClosure(row) {
+  const status = String(row.status || "").toLowerCase();
+  const target = `${present(row.targetRuntime)}:${present(row.targetAgentId)}`;
+  if (status.includes("failed")) return "failed";
+  if (status === "route_registered") return "route registered";
+  if (status === "runtime_dispatched") return "runtime pending";
+  if (status === "outbound_queued") return "delivery queued";
+  if (["local_codex", "codex"].includes(String(row.targetRuntime || "").toLowerCase())) {
+    return status === "runtime_completed" ? `inbox receipt (${target})` : `inbox pending (${target})`;
+  }
+  if (row.returnPolicy === "silent") return status === "runtime_completed" ? "runtime receipt only" : "runtime pending";
+  if (row.deliveryReceiptPresent) return "delivered";
+  if (row.finalOutputPresent) return "delivery pending";
+  return "runtime pending";
+}
+
+function renderMessageFlows(data) {
+  const flows = data.flows || [];
+  const events = data.events || [];
+  const summary = data.summary || [];
+  const body = h("div", { className: "stack" }, [
+    section("Closure Summary", renderTable([
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Return Policy", key: "returnPolicy" },
+      { label: "Target Runtime", key: "targetRuntime" },
+      { label: "Count", key: "count" },
+      { label: "Runtime Output", key: "finalOutputPresent" },
+      { label: "Delivery Receipt", key: "deliveryReceiptPresent" }
+    ], summary, "No message_flow summary.")),
+    section("Flows", renderTable([
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Flow", render: (row) => h("div", {}, [
+        h("strong", {}, row.flowId),
+        h("p", { className: "muted" }, row.traceId || row.idempotencyKey || row.dispatchId)
+      ]) },
+      { label: "Target", render: (row) => `${present(row.targetRuntime)}:${present(row.targetAgentId)}` },
+      { label: "Policy", key: "returnPolicy" },
+      { label: "Closure", render: (row) => messageFlowClosure(row) },
+      { label: "Output", render: (row) => row.finalOutputPresent ? chip("present", "ok") : chip("not required/none", "neutral") },
+      { label: "Delivery", render: (row) => row.deliveryReceiptPresent ? chip("receipt", "ok") : chip("no receipt", row.returnPolicy === "silent" || ["local_codex", "codex"].includes(String(row.targetRuntime || "").toLowerCase()) ? "neutral" : "warning") },
+      { label: "Updated", render: (row) => formatDate(row.timestamps?.updatedAt) },
+      { label: "Error", render: (row) => short(row.lastError, 120) }
+    ], flows, "No message_flows recorded.")),
+    section("Events", renderTable([
+      { label: "At", render: (row) => formatDate(row.createdAt) },
+      { label: "Event", render: (row) => h("div", {}, [
+        h("strong", {}, row.eventType),
+        h("p", { className: "muted" }, row.flowId)
+      ]) },
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Target", render: (row) => `${present(row.targetRuntime)}:${present(row.targetAgentId)}` },
+      { label: "Policy", key: "returnPolicy" },
+      { label: "Dispatch", key: "dispatchId" }
+    ], events, "No message_flow events."))
+  ]);
+  setDetailBody(body);
 }
 
 function renderTimeline(data) {
@@ -491,7 +558,40 @@ function renderOperations(data) {
     section("Human Gate", renderTable([
       { label: "Status", render: (row) => chip(row.status) },
       { label: "Count", key: "count" }
-    ], data.humanGate || [], "No Human Gate summary."))
+    ], data.humanGate || [], "No Human Gate summary.")),
+    section("Runtime Drain Jobs", renderTable([
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Kind", render: (row) => row.drainKind ? chip(row.drainKind, row.drainKind === "exact" ? "ok" : "neutral") : "-" },
+      { label: "Job", render: (row) => h("div", {}, [
+        h("strong", {}, row.jobId),
+        h("p", { className: "muted" }, short(row.dedupeKey, 120))
+      ]) },
+      { label: "Runtime", key: "runtime" },
+      { label: "Dispatch", key: "exactDispatchId" },
+      { label: "Attempt", render: (row) => `${present(row.attempt)}/${present(row.maxAttempts)}` },
+      { label: "Next", render: (row) => formatDate(row.nextRunAt) },
+      { label: "Lease", render: (row) => formatDate(row.leaseUntil) },
+      { label: "Updated", render: (row) => formatDate(row.updatedAt) },
+      { label: "Error", render: (row) => short(row.lastError, 120) }
+    ], (data.controlLoopJobDetails || []).filter((row) => row.jobType === "runtime_drain"), "No runtime drain jobs.")),
+    section("Message Flow", renderTable([
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Return Policy", key: "return_policy" },
+      { label: "Target Runtime", key: "target_runtime" },
+      { label: "Count", key: "count" },
+      { label: "Runtime Output", key: "final_output_present" },
+      { label: "Delivery Receipt", key: "delivery_receipt_present" }
+    ], data.messageFlow || [], "No message_flow summary.")),
+    section("Message Flow Attention", renderTable([
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Flow", key: "flow_id" },
+      { label: "Workflow", render: (row) => present(row.workflow_id || row.meeting_id) },
+      { label: "Target", render: (row) => `${present(row.target_runtime)}:${present(row.target_agent_id)}` },
+      { label: "Policy", key: "return_policy" },
+      { label: "Outbox", key: "outbox_id" },
+      { label: "Updated", render: (row) => formatDate(row.updated_at) },
+      { label: "Error", render: (row) => short(row.last_error, 120) }
+    ], data.messageFlowAttention || [], "No delivery-required message_flow needs attention."))
   ]);
   setDetailBody(body);
 }

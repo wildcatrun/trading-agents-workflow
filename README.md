@@ -22,14 +22,18 @@ Platform-local lists such as Hermers profiles, OpenClaw agent config, Codex sess
 
 `workflow.session_pack.*` and `workflow.session_run.*` provide the first workflow-native session store. They let the workflow prepare compact, task-specific worker input from stored context, tool policy, evidence refs, checkpoint refs, and per-run input. This is for repeatable worker execution and retry safety; it does not replace workflows, checkpoints, receipts, artifacts, or Human Gate records. Development notes are in `docs/workflow-session-store.md`.
 
+`message_flow` is the governed delivery layer for agent-to-agent, route-shell, Telegram-return, and local Codex inbox traffic. `local_codex` / `codex` is now an allowed inbox target through the workflow plugin, but it records delivery evidence only; formal reports, Human Gate requests, and trading-related confirmations still require the governed IM/Human Gate path. Closure details are in `docs/message-flow-closure.md`.
+
 `human_gate.inbox` creates the secretary-facing approval table for complex workflows. It gathers pending Human Gate records, review gates, gated tasks, and Cat Claw delivery failures into `human_gate_batches`, `human_gate_batch_items`, and HTML/JSON artifacts under `human-gates/inbox/` so Flashcat can review multiple low-risk items together while P0/P1 items remain individual approvals.
 
 ## OpenClaw Plugin
 
-This repository also contains the OpenClaw runtime plugin source that is currently deployed on the development server under:
+This repository also contains the OpenClaw runtime plugin source. The
+development server active checkout is maintained through the GitHub-managed
+path:
 
 ```text
-/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow
+/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout
 ```
 
 Tracked OpenClaw plugin files include:
@@ -115,7 +119,9 @@ Hermers ACP dispatch.
 - `docs/agent-registry-routing.md` - routing contract for platform, adapter, IM ingress, workflow ingress, and route-shell behavior.
 - `docs/companion-stability-plugin.md` - boundary contract with `cat-agents-stability`.
 - `docs/managed-agent-evolution-plan.md` - phased plan for workflow events, permission gates, managed worker runners, and financial evidence contracts.
+- `docs/message-flow-closure.md` - closure contract for message_flow, return policies, local Codex inbox delivery, runtime drain, and stuck-flow incidents.
 - `docs/runtime-profile-modes.md` - registry-first notes for runtime profile-mode evidence, workflow admission, readiness, and stability boundaries.
+- `docs/workflow-console-v0.3-message-flow-observability.md` - v0.3 console round record for message_flow visibility, attention rules, runtime drain job display, smoke evidence, and rollout notes.
 - `docs/workflow-session-store.md` - development notes for session packs, session runs, worker input, CLI, invariants, and roadmap.
 - `docs/tracking-schema.sql` - schema export for `tracking.db`.
 - `scripts/trading_agents_workflow_mcp.py` - local Codex MCP server.

@@ -64,8 +64,8 @@ function compactText(value, limit = 180) {
 function timelineSeverity(status = "") {
   const value = String(status || "").toLowerCase();
   if (["failed", "blocked", "cancelled", "rejected", "expired", "uncertain"].includes(value)) return "critical";
-  if (["pending", "queued", "waiting_human", "mitigating", "monitoring"].includes(value)) return "warning";
-  if (["done", "completed", "approved", "sent", "acked", "success", "resolved"].includes(value)) return "ok";
+  if (["pending", "queued", "waiting_human", "mitigating", "monitoring", "route_registered", "runtime_dispatched", "outbound_queued"].includes(value)) return "warning";
+  if (["done", "completed", "approved", "sent", "acked", "success", "resolved", "runtime_completed", "telegram_sent"].includes(value)) return "ok";
   return "neutral";
 }
 
@@ -230,6 +230,110 @@ LIMIT 50;`);
     };
   }
 
+  async messageFlows(workflowId, query = {}) {
+    const limit = clampLimit(query.limit, 100, 500);
+    const flowWhere = `(workflow_id=${sqlValue(workflowId)} OR meeting_id=${sqlValue(workflowId)})`;
+    const flows = await sqlite(this.paths.dbFile, `
+SELECT flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, runtime_run_id, outbox_id,
+  source_channel, source_system, source_runtime, source_account_id, source_chat_id, sender_id, source_message_id,
+  route_agent_id, route_runtime, target_runtime, target_agent_id, target_platform, workflow_ingress_adapter,
+  im_identity, execution_identity, return_policy, status, inbound_received_at, route_registered_at,
+  runtime_dispatched_at, runtime_completed_at, runtime_failed_at, outbound_queued_at, telegram_sent_at,
+  telegram_failed_at, completed_at, failure_type, last_error, final_output_present, delivery_receipt_present,
+  payload_json, created_at, updated_at
+FROM message_flows
+WHERE ${flowWhere}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+    const events = await sqlite(this.paths.dbFile, `
+SELECT e.event_id, e.flow_id, e.status, e.event_type, e.payload_json, e.created_at,
+  mf.return_policy, mf.target_runtime, mf.target_agent_id, mf.dispatch_id
+FROM message_flow_events e
+JOIN message_flows mf ON mf.flow_id=e.flow_id
+WHERE ${flowWhere.replace(/workflow_id/g, "mf.workflow_id").replace(/meeting_id/g, "mf.meeting_id")}
+ORDER BY e.created_at DESC
+LIMIT ${limit};`);
+    const summary = await sqlite(this.paths.dbFile, `
+SELECT status, return_policy, target_runtime, COUNT(*) AS count,
+  SUM(CASE WHEN final_output_present=1 THEN 1 ELSE 0 END) AS final_output_present,
+  SUM(CASE WHEN delivery_receipt_present=1 THEN 1 ELSE 0 END) AS delivery_receipt_present
+FROM message_flows
+WHERE ${flowWhere}
+GROUP BY status, return_policy, target_runtime
+ORDER BY status, return_policy, target_runtime;`);
+    return {
+      workflowId,
+      count: flows.length,
+      flows: flows.map((row) => ({
+        flowId: row.flow_id,
+        traceId: row.trace_id || "",
+        idempotencyKey: row.idempotency_key || "",
+        meetingId: row.meeting_id || "",
+        workflowId: row.workflow_id || "",
+        dispatchId: row.dispatch_id || "",
+        runtimeRunId: row.runtime_run_id || "",
+        outboxId: row.outbox_id || "",
+        source: {
+          channel: row.source_channel || "",
+          system: row.source_system || "",
+          runtime: row.source_runtime || "",
+          accountId: row.source_account_id || "",
+          chatId: row.source_chat_id || "",
+          senderId: row.sender_id || "",
+          sourceMessageId: row.source_message_id || ""
+        },
+        routeAgentId: row.route_agent_id || "",
+        routeRuntime: row.route_runtime || "",
+        targetRuntime: row.target_runtime || "",
+        targetAgentId: row.target_agent_id || "",
+        targetPlatform: row.target_platform || "",
+        workflowIngressAdapter: row.workflow_ingress_adapter || "",
+        imIdentity: row.im_identity || "",
+        executionIdentity: row.execution_identity || "",
+        returnPolicy: row.return_policy || "",
+        status: row.status,
+        finalOutputPresent: Boolean(Number(row.final_output_present || 0)),
+        deliveryReceiptPresent: Boolean(Number(row.delivery_receipt_present || 0)),
+        failureType: row.failure_type || "",
+        lastError: row.last_error || "",
+        timestamps: {
+          inboundReceivedAt: row.inbound_received_at || "",
+          routeRegisteredAt: row.route_registered_at || "",
+          runtimeDispatchedAt: row.runtime_dispatched_at || "",
+          runtimeCompletedAt: row.runtime_completed_at || "",
+          runtimeFailedAt: row.runtime_failed_at || "",
+          outboundQueuedAt: row.outbound_queued_at || "",
+          telegramSentAt: row.telegram_sent_at || "",
+          telegramFailedAt: row.telegram_failed_at || "",
+          completedAt: row.completed_at || "",
+          createdAt: row.created_at || "",
+          updatedAt: row.updated_at || ""
+        },
+        payload: redact(parseJson(row.payload_json, {}))
+      })),
+      events: events.map((row) => ({
+        eventId: row.event_id,
+        flowId: row.flow_id,
+        status: row.status,
+        eventType: row.event_type,
+        returnPolicy: row.return_policy || "",
+        targetRuntime: row.target_runtime || "",
+        targetAgentId: row.target_agent_id || "",
+        dispatchId: row.dispatch_id || "",
+        payload: redact(parseJson(row.payload_json, {})),
+        createdAt: row.created_at
+      })),
+      summary: summary.map((row) => ({
+        status: row.status,
+        returnPolicy: row.return_policy || "",
+        targetRuntime: row.target_runtime || "",
+        count: toInt(row.count),
+        finalOutputPresent: toInt(row.final_output_present),
+        deliveryReceiptPresent: toInt(row.delivery_receipt_present)
+      }))
+    };
+  }
+
   async outbox(workflowId, query = {}) {
     const limit = clampLimit(query.limit, 100, 500);
     const rows = await sqlite(this.paths.dbFile, `
@@ -316,7 +420,8 @@ LIMIT 200;`);
       checkpoints,
       artifacts,
       sideEffects,
-      incidents
+      incidents,
+      messageFlowEvents
     ] = await Promise.all([
       sqlite(this.paths.dbFile, `
 SELECT task_id, parent_task_id, phase, owner_agent, runtime, agent_id, task_type, status, priority, summary, blocked_reason, created_at, updated_at
@@ -378,7 +483,15 @@ SELECT incident_id, status, mode, summary, commander, impact, mitigation, declar
 FROM incident_states
 WHERE payload_json LIKE ${sqlValue(`%${workflowId}%`)}
 ORDER BY declared_at DESC
-LIMIT 80;`)
+LIMIT 80;`),
+      sqlite(this.paths.dbFile, `
+SELECT e.event_id, e.flow_id, e.status, e.event_type, e.payload_json, e.created_at,
+  mf.return_policy, mf.target_runtime, mf.target_agent_id, mf.dispatch_id
+FROM message_flow_events e
+JOIN message_flows mf ON mf.flow_id=e.flow_id
+WHERE mf.workflow_id=${sqlValue(workflowId)} OR mf.meeting_id=${sqlValue(workflowId)}
+ORDER BY e.created_at DESC
+LIMIT 120;`)
     ]);
 
     for (const row of tasks) {
@@ -614,6 +727,28 @@ LIMIT 80;`)
       });
     }
 
+    for (const row of messageFlowEvents) {
+      const payload = parseJson(row.payload_json, {});
+      pushTimelineEvent(events, {
+        at: row.created_at,
+        kind: "message_flow",
+        status: row.status,
+        title: `Message flow ${row.event_type}: ${row.flow_id}`,
+        subtitle: `${row.return_policy || "-"} / ${row.target_runtime || "-"}:${row.target_agent_id || "-"}`,
+        actor: row.target_agent_id,
+        refId: row.flow_id,
+        payload: {
+          eventId: row.event_id,
+          eventType: row.event_type,
+          returnPolicy: row.return_policy,
+          targetRuntime: row.target_runtime,
+          targetAgentId: row.target_agent_id,
+          dispatchId: row.dispatch_id,
+          payload
+        }
+      });
+    }
+
     events.sort((a, b) => String(b.at).localeCompare(String(a.at)));
     return {
       workflowId,
@@ -667,8 +802,76 @@ FROM protocol_objects
 WHERE object_type='human_gate_record'
 GROUP BY status
 ORDER BY status;`);
+    const messageFlow = await sqlite(this.paths.dbFile, `
+SELECT status, return_policy, target_runtime, COUNT(*) AS count,
+  SUM(CASE WHEN final_output_present=1 THEN 1 ELSE 0 END) AS final_output_present,
+  SUM(CASE WHEN delivery_receipt_present=1 THEN 1 ELSE 0 END) AS delivery_receipt_present
+FROM message_flows
+GROUP BY status, return_policy, target_runtime
+ORDER BY status, return_policy, target_runtime;`);
+    const messageFlowAttention = await sqlite(this.paths.dbFile, `
+SELECT flow_id, workflow_id, meeting_id, target_runtime, target_agent_id, return_policy, status,
+  final_output_present, delivery_receipt_present, runtime_completed_at, runtime_failed_at,
+  outbox_id, updated_at, last_error
+FROM message_flows
+WHERE
+  (
+    return_policy IN ('reply_to_source_chat','report_to_flashcat')
+    AND delivery_receipt_present=0
+    AND target_runtime NOT IN ('local_codex','codex')
+    AND (COALESCE(runtime_completed_at,'') != '' OR COALESCE(runtime_failed_at,'') != '')
+  )
+  OR status IN ('runtime_failed','telegram_failed')
+ORDER BY updated_at ASC
+LIMIT 100;`);
+    const controlLoopJobDetails = await sqlite(this.paths.dbFile, `
+SELECT job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json,
+  attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at
+FROM control_loop_jobs
+WHERE job_type IN ('runtime_drain','message_flow_reconcile','telegram_outbox_deliver','human_gate_request_ensure','human_gate_inbox')
+ORDER BY updated_at DESC
+LIMIT 120;`);
     const readiness = await this.readinessLatest();
-    return { controlLoopJobs: jobs, staleDispatches, telegramOutbox: outbox, humanGate, readiness };
+    return {
+      controlLoopJobs: jobs,
+      controlLoopJobDetails: controlLoopJobDetails.map((row) => {
+        const payload = parseJson(row.payload_json, {});
+        const result = parseJson(row.result_json, {});
+        const exactDispatchId = String(payload.dispatchId || payload.dispatch_id || "").trim();
+        const dedupeParts = String(row.dedupe_key || "").split(":");
+        const dedupeDispatchId = row.job_type === "runtime_drain" && dedupeParts.length >= 3 ? dedupeParts.slice(2).join(":") : "";
+        const dispatchId = exactDispatchId || dedupeDispatchId;
+        return {
+          jobId: row.job_id,
+          jobType: row.job_type,
+          dedupeKey: row.dedupe_key,
+          drainKind: row.job_type === "runtime_drain" ? (dispatchId ? "exact" : "generic") : "",
+          exactDispatchId: dispatchId,
+          priority: row.priority,
+          status: row.status,
+          workflowId: row.workflow_id || "",
+          runtime: row.runtime || "",
+          attempt: toInt(row.attempt),
+          maxAttempts: toInt(row.max_attempts),
+          nextRunAt: row.next_run_at || "",
+          leaseOwner: row.lease_owner || "",
+          leaseUntil: row.lease_until || "",
+          lastError: row.last_error || "",
+          resultStatus: result.status || "",
+          payload: redact(payload),
+          result: redact(result),
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          completedAt: row.completed_at || ""
+        };
+      }),
+      staleDispatches,
+      telegramOutbox: outbox,
+      humanGate,
+      messageFlow,
+      messageFlowAttention,
+      readiness
+    };
   }
 
   async readinessLatest() {

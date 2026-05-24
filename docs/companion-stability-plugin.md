@@ -65,7 +65,7 @@ Local Mac Codex should load both MCP servers:
 - `trading-agents-workflow`
 - `cat-agents-stability`
 
-Codex may inspect workflow status, runtime agents, governance logs, stability findings, desired-state drift, and runbooks. Codex remains a control panel and must not become a workflow runtime, agent return inbox, or parallel scheduler.
+Codex may inspect workflow status, runtime agents, governance logs, stability findings, desired-state drift, and runbooks. Codex remains a control panel and must not become a workflow runtime or parallel scheduler. It may receive governed `local_codex` / `codex` inbox messages through `message_flow`, but an inbox receipt is not a Human Gate decision, final Flashcat delivery, or runtime execution result.
 
 ## Hermers Boundary
 

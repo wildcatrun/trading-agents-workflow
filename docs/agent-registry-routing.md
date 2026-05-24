@@ -66,6 +66,11 @@ State machine:
 inbound_received -> route_registered -> runtime_dispatched -> runtime_completed/runtime_failed -> outbound_queued -> telegram_sent/telegram_failed
 ```
 
+Some targets stop before the human-visible delivery states. `return_policy=silent`
+closes on runtime receipt. `local_codex` / `codex` closes on a
+`local_codex_inbox_received` receipt because the local Codex path is a governed
+inbox target, not a Telegram delivery target.
+
 Required return-path fields for `return_policy=reply_to_source_chat`:
 
 - `source_channel`
@@ -75,9 +80,9 @@ Required return-path fields for `return_policy=reply_to_source_chat`:
 - `source_message_id`
 - `delivery_policy`
 
-For non-OpenClaw agents, completion is not `dispatch.status=acked`. A user-visible reply is complete only when the flow has `final_output_present=1` and `delivery_receipt_present=1`, normally with status `telegram_sent`. Empty output, interrupted output, cancelled ACP turns, missing return path, and Telegram delivery failure are flow failures even if the dispatch row was already acknowledged at the runtime layer.
+For non-OpenClaw agents, completion is not `dispatch.status=acked`. A user-visible reply is complete only when the selected return policy requires delivery and the flow has `final_output_present=1` plus `delivery_receipt_present=1`, normally with status `telegram_sent`. Empty output, interrupted output, cancelled ACP turns, missing return path, and Telegram delivery failure are flow failures even if the dispatch row was already acknowledged at the runtime layer. A `silent` flow with runtime closure and a local Codex inbox flow with `local_codex_inbox_received` are not user-visible replies and must not be reconciled as missing Telegram delivery.
 
-The 10s control loop must reconcile stuck message flows. A flow with runtime final output but no Telegram delivery receipt after the configured stuck window is not successful; it must create an incident and leave evidence in `message_flow_events`.
+The 10s control loop must reconcile stuck message flows. A delivery-required flow with runtime final output but no Telegram delivery receipt after the configured stuck window is not successful; it must create an incident and leave evidence in `message_flow_events`. The detailed closure contract is maintained in [message-flow-closure.md](message-flow-closure.md).
 
 ## Examples
 
@@ -117,4 +122,17 @@ im_ingress_owner=external_platform
 im_ingress_adapter=platform_im
 workflow_ingress_adapter=api
 endpoint_ref=https://example.invalid/agent/external_researcher
+```
+
+Local Codex inbox:
+
+```text
+agent_id=local_codex
+platform=local_codex
+execution_adapter=inbox
+im_ingress_owner=none
+im_ingress_adapter=none
+workflow_ingress_adapter=local_codex_inbox
+execution_identity=local_codex_inbox
+return_policy=silent
 ```

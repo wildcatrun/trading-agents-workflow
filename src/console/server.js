@@ -166,6 +166,7 @@ export function createConsoleServer(options = {}) {
         if (child === "tasks") return json(res, 200, await readModel.tasks(workflowId));
         if (child === "dispatches") return json(res, 200, await readModel.dispatches(workflowId, query));
         if (child === "runtime-runs") return json(res, 200, await readModel.runtimeRuns(workflowId, query));
+        if (child === "message-flows") return json(res, 200, await readModel.messageFlows(workflowId, query));
         if (child === "human-gates") return json(res, 200, await readModel.humanGates(workflowId));
         if (child === "outbox") return json(res, 200, await readModel.outbox(workflowId, query));
         if (child === "checkpoints") return json(res, 200, await readModel.checkpoints(workflowId));

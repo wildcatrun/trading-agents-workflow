@@ -40,7 +40,9 @@ Other agents contribute within their professional boundaries. They do not replac
 
 Local Mac Codex is Flashcat's control panel and outbound operator surface. It can help Flashcat send instructions, queries, reviews, and maintenance requests into the cat system through OpenClaw Gateway and this workflow plugin.
 
-Agent-to-Flashcat return traffic must not target local Mac Codex. Reports, alerts, confirmation requests, Human Gate requests, task results, receipts, and trading-related messages must leave through governed IM exits such as Telegram, WeCom, or OpenClaw IM. The local Codex-to-node path is one-way for control-plane operations; it is not an inbox for cat-system callbacks.
+Local Mac Codex can also be addressed as `local_codex` / `codex` through the governed `message_flow` path. This is an inbox delivery surface for structured handoffs, status, review evidence, and operator context. It records inbox receipt evidence; it is not an autonomous cat-system member runtime and it does not mean Codex approved, summarized, or delivered the content to Flashcat.
+
+Formal reports, alerts, confirmation requests, Human Gate requests, task results, receipts, and trading-related messages still need the governed IM/Human Gate path when Flashcat must see or approve them. Use Telegram, WeCom, OpenClaw IM, Cat Claw, and Human Gate according to the workflow policy instead of treating a local Codex inbox receipt as user-visible delivery.
 
 ## Agent-to-Agent Message Flow
 
@@ -63,6 +65,8 @@ Minimal action payload:
 ```
 
 The action creates one queued dispatch and one `message_flows` record per target. Completion is still proven by the normal runtime bridge and receipt path; `workflow.message_flow.send` only registers the governed message flow and does not claim that the target has read or acted on the message.
+
+The current closure contract, including `return_policy=silent`, local Codex inbox delivery, and control-loop exact runtime drains, is maintained in [message-flow-closure.md](message-flow-closure.md).
 
 ## Agent Registry Routing
 
@@ -110,7 +114,7 @@ Route-shell forwarding must be a Gateway pre-dispatch routing action, not an age
 
 This is fail-closed by default. If the registered Gateway ingress row, dispatch-capable target row, or required return path is missing, the hook handles the message and returns `ROUTE_FAILED`; it does not fall back to the OpenClaw route-shell agent. `drainNow` defaults to `false` because Gateway dispatch should not synchronously run external platform work. The 10s control loop should drain the queued dispatch.
 
-For non-OpenClaw agents, a route-shell acknowledgement is never a formal agent reply. The formal success condition is a completed message flow: `final_output_present=1` and `delivery_receipt_present=1`, normally with `message_flows.status=telegram_sent`. `dispatch.status=acked` means only that the runtime turn ended.
+For delivery-required non-OpenClaw replies, a route-shell acknowledgement is never a formal agent reply. The formal success condition is a completed message flow with `final_output_present=1` and `delivery_receipt_present=1`, normally with `message_flows.status=telegram_sent`. `dispatch.status=acked` means only that the runtime turn ended. `return_policy=silent` flows and local Codex inbox flows close on their runtime/inbox receipts and must not be treated as missing Telegram delivery.
 
 The hook also applies in-process single-flight by route-shell agent, channel, and source message id. Concurrent provider retries for the same Telegram message wait on the same routing promise instead of creating a thundering herd against SQLite. SQLite unique idempotency still remains the durable backstop across process restarts.
 
@@ -435,7 +439,7 @@ Timeouts are layered. `tickMs` is only cadence. `timeoutSeconds` bounds runtime 
 
 Stale dispatch reconciliation is mechanical: a `sent` dispatch older than the safe window is synced to a terminal runtime receipt when one exists; otherwise it is marked `failed/runtime_stale` or requeued only if `max_attempts` still allows retry. This prevents readiness from staying critical on dead `sent` rows without pretending the underlying runtime work succeeded.
 
-Stuck `message_flow` reconciliation is also mechanical. If a non-OpenClaw flow has `final_output_present=1`, `runtime_completed_at` is older than `controlLoop.messageFlowStuckAfterMs` (default 5 minutes), and `delivery_receipt_present=0`, the control loop queues `message_flow_reconcile`. The job records an `incident_states` row and a `message_flow_events` entry instead of silently accepting dispatch ack as success. Telegram outbox delivery remains a separate queued job.
+Stuck `message_flow` reconciliation is also mechanical. If a delivery-required non-OpenClaw flow has `final_output_present=1`, `runtime_completed_at` is older than `controlLoop.messageFlowStuckAfterMs` (default 5 minutes), and `delivery_receipt_present=0`, the control loop queues `message_flow_reconcile`. The job records an `incident_states` row and a `message_flow_events` entry instead of silently accepting dispatch ack as success. `return_policy=silent` flows and local Codex inbox flows with `local_codex_inbox_received` do not require Telegram delivery receipts. Telegram outbox delivery remains a separate queued job.
 
 Pending Human Gate requests are also re-ensured mechanically. If a pending Human Gate already has a `sent` Telegram outbox but no button callback arrives after the resend window, the same outbox is requeued for delivery and the previous delivery receipt is retained in payload history. The Human Gate record and button ids are not recreated, so Flashcat still acts on one durable decision object.
 
