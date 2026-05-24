@@ -27,6 +27,7 @@ DEFAULT_REMOTE_KEY = "/Users/Flashcat/.ssh/openclaw_server"
 DEFAULT_AUDIT_LOG = "/Users/Flashcat/.trading-agents-workflow-mcp/audit.jsonl"
 LEGACY_WORKFLOW_ROOT = Path("/home/flashcat/.openclaw/shared/trading-agents-workflow")
 ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT"
+MESSAGE_FLOW_DELIVERY_RETURN_POLICIES = ("reply_to_source_chat", "report_to_flashcat")
 
 
 def now_iso() -> str:
@@ -649,6 +650,10 @@ def reconcile_dry_run(args: dict[str, Any]) -> dict[str, Any]:
             where.append("final_output_present=1")
         if "delivery_receipt_present" in message_flow_columns:
             where.append("delivery_receipt_present=0")
+        if "return_policy" in message_flow_columns:
+            placeholders = ", ".join("?" for _ in MESSAGE_FLOW_DELIVERY_RETURN_POLICIES)
+            where.append(f"return_policy IN ({placeholders})")
+            params.extend(MESSAGE_FLOW_DELIVERY_RETURN_POLICIES)
         query = "SELECT * FROM message_flows"
         if where:
             query += " WHERE " + " AND ".join(where)
