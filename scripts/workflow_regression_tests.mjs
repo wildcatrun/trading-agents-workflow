@@ -471,6 +471,26 @@ LIMIT 1;`)[0];
     finalOutputPresent: 1,
     dispatchId
   });
+  sqliteExec(dbFile, `
+UPDATE message_flows
+SET runtime_completed_at='${new Date(Date.now() - 10 * 60_000).toISOString()}'
+WHERE dispatch_id='${dispatchId}';`);
+  const silentReconcile = await runAction(root, {
+    action: "message_flow.reconcile",
+    messageFlowStuckAfterMs: 60_000
+  });
+  assert.equal(silentReconcile.count, 0);
+  assert.equal(sqliteCount(dbFile, "incident_states", "incident_id LIKE 'message-flow-stuck-%'"), 0);
+  const silentTick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    messageFlowStuckAfterMs: 60_000,
+    drainQueued: false,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false
+  });
+  assert.equal(Boolean(silentTick.seededJobs?.some((job) => job.jobType === "message_flow_reconcile")), false);
 
   sqliteExec(dbFile, `UPDATE mixed_meeting_dispatches SET status='queued' WHERE dispatch_id='${dispatchId}';`);
   const failBin = await makeFakeOpenClaw(root, "fake-openclaw-fail.mjs", "fail");
@@ -627,6 +647,156 @@ LIMIT 1;`)[0];
     status: "telegram_failed",
     deliveryReceiptPresent: 0
   });
+}
+
+async function testControlLoopDrainsMessageFlowRuntimes() {
+  const root = await tempRoot("message-flow-control-loop");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  const sent = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "message_flow control-loop openclaw drain body",
+    workflowId: "workflow-message-flow-openclaw-drain",
+    meetingId: "meeting-message-flow-openclaw-drain",
+    returnPolicy: "silent"
+  });
+  const dispatchId = sent.dispatches[0].dispatchId;
+  const successBin = await makeFakeOpenClaw(root, "fake-openclaw-control-loop-success.mjs", "success");
+  const tick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    runtimes: "hermers",
+    jobLimit: 1,
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    openclawBin: successBin
+  });
+  assert.equal(tick.claimedJobs?.[0]?.jobType, "runtime_drain");
+  assert.equal(tick.jobResults?.[0]?.result?.results?.[0]?.dispatchId, dispatchId);
+  const row = sqliteJson(path.join(root, "tracking.db"), `
+SELECT d.status AS dispatchStatus, mf.status AS flowStatus, mf.final_output_present AS finalOutputPresent
+FROM mixed_meeting_dispatches d
+JOIN message_flows mf ON mf.dispatch_id=d.dispatch_id
+WHERE d.dispatch_id='${dispatchId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(row, {
+    dispatchStatus: "acked",
+    flowStatus: "runtime_completed",
+    finalOutputPresent: 1
+  });
+
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "local_codex",
+    runtime: "local_codex",
+    agentId: "codex",
+    displayName: "Local Codex",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "local_codex_inbox"
+  });
+  const local = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "cat_body",
+    fromRuntime: "hermers",
+    targets: ["local_codex:codex"],
+    body: "message_flow control-loop local codex inbox body",
+    workflowId: "workflow-message-flow-local-codex",
+    meetingId: "meeting-message-flow-local-codex",
+    returnPolicy: "report_to_flashcat"
+  });
+  const localDispatchId = local.dispatches[0].dispatchId;
+  const localTick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    runtimes: "hermers",
+    jobLimit: 1,
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false
+  });
+  assert.equal(localTick.claimedJobs?.[0]?.jobType, "runtime_drain");
+  assert.equal(localTick.jobResults?.[0]?.result?.results?.[0]?.adapter, "local_codex_inbox");
+  const localRow = sqliteJson(path.join(root, "tracking.db"), `
+SELECT d.status AS dispatchStatus, mf.status AS flowStatus, mf.final_output_present AS finalOutputPresent, mf.outbox_id AS outboxId
+FROM mixed_meeting_dispatches d
+JOIN message_flows mf ON mf.dispatch_id=d.dispatch_id
+WHERE d.dispatch_id='${localDispatchId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(localRow, {
+    dispatchStatus: "acked",
+    flowStatus: "runtime_completed",
+    finalOutputPresent: 0,
+    outboxId: ""
+  });
+  assert.equal(sqliteCount(path.join(root, "tracking.db"), "telegram_outbox", "message_type='message_flow_reply'"), 0);
+
+  const starvationRoot = await tempRoot("message-flow-precise-runtime-window");
+  await runAction(starvationRoot, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  await runAction(starvationRoot, {
+    action: "runtime.agent.upsert",
+    platform: "local_codex",
+    runtime: "local_codex",
+    agentId: "codex",
+    displayName: "Local Codex",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "local_codex_inbox"
+  });
+  await runAction(starvationRoot, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "configured runtime should not occupy precise message_flow scan window",
+    workflowId: "workflow-message-flow-precise-window",
+    meetingId: "meeting-message-flow-precise-window",
+    returnPolicy: "silent"
+  });
+  const unconfigured = await runAction(starvationRoot, {
+    action: "workflow.message_flow.send",
+    fromAgent: "cat_body",
+    fromRuntime: "hermers",
+    targets: ["local_codex:codex"],
+    body: "unconfigured local_codex should still be discovered with runtimeLimit=1",
+    workflowId: "workflow-message-flow-precise-window",
+    meetingId: "meeting-message-flow-precise-window",
+    returnPolicy: "silent"
+  });
+  const unconfiguredDispatchId = unconfigured.dispatches[0].dispatchId;
+  const starvationBin = await makeFakeOpenClaw(starvationRoot, "fake-openclaw-precise-window-success.mjs", "success");
+  const starvationTick = await runAction(starvationRoot, {
+    action: "workflow.control_loop.tick",
+    runtimes: "openclaw",
+    runtimeLimit: 1,
+    jobLimit: 1,
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    openclawBin: starvationBin
+  });
+  assert.equal(Boolean(starvationTick.seededJobs?.some((job) => job.dedupeKey === `runtime_drain:local_codex:${unconfiguredDispatchId}`)), true);
 }
 
 async function testControlLoopSeedsStaleDeliveringOutbox() {
@@ -2173,6 +2343,7 @@ try {
     ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
+    ["message_flow control-loop runtime drains", testControlLoopDrainsMessageFlowRuntimes],
     ["control_loop stale delivering outbox", testControlLoopSeedsStaleDeliveringOutbox],
     ["trade_intent fail-closed", testTradeIntentFailClosed],
     ["trade chain and receipt guardrails", testTradeIntentChainAndReceiptGuardrails],

@@ -46,6 +46,7 @@ const RUNTIMES = new Set(["openclaw", "openclaw_route_shell", "hermers", "telegr
 const DISPATCH_STATUSES = new Set(["queued", "sent", "acked", "failed", "cancelled"]);
 const MESSAGE_FLOW_STATUSES = new Set(["inbound_received", "route_registered", "runtime_dispatched", "runtime_completed", "runtime_failed", "outbound_queued", "telegram_sent", "telegram_failed"]);
 const MESSAGE_FLOW_RETURN_POLICIES = new Set(["reply_to_source_chat", "report_to_flashcat", "silent"]);
+const MESSAGE_FLOW_DELIVERY_RETURN_POLICIES = new Set(["reply_to_source_chat", "report_to_flashcat"]);
 const WORKFLOW_RUN_STATUSES = new Set(["active", "waiting_human", "blocked", "paused", "completed", "stopped", "cancelled"]);
 const WORKFLOW_TASK_STATUSES = new Set(["pending", "in_progress", "done", "blocked", "failed", "cancelled"]);
 const WORKFLOW_TASK_PRIORITIES = new Set(["flash", "steer", "high", "normal", "low"]);
@@ -6973,6 +6974,102 @@ async function finishMessageFlowRuntime(paths, row, data = {}, input = {}) {
   });
 }
 
+async function runLocalCodexDispatch(paths, row, input = {}) {
+  const adapter = "local_codex_inbox";
+  const startedAt = nowIso();
+  const attempt = Number(row.attempt || 0) + 1;
+  await updateDispatch(paths, row.dispatch_id, "sent", { adapter, startedAt, attempt });
+  const runtimeRunId = await recordRuntimeRun(paths, row, {
+    adapter,
+    status: "started",
+    startedAt,
+    attempt,
+    payload: { deliveryMode: "local_codex_inbox" }
+  });
+  const flow = await messageFlowForDispatch(paths, row);
+  if (flow) {
+    await updateMessageFlow(paths, flow.flow_id, "runtime_dispatched", {
+      runtimeRunId,
+      payload: { dispatchId: row.dispatch_id, runtimeRunId, adapter }
+    });
+  }
+  const completedAt = nowIso();
+  const receiptText = [
+    "LOCAL_CODEX_INBOX_RECEIVED",
+    `timestamp: ${completedAt}`,
+    `dispatch_id: ${row.dispatch_id}`,
+    `flow_id: ${flow?.flow_id || ""}`
+  ].join("\n");
+  const outputHash = textHash(receiptText);
+  await updateDispatch(paths, row.dispatch_id, "acked", { adapter, completedAt, attempt, messageId: "" });
+  const ackRuntimeRunId = safeId("runtime_run_ack");
+  await recordRuntimeRun(paths, row, {
+    runtimeRunId: ackRuntimeRunId,
+    adapter,
+    status: "acked",
+    startedAt,
+    completedAt,
+    attempt,
+    outputHash,
+    payload: {
+      deliveryMode: "local_codex_inbox",
+      localCodexReceivesVia: "workflow_message_flows"
+    }
+  });
+  let messageFlowDelivery = null;
+  if (flow) {
+    const updated = await updateMessageFlow(paths, flow.flow_id, "runtime_completed", {
+      runtimeRunId: ackRuntimeRunId,
+      finalOutputPresent: false,
+      payload: {
+        runtimeStatus: "local_codex_inbox_received",
+        runtimeRunId: ackRuntimeRunId,
+        outputHash,
+        localCodexInboxReceipt: {
+          receivedAt: completedAt,
+          dispatchId: row.dispatch_id,
+          flowId: flow.flow_id
+        }
+      }
+    });
+    await appendMessageFlowEvent(paths, flow.flow_id, "runtime_completed", "local_codex_inbox_received", {
+      dispatchId: row.dispatch_id,
+      runtimeRunId: ackRuntimeRunId,
+      note: "local_codex inbox receipt is delivery evidence, not a semantic agent reply"
+    });
+    messageFlowDelivery = {
+      status: "local_codex_inbox_received",
+      flowId: flow.flow_id,
+      finalOutputPresent: Boolean(Number(updated?.final_output_present || 0)),
+      deliverySkipped: true,
+      reason: "local_codex_inbox_receipt_not_semantic_reply"
+    };
+  }
+  await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
+    ts: completedAt,
+    event: "runtime_dispatch_acked",
+    dispatchId: row.dispatch_id,
+    meetingId: row.meeting_id,
+    runtime: row.runtime,
+    agentId: row.agent_id,
+    adapter,
+    completedAt,
+    attempt,
+    runtimeRunId: ackRuntimeRunId,
+    messageFlowDelivery
+  });
+  return {
+    dispatchId: row.dispatch_id,
+    runtime: row.runtime,
+    agentId: row.agent_id,
+    status: "acked",
+    adapter,
+    runtimeRunId: ackRuntimeRunId,
+    messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+    messageFlowDelivery
+  };
+}
+
 async function ensureRuntimeAgent(paths, input) {
   const runtime = normalizeRuntime(input.runtime || input.runtimeKey || input.runtime_key || input.platform);
   const agentId = normalizeAgentId(input.agentId || input.agent_id);
@@ -9489,6 +9586,8 @@ LIMIT ${limit};`, { json: true });
         }
       } else if (runtime === "openclaw") {
         result = await runOpenClawDispatch(paths, claimedRow, input);
+      } else if (runtime === "local_codex" || runtime === "codex") {
+        result = await runLocalCodexDispatch(paths, claimedRow, input);
       } else {
         await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "none", failedAt: nowIso(), error: `runtime adapter not implemented: ${runtime}` });
         result = { dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `runtime adapter not implemented: ${runtime}` };
@@ -11111,6 +11210,7 @@ LEFT JOIN telegram_outbox o ON o.outbox_id=mf.outbox_id
 WHERE (
     mf.final_output_present=1
     AND mf.delivery_receipt_present=0
+    AND mf.return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])})
     AND mf.runtime_completed_at IS NOT NULL
     AND mf.runtime_completed_at != ''
     AND mf.runtime_completed_at < ${sqlValue(cutoff)}
@@ -11773,6 +11873,7 @@ FROM message_flows
 WHERE (
     final_output_present=1
     AND delivery_receipt_present=0
+    AND return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])})
     AND runtime_completed_at IS NOT NULL
     AND runtime_completed_at != ''
     AND runtime_completed_at < ${sqlValue(messageFlowStuckCutoff)}
@@ -11798,7 +11899,9 @@ WHERE (
   }
 
   if (drainQueued) {
-    const runtimes = toList(input.runtimes || input.runtime || "hermers").filter((runtime) => RUNTIMES.has(normalizeRuntime(runtime))).map(normalizeRuntime);
+    const configuredRuntimes = new Set(toList(input.runtimes || input.runtime || "hermers").filter((runtime) => RUNTIMES.has(normalizeRuntime(runtime))).map(normalizeRuntime));
+    const runtimes = [...configuredRuntimes];
+    const preciseRuntimeExclusion = runtimes.length ? `AND runtime NOT IN (${sqlStringList(runtimes)})` : "";
     for (const runtime of runtimes) {
       const rows = await sqlite(paths.dbFile, `
 SELECT COUNT(*) AS count
@@ -11817,6 +11920,28 @@ WHERE status='queued' AND runtime=${sqlValue(runtime)} AND priority='flash'
         priority: hasFlash ? "flash" : "high",
         runtime,
         payload: { runtime, limit: runtimeLimit, timeoutSeconds }
+      }));
+    }
+    const messageFlowDispatchRows = await sqlite(paths.dbFile, `
+SELECT dispatch_id, runtime, priority
+FROM mixed_meeting_dispatches
+WHERE status='queued'
+  AND dispatch_type='message_flow_send'
+  ${preciseRuntimeExclusion}
+  AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())})
+ORDER BY
+  CASE priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+  created_at
+LIMIT ${runtimeLimit};`, { json: true });
+    for (const row of messageFlowDispatchRows) {
+      const runtime = normalizeRuntime(row.runtime);
+      if (!RUNTIMES.has(runtime)) continue;
+      seeded.push(await enqueueControlLoopJob(paths, {
+        jobType: "runtime_drain",
+        dedupeKey: `runtime_drain:${runtime}:${row.dispatch_id}`,
+        priority: row.priority || "high",
+        runtime,
+        payload: { runtime, dispatchId: row.dispatch_id, limit: 1, timeoutSeconds }
       }));
     }
   }
@@ -11993,6 +12118,7 @@ async function runControlLoopJob(rootDir, paths, job, input = {}) {
       ...input,
       workflowRootDir: paths.root,
       runtime: payload.runtime || job.runtime,
+      dispatchId: payload.dispatchId || payload.dispatch_id || input.dispatchId || input.dispatch_id || "",
       limit: 1,
       timeoutSeconds: payload.timeoutSeconds || payload.timeout_seconds || input.timeoutSeconds || input.timeout_seconds || 45,
       dryRun: false
