@@ -59,6 +59,29 @@ async function assertRejectsMessage(fn, expected) {
 function planButtons() {
   return [
     {
+      label: "方案 A：定点修复",
+      summary: "继续用定点补丁修复 Human Gate 方案展示问题。",
+      prompt: "只修改 workflow 代码中的 Human Gate 生成和审计逻辑。",
+      rollback: "如果检查失败，停止本批补丁并保留当前本地 diff。"
+    },
+    {
+      label: "方案 B：先补证据",
+      summary: "暂停代码修改，先收集更多 Human Gate 样本和日志证据。",
+      prompt: "在实施前继续做只读检查，确认英文穿透路径。",
+      rollback: "证据完整后回到方案 A 继续修复。"
+    },
+    {
+      label: "方案 C：冻结本项",
+      summary: "冻结 Human Gate 改动，先处理 runtime bridge 的稳定性问题。",
+      prompt: "不要继续修改 Human Gate，优先排查 runtime dispatch。",
+      rollback: "如果 runtime bridge 已稳定，再恢复 Human Gate 修复。"
+    }
+  ];
+}
+
+function englishPlanButtons() {
+  return [
+    {
       label: "Plan A",
       summary: "Continue debugging with targeted fixes",
       prompt: "Proceed with the next repair batch inside workflow code only",
@@ -101,7 +124,7 @@ function planRollback(button) {
 function assertCompletePlanButtons(request) {
   const approved = approvedButtons(request);
   assert.equal(approved.length, 3);
-  assert.deepEqual(approved.map((button) => button.label), ["批准方案 A", "批准方案 B", "批准方案 C"]);
+  assert.deepEqual(approved.map((button) => button.label), ["批准方案 A：定点修复", "批准方案 B：先补证据", "批准方案 C：冻结本项"]);
   for (const button of approved) {
     assert.ok(button.summary, `${button.label} summary is required`);
     assert.ok(button.prompt, `${button.label} prompt is required`);
@@ -150,6 +173,11 @@ async function testHumanGateLanguageAndResume() {
   await assertRejectsMessage(
     () => requestHumanGate(incompleteRoot, { buttons: incompleteButtons }),
     /human_gate_requires_complete_plan_details/
+  );
+  const englishPlansRoot = await tempRoot("hgate-english-plans");
+  await assertRejectsMessage(
+    () => requestHumanGate(englishPlansRoot, { buttons: englishPlanButtons() }),
+    /human_gate_requires_chinese_plan_details/
   );
 
   const root = await tempRoot("hgate-resume");

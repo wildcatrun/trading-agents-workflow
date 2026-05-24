@@ -5449,6 +5449,7 @@ function auditHumanGatePlanOptions(buttons = []) {
 function auditHumanGatePlanDetails(buttons = []) {
   const planButtons = humanGatePlanOptionButtons(buttons);
   const missing = [];
+  const nonChinese = [];
   for (const [index, button] of planButtons.entries()) {
     const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
     const key = humanGatePlanKey(button, fallback);
@@ -5460,12 +5461,21 @@ function auditHumanGatePlanDetails(buttons = []) {
     if (!summary) missing.push(`${key}.summary`);
     if (!prompt) missing.push(`${key}.prompt`);
     if (!rollback) missing.push(`${key}.rollback`);
+    for (const [field, text] of Object.entries({ title, summary, prompt, rollback })) {
+      if (text && countChineseChars(text) < 2) nonChinese.push(`${key}.${field}`);
+    }
   }
+  const ok = missing.length === 0 && nonChinese.length === 0;
   return {
-    ok: missing.length === 0,
+    ok,
     missingDetailFields: missing,
+    nonChineseDetailFields: nonChinese,
     languagePolicy: "cat_claw_report_primary_language_zh; technical terms, agent ids, artifact paths, symbols, and callback/tool names may remain original",
-    reason: missing.length ? "human_gate_requires_complete_plan_details" : ""
+    reason: missing.length
+      ? "human_gate_requires_complete_plan_details"
+      : nonChinese.length
+        ? "human_gate_requires_chinese_plan_details"
+        : ""
   };
 }
 
@@ -5476,7 +5486,7 @@ function countChineseChars(value) {
 function auditHumanGatePrimaryLanguage(context = {}, buttons = []) {
   const payload = parseJsonValue(context.payload, context.payload || {});
   const nestedPayload = parseJsonValue(payload.payload, payload.payload || {});
-  const textParts = [
+  const primaryTextParts = [
     context.title,
     context.summary,
     context.text,
@@ -5493,6 +5503,7 @@ function auditHumanGatePrimaryLanguage(context = {}, buttons = []) {
     nestedPayload.content,
     nestedPayload.description
   ];
+  const textParts = [...primaryTextParts];
   for (const [index, button] of humanGatePlanOptionButtons(buttons).entries()) {
     const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
     const key = humanGatePlanKey(button, fallback);
@@ -5503,12 +5514,15 @@ function auditHumanGatePrimaryLanguage(context = {}, buttons = []) {
       firstHumanGateDetail(button, ["rollback", "rollbackPlan", "rollback_plan", "rollbackBoundary", "rollback_boundary", "recovery", "restore", "fallback"], 520)
     );
   }
+  const primaryAuthoredText = primaryTextParts.filter(Boolean).join("\n");
+  const primaryChineseChars = countChineseChars(primaryAuthoredText);
   const visibleAuthoredText = textParts.filter(Boolean).join("\n");
   const chineseChars = countChineseChars(visibleAuthoredText);
   const requiredChineseChars = 6;
-  const ok = chineseChars >= requiredChineseChars;
+  const ok = primaryChineseChars >= requiredChineseChars && chineseChars >= requiredChineseChars;
   return {
     ok,
+    primaryChineseChars,
     chineseChars,
     requiredChineseChars,
     languagePolicy: "cat_claw_report_primary_language_zh; technical terms, agent ids, artifact paths, symbols, and callback/tool names may remain original",
