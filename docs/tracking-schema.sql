@@ -182,6 +182,34 @@ CREATE TABLE workflow_checkpoints (
   FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_workflow_checkpoints_workflow ON workflow_checkpoints(workflow_id, created_at DESC);
+CREATE TABLE workflow_events (
+  event_id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'recorded',
+  workflow_id TEXT,
+  trace_id TEXT,
+  task_id TEXT,
+  dispatch_id TEXT,
+  runtime_run_id TEXT,
+  message_flow_id TEXT,
+  human_gate_id TEXT,
+  side_effect_id TEXT,
+  incident_id TEXT,
+  actor TEXT,
+  source_runtime TEXT,
+  source_agent TEXT,
+  previous_state TEXT,
+  next_state TEXT,
+  idempotency_key TEXT,
+  artifact_ref TEXT,
+  payload_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_workflow_events_workflow ON workflow_events(workflow_id, created_at);
+CREATE INDEX idx_workflow_events_trace ON workflow_events(trace_id, created_at);
+CREATE INDEX idx_workflow_events_type ON workflow_events(event_type, created_at);
+CREATE UNIQUE INDEX idx_workflow_events_idempotency ON workflow_events(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE TABLE workflow_session_packs (
   session_id TEXT PRIMARY KEY,
   version INTEGER NOT NULL DEFAULT 1,

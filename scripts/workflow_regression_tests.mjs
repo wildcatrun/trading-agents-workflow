@@ -259,6 +259,101 @@ LIMIT 1;`)[0];
   assert.deepEqual(dispatch, { status: "queued", agent_id: "main", runtime: "openclaw" });
 }
 
+async function testHumanGateStageDedupAndSupersede() {
+  const root = await tempRoot("hgate-stage-hardening");
+  const first = await requestHumanGate(root, {
+    workflowId: "workflow-stage-hardening",
+    meetingId: "meeting-stage-hardening",
+    stageKey: "phase-alpha"
+  });
+  const duplicate = await requestHumanGate(root, {
+    workflowId: "workflow-stage-hardening",
+    meetingId: "meeting-stage-hardening",
+    stageKey: "phase-alpha",
+    text: "猫爪正式汇报：重复提交同一阶段，应复用原 Human Gate。"
+  });
+  assert.equal(duplicate.humanGateId, first.humanGateId);
+  assert.equal(duplicate.reusedStageGate, true);
+  assert.equal(duplicate.telegramOutbox.outboxId, first.telegramOutbox.outboxId);
+
+  const beta = await requestHumanGate(root, {
+    workflowId: "workflow-stage-hardening",
+    meetingId: "meeting-stage-hardening",
+    stageKey: "phase-beta"
+  });
+  assert.notEqual(beta.humanGateId, first.humanGateId);
+
+  const replacement = await requestHumanGate(root, {
+    workflowId: "workflow-stage-hardening",
+    meetingId: "meeting-stage-hardening",
+    stageKey: "phase-alpha",
+    supersedeExisting: true,
+    text: "猫爪正式汇报：同一阶段提交新证据包，明确 supersede 旧 Human Gate。"
+  });
+  assert.notEqual(replacement.humanGateId, first.humanGateId);
+  assert.equal(replacement.supersededGate.humanGateId, first.humanGateId);
+
+  const dbFile = path.join(root, "tracking.db");
+  const decoyCreatedAt = new Date(Date.now() + 60_000).toISOString();
+  for (let index = 0; index < 220; index += 1) {
+    sqliteExec(dbFile, `
+INSERT INTO protocol_objects(object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hgate-decoy-${index}', 'human_gate_record', 'pending', 'test', 'cat_claw', 'workflow-decoy-${index}', '', '{"objectId":"hgate-decoy-${index}","objectType":"human_gate_record","status":"pending","payload":{"workflowId":"workflow-decoy-${index}","gateType":"workflow_continuation","humanGateStageKey":"phase-alpha"}}', 'hash-${index}', '${decoyCreatedAt}', '${decoyCreatedAt}');`);
+  }
+  const duplicateAfterDecoys = await requestHumanGate(root, {
+    workflowId: "workflow-stage-hardening",
+    meetingId: "meeting-stage-hardening",
+    stageKey: "phase-alpha",
+    text: "猫爪正式汇报：高水位 pending gate 下仍应复用原 Human Gate。"
+  });
+  assert.equal(duplicateAfterDecoys.humanGateId, replacement.humanGateId);
+
+  const gateRows = sqliteJson(dbFile, `
+SELECT object_id AS objectId, status, path, payload_json AS payloadJson
+FROM protocol_objects
+WHERE object_type='human_gate_record' AND parent_object_id='workflow-stage-hardening'
+ORDER BY created_at;`);
+  assert.equal(gateRows.length, 3);
+  const firstRow = gateRows.find((row) => row.objectId === first.humanGateId);
+  const replacementRow = gateRows.find((row) => row.objectId === replacement.humanGateId);
+  assert.equal(firstRow.status, "superseded");
+  assert.equal(JSON.parse(firstRow.payloadJson).status, "superseded");
+  const firstArtifact = JSON.parse(await fs.readFile(path.join(root, firstRow.path), "utf8"));
+  assert.equal(firstArtifact.status, "superseded");
+  assert.equal(replacementRow.status, "pending");
+  assert.equal(JSON.parse(replacementRow.payloadJson).payload.humanGateStageKey, "phase-alpha");
+  const activeAlpha = gateRows.filter((row) => {
+    const payload = JSON.parse(row.payloadJson).payload || {};
+    return row.status === "pending"
+      && payload.workflowId === "workflow-stage-hardening"
+      && payload.gateType === "workflow_continuation"
+      && payload.humanGateStageKey === "phase-alpha";
+  });
+  assert.equal(activeAlpha.length, 1);
+
+  const oldButtons = sqliteJson(dbFile, `
+SELECT status, COUNT(*) AS count
+FROM human_gate_buttons
+WHERE human_gate_id='${first.humanGateId}'
+GROUP BY status
+ORDER BY status;`);
+  assert.deepEqual(oldButtons, [{ status: "superseded", count: 6 }]);
+  const oldOutbox = sqliteJson(dbFile, `
+SELECT status
+FROM telegram_outbox
+WHERE outbox_id='${first.telegramOutbox.outboxId}'
+LIMIT 1;`)[0];
+  assert.equal(oldOutbox.status, "cancelled");
+  const supersedeEvent = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, human_gate_id AS humanGateId
+FROM workflow_events
+WHERE event_type='human_gate.superseded'
+LIMIT 1;`)[0];
+  assert.equal(supersedeEvent.eventType, "human_gate.superseded");
+  assert.equal(supersedeEvent.status, "superseded");
+  assert.equal(supersedeEvent.humanGateId, first.humanGateId);
+}
+
 async function testScheduleResumeSemantics() {
   const root = await tempRoot("schedule");
   const nextRunAt = "2099-01-01T00:00:00.000Z";
@@ -1168,6 +1263,395 @@ LIMIT 1;`)[0];
   assert.equal(storedRun.outputJson.includes("[redacted]"), true);
 }
 
+async function testWorkflowEventStore() {
+  const root = await tempRoot("workflow-events");
+  const first = await runAction(root, {
+    action: "workflow.event.append",
+    eventId: "event-workflow-created",
+    eventType: "workflow.created",
+    workflowId: "workflow-events",
+    traceId: "trace-events",
+    actor: "local_codex",
+    sourceRuntime: "local_codex",
+    previousState: "",
+    nextState: "active",
+    idempotencyKey: "workflow-events-created",
+    payload: {
+      summary: "event store regression",
+      callbackToken: "must-not-persist",
+      command: "/hgate tawhg:secret-token approve"
+    }
+  });
+  assert.equal(first.eventId, "event-workflow-created");
+  assert.equal(first.eventType, "workflow.created");
+  assert.equal(first.payload.callbackToken, "[redacted]");
+  assert.equal(first.payload.command.includes("tawhg:<redacted>"), true);
+  assert.equal(first.payloadHash, sha256Text(JSON.stringify(first.payload)));
+
+  const retry = await runAction(root, {
+    action: "workflow.event.append",
+    eventId: "event-workflow-created",
+    eventType: "workflow.created",
+    workflowId: "workflow-events",
+    traceId: "trace-events",
+    actor: "local_codex",
+    sourceRuntime: "local_codex",
+    previousState: "",
+    nextState: "active",
+    idempotencyKey: "workflow-events-created",
+    payload: {
+      summary: "event store regression",
+      callbackToken: "must-not-persist",
+      command: "/hgate tawhg:secret-token approve"
+    }
+  });
+  assert.equal(retry.deduped, true);
+  assert.equal(retry.eventId, first.eventId);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.event.append",
+      eventId: "event-workflow-created",
+      eventType: "workflow.created",
+      workflowId: "workflow-events",
+      traceId: "trace-events",
+      actor: "local_codex",
+      sourceRuntime: "local_codex",
+      previousState: "",
+      nextState: "paused",
+      idempotencyKey: "workflow-events-created",
+      payload: {
+        summary: "event store regression",
+        callbackToken: "must-not-persist",
+        command: "/hgate tawhg:secret-token approve"
+      }
+    }),
+    /workflow event idempotency conflict.*field=nextState/
+  );
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.event.append",
+      eventId: "event-workflow-created-conflict",
+      eventType: "workflow.created",
+      workflowId: "workflow-events",
+      traceId: "trace-events",
+      idempotencyKey: "workflow-events-created",
+      payload: { summary: "different payload should conflict" }
+    }),
+    /workflow event idempotency conflict/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.event.append",
+      eventId: "event-hash-spoof",
+      eventType: "workflow.created",
+      workflowId: "workflow-events",
+      traceId: "trace-events",
+      idempotencyKey: "workflow-events-hash-spoof",
+      payloadHash: first.payloadHash,
+      payload: { summary: "different payload must not reuse a supplied hash" }
+    }),
+    /payloadHash must match canonical redacted payload hash/
+  );
+
+  await runAction(root, {
+    action: "workflow.event.append",
+    eventId: "event-dispatch-created",
+    eventType: "dispatch.created",
+    workflowId: "workflow-events",
+    traceId: "trace-events",
+    dispatchId: "dispatch-events",
+    nextState: "queued",
+    createdAt: "2099-01-01T00:00:01.000Z",
+    payload: { dispatchId: "dispatch-events" }
+  });
+  await runAction(root, {
+    action: "workflow.event.append",
+    eventId: "event-runtime-receipt",
+    eventType: "runtime.receipt",
+    workflowId: "workflow-events",
+    traceId: "trace-events",
+    runtimeRunId: "runtime-run-events",
+    idempotencyKey: "workflow-events-runtime-receipt",
+    createdAt: "2099-01-01T00:00:02.000Z",
+    payload: { status: "acked" }
+  });
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.event.append",
+      eventId: "event-dispatch-created",
+      eventType: "dispatch.created",
+      workflowId: "workflow-events",
+      traceId: "trace-events",
+      idempotencyKey: "workflow-events-runtime-receipt",
+      payload: { dispatchId: "dispatch-events" }
+    }),
+    /point to different events/
+  );
+
+  const list = await runAction(root, {
+    action: "workflow.event.list",
+    workflowId: "workflow-events",
+    limit: 10
+  });
+  assert.equal(list.count, 3);
+  assert.deepEqual(list.events.map((event) => event.eventType), ["runtime.receipt", "dispatch.created", "workflow.created"]);
+
+  const timeline = await runAction(root, {
+    action: "workflow.event.timeline",
+    traceId: "trace-events",
+    limit: 10
+  });
+  assert.equal(timeline.count, 3);
+  assert.deepEqual(timeline.events.map((event) => event.eventType), ["workflow.created", "dispatch.created", "runtime.receipt"]);
+
+  const dbFile = path.join(root, "tracking.db");
+  assert.equal(sqliteCount(dbFile, "workflow_events"), 3);
+  const stored = sqliteJson(dbFile, `
+SELECT payload_json AS payloadJson
+FROM workflow_events
+WHERE event_id='event-workflow-created'
+LIMIT 1;`)[0].payloadJson;
+  assert.equal(stored.includes("must-not-persist"), false);
+  assert.equal(stored.includes("tawhg:secret-token"), false);
+  assert.equal(stored.includes("[redacted]"), true);
+  assert.equal(stored.includes("tawhg:<redacted>"), true);
+}
+
+async function testAutomaticWorkflowEvents() {
+  const root = await tempRoot("workflow-events-auto");
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId: "workflow-auto-events",
+    workflowType: "governance",
+    objective: "Verify automatic event emission."
+  });
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  const flowDispatch = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "automatic event dispatch regression",
+    meetingId: "meeting-auto-events",
+    workflowId: "workflow-auto-events",
+    traceId: "trace-auto-events",
+    returnPolicy: "silent"
+  });
+  const dispatch = flowDispatch.dispatches[0];
+  const successBin = await makeFakeOpenClaw(root, "fake-openclaw-auto-events.mjs", "success");
+  await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: dispatch.dispatchId,
+    openclawBin: successBin,
+    reportDelivery: false
+  });
+  const request = await requestHumanGate(root, {
+    workflowId: "workflow-auto-events",
+    meetingId: "meeting-auto-events"
+  });
+  await runAction(root, {
+    action: "human_gate.resume",
+    token: approvedButtons(request)[0].callbackToken,
+    text: "闪电猫原话：批准自动事件测试。"
+  });
+  await runAction(root, {
+    action: "side_effect.record",
+    sideEffectId: "side-effect-auto-events",
+    workflowId: "workflow-auto-events",
+    traceId: "trace-auto-events",
+    status: "confirmed",
+    sideEffectType: "test_side_effect",
+    payload: { apiSecret: "must-not-persist" }
+  });
+  await runAction(root, {
+    action: "incident.state",
+    incidentId: "incident-auto-events",
+    workflowId: "workflow-auto-events",
+    traceId: "trace-auto-events",
+    status: "active",
+    summary: "automatic event incident regression"
+  });
+
+  const timeline = await runAction(root, {
+    action: "workflow.event.timeline",
+    workflowId: "workflow-auto-events",
+    limit: 100
+  });
+  const eventTypes = timeline.events.map((event) => event.eventType);
+  for (const expected of [
+    "workflow.created",
+    "dispatch.created",
+    "runtime.receipt",
+    "human_gate.requested",
+    "human_gate.submitted",
+    "side_effect.recorded",
+    "incident.created"
+  ]) {
+    assert.equal(eventTypes.includes(expected), true, `${expected} should be present`);
+  }
+  const sideEffectEvent = timeline.events.find((event) => event.eventType === "side_effect.recorded");
+  assert.equal(JSON.stringify(sideEffectEvent.payload).includes("must-not-persist"), false);
+  assert.equal(JSON.stringify(sideEffectEvent.payload).includes("[redacted]"), false);
+  const dbFile = path.join(root, "tracking.db");
+  const runtimeReceiptJoin = sqliteJson(dbFile, `
+SELECT e.runtime_run_id AS runtimeRunId,
+       rr.runtime_run_id AS joinedRuntimeRunId,
+       e.message_flow_id AS messageFlowId,
+       mf.flow_id AS joinedMessageFlowId
+FROM workflow_events e
+LEFT JOIN runtime_runs rr ON rr.runtime_run_id=e.runtime_run_id
+LEFT JOIN message_flows mf ON mf.flow_id=e.message_flow_id
+WHERE e.event_type='runtime.receipt' AND e.dispatch_id='${dispatch.dispatchId}'
+LIMIT 1;`)[0];
+  assert.ok(runtimeReceiptJoin.runtimeRunId);
+  assert.equal(runtimeReceiptJoin.joinedRuntimeRunId, runtimeReceiptJoin.runtimeRunId);
+  assert.ok(runtimeReceiptJoin.messageFlowId);
+  assert.equal(runtimeReceiptJoin.joinedMessageFlowId, runtimeReceiptJoin.messageFlowId);
+  const submittedEvent = timeline.events.find((event) => event.eventType === "human_gate.submitted");
+  assert.equal(submittedEvent.humanGateId, request.humanGateId);
+  assert.equal(submittedEvent.payload.flashcatOriginalWords, "闪电猫原话：批准自动事件测试。");
+}
+
+async function testWorkflowPermissionGate() {
+  const root = await tempRoot("workflow-permission-gate");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_body",
+    displayName: "猫之体",
+    workflowIngressAdapter: "acp",
+    endpointRef: "hermers-profile:catbody",
+    capabilities: { mode: "message_only" }
+  });
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "cat_claw",
+    displayName: "猫爪",
+    capabilities: {}
+  });
+
+  const allowedMessage = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.message_flow.send",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(allowedMessage.allowed, true);
+  assert.equal(allowedMessage.requiredCapability, "message_flow.send");
+
+  const deniedRuntime = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.bridge.drain",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers",
+    toolMode: "full"
+  });
+  assert.equal(deniedRuntime.allowed, false);
+  assert.equal(deniedRuntime.reason, "missing_capability:runtime.dispatch");
+
+  const unregisteredSpoof = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.bridge.drain",
+    callerAgent: "main",
+    callerRuntime: "hermers",
+    toolMode: "full"
+  });
+  assert.equal(unregisteredSpoof.allowed, false);
+  assert.equal(unregisteredSpoof.reason, "caller_not_registered");
+
+  const auditDenied = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "cat_claw.audit",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(auditDenied.allowed, false);
+  assert.equal(auditDenied.reason, "missing_capability:cat_claw.audit");
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "runtime.bridge.drain",
+      runtime: "hermers",
+      callerAgent: "cat_body",
+      callerRuntime: "hermers"
+    }),
+    /workflow permission denied: action=runtime\.bridge\.drain/
+  );
+
+  const dbFile = path.join(root, "tracking.db");
+  const deniedEvent = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, source_agent AS sourceAgent, payload_json AS payloadJson
+FROM workflow_events
+WHERE event_type='permission.denied'
+ORDER BY created_at DESC
+LIMIT 1;`)[0];
+  assert.equal(deniedEvent.eventType, "permission.denied");
+  assert.equal(deniedEvent.status, "denied");
+  assert.equal(deniedEvent.sourceAgent, "cat_body");
+  assert.equal(deniedEvent.payloadJson.includes("runtime.dispatch"), true);
+
+  const catClawGate = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "human_gate.request",
+    callerAgent: "cat_claw",
+    callerRuntime: "openclaw"
+  });
+  assert.equal(catClawGate.allowed, true);
+  assert.equal(catClawGate.reason, "capability_allowed");
+
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_body",
+    capabilities: {
+      permissions: ["runtime.dispatch"],
+      forbiddenActions: ["runtime.bridge.drain"]
+    }
+  });
+  const forbidden = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.bridge.drain",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(forbidden.allowed, false);
+  assert.equal(forbidden.reason, "action_forbidden_by_policy");
+
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_body",
+    capabilities: {
+      permissions: ["message_flow.send"],
+      forbiddenActions: ["workflow.message_flow.send"]
+    }
+  });
+  const canonicalForbidden = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "message_flow.send",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(canonicalForbidden.allowed, false);
+  assert.equal(canonicalForbidden.reason, "action_forbidden_by_policy");
+}
+
 async function testWorkflowSessionStoreCli() {
   const root = await tempRoot("session-store-cli");
   const pack = workflowCliJson([
@@ -1658,11 +2142,15 @@ try {
   const tests = [
     ["human_gate language/resume", testHumanGateLanguageAndResume],
     ["human_gate pending cleanup/retry", testHumanGatePendingCleanupAndRetryRedaction],
+    ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["control_loop stale delivering outbox", testControlLoopSeedsStaleDeliveringOutbox],
     ["trade_intent fail-closed", testTradeIntentFailClosed],
     ["trade chain and receipt guardrails", testTradeIntentChainAndReceiptGuardrails],
+    ["workflow event store", testWorkflowEventStore],
+    ["automatic workflow events", testAutomaticWorkflowEvents],
+    ["workflow permission gate", testWorkflowPermissionGate],
     ["workflow session store", testWorkflowSessionStore],
     ["workflow session store cli", testWorkflowSessionStoreCli],
     ["expired human_gate blocked", testExpiredHumanGateBlocked],

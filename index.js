@@ -142,9 +142,13 @@ function parseCliJson(value, fallback = undefined) {
 }
 
 function messageFlowSendInput(params = {}, toolContext = {}) {
-  const sourceAgent = normalizeAgentId(params.fromAgent ?? params.from_agent ?? toolContext.agentId ?? "unknown");
+  const contextAgent = normalizeAgentId(toolContext.agentId || "");
+  const sourceAgent = normalizeAgentId(params.fromAgent ?? params.from_agent ?? contextAgent ?? "unknown");
   return compactObject({
     action: "message_flow.send",
+    callerAgent: contextAgent || sourceAgent,
+    callerRuntime: params.fromRuntime ?? params.from_runtime ?? "openclaw",
+    toolMode: "message_only",
     fromAgent: sourceAgent,
     fromRuntime: params.fromRuntime ?? params.from_runtime ?? "openclaw",
     to: params.to,
@@ -156,6 +160,18 @@ function messageFlowSendInput(params = {}, toolContext = {}) {
     sourceSystem: "openclaw_plugin",
     createdBy: `openclaw:${sourceAgent || "unknown"}`,
     calledAt: new Date().toISOString()
+  });
+}
+
+function withWorkflowToolCaller(params = {}, toolContext = {}, mode = "") {
+  const contextAgent = normalizeAgentId(toolContext.agentId || "");
+  const paramAgent = normalizeAgentId(params.callerAgent || params.caller_agent || "");
+  return compactObject({
+    ...params,
+    callerAgent: contextAgent || paramAgent,
+    callerRuntime: params.callerRuntime ?? params.caller_runtime ?? "openclaw",
+    toolMode: mode || params.toolMode || params.tool_mode,
+    sourceSystem: params.sourceSystem ?? params.source_system ?? "openclaw_plugin"
   });
 }
 
@@ -201,6 +217,8 @@ const toolParameters = {
         "workflow.runtime_agents",
         "workflow.runtime-agents",
         "workflow.runtime.registry",
+        "workflow.permission.check",
+        "workflow.permission.explain",
         "workflow.run.upsert",
         "workflow.initiative.upsert",
         "workflow.swarm.plan",
@@ -234,6 +252,14 @@ const toolParameters = {
         "workflow.checkpoint",
         "workflow.context_checkpoint",
         "context.checkpoint",
+        "workflow.event.append",
+        "workflow.events.append",
+        "workflow.event.list",
+        "workflow.events",
+        "workflow.events.list",
+        "workflow.event.timeline",
+        "workflow.timeline",
+        "workflow.events.timeline",
         "workflow.session_pack.upsert",
         "workflow.session.pack.upsert",
         "session_pack.upsert",
@@ -632,8 +658,16 @@ const governanceWorkflowActions = new Set([
   "workflow.runtime_agents",
   "workflow.runtime-agents",
   "workflow.runtime.registry",
+  "workflow.permission.check",
+  "workflow.permission.explain",
   "workflow.task.list",
   "workflow.tasks",
+  "workflow.event.list",
+  "workflow.events",
+  "workflow.events.list",
+  "workflow.event.timeline",
+  "workflow.timeline",
+  "workflow.events.timeline",
   "workflow.schedule.list",
   "workflow.schedules",
   "workflow.scheduler.list",
@@ -3146,7 +3180,7 @@ export default definePluginEntry({
         parameters: governanceToolParameters,
         execute: async (_id, params) => {
           const root = requireRoot(api);
-          const guarded = guardGovernanceWorkflowAction(params || {});
+          const guarded = guardGovernanceWorkflowAction(withWorkflowToolCaller(params || {}, toolContext, mode));
           return jsonText(await runAction(root, guardWorkflowRootOverride(guarded, root)));
         }
       };
@@ -3158,7 +3192,7 @@ export default definePluginEntry({
           parameters: toolParameters,
           execute: async (_id, params) => {
             const root = requireRoot(api);
-            return jsonText(await runAction(root, guardWorkflowRootOverride(params || {}, root)));
+            return jsonText(await runAction(root, guardWorkflowRootOverride(withWorkflowToolCaller(params || {}, toolContext, mode), root)));
           }
         },
         messageFlowTool

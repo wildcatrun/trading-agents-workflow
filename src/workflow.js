@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 12;
+export const WORKFLOW_SCHEMA_VERSION = 13;
 export const LEGACY_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 const ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT";
 
@@ -24,7 +24,7 @@ const RADAR_ZONES = new Set(["bright", "dark", "overheated", "dead_water", "watc
 const GATE_STATUSES = new Set(["pending", "approved", "rejected", "waived"]);
 const PROTOCOL_OBJECT_TYPES = new Set(["research_signal", "evidence_pack", "research_memo", "trade_proposal", "risk_decision", "human_gate_record", "simulation_request", "simulation_result", "executable_trade_intent", "trading_core_receipt", "execution_audit_summary", "generic"]);
 const RISK_DECISION_STATUSES = new Set(["pending", "approved", "rejected", "revise_required"]);
-const HUMAN_GATE_STATUSES = new Set(["pending", "approved", "rejected", "paused", "terminated", "expired"]);
+const HUMAN_GATE_STATUSES = new Set(["pending", "approved", "rejected", "paused", "terminated", "expired", "superseded"]);
 const TRADE_SIDES = new Set(["buy", "sell", "short", "cover", "reduce", "close"]);
 const ORDER_TYPES = new Set(["market", "limit", "stop", "stop_limit", "twap", "vwap"]);
 const TRADING_CORE_SIDES = new Set(["buy", "sell"]);
@@ -124,6 +124,147 @@ const HUMAN_GATE_ZH_TEXT = new Map([
     "如果 readiness 继续恶化，或投递路径仍无法验证，回退到方案 A：冻结现状并梳理边界。"
   ]
 ]);
+
+const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
+  "workflow.status",
+  "workflow.readiness",
+  "workflow.topology",
+  "workflow.runtime_agents",
+  "workflow.task.list",
+  "workflow.event.list",
+  "workflow.event.timeline",
+  "workflow.session_pack.get",
+  "workflow.session_pack.list",
+  "workflow.schedule.list",
+  "human_gate.web_app_review",
+  "human_gate.inbox",
+  "message_flow.list",
+  "workflow.permission.check"
+]);
+
+const WORKFLOW_ACTION_ALIASES = {
+  status: "workflow.status",
+  "trading_workflow.init": "workflow.init",
+  "trading_workflow.status": "workflow.status",
+  "trading_workflow.readiness": "workflow.readiness",
+  "trading_workflow.topology": "workflow.topology",
+  "workflow.runtime-agents": "workflow.runtime_agents",
+  "workflow.runtime.registry": "workflow.runtime_agents",
+  "workflow.initiative.upsert": "workflow.run.upsert",
+  "workflow.swarm": "workflow.swarm.plan",
+  "workflow.tasks": "workflow.task.list",
+  "workflow.preview.advance": "workflow.advance.preview",
+  "workflow.supervisor": "workflow.supervise",
+  "workflow.supervisor.preview": "workflow.supervise.preview",
+  "workflow.preview.supervise": "workflow.supervise.preview",
+  "workflow.loop.tick": "workflow.control_loop.tick",
+  "workflow.reconciler.tick": "workflow.control_loop.tick",
+  "workflow.scheduler.upsert": "workflow.schedule.upsert",
+  "workflow.schedules": "workflow.schedule.list",
+  "workflow.scheduler.list": "workflow.schedule.list",
+  "workflow.scheduler.pause": "workflow.schedule.pause",
+  "workflow.scheduler.resume": "workflow.schedule.resume",
+  "workflow.scheduler.disable": "workflow.schedule.disable",
+  "workflow.context_checkpoint": "workflow.checkpoint",
+  "context.checkpoint": "workflow.checkpoint",
+  "workflow.events.append": "workflow.event.append",
+  "workflow.events": "workflow.event.list",
+  "workflow.events.list": "workflow.event.list",
+  "workflow.timeline": "workflow.event.timeline",
+  "workflow.events.timeline": "workflow.event.timeline",
+  "workflow.session.pack.upsert": "workflow.session_pack.upsert",
+  "session_pack.upsert": "workflow.session_pack.upsert",
+  "workflow.session.pack.get": "workflow.session_pack.get",
+  "session_pack.get": "workflow.session_pack.get",
+  "workflow.session.pack.list": "workflow.session_pack.list",
+  "session_pack.list": "workflow.session_pack.list",
+  "workflow.session.run.start": "workflow.session_run.start",
+  "session_run.start": "workflow.session_run.start",
+  "workflow.session.run.complete": "workflow.session_run.complete",
+  "session_run.complete": "workflow.session_run.complete",
+  "runtime.agent": "runtime.agent.upsert",
+  "route-shell.ingest": "route_shell.ingest",
+  "route_shell.route": "route_shell.ingest",
+  "runtime.participant": "meeting.runtime_participant",
+  "telegram.live.configure": "telegram.live",
+  "dispatch.reconcile": "workflow.dispatch.reconcile",
+  "stale_dispatch.reconcile": "workflow.dispatch.reconcile",
+  "runtime.bridge": "runtime.bridge.drain",
+  "human_gate.review_form": "human_gate.web_app_review",
+  "human_gate.submit_form": "human_gate.web_app_submit",
+  "human_gate.callback": "human_gate.button_callback",
+  "human_gate.submit_feedback": "human_gate.feedback",
+  "human_gate.console": "human_gate.inbox",
+  "human_gate.batch_inbox": "human_gate.inbox",
+  "human_gate.confirm": "human_gate.resume",
+  "workflow.message_flow.send": "message_flow.send",
+  "message_flow.status": "message_flow.list",
+  "workflow.message_flow.list": "message_flow.list",
+  "workflow.message_flow.status": "message_flow.list",
+  "workflow.message_flow.reconcile": "message_flow.reconcile",
+  "protocol.object": "protocol.record",
+  "workflow.human_gate": "human_gate.record",
+  "execution.intent": "trade.intent",
+  "execution.receipt": "trading_core.receipt",
+  "side_effect.ledger": "side_effect.record",
+  "workflow.incident": "incident.state",
+  "tracking.instrument": "instrument.upsert",
+  "thesis.create": "thesis.update",
+  "human_gate.review": "gate.review",
+  "workflow.permission.explain": "workflow.permission.check"
+};
+
+const WORKFLOW_ACTION_PERMISSION_RULES = {
+  "workflow.run.upsert": { capability: "workflow.write", risk: "medium", mutating: true },
+  "workflow.swarm.plan": { capability: "workflow.plan", risk: "medium", mutating: true },
+  "workflow.task.create": { capability: "workflow.task.write", risk: "medium", mutating: true },
+  "workflow.task.update": { capability: "workflow.task.write", risk: "medium", mutating: true },
+  "workflow.advance": { capability: "workflow.operate", risk: "high", mutating: true },
+  "workflow.supervise": { capability: "workflow.operate", risk: "high", mutating: true },
+  "workflow.control_loop.tick": { capability: "workflow.operate", risk: "high", mutating: true },
+  "workflow.schedule.upsert": { capability: "schedule.write", risk: "high", mutating: true },
+  "workflow.schedule.pause": { capability: "schedule.write", risk: "high", mutating: true },
+  "workflow.schedule.resume": { capability: "schedule.write", risk: "high", mutating: true },
+  "workflow.schedule.disable": { capability: "schedule.write", risk: "high", mutating: true },
+  "workflow.checkpoint": { capability: "workflow.checkpoint", risk: "medium", mutating: true },
+  "workflow.event.append": { capability: "workflow.event.write", risk: "medium", mutating: true },
+  "workflow.session_pack.upsert": { capability: "session.write", risk: "medium", mutating: true },
+  "workflow.session_run.start": { capability: "session.run", risk: "medium", mutating: true },
+  "workflow.session_run.complete": { capability: "session.run", risk: "medium", mutating: true },
+  "runtime.agent.upsert": { capability: "registry.write", risk: "high", mutating: true },
+  "route_shell.ingest": { capability: "message_flow.send", risk: "low", mutating: true },
+  "meeting.runtime_participant": { capability: "registry.write", risk: "high", mutating: true },
+  "telegram.live": { capability: "telegram.configure", risk: "high", mutating: true },
+  "meeting.dispatch": { capability: "dispatch.write", risk: "high", mutating: true },
+  "meeting.ingest": { capability: "receipt.write", risk: "medium", mutating: true },
+  "workflow.dispatch.reconcile": { capability: "dispatch.reconcile", risk: "high", mutating: true },
+  "runtime.bridge.drain": { capability: "runtime.dispatch", risk: "high", mutating: true },
+  "human_gate.request": { capability: "human_gate.write", risk: "high", mutating: true, requiresHumanGateEvidence: true },
+  "human_gate.web_app_submit": { capability: "human_gate.submit", risk: "high", mutating: true },
+  "human_gate.button_callback": { capability: "human_gate.submit", risk: "high", mutating: true },
+  "human_gate.feedback": { capability: "human_gate.submit", risk: "high", mutating: true },
+  "human_gate.resume": { capability: "human_gate.submit", risk: "high", mutating: true },
+  "meeting.resume": { capability: "workflow.operate", risk: "high", mutating: true },
+  "meeting.disperse": { capability: "dispatch.write", risk: "high", mutating: true },
+  "telegram.outbox": { capability: "telegram.outbox", risk: "high", mutating: true },
+  "message_flow.send": { capability: "message_flow.send", risk: "low", mutating: true },
+  "message_flow.reconcile": { capability: "message_flow.reconcile", risk: "medium", mutating: true },
+  "protocol.record": { capability: "protocol.write", risk: "medium", mutating: true },
+  "trade.proposal": { capability: "trade.proposal", risk: "high", mutating: true },
+  "risk.decision": { capability: "risk.decision", risk: "critical", mutating: true },
+  "human_gate.record": { capability: "human_gate.record", risk: "critical", mutating: true },
+  "trade.intent": { capability: "trade.intent", risk: "critical", mutating: true, requiresHumanGateEvidence: true },
+  "trading_core.receipt": { capability: "trading_core.receipt", risk: "critical", mutating: true },
+  "side_effect.record": { capability: "side_effect.record", risk: "high", mutating: true },
+  "incident.state": { capability: "incident.write", risk: "medium", mutating: true },
+  "instrument.upsert": { capability: "research.write", risk: "medium", mutating: true },
+  "radar.update": { capability: "research.write", risk: "medium", mutating: true },
+  "thesis.update": { capability: "research.write", risk: "medium", mutating: true },
+  "research.evidence": { capability: "research.write", risk: "medium", mutating: true },
+  "research.memo": { capability: "research.write", risk: "medium", mutating: true },
+  "gate.review": { capability: "gate.review", risk: "medium", mutating: true },
+  "cat_claw.audit": { capability: "cat_claw.audit", risk: "low", mutating: true }
+};
 
 function nowIso() {
   return new Date().toISOString();
@@ -943,6 +1084,274 @@ function runtimeAgentKey(runtime, agentId) {
   return `${normalizeRuntime(runtime)}:${normalizeAgentId(agentId)}`;
 }
 
+function normalizeOptionalAgentId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return normalizeAgentId(text);
+}
+
+function canonicalWorkflowAction(action) {
+  const raw = String(action || "workflow.status").trim();
+  return WORKFLOW_ACTION_ALIASES[raw] || raw;
+}
+
+function workflowActionPermissionRule(action, input = {}) {
+  const canonical = canonicalWorkflowAction(action);
+  if (WORKFLOW_PERMISSION_READ_ACTIONS.has(canonical)) {
+    return { action: canonical, capability: "read", risk: "low", mutating: false, readOnly: true };
+  }
+  if (canonical === "telegram.outbox") {
+    const operation = String(input.operation || "").trim().toLowerCase();
+    const deliver = boolOption(input.deliver ?? input.autoDeliver ?? input.auto_deliver, false);
+    if (!deliver && ["", "list", "status", "get", "read"].includes(operation)) {
+      return { action: canonical, capability: "read", risk: "low", mutating: false, readOnly: true };
+    }
+  }
+  return { action: canonical, ...(WORKFLOW_ACTION_PERMISSION_RULES[canonical] || { capability: "workflow.write", risk: "medium", mutating: true }) };
+}
+
+function workflowPermissionCaller(input = {}) {
+  const callerAgent = normalizeOptionalAgentId(firstText(
+    input.callerAgent,
+    input.caller_agent,
+    input.principalAgent,
+    input.principal_agent,
+    input.fromAgent,
+    input.from_agent,
+    input.sourceAgent,
+    input.source_agent,
+    input.createdBy,
+    input.created_by,
+    input.updatedBy,
+    input.updated_by,
+    input.requester,
+    input.actor
+  ));
+  const callerRuntimeText = firstText(
+    input.callerRuntime,
+    input.caller_runtime,
+    input.principalRuntime,
+    input.principal_runtime,
+    input.fromRuntime,
+    input.from_runtime,
+    input.sourceRuntime,
+    input.source_runtime,
+    input.runtime
+  );
+  return {
+    agentId: callerAgent,
+    runtime: callerRuntimeText ? normalizeRuntime(callerRuntimeText) : "",
+    sourceSystem: String(input.sourceSystem || input.source_system || "").trim(),
+    toolMode: String(input.toolMode || input.tool_mode || input.capabilityMode || input.capability_mode || "").trim().toLowerCase()
+  };
+}
+
+function workflowCapabilitySetFromList(value, set = new Set()) {
+  for (const item of toList(value)) set.add(item);
+  return set;
+}
+
+function workflowActionSetFromList(value, set = new Set()) {
+  for (const item of toList(value)) set.add(canonicalWorkflowAction(item));
+  return set;
+}
+
+function workflowCapabilityPolicy(capabilities = {}, mode = "") {
+  const policy = {
+    mode: String(mode || capabilities.mode || capabilities.capabilityMode || capabilities.capability_mode || "").trim().toLowerCase(),
+    permissions: new Set(),
+    allowedActions: new Set(),
+    forbiddenActions: new Set()
+  };
+  workflowCapabilitySetFromList(capabilities.permissions, policy.permissions);
+  workflowCapabilitySetFromList(capabilities.capabilities, policy.permissions);
+  workflowCapabilitySetFromList(capabilities.allowedCapabilities, policy.permissions);
+  workflowCapabilitySetFromList(capabilities.allowed_capabilities, policy.permissions);
+  workflowCapabilitySetFromList(capabilities.workflowCapabilities, policy.permissions);
+  workflowCapabilitySetFromList(capabilities.workflow_capabilities, policy.permissions);
+  workflowActionSetFromList(capabilities.allowedActions, policy.allowedActions);
+  workflowActionSetFromList(capabilities.allowed_actions, policy.allowedActions);
+  workflowActionSetFromList(capabilities.forbiddenActions, policy.forbiddenActions);
+  workflowActionSetFromList(capabilities.forbidden_actions, policy.forbiddenActions);
+  const tools = objectValue(capabilities.tools);
+  workflowCapabilitySetFromList(tools.permissions, policy.permissions);
+  workflowCapabilitySetFromList(tools.capabilities, policy.permissions);
+  workflowActionSetFromList(tools.allowedActions, policy.allowedActions);
+  workflowActionSetFromList(tools.allowed_actions, policy.allowedActions);
+  workflowActionSetFromList(tools.forbiddenActions, policy.forbiddenActions);
+  workflowActionSetFromList(tools.forbidden_actions, policy.forbiddenActions);
+  for (const [key, value] of Object.entries(capabilities)) {
+    if (value === true && /^[a-z0-9_.:-]+$/i.test(key)) policy.permissions.add(key);
+  }
+  return policy;
+}
+
+function addWorkflowDefaultCapabilities(policy, caller = {}, row = null) {
+  if (!row) return policy;
+  const agent = String(caller.agentId || row?.agent_id || "").trim();
+  const mode = String(caller.toolMode || policy.mode || "").trim().toLowerCase();
+  if (agent === "main" || agent === "cat_heart" || agent === "catheart") {
+    policy.permissions.add("*");
+    return policy;
+  }
+  if (mode === "governance" || agent === "cat_claw") {
+    for (const permission of [
+      "read",
+      "message_flow.send",
+      "human_gate.write",
+      "human_gate.submit",
+      "human_gate.record",
+      "telegram.outbox",
+      "cat_claw.audit",
+      "incident.write",
+      "workflow.event.write",
+      "workflow.checkpoint"
+    ]) {
+      policy.permissions.add(permission);
+    }
+  }
+  if (mode === "message_only") policy.permissions.add("message_flow.send");
+  return policy;
+}
+
+function workflowPermissionHasCapability(policy, action, capability) {
+  if (policy.forbiddenActions.has(action)) return false;
+  if (policy.permissions.has("*") || policy.permissions.has("all") || policy.permissions.has("workflow.full") || policy.permissions.has("admin.full")) return true;
+  if (policy.allowedActions.has(action)) return true;
+  if (policy.permissions.has(capability)) return true;
+  if (capability === "read" && policy.permissions.has("read")) return true;
+  return false;
+}
+
+function isWorkflowTrustedOperator(caller = {}) {
+  const agent = String(caller.agentId || "").trim();
+  const runtime = String(caller.runtime || "").trim();
+  const source = String(caller.sourceSystem || "").trim().toLowerCase();
+  return ["flashcat", "local_codex", "codex", "system", "tool", "admin"].includes(agent)
+    || ["local_codex", "codex", "system"].includes(runtime)
+    || ["codex_mtls", "local_codex", "local_codex_mtls", "human_gate_console"].includes(source);
+}
+
+async function workflowPermissionAgentRow(paths, caller = {}) {
+  if (!caller.agentId) return null;
+  const runtimeFilter = caller.runtime ? `AND runtime=${sqlValue(caller.runtime)}` : "";
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM runtime_agents
+WHERE agent_id=${sqlValue(caller.agentId)}
+  ${runtimeFilter}
+ORDER BY
+  CASE status WHEN 'active' THEN 0 ELSE 1 END,
+  CASE runtime WHEN ${sqlValue(caller.runtime || "")} THEN 0 ELSE 1 END,
+  updated_at DESC
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function evaluateWorkflowPermission(paths, input = {}) {
+  const targetAction = input.targetAction || input.target_action || input.checkAction || input.check_action || input.action || "workflow.status";
+  const rule = workflowActionPermissionRule(targetAction, input);
+  const caller = workflowPermissionCaller(input);
+  const decision = {
+    allowed: true,
+    action: rule.action,
+    originalAction: String(targetAction || ""),
+    risk: rule.risk || "medium",
+    mutating: Boolean(rule.mutating),
+    readOnly: Boolean(rule.readOnly),
+    requiredCapability: rule.capability || "workflow.write",
+    caller,
+    registered: false,
+    reason: "allowed",
+    row: null
+  };
+  if (rule.readOnly) {
+    decision.reason = "read_action";
+    return decision;
+  }
+  if (!caller.agentId) {
+    decision.reason = "local_unscoped_default_allow";
+    return decision;
+  }
+  if (isWorkflowTrustedOperator(caller)) {
+    decision.reason = "trusted_operator";
+    return decision;
+  }
+  const row = await workflowPermissionAgentRow(paths, caller);
+  decision.registered = Boolean(row);
+  decision.row = row ? {
+    agentKey: row.agent_key,
+    runtime: row.runtime,
+    agentId: row.agent_id,
+    status: row.status,
+    canReceiveDispatch: Number(row.can_receive_dispatch ?? 1) !== 0,
+    canStartWorkflow: Number(row.can_start_workflow ?? 1) !== 0
+  } : null;
+  const capabilities = parseJsonValue(row?.capabilities_json, {});
+  const policy = addWorkflowDefaultCapabilities(workflowCapabilityPolicy(capabilities, caller.toolMode), caller, row);
+  if (policy.forbiddenActions.has(rule.action)) {
+    decision.allowed = false;
+    decision.reason = "action_forbidden_by_policy";
+    return decision;
+  }
+  if (!row && !workflowPermissionHasCapability(policy, rule.action, rule.capability) && rule.action !== "message_flow.send") {
+    decision.allowed = false;
+    decision.reason = "caller_not_registered";
+    return decision;
+  }
+  if (row && String(row.status || "") !== "active") {
+    decision.allowed = false;
+    decision.reason = `runtime_agent_not_active:${row.status || "unknown"}`;
+    return decision;
+  }
+  if (row && rule.action === "workflow.run.upsert" && Number(row.can_start_workflow ?? 1) === 0) {
+    decision.allowed = false;
+    decision.reason = "runtime_agent_cannot_start_workflow";
+    return decision;
+  }
+  if (!workflowPermissionHasCapability(policy, rule.action, rule.capability) && rule.action !== "message_flow.send") {
+    decision.allowed = false;
+    decision.reason = `missing_capability:${rule.capability}`;
+    return decision;
+  }
+  decision.reason = row ? "capability_allowed" : "low_risk_message_flow_default";
+  return decision;
+}
+
+async function authorizeWorkflowAction(rootDir, input = {}) {
+  const action = canonicalWorkflowAction(input.action || "workflow.status");
+  if (action === "workflow.permission.check") return null;
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const decision = await evaluateWorkflowPermission(paths, input);
+  if (!decision.allowed) {
+    await appendWorkflowEvent(paths, {
+      eventType: "permission.denied",
+      status: "denied",
+      workflowId: input.workflowId || input.workflow_id || "",
+      traceId: input.traceId || input.trace_id || "",
+      actor: decision.caller.agentId || "unknown",
+      sourceRuntime: decision.caller.runtime || "",
+      sourceAgent: decision.caller.agentId || "",
+      nextState: decision.reason,
+      payload: {
+        action: decision.action,
+        originalAction: decision.originalAction,
+        risk: decision.risk,
+        requiredCapability: decision.requiredCapability,
+        reason: decision.reason
+      }
+    }).catch(() => {});
+    throw new Error(`workflow permission denied: action=${decision.action} caller=${decision.caller.agentId || "<local>"} requiredCapability=${decision.requiredCapability} reason=${decision.reason}`);
+  }
+  return decision;
+}
+
+export async function workflowPermissionCheck(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const decision = await evaluateWorkflowPermission(paths, input);
+  return { ...decision, dbFile: paths.dbFile };
+}
+
 function assertRuntimeAgentRegistrationAllowed(runtime, agentId, registry = {}) {
   const normalizedRuntime = normalizeRuntime(runtime);
   const normalizedAgentId = normalizeAgentId(agentId);
@@ -1469,6 +1878,34 @@ CREATE TABLE IF NOT EXISTS workflow_checkpoints (
   FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_checkpoints_workflow ON workflow_checkpoints(workflow_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_events (
+  event_id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'recorded',
+  workflow_id TEXT,
+  trace_id TEXT,
+  task_id TEXT,
+  dispatch_id TEXT,
+  runtime_run_id TEXT,
+  message_flow_id TEXT,
+  human_gate_id TEXT,
+  side_effect_id TEXT,
+  incident_id TEXT,
+  actor TEXT,
+  source_runtime TEXT,
+  source_agent TEXT,
+  previous_state TEXT,
+  next_state TEXT,
+  idempotency_key TEXT,
+  artifact_ref TEXT,
+  payload_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_workflow ON workflow_events(workflow_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_trace ON workflow_events(trace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_type ON workflow_events(event_type, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_idempotency ON workflow_events(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE TABLE IF NOT EXISTS workflow_session_packs (
   session_id TEXT PRIMARY KEY,
   version INTEGER NOT NULL DEFAULT 1,
@@ -2169,6 +2606,10 @@ CREATE INDEX IF NOT EXISTS idx_mixed_dispatches_retry ON mixed_meeting_dispatche
 CREATE INDEX IF NOT EXISTS idx_side_effects_idempotency ON side_effect_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE INDEX IF NOT EXISTS idx_incident_states_status ON incident_states(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_readiness_snapshots_checked ON readiness_snapshots(checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_workflow ON workflow_events(workflow_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_trace ON workflow_events(trace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_type ON workflow_events(event_type, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_idempotency ON workflow_events(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE TABLE IF NOT EXISTS workflow_schedules (
   schedule_id TEXT PRIMARY KEY,
   name TEXT,
@@ -2652,6 +3093,7 @@ UNION ALL SELECT 'workflows', COUNT(*) FROM workflow_runs
 UNION ALL SELECT 'workflow_tasks', COUNT(*) FROM workflow_tasks
 UNION ALL SELECT 'workflow_task_dependencies', COUNT(*) FROM workflow_task_dependencies
 UNION ALL SELECT 'workflow_checkpoints', COUNT(*) FROM workflow_checkpoints
+UNION ALL SELECT 'workflow_events', COUNT(*) FROM workflow_events
 UNION ALL SELECT 'workflow_session_packs', COUNT(*) FROM workflow_session_packs
 UNION ALL SELECT 'workflow_session_runs', COUNT(*) FROM workflow_session_runs
 UNION ALL SELECT 'protocol_objects', COUNT(*) FROM protocol_objects
@@ -2688,6 +3130,8 @@ export async function workflowRunUpsert(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const createdAt = nowIso();
   const workflowId = String(input.workflowId || input.workflow_id || input.initiativeId || input.initiative_id || safeId("workflow")).trim();
+  const existingRows = await sqlite(paths.dbFile, `SELECT status FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
+  const previousStatus = existingRows[0]?.status || "";
   const statusRaw = String(input.status || "active").trim();
   const status = WORKFLOW_RUN_STATUSES.has(statusRaw) ? statusRaw : "active";
   const workflowType = String(input.workflowType || input.workflow_type || input.type || "initiative").trim();
@@ -2712,6 +3156,17 @@ ON CONFLICT(workflow_id) DO UPDATE SET
   current_decision=CASE WHEN excluded.current_decision != '' THEN excluded.current_decision ELSE workflow_runs.current_decision END,
   payload_json=excluded.payload_json,
   updated_at=excluded.updated_at;`);
+  await appendWorkflowEvent(paths, {
+    eventType: previousStatus ? "workflow.updated" : "workflow.created",
+    workflowId,
+    actor: input.createdBy || input.created_by || input.from || input.ownerAgent || input.owner_agent || "main",
+    previousState: previousStatus,
+    nextState: status,
+    sourceRuntime: "workflow",
+    sourceAgent: input.ownerAgent || input.owner_agent || "main",
+    payload: { workflowType, summary: input.summary || input.text || "", phase: input.phase || input.currentPhase || input.current_phase || "" },
+    createdAt
+  });
   return { workflowId, status, workflowType, dbFile: paths.dbFile };
 }
 
@@ -3589,6 +4044,184 @@ function sessionJsonObject(value, fallback = {}) {
   const parsed = parseJsonValue(value, value === undefined ? fallback : value);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fallback;
   return redactSensitiveForPersistence(parsed);
+}
+
+function workflowEventFromRow(row) {
+  if (!row) return null;
+  return {
+    eventId: row.event_id,
+    eventType: row.event_type,
+    status: row.status,
+    workflowId: row.workflow_id || "",
+    traceId: row.trace_id || "",
+    taskId: row.task_id || "",
+    dispatchId: row.dispatch_id || "",
+    runtimeRunId: row.runtime_run_id || "",
+    messageFlowId: row.message_flow_id || "",
+    humanGateId: row.human_gate_id || "",
+    sideEffectId: row.side_effect_id || "",
+    incidentId: row.incident_id || "",
+    actor: row.actor || "",
+    sourceRuntime: row.source_runtime || "",
+    sourceAgent: row.source_agent || "",
+    previousState: row.previous_state || "",
+    nextState: row.next_state || "",
+    idempotencyKey: row.idempotency_key || "",
+    artifactRef: row.artifact_ref || "",
+    payloadHash: row.payload_hash || "",
+    payload: parseJsonValue(row.payload_json, {}),
+    createdAt: row.created_at
+  };
+}
+
+function workflowEventPayload(input = {}) {
+  return redactSensitiveForPersistence(parseJsonValue(input.payload, input.payload || {}));
+}
+
+function workflowEventRecordFromInput(input = {}, now = nowIso()) {
+  const payload = workflowEventPayload(input);
+  const eventType = String(input.eventType || input.event_type || input.type || "").trim();
+  if (!eventType) throw new Error("workflow eventType is required");
+  const canonicalPayloadHash = jsonHash(payload);
+  const suppliedPayloadHash = String(input.payloadHash || input.payload_hash || "").trim();
+  if (suppliedPayloadHash && suppliedPayloadHash !== canonicalPayloadHash) {
+    throw new Error("workflow event payloadHash must match canonical redacted payload hash");
+  }
+  return {
+    eventId: String(input.eventId || input.event_id || safeId("workflow_event")).trim(),
+    eventType,
+    status: String(input.status || "recorded").trim(),
+    workflowId: String(input.workflowId || input.workflow_id || "").trim(),
+    traceId: String(input.traceId || input.trace_id || "").trim(),
+    taskId: String(input.taskId || input.task_id || "").trim(),
+    dispatchId: String(input.dispatchId || input.dispatch_id || "").trim(),
+    runtimeRunId: String(input.runtimeRunId || input.runtime_run_id || "").trim(),
+    messageFlowId: String(input.messageFlowId || input.message_flow_id || input.flowId || input.flow_id || "").trim(),
+    humanGateId: String(input.humanGateId || input.human_gate_id || "").trim(),
+    sideEffectId: String(input.sideEffectId || input.side_effect_id || "").trim(),
+    incidentId: String(input.incidentId || input.incident_id || "").trim(),
+    actor: String(input.actor || input.createdBy || input.created_by || input.from || "").trim(),
+    sourceRuntime: String(input.sourceRuntime || input.source_runtime || input.runtime || "").trim(),
+    sourceAgent: String(input.sourceAgent || input.source_agent || input.agentId || input.agent_id || "").trim(),
+    previousState: String(input.previousState || input.previous_state || input.fromState || input.from_state || "").trim(),
+    nextState: String(input.nextState || input.next_state || input.toState || input.to_state || "").trim(),
+    idempotencyKey: String(input.idempotencyKey || input.idempotency_key || "").trim(),
+    artifactRef: String(input.artifactRef || input.artifact_ref || "").trim(),
+    payloadHash: canonicalPayloadHash,
+    payload,
+    createdAt: String(input.createdAt || input.created_at || now).trim()
+  };
+}
+
+const WORKFLOW_EVENT_DEDUPE_FIELDS = [
+  "eventType",
+  "status",
+  "workflowId",
+  "traceId",
+  "taskId",
+  "dispatchId",
+  "runtimeRunId",
+  "messageFlowId",
+  "humanGateId",
+  "sideEffectId",
+  "incidentId",
+  "actor",
+  "sourceRuntime",
+  "sourceAgent",
+  "previousState",
+  "nextState",
+  "idempotencyKey",
+  "artifactRef",
+  "payloadHash"
+];
+
+function workflowEventDedupeMismatch(existing, record) {
+  for (const field of WORKFLOW_EVENT_DEDUPE_FIELDS) {
+    if (String(existing[field] || "") !== String(record[field] || "")) return field;
+  }
+  return "";
+}
+
+export async function workflowEventAppend(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  return appendWorkflowEvent(paths, input);
+}
+
+async function appendWorkflowEvent(paths, input = {}) {
+  const record = workflowEventRecordFromInput(input);
+  const duplicateFilters = [`event_id=${sqlValue(record.eventId)}`];
+  if (record.idempotencyKey) duplicateFilters.push(`idempotency_key=${sqlValue(record.idempotencyKey)}`);
+  const existingRows = await sqlite(paths.dbFile, `
+SELECT * FROM workflow_events
+WHERE ${duplicateFilters.join(" OR ")}
+ORDER BY created_at DESC
+LIMIT 5;`, { json: true });
+  if (existingRows.length) {
+    const byEventId = existingRows.find((row) => row.event_id === record.eventId);
+    const byIdempotency = record.idempotencyKey ? existingRows.find((row) => row.idempotency_key === record.idempotencyKey) : null;
+    if (byEventId && byIdempotency && byEventId.event_id !== byIdempotency.event_id) {
+      throw new Error(`workflow event idempotency conflict: eventId ${record.eventId} and idempotencyKey ${record.idempotencyKey} point to different events`);
+    }
+    const existing = workflowEventFromRow(byEventId || byIdempotency || existingRows[0]);
+    const sameEventId = existing.eventId === record.eventId;
+    const sameIdempotency = record.idempotencyKey && existing.idempotencyKey === record.idempotencyKey;
+    const mismatch = workflowEventDedupeMismatch(existing, record);
+    if ((sameEventId || sameIdempotency) && !mismatch) {
+      return { ...existing, deduped: true, dbFile: paths.dbFile };
+    }
+    throw new Error(`workflow event idempotency conflict: ${sameEventId ? record.eventId : record.idempotencyKey}${mismatch ? ` field=${mismatch}` : ""}`);
+  }
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_events(event_id, event_type, status, workflow_id, trace_id, task_id, dispatch_id, runtime_run_id, message_flow_id, human_gate_id, side_effect_id, incident_id, actor, source_runtime, source_agent, previous_state, next_state, idempotency_key, artifact_ref, payload_hash, payload_json, created_at)
+VALUES (${sqlValue(record.eventId)}, ${sqlValue(record.eventType)}, ${sqlValue(record.status)}, ${sqlValue(record.workflowId)}, ${sqlValue(record.traceId)}, ${sqlValue(record.taskId)}, ${sqlValue(record.dispatchId)}, ${sqlValue(record.runtimeRunId)}, ${sqlValue(record.messageFlowId)}, ${sqlValue(record.humanGateId)}, ${sqlValue(record.sideEffectId)}, ${sqlValue(record.incidentId)}, ${sqlValue(record.actor)}, ${sqlValue(record.sourceRuntime)}, ${sqlValue(record.sourceAgent)}, ${sqlValue(record.previousState)}, ${sqlValue(record.nextState)}, ${sqlValue(record.idempotencyKey)}, ${sqlValue(record.artifactRef)}, ${sqlValue(record.payloadHash)}, ${sqlValue(JSON.stringify(record.payload))}, ${sqlValue(record.createdAt)});`);
+  return { ...record, dbFile: paths.dbFile };
+}
+
+function workflowEventWhere(input = {}) {
+  const filters = [];
+  const fieldMap = [
+    ["workflow_id", input.workflowId || input.workflow_id],
+    ["trace_id", input.traceId || input.trace_id],
+    ["task_id", input.taskId || input.task_id],
+    ["dispatch_id", input.dispatchId || input.dispatch_id],
+    ["runtime_run_id", input.runtimeRunId || input.runtime_run_id],
+    ["message_flow_id", input.messageFlowId || input.message_flow_id || input.flowId || input.flow_id],
+    ["human_gate_id", input.humanGateId || input.human_gate_id],
+    ["side_effect_id", input.sideEffectId || input.side_effect_id],
+    ["incident_id", input.incidentId || input.incident_id],
+    ["idempotency_key", input.idempotencyKey || input.idempotency_key],
+    ["status", input.status]
+  ];
+  for (const [column, value] of fieldMap) {
+    const text = String(value || "").trim();
+    if (text) filters.push(`${column}=${sqlValue(text)}`);
+  }
+  const eventTypes = toList(input.eventTypes || input.event_types || input.eventType || input.event_type || input.type);
+  if (eventTypes.length === 1) filters.push(`event_type=${sqlValue(eventTypes[0])}`);
+  if (eventTypes.length > 1) filters.push(`event_type IN (${eventTypes.map(sqlValue).join(", ")})`);
+  const since = String(input.since || input.createdAfter || input.created_after || "").trim();
+  if (since) filters.push(`created_at >= ${sqlValue(since)}`);
+  const until = String(input.until || input.createdBefore || input.created_before || "").trim();
+  if (until) filters.push(`created_at <= ${sqlValue(until)}`);
+  return filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+}
+
+export async function workflowEventList(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const requestedLimit = Number(input.limit || 100);
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(1000, Math.trunc(requestedLimit))) : 100;
+  const order = String(input.order || input.sort || "").toLowerCase() === "asc" ? "ASC" : "DESC";
+  const where = workflowEventWhere(input);
+  const rows = await sqlite(paths.dbFile, `
+SELECT * FROM workflow_events
+${where}
+ORDER BY created_at ${order}, event_id ${order}
+LIMIT ${limit};`, { json: true });
+  return { count: rows.length, events: rows.map(workflowEventFromRow), dbFile: paths.dbFile };
+}
+
+export async function workflowEventTimeline(rootDir, input = {}) {
+  return workflowEventList(rootDir, { ...input, order: "asc" });
 }
 
 function sessionJsonArray(value) {
@@ -6531,6 +7164,9 @@ export async function workflowHumanGateRecord(rootDir, input) {
     sourceAgent: input.sourceAgent || input.source_agent || input.from || "flashcat",
     payload: {
       gateType: input.gateType || input.gate_type || "high_risk_trade_execution",
+      humanGateStageKey: input.humanGateStageKey || input.human_gate_stage_key || input.stageKey || input.stage_key || "",
+      stage: input.stage || input.phase || "",
+      meetingId: input.meetingId || input.meeting_id || "",
       actor: input.actor || input.from || "flashcat",
       assurance: input.assurance || input.authAssurance || "",
       expiresAt: input.expiresAt || input.expires_at || "",
@@ -6755,7 +7391,7 @@ export async function sideEffectRecord(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const sideEffectId = input.sideEffectId || input.side_effect_id || safeId("side_effect");
   const createdAt = nowIso();
-  const payload = parseJsonValue(input.payload, input.payload || {});
+  const payload = redactSensitiveForPersistence(parseJsonValue(input.payload, input.payload || {}));
   const status = String(input.status || "planned").trim();
   const sideEffectType = String(input.sideEffectType || input.side_effect_type || input.type || "generic").trim();
   await sqlite(paths.dbFile, `
@@ -6767,6 +7403,21 @@ ON CONFLICT(side_effect_id) DO UPDATE SET
   artifact_ref=CASE WHEN excluded.artifact_ref != '' THEN excluded.artifact_ref ELSE side_effect_ledger.artifact_ref END,
   payload_json=excluded.payload_json,
   updated_at=excluded.updated_at;`);
+  await appendWorkflowEvent(paths, {
+    eventType: "side_effect.recorded",
+    status,
+    workflowId: input.workflowId || input.workflow_id || "",
+    traceId: input.traceId || input.trace_id || "",
+    dispatchId: input.dispatchId || input.dispatch_id || "",
+    sideEffectId,
+    actor: input.ownerAgent || input.owner_agent || input.agentId || input.agent_id || "workflow",
+    sourceRuntime: "workflow",
+    sourceAgent: input.ownerAgent || input.owner_agent || input.agentId || input.agent_id || "",
+    nextState: status,
+    artifactRef: input.artifactRef || input.artifact_ref || "",
+    payload: { sideEffectType, inputHash: input.inputHash || input.input_hash || jsonHash(payload), outputHash: input.outputHash || input.output_hash || "" },
+    createdAt
+  });
   return { sideEffectId, sideEffectType, status, dbFile: paths.dbFile };
 }
 
@@ -6818,6 +7469,8 @@ export async function incidentState(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const incidentId = input.incidentId || input.incident_id || safeId("incident");
   const createdAt = nowIso();
+  const existingRows = await sqlite(paths.dbFile, `SELECT status FROM incident_states WHERE incident_id=${sqlValue(incidentId)} LIMIT 1;`, { json: true });
+  const previousStatus = existingRows[0]?.status || "";
   const statusRaw = String(input.status || "active").trim();
   const status = INCIDENT_STATUSES.has(statusRaw) ? statusRaw : "active";
   const modeRaw = String(input.mode || (status === "resolved" ? "normal" : "degraded")).trim();
@@ -6863,6 +7516,27 @@ ON CONFLICT(incident_id) DO UPDATE SET
   next_update_at=excluded.next_update_at,
   resolved_at=excluded.resolved_at,
   updated_at=excluded.updated_at;`);
+  await appendWorkflowEvent(paths, {
+    eventType: previousStatus ? (status === "resolved" ? "incident.resolved" : "incident.updated") : "incident.created",
+    status,
+    workflowId: input.workflowId || input.workflow_id || "",
+    traceId: input.traceId || input.trace_id || "",
+    incidentId,
+    actor: record.commander,
+    sourceRuntime: "workflow",
+    sourceAgent: record.commander,
+    previousState: previousStatus,
+    nextState: status,
+    artifactRef: markdownRelPath,
+    payload: {
+      mode,
+      summary: record.summary,
+      affectedPlanes: record.affectedPlanes,
+      jsonRelPath,
+      markdownRelPath
+    },
+    createdAt
+  });
   return { incidentId, status, mode, relativePath: markdownRelPath, jsonRelativePath: jsonRelPath, markdownRelativePath: markdownRelPath, dbFile: paths.dbFile };
 }
 
@@ -7060,6 +7734,28 @@ VALUES (${sqlValue(dispatchId)}, ${sqlValue(meetingId)}, ${sqlValue(workflowId)}
     createdAt
   });
   const relPath = await writeJsonArtifact(paths.root, path.join(paths.dispatchesDir, status), dispatchId, payload);
+  await appendWorkflowEvent(paths, {
+    eventType: "dispatch.created",
+    status,
+    workflowId,
+    traceId,
+    dispatchId,
+    actor: payload.chair,
+    sourceRuntime: "workflow",
+    sourceAgent: payload.chair,
+    nextState: status,
+    idempotencyKey: idempotencyKey ? `workflow_event:dispatch.created:${idempotencyKey}` : "",
+    artifactRef: relPath,
+    payload: {
+      meetingId,
+      runtime: dispatchRuntime,
+      agentId,
+      dispatchType: payload.dispatchType,
+      priority: input.priority || "normal",
+      messageFlowId: messageFlow?.flowId || ""
+    },
+    createdAt
+  });
   return { meetingId, workflowId, traceId, idempotencyKey, dispatchId, runtime: dispatchRuntime, platform: targetRegistry.platform, workflowIngressAdapter: targetRegistry.workflowIngressAdapter, imIdentity: targetRegistry.imIdentity, executionIdentity: targetRegistry.executionIdentity, agentId, status, messageFlowId: messageFlow?.flowId || "", returnPolicy: messageFlow?.returnPolicy || "", relativePath: relPath, dbFile: paths.dbFile };
 }
 
@@ -8019,7 +8715,7 @@ async function runHermesDispatch(paths, row, input = {}) {
       runtimeRunId: ackRuntimeRunId,
       messageFlowDelivery
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter, profile, messageId: ingest.messageId, reportDelivery, messageFlowDelivery };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter, profile, messageId: ingest.messageId, runtimeRunId: ackRuntimeRunId, messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "", reportDelivery, messageFlowDelivery };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
@@ -8050,7 +8746,7 @@ async function runHermesDispatch(paths, row, input = {}) {
       attempt,
       runtimeRunId
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter, profile, failureType, retryScheduled: shouldRetry, error: message };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter, profile, runtimeRunId: failedRuntimeRunId, messageFlowId: flow?.flow_id || "", failureType, retryScheduled: shouldRetry, error: message };
   }
 }
 
@@ -8357,7 +9053,8 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       attempt,
       runtimeRunId
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "acp", backend: backendId, acpAgent, sessionKey, failureType, retryScheduled: shouldRetry, error: message };
+    const flow = await messageFlowForDispatch(paths, row);
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "acp", backend: backendId, acpAgent, sessionKey, runtimeRunId, messageFlowId: flow?.flow_id || "", failureType, retryScheduled: shouldRetry, error: message };
   }
   await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "acp", backend: backendId, backendSource, acpAgent, sessionMode, sessionKey, startedAt, attempt });
   const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "started", startedAt, attempt, payload: { sessionMode, backendSource } });
@@ -8456,7 +9153,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       messageFlowDelivery
     });
     if (sessionMode === "oneshot") await backend.runtime.close({ handle, reason: "trading-agents-workflow oneshot completed", discardPersistentState: true }).catch(() => {});
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "acp", backend: backendId, acpAgent, sessionKey, messageId: ingest.messageId, reportDelivery, messageFlowDelivery };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "acp", backend: backendId, acpAgent, sessionKey, messageId: ingest.messageId, runtimeRunId: ackRuntimeRunId, messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "", reportDelivery, messageFlowDelivery };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
@@ -8492,7 +9189,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       attempt,
       runtimeRunId
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "acp", backend: backendId, acpAgent, sessionKey, failureType, retryScheduled: shouldRetry, error: message };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "acp", backend: backendId, acpAgent, sessionKey, runtimeRunId: failedRuntimeRunId, messageFlowId: flow?.flow_id || "", failureType, retryScheduled: shouldRetry, error: message };
   } finally {
     if (timeout) clearTimeout(timeout);
     await backendCleanup();
@@ -8593,7 +9290,7 @@ async function runOpenClawDispatch(paths, row, input = {}) {
       runId: parsed.runId || "",
       messageFlowDelivery
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "openclaw", messageId: ingest.messageId, runId: parsed.runId || "", reportDelivery, messageFlowDelivery };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "openclaw", messageId: ingest.messageId, runId: parsed.runId || "", runtimeRunId: ackRuntimeRunId, messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "", reportDelivery, messageFlowDelivery };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
@@ -8624,7 +9321,7 @@ async function runOpenClawDispatch(paths, row, input = {}) {
       attempt,
       runtimeRunId
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "openclaw", failureType, retryScheduled: shouldRetry, error: message };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: shouldRetry ? "queued" : "failed", adapter: "openclaw", runtimeRunId: failedRuntimeRunId, messageFlowId: flow?.flow_id || "", failureType, retryScheduled: shouldRetry, error: message };
   }
 }
 
@@ -8696,6 +9393,33 @@ async function redirectQueuedRouteShellDispatch(paths, row, input = {}) {
   };
 }
 
+async function appendRuntimeBridgeResultEvent(paths, row, result = {}) {
+  if (!row?.dispatch_id || !result?.status || result.status === "skipped") return;
+  await appendWorkflowEvent(paths, {
+    eventType: "runtime.receipt",
+    status: result.status,
+    workflowId: row.workflow_id || result.workflowId || "",
+    traceId: row.trace_id || result.traceId || "",
+    dispatchId: row.dispatch_id,
+    runtimeRunId: result.runtimeRunId || "",
+    messageFlowId: result.messageFlowId || "",
+    actor: "runtime.bridge",
+    sourceRuntime: row.runtime || result.runtime || "",
+    sourceAgent: row.agent_id || result.agentId || "",
+    previousState: "queued",
+    nextState: result.status,
+    payload: {
+      runtime: row.runtime || result.runtime || "",
+      agentId: row.agent_id || result.agentId || "",
+      adapter: result.adapter || "",
+      backend: result.backend || "",
+      failureType: result.failureType || "",
+      retryScheduled: Boolean(result.retryScheduled),
+      error: result.error || ""
+    }
+  });
+}
+
 export async function runtimeBridgeDrain(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const runtime = normalizeRuntime(input.runtime || "hermers");
@@ -8724,7 +9448,9 @@ LIMIT ${limit};`, { json: true });
   for (const row of rows) {
     const validation = validateRuntimeBridgeRegistryRow(row, runtime);
     if (!validation.ok) {
-      results.push(await failRuntimeBridgeRegistryDispatch(paths, row, validation, input));
+      const result = await failRuntimeBridgeRegistryDispatch(paths, row, validation, input);
+      await appendRuntimeBridgeResultEvent(paths, row, result);
+      results.push(result);
       continue;
     }
     const claim = await claimQueuedDispatch(paths, row, input);
@@ -8734,28 +9460,33 @@ LIMIT ${limit};`, { json: true });
     }
     const claimedRow = claim.row;
     try {
+      let result = null;
       if (runtime === "openclaw_route_shell") {
-        results.push(await redirectQueuedRouteShellDispatch(paths, claimedRow, input));
+        result = await redirectQueuedRouteShellDispatch(paths, claimedRow, input);
       } else if (runtime === "hermers") {
         const adapter = normalizeWorkflowIngressAdapter(claimedRow.workflow_ingress_adapter || claimedRow.execution_adapter || "", claimedRow.platform || "", runtime);
         if (adapter === "acp") {
-          results.push(await runHermesAcpDispatch(paths, claimedRow, input));
+          result = await runHermesAcpDispatch(paths, claimedRow, input);
         } else if (adapter === "cli") {
-          results.push(await runHermesDispatch(paths, claimedRow, { ...input, adapterName: "cli" }));
+          result = await runHermesDispatch(paths, claimedRow, { ...input, adapterName: "cli" });
         } else {
           await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter, failedAt: nowIso(), error: `hermers adapter not implemented: ${adapter}` });
-          results.push({ dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `hermers adapter not implemented: ${adapter}` });
+          result = { dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `hermers adapter not implemented: ${adapter}` };
         }
       } else if (runtime === "openclaw") {
-        results.push(await runOpenClawDispatch(paths, claimedRow, input));
+        result = await runOpenClawDispatch(paths, claimedRow, input);
       } else {
         await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "none", failedAt: nowIso(), error: `runtime adapter not implemented: ${runtime}` });
-        results.push({ dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `runtime adapter not implemented: ${runtime}` });
+        result = { dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `runtime adapter not implemented: ${runtime}` };
       }
+      await appendRuntimeBridgeResultEvent(paths, claimedRow, result);
+      results.push(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "runtime_bridge", failedAt: nowIso(), failureType: "runtime_bridge_error", error: message.slice(0, 2000) });
-      results.push({ dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", failureType: "runtime_bridge_error", error: message });
+      const result = { dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", failureType: "runtime_bridge_error", error: message };
+      await appendRuntimeBridgeResultEvent(paths, claimedRow, result);
+      results.push(result);
     }
   }
   return { runtime, count: rows.length, results, dbFile: paths.dbFile };
@@ -8902,6 +9633,120 @@ function humanGateButtonOptions(input = {}) {
   return withHumanGateControlButtons(options, {}, input, input);
 }
 
+function humanGateStageKey(input = {}, workflowId = "", gateType = "", parentObjectId = "") {
+  const explicit = firstText(
+    input.humanGateStageKey,
+    input.human_gate_stage_key,
+    input.stageKey,
+    input.stage_key,
+    input.workflowStage,
+    input.workflow_stage,
+    input.stage,
+    input.phase
+  );
+  if (explicit) return cleanFileSegment(explicit);
+  const taskId = firstText(input.taskId, input.task_id);
+  if (taskId) return `task:${cleanFileSegment(taskId)}`;
+  const dispatchId = firstText(input.dispatchId, input.dispatch_id);
+  if (dispatchId) return `dispatch:${cleanFileSegment(dispatchId)}`;
+  const parent = firstText(parentObjectId, workflowId);
+  return `workflow:${cleanFileSegment(parent || gateType || "default")}`;
+}
+
+function humanGateRecordStageKey(row = {}, payload = {}, body = {}) {
+  const explicit = firstText(
+    body.humanGateStageKey,
+    body.human_gate_stage_key,
+    body.stageKey,
+    body.stage_key,
+    body.workflowStage,
+    body.workflow_stage,
+    body.stage,
+    body.phase,
+    payload.humanGateStageKey,
+    payload.human_gate_stage_key,
+    payload.stageKey,
+    payload.stage_key
+  );
+  if (explicit) return explicit;
+  return `workflow:${cleanFileSegment(firstText(row.parent_object_id, body.workflowId, payload.workflowId, row.object_id, "default"))}`;
+}
+
+function humanGateRecordGateType(payload = {}, body = {}) {
+  return firstText(body.gateType, body.gate_type, payload.gateType, payload.gate_type, "workflow_continuation");
+}
+
+async function pendingHumanGateForStage(paths, { workflowId, gateType, stageKey, excludeHumanGateId = "" } = {}) {
+  const rows = await sqlite(paths.dbFile, `
+SELECT object_id, status, source_agent, parent_object_id, path, payload_json, created_at
+FROM protocol_objects
+WHERE object_type='human_gate_record' AND status='pending'
+ORDER BY created_at DESC;`, { json: true });
+  for (const row of rows) {
+    if (excludeHumanGateId && row.object_id === excludeHumanGateId) continue;
+    const payload = parseJsonValue(row.payload_json, {});
+    const body = humanGateBody(payload);
+    if (humanGateWorkflowId(row, payload, body) !== workflowId) continue;
+    if (humanGateRecordGateType(payload, body) !== gateType) continue;
+    if (humanGateRecordStageKey(row, payload, body) !== stageKey) continue;
+    return { row, payload, body };
+  }
+  return null;
+}
+
+async function supersedeHumanGateRecord(paths, row, reason = "superseded_by_new_human_gate_request") {
+  if (!row?.object_id) return null;
+  const supersededAt = nowIso();
+  const payload = parseJsonValue(row.payload_json, {});
+  const updatedPayload = { ...payload, status: "superseded", supersededAt, supersededReason: reason };
+  const hash = jsonHash(updatedPayload);
+  const relPath = await writeJsonArtifact(paths.root, path.join(paths.protocolDir, "human_gate_record"), row.object_id, { ...updatedPayload, hash });
+  await sqlite(paths.dbFile, `
+UPDATE protocol_objects
+SET status='superseded',
+    path=${sqlValue(relPath)},
+    payload_json=${sqlValue(JSON.stringify(updatedPayload))},
+    hash=${sqlValue(hash)},
+    updated_at=${sqlValue(supersededAt)}
+WHERE object_id=${sqlValue(row.object_id)} AND object_type='human_gate_record' AND status='pending';
+UPDATE human_gate_buttons
+SET status='superseded',
+    updated_at=${sqlValue(supersededAt)}
+WHERE human_gate_id=${sqlValue(row.object_id)} AND status IN ('active','feedback_pending');`);
+  const outboxRows = await sqlite(paths.dbFile, `
+SELECT outbox_id, status, payload_json
+FROM telegram_outbox
+WHERE message_type='human_gate_request'
+ORDER BY created_at DESC
+LIMIT 500;`, { json: true });
+  for (const outbox of outboxRows) {
+    const outboxPayload = parseJsonValue(outbox.payload_json, {});
+    const humanGateId = String(outboxPayload.humanGateId || outboxPayload.human_gate_id || "").trim();
+    if (humanGateId !== row.object_id) continue;
+    if (["queued", "delivering", "failed"].includes(String(outbox.status || ""))) {
+      await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='cancelled',
+    payload_json=${sqlValue(JSON.stringify({ ...outboxPayload, cancelledAt: supersededAt, cancelledReason: reason }))},
+    updated_at=${sqlValue(supersededAt)}
+WHERE outbox_id=${sqlValue(outbox.outbox_id)};`);
+    }
+  }
+  await appendWorkflowEvent(paths, {
+    eventType: "human_gate.superseded",
+    status: "superseded",
+    workflowId: humanGateWorkflowId(row, payload, humanGateBody(payload)),
+    humanGateId: row.object_id,
+    actor: "workflow",
+    sourceRuntime: "workflow",
+    sourceAgent: "workflow",
+    previousState: "pending",
+    nextState: "superseded",
+    payload: { reason }
+  });
+  return { humanGateId: row.object_id, status: "superseded", supersededAt, reason };
+}
+
 async function createHumanGateButtons(paths, input = {}) {
   const humanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
   if (!humanGateId) return [];
@@ -8913,11 +9758,13 @@ async function createHumanGateButtons(paths, input = {}) {
   if (!options.length) return [];
   const buttons = [];
   for (const [index, option] of options.entries()) {
-    const callbackToken = textHash(`${humanGateId}:${index}:${option.label}:${createdAt}`).slice(0, 24);
-    const buttonId = safeId("hgatebtn");
+    const buttonSeed = `${humanGateId}:${index}:${option.label}:${option.decisionStatus}:${option.role}`;
+    const callbackToken = textHash(`token:${buttonSeed}`).slice(0, 24);
+    const buttonId = `hgatebtn.${textHash(`button:${buttonSeed}`).slice(0, 24)}`;
     await sqlite(paths.dbFile, `
 INSERT INTO human_gate_buttons(button_id, callback_token, human_gate_id, workflow_id, meeting_id, label, decision_status, button_role, artifact_ref, summary, prompt, payload_json, status, created_by, created_at, updated_at)
-VALUES (${sqlValue(buttonId)}, ${sqlValue(callbackToken)}, ${sqlValue(humanGateId)}, ${sqlValue(workflowId)}, ${sqlValue(meetingId)}, ${sqlValue(option.label)}, ${sqlValue(option.decisionStatus)}, ${sqlValue(option.role)}, ${sqlValue(option.artifactRef)}, ${sqlValue(option.summary)}, ${sqlValue(option.prompt)}, ${sqlValue(JSON.stringify(option.payload || {}))}, 'active', ${sqlValue(createdBy)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
+VALUES (${sqlValue(buttonId)}, ${sqlValue(callbackToken)}, ${sqlValue(humanGateId)}, ${sqlValue(workflowId)}, ${sqlValue(meetingId)}, ${sqlValue(option.label)}, ${sqlValue(option.decisionStatus)}, ${sqlValue(option.role)}, ${sqlValue(option.artifactRef)}, ${sqlValue(option.summary)}, ${sqlValue(option.prompt)}, ${sqlValue(JSON.stringify(option.payload || {}))}, 'active', ${sqlValue(createdBy)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+ON CONFLICT(button_id) DO NOTHING;`);
     buttons.push({
       buttonId,
       callbackToken,
@@ -9087,9 +9934,13 @@ export async function humanGateRequest(rootDir, input) {
   const workflowId = firstText(input.workflowId, input.workflow_id, input.parentObjectId, input.parent_object_id, meetingId);
   const gateType = firstText(input.gateType, input.gate_type, "workflow_continuation");
   const parentObjectId = input.parentObjectId || input.parent_object_id || workflowId;
+  const stageKey = humanGateStageKey(input, workflowId, gateType, parentObjectId);
+  const requestedHumanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
+  const supersedeExisting = boolOption(input.supersedeExisting ?? input.supersede_existing ?? input.supersede ?? input.replaceExisting ?? input.replace_existing, false);
+  const stageGateId = requestedHumanGateId || (supersedeExisting ? "" : `hgate.stage.${textHash(`${workflowId}:${gateType}:${stageKey}`).slice(0, 24)}`);
   const requestPayload = parseJsonValue(input.payload, input.payload || {});
   const buttonSpecs = humanGateButtonSpecs(
-    { object_id: input.humanGateId || input.human_gate_id || "", path: "" },
+    { object_id: stageGateId, path: "" },
     { ...input, payload: requestPayload },
     { ...input, raw: requestPayload }
   );
@@ -9102,29 +9953,24 @@ export async function humanGateRequest(rootDir, input) {
     throw new Error(`Human Gate request blocked: ${buttonAudit.reason}; cat-brain main must provide complete plan A/B/C details and Chinese-primary report material before cat_claw submits to Flashcat`);
   }
   let gate = null;
-  const existingGateRows = await sqlite(paths.dbFile, `
-SELECT object_id, payload_json
-FROM protocol_objects
-WHERE object_type='human_gate_record'
-  AND status='pending'
-  AND parent_object_id=${sqlValue(parentObjectId)}
-ORDER BY created_at DESC
-LIMIT 20;`, { json: true });
-  for (const row of existingGateRows) {
-    const payload = parseJsonValue(row.payload_json, {});
-    const body = humanGateBody(payload);
-    if (String(body.workflowId || payload.workflowId || parentObjectId || "") === String(workflowId) && String(body.gateType || payload.gateType || "workflow_continuation") === String(gateType)) {
-      gate = { objectId: row.object_id, objectType: "human_gate_record", status: "pending", idempotentReplay: true };
-      break;
+  let supersededGate = null;
+  const stageMatch = await pendingHumanGateForStage(paths, { workflowId, gateType, stageKey, excludeHumanGateId: requestedHumanGateId });
+  if (stageMatch?.row) {
+    if (supersedeExisting) {
+      supersededGate = await supersedeHumanGateRecord(paths, stageMatch.row, "superseded_by_new_human_gate_request_same_stage");
+    } else {
+      gate = { objectId: stageMatch.row.object_id, objectType: "human_gate_record", status: "pending", idempotentReplay: true, reusedStageGate: true };
     }
   }
   if (!gate) {
     gate = await workflowHumanGateRecord(rootDir, {
       ...input,
       [INTERNAL_HUMAN_GATE_RECORD]: true,
+      humanGateId: stageGateId || input.humanGateId || input.human_gate_id,
       workflowId,
       parentObjectId,
       gateType,
+      humanGateStageKey: stageKey,
       actor: input.actor || requester,
       status: "pending",
       sourceSystem: input.sourceSystem || input.source_system || "openclaw",
@@ -9175,7 +10021,31 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
     const rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(telegramOutbox.outboxId)} LIMIT 1;`, { json: true });
     if (rows[0]) delivery = await deliverTelegramOutboxRow(paths, rows[0], { ...input, account: deliveryAccount, target: targetRef });
   }
-  return { meetingId, workflowId, humanGateId: gate.objectId, gateType, eventId, buttons, presentation, telegramReplyMarkup, webApp, targetKind, targetRef, deliveryAccount, telegramOutbox, deliveryRequired: telegramOutbox.status === "queued" && !delivery, delivery, status: "pending", dbFile: paths.dbFile };
+  await appendWorkflowEvent(paths, {
+    eventType: "human_gate.requested",
+    status: "pending",
+    workflowId,
+    humanGateId: gate.objectId,
+    actor: requester,
+    sourceRuntime: "workflow",
+    sourceAgent: requester,
+    nextState: "pending",
+    artifactRef: telegramOutbox.outboxId,
+    payload: {
+      meetingId,
+      gateType,
+      stageKey,
+      reusedStageGate: Boolean(gate.idempotentReplay),
+      supersededHumanGateId: supersededGate?.humanGateId || "",
+      targetKind,
+      targetRef,
+      buttonCount: buttons.length,
+      telegramOutboxId: telegramOutbox.outboxId,
+      deliveryStatus: delivery?.status || telegramOutbox.status
+    },
+    createdAt
+  });
+  return { meetingId, workflowId, humanGateId: gate.objectId, gateType, stageKey, reusedStageGate: Boolean(gate.idempotentReplay), supersededGate, eventId, buttons, presentation, telegramReplyMarkup, webApp, targetKind, targetRef, deliveryAccount, telegramOutbox, deliveryRequired: telegramOutbox.status === "queued" && !delivery, delivery, status: "pending", dbFile: paths.dbFile };
 }
 
 async function workflowPayloadWithHumanGateFeedback(paths, workflowId, button, selectedAt, feedbackContext = {}) {
@@ -9845,6 +10715,32 @@ WHERE human_gate_id=${sqlValue(button.human_gate_id)}
       targetAgent: "cat_claw"
     }));
   }
+  await appendWorkflowEvent(paths, {
+    eventType: "human_gate.submitted",
+    status: button.decision_status,
+    workflowId: button.workflow_id,
+    traceId: `${button.workflow_id}:human_gate:${button.button_id}`,
+    humanGateId: button.human_gate_id,
+    actor,
+    sourceRuntime: "workflow",
+    sourceAgent: actor,
+    previousState: "pending",
+    nextState: button.decision_status,
+    idempotencyKey: `workflow_event:human_gate.submitted:${button.button_id}`,
+    artifactRef: button.artifact_ref || "",
+    payload: {
+      meetingId: button.meeting_id,
+      buttonId: button.button_id,
+      buttonLabel: button.label,
+      decisionStatus: button.decision_status,
+      role: button.button_role || "",
+      feedbackReceivedAt,
+      flashcatOriginalWords: feedbackText,
+      workflowDecision,
+      dispatchId: dispatch?.dispatchId || "",
+      archiveCheckpointId: archiveCheckpoint?.checkpointId || ""
+    }
+  });
   return {
     handled: true,
     status: button.decision_status,
@@ -11288,6 +12184,7 @@ ${pendingGates.length ? pendingGates.map((row) => `- ${row.gate_id} ${row.instru
 
 export async function runWorkflowAction(rootDir, input = {}) {
   const action = String(input.action || "workflow.status");
+  await authorizeWorkflowAction(rootDir, input);
   switch (action) {
     case "workflow.init":
     case "trading_workflow.init":
@@ -11307,6 +12204,9 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.runtime-agents":
     case "workflow.runtime.registry":
       return workflowRuntimeAgents(rootDir, input);
+    case "workflow.permission.check":
+    case "workflow.permission.explain":
+      return workflowPermissionCheck(rootDir, input);
     case "workflow.run.upsert":
     case "workflow.initiative.upsert":
       return workflowRunUpsert(rootDir, input);
@@ -11356,6 +12256,17 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.context_checkpoint":
     case "context.checkpoint":
       return workflowCheckpoint(rootDir, input);
+    case "workflow.event.append":
+    case "workflow.events.append":
+      return workflowEventAppend(rootDir, input);
+    case "workflow.event.list":
+    case "workflow.events":
+    case "workflow.events.list":
+      return workflowEventList(rootDir, input);
+    case "workflow.event.timeline":
+    case "workflow.timeline":
+    case "workflow.events.timeline":
+      return workflowEventTimeline(rootDir, input);
     case "workflow.session_pack.upsert":
     case "workflow.session.pack.upsert":
     case "session_pack.upsert":
