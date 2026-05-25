@@ -28,6 +28,12 @@ Hermers is the platform. ACP is an adapter/mechanism used by Hermers instances t
 
 Cat Claw `cat_claw` is an OpenClaw-only secretary and Human Gate agent. Its valid registry row is `openclaw:cat_claw` with `platform=openclaw` and `workflow_ingress_adapter=openclaw_native`. It must not be registered as a Hermers ACP profile, route-shell executor, or generic external adapter unless a future migration explicitly creates and documents a real non-OpenClaw Cat Claw runtime.
 
+## Snapshot Export
+
+`runtime_agents` remains the live source of truth. The workflow action `workflow.runtime_agents` also writes an atomic read-only snapshot to `registry/runtime-agents.snapshot.json` under the workflow state root. This snapshot is a derived runtime artifact, not a second authority and not plugin source code.
+
+Companion services such as `cat-agents-stabilityd` may use the snapshot only as a read-only fallback when the SQLite registry is temporarily unavailable. Scope decisions should still be expressed as registry-derived sets such as `derivedScopes.activeOpenClawAgentIds`; platform-local directories must not become the membership source.
+
 ## Ingress Classes
 
 Class A: IM ingress is OpenClaw Gateway and execution is OpenClaw.

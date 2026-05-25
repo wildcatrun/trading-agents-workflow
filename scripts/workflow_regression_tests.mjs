@@ -2017,6 +2017,11 @@ async function testHermersProfileModeReadinessAndRegistry() {
   const catEars = registry.runtimeRegistry.hermers.find((agent) => agent.agentId === "cat_ears");
   assert.equal(catEars.profile, "catears");
   assert.equal(catEars.profileMode, "cold");
+  assert.ok(registry.snapshotFile.endsWith(path.join("registry", "runtime-agents.snapshot.json")));
+  const registrySnapshot = JSON.parse(await fs.readFile(registry.snapshotFile, "utf8"));
+  assert.equal(registrySnapshot.source.authority, "trading-agents-workflow.runtime_agents");
+  assert.equal(Boolean(registrySnapshot.records.some((agent) => agent.agentId === "cat_ears" && agent.runtime === "hermers")), true);
+  assert.equal(Boolean(registrySnapshot.derivedScopes.activeOpenClawAgentIds.includes("cat_ears")), false);
 
   const readiness = await runAction(root, {
     action: "workflow.readiness",

@@ -339,6 +339,7 @@ export function workflowPaths(rootDir, input = {}) {
     workflowsDir: path.join(root, "workflows"),
     templatesDir: path.join(root, "templates"),
     exportsDir: path.join(root, "exports"),
+    registryDir: path.join(root, "registry"),
     indexDir: path.join(root, "index")
   };
 }
@@ -1622,6 +1623,13 @@ SELECT changes() AS changes;`, { json: true });
   return Number(rows[0]?.changes || 0);
 }
 
+async function writeJsonAtomic(filePath, payload) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await fs.rename(tmpPath, filePath);
+}
+
 function isSqliteConstraintError(error) {
   const text = `${error?.message || ""}\n${error?.stderr || ""}`.toLowerCase();
   return text.includes("constraint failed") || text.includes("unique constraint failed");
@@ -1664,6 +1672,7 @@ async function ensureWorkflowLayout(rootDir, input = {}) {
     fs.mkdir(paths.workflowsDir, { recursive: true }),
     fs.mkdir(paths.templatesDir, { recursive: true }),
     fs.mkdir(paths.exportsDir, { recursive: true }),
+    fs.mkdir(paths.registryDir, { recursive: true }),
     fs.mkdir(paths.indexDir, { recursive: true })
   ]);
   await initDatabase(paths.dbFile);
@@ -4701,7 +4710,7 @@ VALUES (${sqlValue(gateId)}, ${sqlValue(instrument?.instrumentId || null)}, ${sq
 export async function workflowTopology(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const registeredAgents = await sqlite(paths.dbFile, `
-SELECT runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, endpoint_ref
+SELECT agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, endpoint_ref, updated_at
 FROM runtime_agents
 WHERE status NOT IN (${Array.from(RETIRED_RUNTIME_AGENT_STATUSES).map(sqlValue).join(", ")})
 ORDER BY platform, agent_id;`, { json: true });
@@ -4719,6 +4728,8 @@ ORDER BY platform, agent_id;`, { json: true });
     if (!acc[snap.platform]) acc[snap.platform] = [];
     const profileModeEvidence = snap.platform === "hermers" ? profileModeEvidenceForRow(row, hermersModes) : {};
     acc[snap.platform].push({
+      agentKey: row.agent_key,
+      runtime: row.runtime,
       agentId: row.agent_id,
       displayName: row.display_name,
       role: row.role,
@@ -4735,6 +4746,7 @@ ORDER BY platform, agent_id;`, { json: true });
       canStartWorkflow: snap.canStartWorkflow,
       gatewayProxyAllowed: snap.gatewayProxyAllowed,
       endpointRef: row.endpoint_ref,
+      updatedAt: row.updated_at,
       ...profileModeEvidence
     });
     return acc;
@@ -4775,11 +4787,45 @@ export async function workflowRuntimeAgents(rootDir, input = {}) {
     active: agents.filter((agent) => agent.status === "active").length,
     total: agents.length
   }));
+  const generatedAt = nowIso();
+  const records = Object.values(topology.runtimeRegistry || {}).flat();
+  const activeOpenClawAgents = records
+    .filter((agent) => agent.status === "active" && agent.runtime === "openclaw" && agent.platform === "openclaw")
+    .map((agent) => agent.agentId)
+    .filter(Boolean)
+    .sort();
+  const snapshot = {
+    schemaVersion: 1,
+    workflowSchemaVersion: WORKFLOW_SCHEMA_VERSION,
+    generatedAt,
+    generatedAtEpoch: Math.floor(new Date(generatedAt).getTime() / 1000),
+    source: {
+      root: topology.root,
+      dbFile: workflowPaths(rootDir, input).dbFile,
+      table: "runtime_agents",
+      authority: "trading-agents-workflow.runtime_agents"
+    },
+    runtimeRegistry: topology.runtimeRegistry,
+    records,
+    derivedScopes: {
+      activeOpenClawAgentIds: activeOpenClawAgents
+    },
+    runtimes,
+    count: runtimes.reduce((sum, item) => sum + item.total, 0),
+    checksum: ""
+  };
+  snapshot.checksum = jsonHash({ ...snapshot, checksum: "" });
+  const paths = workflowPaths(rootDir, input);
+  const snapshotFile = path.join(paths.registryDir, "runtime-agents.snapshot.json");
+  await writeJsonAtomic(snapshotFile, snapshot);
   return {
     schemaVersion: WORKFLOW_SCHEMA_VERSION,
     workflowSchemaVersion: WORKFLOW_SCHEMA_VERSION,
     root: topology.root,
     runtimeRegistry: topology.runtimeRegistry,
+    snapshotFile,
+    snapshotGeneratedAt: generatedAt,
+    derivedScopes: snapshot.derivedScopes,
     runtimes,
     count: runtimes.reduce((sum, item) => sum + item.total, 0)
   };
@@ -7164,7 +7210,8 @@ ON CONFLICT(agent_key) DO UPDATE SET
 ${conflictUpdate}`);
   const rows = await sqlite(paths.dbFile, `SELECT * FROM runtime_agents WHERE agent_key=${sqlValue(agentKey)} LIMIT 1;`, { json: true });
   const saved = registrySnapshot(rows[0] || { agent_key: agentKey, runtime, agent_id: agentId, platform, execution_adapter: executionAdapter, im_ingress_owner: imIngressOwner, im_ingress_adapter: imIngressAdapter, workflow_ingress_adapter: workflowIngressAdapter, im_identity: imIdentity, execution_identity: executionIdentity, return_policy: returnPolicy, can_receive_dispatch: canReceiveDispatch, can_start_workflow: canStartWorkflow, gateway_proxy_allowed: gatewayProxyAllowed });
-  return { agentKey: saved.agentKey, runtime: rows[0]?.runtime || runtime, agentId: saved.agentId, platform: saved.platform, executionAdapter: saved.executionAdapter, imIngressOwner: saved.imIngressOwner, imIngressAdapter: saved.imIngressAdapter, workflowIngressAdapter: saved.workflowIngressAdapter, imIdentity: saved.imIdentity, executionIdentity: saved.executionIdentity, returnPolicy: saved.returnPolicy, canReceiveDispatch: saved.canReceiveDispatch, canStartWorkflow: saved.canStartWorkflow, gatewayProxyAllowed: saved.gatewayProxyAllowed };
+  const exported = await workflowRuntimeAgents(paths.root, { workflowRootDir: paths.root });
+  return { agentKey: saved.agentKey, runtime: rows[0]?.runtime || runtime, agentId: saved.agentId, platform: saved.platform, executionAdapter: saved.executionAdapter, imIngressOwner: saved.imIngressOwner, imIngressAdapter: saved.imIngressAdapter, workflowIngressAdapter: saved.workflowIngressAdapter, imIdentity: saved.imIdentity, executionIdentity: saved.executionIdentity, returnPolicy: saved.returnPolicy, canReceiveDispatch: saved.canReceiveDispatch, canStartWorkflow: saved.canStartWorkflow, gatewayProxyAllowed: saved.gatewayProxyAllowed, snapshotFile: exported.snapshotFile, snapshotGeneratedAt: exported.snapshotGeneratedAt };
 }
 
 export async function protocolRecord(rootDir, input) {
