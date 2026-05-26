@@ -41,22 +41,22 @@ async function createWorkflowIntent(root) {
   const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
   const buttons = [
     {
-      label: "Plan A",
-      summary: "Approve paper bridge smoke",
-      prompt: "Generate canonical executable trade intent",
-      rollback: "Discard temp root"
+      label: "方案 A：批准 paper bridge smoke",
+      summary: "批准本地 paper bridge smoke，进入猫之尾下单前风控审计。",
+      prompt: "猫之尾输出中文风控 paper 和结构化 risk_decision 后，再生成 canonical executable trade intent。",
+      rollback: "如果 smoke 失败，删除临时 root 并保留错误输出。"
     },
     {
-      label: "Plan B",
-      summary: "Pause bridge smoke",
-      prompt: "Keep workflow state only",
-      rollback: "Resume with Plan A"
+      label: "方案 B：暂停 bridge smoke",
+      summary: "暂停本地 smoke，只保留 workflow 状态和 Human Gate 证据。",
+      prompt: "不生成交易 intent，等待后续重新批准方案 A。",
+      rollback: "重新提交 Human Gate 后继续方案 A。"
     },
     {
-      label: "Plan C",
-      summary: "Stop bridge smoke",
-      prompt: "Archive smoke attempt",
-      rollback: "Create fresh temp root"
+      label: "方案 C：终止 bridge smoke",
+      summary: "终止本次 smoke，归档当前尝试。",
+      prompt: "不继续生成风险决策或交易 intent。",
+      rollback: "需要时创建新的临时 root 重新执行 smoke。"
     }
   ];
 
@@ -70,23 +70,33 @@ async function createWorkflowIntent(root) {
     orderType: "limit"
   });
   await runAction(root, {
-    action: "risk.decision",
-    riskDecisionId: "risk-smoke",
-    proposalId: "proposal-smoke",
-    assetType: "crypto",
-    symbol: "BTC/USDT",
-    status: "approved"
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "cat_tail",
+    displayName: "猫之尾",
+    role: "pre_order_risk_audit_and_final_trading_risk_control",
+    executionAdapter: "native",
+    imIngressOwner: "openclaw_gateway",
+    imIngressAdapter: "openclaw_native",
+    workflowIngressAdapter: "openclaw_native",
+    endpointRef: "openclaw-agent:cat_tail"
   });
   const request = await runAction(root, {
     action: "human_gate.request",
     workflowId: "workflow-smoke",
     meetingId: "workflow-smoke",
     traceId: "trace-smoke-hgate",
-    parentObjectId: "risk-smoke",
+    parentObjectId: "proposal-smoke",
     expiresAt,
     text: "猫爪正式汇报：请选择 A/B/C。",
     buttons,
-    payload: { riskDecisionId: "risk-smoke", proposalId: "proposal-smoke" }
+    payload: {
+      proposalId: "proposal-smoke",
+      dispatchType: "pre_order_risk_audit",
+      nextAgent: "cat_tail",
+      preOrderRiskAuditId: "pora-smoke"
+    }
   });
   const approved = request.buttons.find((button) => button.decisionStatus === "approved");
   assert.ok(approved?.callbackToken, "approved Human Gate callback token is required for smoke setup");
@@ -94,6 +104,21 @@ async function createWorkflowIntent(root) {
     action: "human_gate.resume",
     token: approved.callbackToken,
     text: "闪电猫原话：批准 A，用于 workflow 到 trading_core 的本地 paper smoke。"
+  });
+  await runAction(root, {
+    action: "risk.decision",
+    riskDecisionId: "risk-smoke",
+    proposalId: "proposal-smoke",
+    humanGateId: request.humanGateId,
+    preOrderRiskAuditId: "pora-smoke",
+    assetType: "crypto",
+    symbol: "BTC/USDT",
+    status: "approved",
+    reviewerAgent: "cat_tail",
+    dispatchType: "pre_order_risk_audit",
+    riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 },
+    evidenceRefs: ["artifact://workflow-smoke/evidence"],
+    paperRef: "artifact://workflow-smoke/cat_tail-risk-paper"
   });
 
   const intent = await runAction(root, {
@@ -108,6 +133,7 @@ async function createWorkflowIntent(root) {
     orderType: "limit",
     proposalId: "proposal-smoke",
     riskDecisionId: "risk-smoke",
+    preOrderRiskAuditId: "pora-smoke",
     humanGateId: request.humanGateId,
     actor: "flashcat",
     assurance: "mtls",

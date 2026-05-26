@@ -26,6 +26,8 @@ Platform-local lists such as Hermers profiles, OpenClaw agent config, Codex sess
 
 `human_gate.inbox` creates the secretary-facing approval table for complex workflows. It gathers pending Human Gate records, review gates, gated tasks, and Cat Claw delivery failures into `human_gate_batches`, `human_gate_batch_items`, and HTML/JSON artifacts under `human-gates/inbox/` so Flashcat can review multiple low-risk items together while P0/P1 items remain individual approvals.
 
+Trading Human Gates have one extra narrow path. A Human Gate approved trading package may route to `openclaw:cat_tail` only as `dispatch_type=pre_order_risk_audit`; Cat Tail then creates the final risk paper and structured `risk_decision` before any `executable_trade_intent` can be handed to `trading_core`. Ordinary approved Human Gates do not go to Cat Tail. Details are in `docs/pre-order-risk-audit.md`.
+
 ## OpenClaw Plugin
 
 This repository also contains the OpenClaw runtime plugin source. The

@@ -28,6 +28,8 @@ Hermers is the platform. ACP is an adapter/mechanism used by Hermers instances t
 
 Cat Claw `cat_claw` is an OpenClaw-only secretary and Human Gate agent. Its valid registry row is `openclaw:cat_claw` with `platform=openclaw` and `workflow_ingress_adapter=openclaw_native`. It must not be registered as a Hermers ACP profile, route-shell executor, or generic external adapter unless a future migration explicitly creates and documents a real non-OpenClaw Cat Claw runtime.
 
+Cat Tail `cat_tail` is an OpenClaw-only pre-order risk audit agent for trading workflows. Its valid registry row is `openclaw:cat_tail` with `platform=openclaw` and `workflow_ingress_adapter=openclaw_native`. Workflow may route Human Gate approved trading evidence to Cat Tail only through `dispatch_type=pre_order_risk_audit`; ordinary Human Gate approvals resume through their owning workflow and do not go to Cat Tail. Cat Tail emits a risk paper plus structured `risk_decision`; it must not directly place orders or bypass `trading_core`.
+
 ## Snapshot Export
 
 `runtime_agents` remains the live source of truth. The workflow action `workflow.runtime_agents` also writes an atomic read-only snapshot to `registry/runtime-agents.snapshot.json` under the workflow state root. This snapshot is a derived runtime artifact, not a second authority and not plugin source code.

@@ -876,6 +876,19 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     quantity: "1",
     orderType: "limit"
   });
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "cat_tail",
+    displayName: "猫之尾",
+    role: "pre_order_risk_audit_and_final_trading_risk_control",
+    executionAdapter: "native",
+    imIngressOwner: "openclaw_gateway",
+    imIngressAdapter: "openclaw_native",
+    workflowIngressAdapter: "openclaw_native",
+    endpointRef: "openclaw-agent:cat_tail"
+  });
   await assertRejectsMessage(
     () => runAction(root, {
       action: "risk.decision",
@@ -885,20 +898,91 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     }),
     /approved risk\.decision requires an existing trade_proposal parent/
   );
+  await createApprovedHumanGate(root, {
+    workflowId: "workflow-trade-target-only",
+    meetingId: "workflow-trade-target-only",
+    parentObjectId: "proposal-A",
+    expiresAt,
+    payload: {
+      proposalId: "proposal-A",
+      nextAgent: "cat_tail",
+      preOrderRiskAuditId: "pora-target-only"
+    }
+  });
+  assert.equal(sqliteCount(path.join(root, "tracking.db"), "mixed_meeting_dispatches", "workflow_id='workflow-trade-target-only' AND agent_id='cat_tail'"), 0);
+  await createApprovedHumanGate(root, {
+    workflowId: "workflow-trade-dispatch-only",
+    meetingId: "workflow-trade-dispatch-only",
+    parentObjectId: "proposal-A",
+    expiresAt,
+    payload: {
+      proposalId: "proposal-A",
+      dispatchType: "pre_order_risk_audit",
+      preOrderRiskAuditId: "pora-dispatch-only"
+    }
+  });
+  assert.equal(sqliteCount(path.join(root, "tracking.db"), "mixed_meeting_dispatches", "workflow_id='workflow-trade-dispatch-only' AND agent_id='cat_tail'"), 0);
+  const humanGateId = await createApprovedHumanGate(root, {
+    workflowId: "workflow-trade-chain",
+    meetingId: "workflow-trade-chain",
+    parentObjectId: "proposal-A",
+    expiresAt,
+    payload: {
+      proposalId: "proposal-A",
+      dispatchType: "pre_order_risk_audit",
+      nextAgent: "cat_tail",
+      preOrderRiskAuditId: "pora-A"
+    }
+  });
+  const catTailDispatch = sqliteJson(path.join(root, "tracking.db"), `
+SELECT runtime, agent_id, dispatch_type, status
+FROM mixed_meeting_dispatches
+WHERE workflow_id='workflow-trade-chain' AND agent_id='cat_tail' AND dispatch_type='pre_order_risk_audit'
+LIMIT 1;`);
+  assert.equal(catTailDispatch[0]?.runtime, "openclaw");
+  assert.equal(catTailDispatch[0]?.status, "queued");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "risk.decision",
+      riskDecisionId: "risk-empty",
+      proposalId: "proposal-A",
+      humanGateId,
+      preOrderRiskAuditId: "pora-empty",
+      status: "approved",
+      reviewerAgent: "cat_tail",
+      dispatchType: "pre_order_risk_audit"
+    }),
+    /approved risk\.decision requires numeric riskLimits/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "risk.decision",
+      riskDecisionId: "risk-rejected-missing-evidence",
+      proposalId: "proposal-A",
+      humanGateId,
+      preOrderRiskAuditId: "pora-A",
+      status: "rejected",
+      decision: "rejected",
+      reviewerAgent: "cat_tail",
+      dispatchType: "pre_order_risk_audit",
+      riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 }
+    }),
+    /rejected risk\.decision requires evidenceRefs/
+  );
   await runAction(root, {
     action: "risk.decision",
     riskDecisionId: "risk-A",
     proposalId: "proposal-A",
+    humanGateId,
+    preOrderRiskAuditId: "pora-A",
     assetType: "crypto",
     symbol: "BTC/USDT",
-    status: "approved"
-  });
-  const humanGateId = await createApprovedHumanGate(root, {
-    workflowId: "risk-A",
-    meetingId: "risk-A",
-    parentObjectId: "risk-A",
-    expiresAt,
-    payload: { riskDecisionId: "risk-A", proposalId: "proposal-A" }
+    status: "approved",
+    reviewerAgent: "cat_tail",
+    dispatchType: "pre_order_risk_audit",
+    riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 },
+    evidenceRefs: ["artifact://trade-chain/evidence"],
+    paperRef: "artifact://trade-chain/cat_tail-risk-paper"
   });
   const ready = await runAction(root, {
     action: "trade.intent",
@@ -912,6 +996,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     orderType: "limit",
     proposalId: "proposal-A",
     riskDecisionId: "risk-A",
+    preOrderRiskAuditId: "pora-A",
     humanGateId,
     actor: "flashcat",
     assurance: "mtls",
@@ -936,6 +1021,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
   assert.equal(readyArtifact.objectType, "executable_trade_intent");
   assert.equal(readyArtifact.workflowId, "workflow-trade-chain");
   assert.equal(readyArtifact.traceId, "trace-trade-chain-ready");
+  assert.equal(readyArtifact.preOrderRiskAuditId, "pora-A");
   assert.equal(readyArtifact.executionMode, "paper");
   assert.equal(readyArtifact.marketType, "spot");
   assert.equal(readyArtifact.exchange, "paper_exchange");
@@ -960,6 +1046,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     orderType: "limit",
     proposalId: "proposal-A",
     riskDecisionId: "risk-A",
+    preOrderRiskAuditId: "pora-A",
     humanGateId,
     actor: "flashcat",
     assurance: "mtls",
@@ -991,6 +1078,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     orderType: "limit",
     proposalId: "proposal-A",
     riskDecisionId: "risk-A",
+    preOrderRiskAuditId: "pora-A",
     humanGateId,
     actor: "flashcat",
     assurance: "mtls",
@@ -1023,6 +1111,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
       orderType: "limit",
       proposalId: "proposal-A",
       riskDecisionId: "risk-A",
+      preOrderRiskAuditId: "pora-A",
       humanGateId,
       actor: "flashcat",
       assurance: "mtls",
@@ -1055,6 +1144,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
       orderType: "limit",
       proposalId: "proposal-A",
       riskDecisionId: "risk-A",
+      preOrderRiskAuditId: "pora-A",
       humanGateId,
       actor: "flashcat",
       assurance: "mtls",
@@ -1080,6 +1170,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     orderType: "limit",
     proposalId: "proposal-A",
     riskDecisionId: "risk-A",
+    preOrderRiskAuditId: "pora-A",
     humanGateId,
     actor: "flashcat",
     assurance: "mtls",
@@ -1094,7 +1185,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     clientOrderId: "idem-missing-crypto-field",
     timeInForce: "gtc",
     priceConstraints: { referencePrice: 68000, limitPrice: 69000 },
-    riskLimits: { maxNotionalUsd: 20000 }
+    riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 }
   });
   assert.equal(missingCryptoField.status, "rejected");
   assert.ok(missingCryptoField.rejectionReasons.includes("crypto_exchange_required"));
@@ -1111,6 +1202,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     orderType: "limit",
     proposalId: "proposal-A",
     riskDecisionId: "risk-A",
+    preOrderRiskAuditId: "pora-A",
     humanGateId,
     actor: "flashcat",
     assurance: "mtls",
@@ -1126,7 +1218,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     clientOrderId: "idem-live-disabled",
     timeInForce: "gtc",
     priceConstraints: { referencePrice: 68000, limitPrice: 69000 },
-    riskLimits: { maxNotionalUsd: 20000 }
+    riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 }
   });
   assert.equal(liveIntent.status, "rejected");
   assert.ok(liveIntent.rejectionReasons.includes("invalid_execution_mode"));
@@ -1135,41 +1227,28 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     workflowId: "workflow-trade-fallback",
     meetingId: "workflow-trade-fallback",
     traceId: "trace-hgate-fallback",
-    parentObjectId: "risk-A",
+    parentObjectId: "proposal-A",
     expiresAt,
-    payload: { riskDecisionId: "risk-A", proposalId: "proposal-A" }
+    payload: { proposalId: "proposal-A" }
   });
-  const fallbackReady = await runAction(root, {
-    action: "trade.intent",
-    intentId: "intent-fallback",
-    assetType: "crypto",
-    symbol: "BTC/USDT",
-    side: "buy",
-    quantity: "0.2",
-    orderType: "limit",
-    proposalId: "proposal-A",
-    riskDecisionId: "risk-A",
-    humanGateId: fallbackHumanGateId,
-    actor: "flashcat",
-    assurance: "mtls",
-    sourceSystem: "codex_mtls",
-    clientCertFingerprint: "test-cert",
-    idempotencyKey: "idem-fallback",
-    expiresAt,
-    executionMode: "paper",
-    marketType: "spot",
-    exchange: "paper_exchange",
-    baseAsset: "BTC",
-    quoteAsset: "USDT",
-    clientOrderId: "idem-fallback",
-    timeInForce: "gtc",
-    priceConstraints: { referencePrice: 68000, limitPrice: 69000 },
-    riskLimits: { maxNotionalUsd: 20000 }
-  });
-  assert.equal(fallbackReady.status, "ready_for_trading_core");
-  const fallbackArtifact = JSON.parse(await fs.readFile(fallbackReady.path, "utf8"));
-  assert.equal(fallbackArtifact.workflowId, "workflow-trade-fallback");
-  assert.equal(fallbackArtifact.traceId, "trace-hgate-fallback");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "risk.decision",
+      riskDecisionId: "risk-fallback",
+      proposalId: "proposal-A",
+      humanGateId: fallbackHumanGateId,
+      preOrderRiskAuditId: "pora-fallback",
+      assetType: "crypto",
+      symbol: "BTC/USDT",
+      status: "approved",
+      reviewerAgent: "cat_tail",
+      dispatchType: "pre_order_risk_audit",
+      riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 },
+      evidenceRefs: ["artifact://trade-chain/fallback-evidence"],
+      paperRef: "artifact://trade-chain/fallback-risk-paper"
+    }),
+    /approved risk\.decision requires matching cat_tail pre_order_risk_audit dispatch/
+  );
 
   const badChain = await runAction(root, {
     action: "trade.intent",
@@ -1182,6 +1261,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     orderType: "limit",
     proposalId: "proposal-B",
     riskDecisionId: "risk-A",
+    preOrderRiskAuditId: "pora-A",
     humanGateId,
     actor: "flashcat",
     assurance: "mtls",
@@ -1238,6 +1318,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
     orderType: "limit",
     proposalId: "proposal-A",
     riskDecisionId: "risk-A",
+    preOrderRiskAuditId: "pora-A",
     humanGateId,
     actor: "flashcat",
     assurance: "mtls",

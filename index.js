@@ -533,6 +533,7 @@ const toolParameters = {
     sourceAgent: { type: "string" },
     proposalId: { type: "string" },
     riskDecisionId: { type: "string" },
+    preOrderRiskAuditId: { type: "string" },
     humanGateId: { type: "string" },
     batchId: { type: "string" },
     intentId: { type: "string" },
@@ -2052,9 +2053,16 @@ function registerCli(api) {
 
     command.command("risk-decision")
       .requiredOption("--proposal <proposalId>", "Trade proposal id")
+      .option("--human-gate <humanGateId>", "Approved Human Gate id")
+      .option("--pre-order-risk-audit <preOrderRiskAuditId>", "Cat Tail pre-order risk audit id")
       .option("--status <status>", "pending, approved, rejected, revise_required", "pending")
       .option("--summary <summary>", "Decision summary")
       .option("--reviewer <agent>", "Reviewer agent", "cat_tail")
+      .option("--dispatch-type <dispatchType>", "Risk decision dispatch type", "pre_order_risk_audit")
+      .option("--decision <decision>", "Structured risk decision", "approved_for_paper_execution")
+      .option("--risk-limits <json>", "Canonical riskLimits JSON")
+      .option("--evidence-ref <ref...>", "Evidence artifact reference")
+      .option("--paper-ref <ref>", "Cat Tail risk paper artifact reference")
       .option("--risk-decision-id <riskDecisionId>", "Risk decision id")
       .option("--asset <assetType>", "Asset type")
       .option("--symbol <symbol>", "Instrument symbol")
@@ -2068,10 +2076,17 @@ function registerCli(api) {
           assetType: options.asset,
           symbol: options.symbol,
           proposalId: options.proposal,
+          humanGateId: options.humanGate,
+          preOrderRiskAuditId: options.preOrderRiskAudit,
           riskDecisionId: options.riskDecisionId,
           status: options.status,
           summary: options.summary,
           reviewerAgent: options.reviewer,
+          dispatchType: options.dispatchType,
+          decision: options.decision,
+          riskLimits: options.riskLimits ? JSON.parse(options.riskLimits) : {},
+          evidenceRefs: options.evidenceRef || [],
+          paperRef: options.paperRef,
           payload: options.payload
         }), null, 2));
       });
@@ -2106,6 +2121,7 @@ function registerCli(api) {
       .requiredOption("--side <side>", "buy, sell, short, cover, reduce, close")
       .requiredOption("--proposal <proposalId>", "Trade proposal id")
       .requiredOption("--risk <riskDecisionId>", "Risk decision id")
+      .requiredOption("--pre-order-risk-audit <preOrderRiskAuditId>", "Cat Tail pre-order risk audit id")
       .requiredOption("--human-gate <humanGateId>", "Human Gate id")
       .option("--intent-id <intentId>", "Intent id")
       .requiredOption("--workflow-id <workflowId>", "Workflow id bound to this executable intent")
@@ -2141,6 +2157,7 @@ function registerCli(api) {
           orderType: options.orderType,
           proposalId: options.proposal,
           riskDecisionId: options.risk,
+          preOrderRiskAuditId: options.preOrderRiskAudit,
           humanGateId: options.humanGate,
           intentId: options.intentId,
           workflowId: options.workflowId,

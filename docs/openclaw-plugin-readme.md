@@ -355,7 +355,6 @@ Workflow and tracking:
 - `research.memo`
 - `trade.proposal`
 - `risk.decision`
-- `human_gate.record` without `meetingId` for workflow-level Human Gate
 - `trade.intent`
 - `trading_core.receipt`
 - `side_effect.record`
@@ -515,6 +514,8 @@ node bin/cat-meeting-governance.mjs human-gate-console \
 
 Every Human Gate package submitted to Flashcat must contain at least three independently approvable alternatives: plan A, plan B, and plan C. The formal Telegram-facing report body must be Chinese, including each option title, option content, next action / execution boundary, evidence / receipt summary, artifact reference, and rollback / stop condition. Technical names, agent ids, and artifact paths may remain in their original spelling. Cat-brain `main` owns generating the plan content and must self-check that the alternatives are present, mutually exclusive enough to choose between, evidence-backed, executable, and Chinese before handing the package to Cat Claw. Cat Claw audits this structure; it does not invent missing plan content. If a pending Human Gate lacks A/B/C alternatives or Chinese plan details, the plugin blocks Telegram delivery and dispatches the evidence package back to `main` for revision.
 
+For trading workflows, a Flashcat approval only authorizes the next step declared in the selected option. If the option prepares an order intent, the required next step is `openclaw:cat_tail` with `dispatch_type=pre_order_risk_audit`. Cat Tail is the only recipient of that Human Gate approved trading evidence package; ordinary Human Gate approvals do not route to Cat Tail. Cat Tail must produce a Chinese risk paper plus structured `risk_decision` before workflow may create an `executable_trade_intent` for `trading_core`.
+
 Cat Claw should provide the approved alternatives as `buttons`, `options`, `alternatives`, or `plans`. The plugin stores each button in `human_gate_buttons`, renders the same choices in the Human Gate console, and creates one token-bound Telegram Web App review URL per button when `humanGate.webAppBaseUrl` is configured. Telegram button coloring on the OpenClaw presentation path must use `style` (`primary`, `success`, or `danger`) so the entire button is styled; color-square emoji in labels are not an acceptable substitute. Fixed Human Gate styles are: plan A/B/C/D option buttons use `success`; reject/return buttons use `danger`; pause workflow uses `primary`; terminate workflow uses `danger`. Telegram has no separate yellow style in this three-style surface, so pause uses `primary`. The plugin appends control buttons for "退回补证/修改", "暂停工作流", and "终止工作流". "终止工作流" means Flashcat considers the work complete and reviewed, so the workflow is archived with a checkpoint and closeout dispatches to `main` and `cat_claw`; it remains resumable later by workflow id/checkpoint.
 
 The primary Human Gate Telegram path is now a Web App form. Each option button opens `/plugins/trading-agents-workflow/human-gate/review?token=<callbackToken>`, displays the exact workflow / Human Gate / button details, and requires Flashcat to fill "闪电猫原话或审核意见". Clicking "发送并完成 Human Gate" submits the same token and text to `human_gate.web_app_submit`; only then does the workflow record the final Human Gate status, save `flashcatOriginalWords` in the button row, Human Gate record, workflow payload, meeting resume payload, and next dispatch payload, and resume/close the workflow from the selected boundary. This makes multiple concurrent Human Gates unambiguous because the button token and the original words are submitted in one bound operation.
@@ -629,7 +630,6 @@ Meeting module:
 - `meeting.notify`
 - `meeting.index`
 - `meeting.validate`
-- `human_gate.record`
 - `telegram.bridge`
 
 ## Smoke Test
@@ -652,10 +652,27 @@ node bin/cat-meeting-governance.mjs workflow-task --workflow demo-initiative --t
 node bin/cat-meeting-governance.mjs workflow-advance --workflow demo-initiative --root "$ROOT"
 node bin/cat-meeting-governance.mjs workflow-checkpoint --workflow demo-initiative --summary "Context recovery checkpoint" --next-action "continue active tasks" --root "$ROOT"
 
+node bin/cat-meeting-governance.mjs runtime-agent --runtime openclaw --platform openclaw --agent cat_tail --execution-adapter native --im-ingress-owner openclaw_gateway --im-ingress-adapter openclaw_native --workflow-ingress-adapter openclaw_native --role pre_order_risk_audit_and_final_trading_risk_control --endpoint openclaw-agent:cat_tail --root "$ROOT"
 PROPOSAL=$(node bin/cat-meeting-governance.mjs trade-proposal --asset stock --symbol 000001.SZ --summary "cat_heart proposal demo" --side buy --quantity 100 --root "$ROOT")
+AUDIT_ID=demo-pre-order-risk-audit-001
 RISK_ID=demo-risk-001
-GATE_ID=demo-gate-001
-node bin/cat-meeting-governance.mjs risk-decision --proposal "$(echo "$PROPOSAL" | jq -r .objectId)" --risk-decision-id "$RISK_ID" --status approved --summary "cat_tail approved demo" --root "$ROOT"
-node bin/cat-meeting-governance.mjs human-gate-workflow --human-gate-id "$GATE_ID" --parent "$RISK_ID" --status approved --text "Flashcat approved demo" --assurance mtls --root "$ROOT"
-node bin/cat-meeting-governance.mjs trade-intent --asset stock --symbol 000001.SZ --side buy --quantity 100 --proposal "$(echo "$PROPOSAL" | jq -r .objectId)" --risk "$RISK_ID" --human-gate "$GATE_ID" --actor flashcat --assurance mtls --cert demo-cert-fingerprint --source codex_mtls --idempotency-key demo-intent-001 --root "$ROOT"
+GATE=$(node bin/cat-meeting-governance.mjs human-gate-request \
+  --workflow demo-initiative \
+  --meeting demo-initiative \
+  --trace-id demo-trace-001 \
+  --parent "$(echo "$PROPOSAL" | jq -r .objectId)" \
+  --payload "{\"proposalId\":\"$(echo "$PROPOSAL" | jq -r .objectId)\",\"dispatchType\":\"pre_order_risk_audit\",\"nextAgent\":\"cat_tail\",\"preOrderRiskAuditId\":\"$AUDIT_ID\"}" \
+  --text "交易 Human Gate：请在 A/B/C 中选择是否进入猫之尾下单前风控审计。方案 A：进入猫之尾最终审计；方案 B：缩小仓位后进入猫之尾审计；方案 C：只保留 paper 观察并进入猫之尾审计。" \
+  --button "{\"key\":\"A\",\"role\":\"option\",\"label\":\"A 进入猫之尾审计\",\"status\":\"approved\",\"summary\":\"批准进入猫之尾最终风控审计。\",\"prompt\":\"把批准后的交易证据包投递给 cat_tail 执行 pre_order_risk_audit。\",\"rollback\":\"如猫之尾拒绝，停止生成 executable_trade_intent。\",\"dispatchType\":\"pre_order_risk_audit\",\"nextAgent\":\"cat_tail\",\"proposalId\":\"$(echo "$PROPOSAL" | jq -r .objectId)\",\"preOrderRiskAuditId\":\"$AUDIT_ID\",\"evidenceRefs\":[\"artifact://demo/evidence-pack\"]}" \
+  --button "{\"key\":\"B\",\"role\":\"option\",\"label\":\"B 缩小仓位再审计\",\"status\":\"approved\",\"summary\":\"批准缩小仓位后进入猫之尾最终风控审计。\",\"prompt\":\"按更小名义本金重整证据包后投递给 cat_tail。\",\"rollback\":\"如证据不足，退回猫之脑补证。\",\"dispatchType\":\"pre_order_risk_audit\",\"nextAgent\":\"cat_tail\",\"proposalId\":\"$(echo "$PROPOSAL" | jq -r .objectId)\",\"preOrderRiskAuditId\":\"$AUDIT_ID\",\"evidenceRefs\":[\"artifact://demo/evidence-pack\"]}" \
+  --button "{\"key\":\"C\",\"role\":\"option\",\"label\":\"C 仅 paper 观察审计\",\"status\":\"approved\",\"summary\":\"批准只按 paper 观察模式进入猫之尾审计。\",\"prompt\":\"猫之尾只能批准 paper execution 或拒绝。\",\"rollback\":\"不得生成 live intent。\",\"dispatchType\":\"pre_order_risk_audit\",\"nextAgent\":\"cat_tail\",\"proposalId\":\"$(echo "$PROPOSAL" | jq -r .objectId)\",\"preOrderRiskAuditId\":\"$AUDIT_ID\",\"evidenceRefs\":[\"artifact://demo/evidence-pack\"]}" \
+  --from cat_claw \
+  --root "$ROOT")
+GATE_ID=$(echo "$GATE" | jq -r .humanGateId)
+TOKEN=$(echo "$GATE" | jq -r '.buttons[] | select(.label | contains("猫之尾")) | .callbackToken')
+node bin/cat-meeting-governance.mjs human-gate-resume --token "$TOKEN" --text "闪电猫原话：批准 A，进入猫之尾最终风控审计。" --root "$ROOT"
+# human-gate-resume creates the required openclaw:cat_tail pre_order_risk_audit dispatch.
+# Cat Tail emits risk_decision=$RISK_ID and preOrderRiskAuditId=$AUDIT_ID before any trading_core intent is created.
+node bin/cat-meeting-governance.mjs risk-decision --proposal "$(echo "$PROPOSAL" | jq -r .objectId)" --human-gate "$GATE_ID" --pre-order-risk-audit "$AUDIT_ID" --risk-decision-id "$RISK_ID" --status approved --reviewer cat_tail --dispatch-type pre_order_risk_audit --decision approved_for_paper_execution --risk-limits '{"maxNotionalUsd":20000,"maxLossUsd":500}' --evidence-ref artifact://demo/evidence-pack --paper-ref artifact://demo/cat-tail-risk-paper --root "$ROOT"
+node bin/cat-meeting-governance.mjs trade-intent --asset stock --symbol 000001.SZ --side buy --quantity 100 --proposal "$(echo "$PROPOSAL" | jq -r .objectId)" --risk "$RISK_ID" --pre-order-risk-audit "$AUDIT_ID" --human-gate "$GATE_ID" --workflow-id demo-initiative --trace-id demo-trace-001 --actor flashcat --assurance mtls --cert demo-cert-fingerprint --source codex_mtls --idempotency-key demo-intent-001 --expires-at 2099-01-01T00:00:00.000Z --price-constraints '{"referencePrice":10,"limitPrice":10.5}' --risk-limits '{"maxNotionalUsd":20000,"maxLossUsd":500}' --root "$ROOT"
 ```

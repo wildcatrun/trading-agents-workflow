@@ -747,6 +747,16 @@ function protocolPayloadField(protocolObject = {}, keys = []) {
   return "";
 }
 
+function protocolPayloadValue(protocolObject = {}, keys = []) {
+  const body = nestedProtocolPayload(protocolObject);
+  const raw = parseJsonValue(body.raw, body.raw || {});
+  for (const key of keys) {
+    if (body[key] !== undefined && body[key] !== null && body[key] !== "") return body[key];
+    if (raw[key] !== undefined && raw[key] !== null && raw[key] !== "") return raw[key];
+  }
+  return undefined;
+}
+
 function protocolObjectReferences(protocolObject = {}, objectId = "") {
   const needle = String(objectId || "").trim();
   if (!needle) return false;
@@ -758,6 +768,8 @@ function protocolObjectReferences(protocolObject = {}, objectId = "") {
     body.proposal_id,
     body.riskDecisionId,
     body.risk_decision_id,
+    body.preOrderRiskAuditId,
+    body.pre_order_risk_audit_id,
     body.humanGateId,
     body.human_gate_id,
     body.workflowId,
@@ -766,12 +778,54 @@ function protocolObjectReferences(protocolObject = {}, objectId = "") {
     raw.proposal_id,
     raw.riskDecisionId,
     raw.risk_decision_id,
+    raw.preOrderRiskAuditId,
+    raw.pre_order_risk_audit_id,
     raw.humanGateId,
     raw.human_gate_id,
     raw.workflowId,
     raw.workflow_id
   ];
   return fields.some((value) => String(value || "").trim() === needle);
+}
+
+function dispatchPayloadReferences(payload = {}, objectId = "") {
+  const needle = String(objectId || "").trim();
+  if (!needle) return false;
+  const fields = [
+    payload.humanGateId,
+    payload.human_gate_id,
+    payload.proposalId,
+    payload.proposal_id,
+    payload.tradeProposalId,
+    payload.trade_proposal_id,
+    payload.preOrderRiskAuditId,
+    payload.pre_order_risk_audit_id,
+    payload.workflowId,
+    payload.workflow_id
+  ];
+  return fields.some((value) => String(value || "").trim() === needle);
+}
+
+async function findCatTailPreOrderRiskAuditDispatch(paths, { workflowId = "", humanGateId = "", proposalId = "", preOrderRiskAuditId = "" } = {}) {
+  const rows = await sqlite(paths.dbFile, `
+SELECT dispatch_id, workflow_id, meeting_id, runtime, agent_id, dispatch_type, status, payload_json, created_at, updated_at
+FROM mixed_meeting_dispatches
+WHERE runtime='openclaw'
+  AND agent_id='cat_tail'
+  AND dispatch_type='pre_order_risk_audit'
+  AND status NOT IN ('failed','cancelled')
+ORDER BY created_at DESC
+LIMIT 200;`, { json: true });
+  for (const row of rows) {
+    const payload = parseJsonValue(row.payload_json, {});
+    const body = parseJsonValue(payload.payload, payload.payload || {});
+    if (workflowId && String(row.workflow_id || payload.workflowId || payload.workflow_id || body.workflowId || body.workflow_id || "").trim() !== String(workflowId).trim()) continue;
+    if (!dispatchPayloadReferences(payload, humanGateId) && !dispatchPayloadReferences(body, humanGateId)) continue;
+    if (!dispatchPayloadReferences(payload, proposalId) && !dispatchPayloadReferences(body, proposalId)) continue;
+    if (!dispatchPayloadReferences(payload, preOrderRiskAuditId) && !dispatchPayloadReferences(body, preOrderRiskAuditId)) continue;
+    return { ...row, payload, body };
+  }
+  return null;
 }
 
 function protocolObjectExpiresAt(protocolObject = {}) {
@@ -867,6 +921,7 @@ function buildExecutableTradeIntent(input, data) {
     orderType,
     proposalId,
     riskDecisionId,
+    preOrderRiskAuditId,
     humanGateId,
     workflowId,
     traceId,
@@ -901,6 +956,7 @@ function buildExecutableTradeIntent(input, data) {
     orderType,
     proposalId,
     riskDecisionId,
+    preOrderRiskAuditId,
     humanGateId,
     actor,
     assurance,
@@ -4775,7 +4831,7 @@ ORDER BY platform, agent_id;`, { json: true });
         advancedOperationAuth: "mTLS client certificate required for executable trade intents."
       }
     },
-    allowedPath: "research_signal/evidence_pack/research_memo -> trade_proposal -> risk_decision -> human_gate_record -> executable_trade_intent -> trading_core_receipt",
+    allowedPath: "research_signal/evidence_pack/research_memo -> trade_proposal -> cat_claw_evidence_audit -> human_gate_record -> cat_tail_pre_order_risk_audit -> risk_decision -> executable_trade_intent -> trading_core_receipt",
     blockedPath: "Telegram/IM/plaintext commands cannot create ready_for_trading_core intents."
   };
 }
@@ -7284,11 +7340,38 @@ export async function riskDecision(rootDir, input) {
   const statusRaw = String(input.status || "pending").trim();
   const status = RISK_DECISION_STATUSES.has(statusRaw) ? statusRaw : "pending";
   const proposalId = String(input.proposalId || input.proposal_id || input.parentObjectId || input.parent_object_id || "").trim();
-  if (status === "approved") {
+  const humanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
+  const preOrderRiskAuditId = String(input.preOrderRiskAuditId || input.pre_order_risk_audit_id || input.auditId || input.audit_id || "").trim();
+  const decision = String(input.decision || input.riskDecision || input.risk_decision || (status === "approved" ? "approved_for_paper_execution" : status)).trim();
+  const reviewerAgent = String(input.reviewerAgent || input.reviewer_agent || "cat_tail").trim();
+  const dispatchType = String(input.dispatchType || input.dispatch_type || "pre_order_risk_audit").trim();
+  const riskLimits = parseJsonValue(input.riskLimits || input.risk_limits, input.riskLimits || input.risk_limits || {});
+  const normalizedRisk = normalizeTradingCoreRiskLimits(riskLimits);
+  const evidenceRefs = toList(input.evidenceRefs || input.evidence_refs);
+  const isTerminalRiskDecision = status === "approved" || status === "rejected";
+  if (isTerminalRiskDecision) {
+    const terminalLabel = status;
     const proposal = await readProtocolObject(paths, proposalId);
     if (!proposalId || !proposal || proposal.object_type !== "trade_proposal") {
-      throw new Error("approved risk.decision requires an existing trade_proposal parent");
+      throw new Error(`${terminalLabel} risk.decision requires an existing trade_proposal parent`);
     }
+    const humanGate = await readProtocolObject(paths, humanGateId);
+    if (!humanGateId || !humanGate || humanGate.object_type !== "human_gate_record" || humanGate.status !== "approved") {
+      throw new Error(`${terminalLabel} risk.decision requires an approved Human Gate parent`);
+    }
+    if (!protocolObjectReferences(humanGate, proposalId)) {
+      throw new Error(`${terminalLabel} risk.decision requires Human Gate bound to the trade_proposal`);
+    }
+    if (!preOrderRiskAuditId) throw new Error(`${terminalLabel} risk.decision requires preOrderRiskAuditId`);
+    if (reviewerAgent !== "cat_tail") throw new Error(`${terminalLabel} risk.decision requires reviewerAgent=cat_tail`);
+    if (dispatchType !== "pre_order_risk_audit") throw new Error(`${terminalLabel} risk.decision requires dispatchType=pre_order_risk_audit`);
+    if (status === "approved" && decision !== "approved_for_paper_execution") throw new Error("approved risk.decision currently allows only approved_for_paper_execution");
+    if (status === "rejected" && decision !== "rejected") throw new Error("rejected risk.decision requires decision=rejected");
+    if (normalizedRisk.rejectionReasons.length) throw new Error(`${terminalLabel} risk.decision requires numeric riskLimits: ${normalizedRisk.rejectionReasons.join(",")}`);
+    if (!evidenceRefs.length) throw new Error(`${terminalLabel} risk.decision requires evidenceRefs`);
+    const workflowId = firstText(input.workflowId, input.workflow_id, protocolPayloadField(humanGate, ["workflowId", "workflow_id"]));
+    const catTailDispatch = await findCatTailPreOrderRiskAuditDispatch(paths, { workflowId, humanGateId, proposalId, preOrderRiskAuditId });
+    if (!catTailDispatch) throw new Error(`${terminalLabel} risk.decision requires matching cat_tail pre_order_risk_audit dispatch`);
   }
   return protocolRecord(rootDir, {
     ...input,
@@ -7300,9 +7383,15 @@ export async function riskDecision(rootDir, input) {
     sourceAgent: input.sourceAgent || input.source_agent || input.reviewerAgent || input.reviewer_agent || "cat_tail",
     payload: {
       proposalId,
-      reviewerAgent: input.reviewerAgent || input.reviewer_agent || "cat_tail",
+      humanGateId,
+      preOrderRiskAuditId,
+      reviewerAgent,
+      dispatchType,
       riskBudgetImpact: input.riskBudgetImpact || input.risk_budget_impact || "",
-      decision: status,
+      decision,
+      riskLimits: normalizedRisk.value,
+      evidenceRefs,
+      paperRef: input.paperRef || input.paper_ref || input.artifactRef || input.artifact_ref || "",
       summary: input.summary || input.text || "",
       raw: parseJsonValue(input.payload, input.payload || {})
     }
@@ -7351,6 +7440,7 @@ export async function tradeIntent(rootDir, input) {
   const intentId = input.intentId || input.intent_id || safeId("intent");
   const proposalId = String(input.proposalId || input.proposal_id || "").trim();
   const riskDecisionId = String(input.riskDecisionId || input.risk_decision_id || "").trim();
+  const preOrderRiskAuditId = String(input.preOrderRiskAuditId || input.pre_order_risk_audit_id || "").trim();
   const humanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
   const sideRaw = String(input.side || "").trim().toLowerCase();
   const side = TRADING_CORE_SIDES.has(sideRaw) ? sideRaw : "";
@@ -7365,11 +7455,18 @@ export async function tradeIntent(rootDir, input) {
   const expiresAtMs = expiresAt ? Date.parse(expiresAt) : NaN;
   const normalizedPrice = normalizeTradingCorePriceConstraints(input.priceConstraints || input.price_constraints, orderType);
   const priceConstraints = normalizedPrice.value;
-  const normalizedRisk = normalizeTradingCoreRiskLimits(input.riskLimits || input.risk_limits);
-  const riskLimits = normalizedRisk.value;
+  let normalizedRisk = normalizeTradingCoreRiskLimits(input.riskLimits || input.risk_limits);
+  let riskLimits = normalizedRisk.value;
   const proposal = await readProtocolObject(paths, proposalId);
   const risk = await readProtocolObject(paths, riskDecisionId);
   const humanGate = await readProtocolObject(paths, humanGateId);
+  const callerProvidedRiskLimits = input.riskLimits !== undefined || input.risk_limits !== undefined;
+  let riskDecisionRiskLimits = null;
+  if (risk && risk.object_type === "risk_decision") {
+    riskDecisionRiskLimits = normalizeTradingCoreRiskLimits(protocolPayloadValue(risk, ["riskLimits", "risk_limits"]));
+    normalizedRisk = riskDecisionRiskLimits;
+    riskLimits = normalizedRisk.value;
+  }
   const workflowId = firstText(input.workflowId, input.workflow_id, protocolPayloadField(humanGate, ["workflowId", "workflow_id"]));
   const traceId = firstText(input.traceId, input.trace_id, protocolPayloadField(humanGate, ["traceId", "trace_id"]));
   const executionMode = String(input.executionMode || input.execution_mode || "paper").trim().toLowerCase();
@@ -7386,11 +7483,28 @@ export async function tradeIntent(rootDir, input) {
   if (!proposalId || !proposal || proposal.object_type !== "trade_proposal") rejectionReasons.push("missing_valid_trade_proposal");
   if (!riskDecisionId || !risk || risk.object_type !== "risk_decision" || risk.status !== "approved") rejectionReasons.push("missing_approved_cat_tail_risk_decision");
   if (!humanGateId || !humanGate || humanGate.object_type !== "human_gate_record" || humanGate.status !== "approved") rejectionReasons.push("missing_approved_flashcat_human_gate");
+  if (!preOrderRiskAuditId) rejectionReasons.push("missing_pre_order_risk_audit_id");
   if (proposal && proposal.object_type === "trade_proposal" && risk && risk.object_type === "risk_decision" && !protocolObjectReferences(risk, proposalId)) {
     rejectionReasons.push("risk_decision_not_bound_to_trade_proposal");
   }
+  if (risk && risk.object_type === "risk_decision") {
+    if (protocolPayloadField(risk, ["reviewerAgent", "reviewer_agent"]) !== "cat_tail") rejectionReasons.push("risk_decision_reviewer_must_be_cat_tail");
+    if (protocolPayloadField(risk, ["dispatchType", "dispatch_type"]) !== "pre_order_risk_audit") rejectionReasons.push("risk_decision_must_come_from_pre_order_risk_audit");
+    if (protocolPayloadField(risk, ["decision"]) !== "approved_for_paper_execution") rejectionReasons.push("risk_decision_must_approve_paper_execution");
+    if (!protocolObjectReferences(risk, humanGateId)) rejectionReasons.push("risk_decision_not_bound_to_human_gate");
+    if (!protocolObjectReferences(risk, preOrderRiskAuditId)) rejectionReasons.push("risk_decision_not_bound_to_pre_order_risk_audit");
+    if (riskDecisionRiskLimits?.rejectionReasons.length) rejectionReasons.push("risk_decision_missing_numeric_risk_limits");
+    const evidenceRefs = protocolPayloadValue(risk, ["evidenceRefs", "evidence_refs"]);
+    if (!Array.isArray(evidenceRefs) || !evidenceRefs.length) rejectionReasons.push("risk_decision_missing_evidence_refs");
+    const catTailDispatch = await findCatTailPreOrderRiskAuditDispatch(paths, { workflowId, humanGateId, proposalId, preOrderRiskAuditId });
+    if (!catTailDispatch) rejectionReasons.push("risk_decision_missing_cat_tail_pre_order_risk_audit_dispatch");
+    if (callerProvidedRiskLimits) {
+      const callerRisk = normalizeTradingCoreRiskLimits(input.riskLimits || input.risk_limits);
+      if (JSON.stringify(callerRisk.value) !== JSON.stringify(riskLimits)) rejectionReasons.push("risk_limits_must_match_cat_tail_risk_decision");
+    }
+  }
   if (humanGate && humanGate.object_type === "human_gate_record") {
-    if (!protocolObjectReferences(humanGate, riskDecisionId)) rejectionReasons.push("human_gate_not_bound_to_risk_decision");
+    if (!protocolObjectReferences(humanGate, proposalId)) rejectionReasons.push("human_gate_not_bound_to_trade_proposal");
     if (humanGateExpiresAt && (!Number.isFinite(humanGateExpiresAtMs) || humanGateExpiresAtMs <= Date.now())) rejectionReasons.push("human_gate_expired");
   }
   if (proposal?.instrument_id && proposal.instrument_id !== instrument.instrumentId) rejectionReasons.push("proposal_instrument_mismatch");
@@ -7429,6 +7543,7 @@ export async function tradeIntent(rootDir, input) {
     orderType: orderType || orderTypeRaw,
     proposalId,
     riskDecisionId,
+    preOrderRiskAuditId,
     humanGateId,
     humanGate,
     workflowId,
@@ -7462,6 +7577,7 @@ export async function tradeIntent(rootDir, input) {
     orderType: orderType || orderTypeRaw,
     proposalId,
     riskDecisionId,
+    preOrderRiskAuditId,
     humanGateId,
     sourceSystem,
     actor,
@@ -10350,6 +10466,87 @@ WHERE object_id=${sqlValue(humanGateId)} AND object_type='human_gate_record';`);
   return nextPayload;
 }
 
+async function catTailPreOrderRiskAuditDispatchSpec(paths, button, feedbackText, selectedAt) {
+  if (String(button.decision_status || "").trim() !== "approved") return null;
+  const record = await readProtocolObject(paths, button.human_gate_id);
+  if (!record || record.object_type !== "human_gate_record") return null;
+  const recordPayload = parseJsonValue(record.payload || record.payload_json, {});
+  const body = humanGateBody(recordPayload);
+  const raw = parseJsonValue(body.raw, body.raw || {});
+  const buttonPayload = parseJsonValue(button.payload_json, {});
+  const explicitDispatchType = firstText(
+    buttonPayload.dispatchType,
+    buttonPayload.dispatch_type,
+    buttonPayload.nextDispatchType,
+    buttonPayload.next_dispatch_type,
+    body.dispatchType,
+    body.dispatch_type,
+    body.nextDispatchType,
+    body.next_dispatch_type,
+    raw.dispatchType,
+    raw.dispatch_type,
+    raw.nextDispatchType,
+    raw.next_dispatch_type
+  );
+  const explicitTarget = firstText(
+    buttonPayload.targetAgent,
+    buttonPayload.target_agent,
+    buttonPayload.nextAgent,
+    buttonPayload.next_agent,
+    body.targetAgent,
+    body.target_agent,
+    body.nextAgent,
+    body.next_agent,
+    raw.targetAgent,
+    raw.target_agent,
+    raw.nextAgent,
+    raw.next_agent
+  );
+  const explicitTargetAgent = String(explicitTarget || "").includes(":")
+    ? String(explicitTarget || "").split(":").pop()
+    : String(explicitTarget || "");
+  if (explicitDispatchType !== "pre_order_risk_audit" || explicitTargetAgent !== "cat_tail") return null;
+  const proposalId = firstText(
+    buttonPayload.proposalId,
+    buttonPayload.proposal_id,
+    buttonPayload.tradeProposalId,
+    buttonPayload.trade_proposal_id,
+    body.proposalId,
+    body.proposal_id,
+    body.tradeProposalId,
+    body.trade_proposal_id,
+    raw.proposalId,
+    raw.proposal_id,
+    raw.tradeProposalId,
+    raw.trade_proposal_id,
+    record.parent_object_id
+  );
+  if (!proposalId) return null;
+  const preOrderRiskAuditId = firstText(
+    buttonPayload.preOrderRiskAuditId,
+    buttonPayload.pre_order_risk_audit_id,
+    body.preOrderRiskAuditId,
+    body.pre_order_risk_audit_id,
+    raw.preOrderRiskAuditId,
+    raw.pre_order_risk_audit_id,
+    `pora.${textHash(`${button.human_gate_id}:${button.button_id}:${proposalId}`).slice(0, 24)}`
+  );
+  return {
+    workflowId: button.workflow_id,
+    meetingId: button.meeting_id || button.workflow_id,
+    humanGateId: button.human_gate_id,
+    buttonId: button.button_id,
+    proposalId,
+    preOrderRiskAuditId,
+    selectedOption: button.label,
+    selectedAt,
+    flashcatOriginalWords: feedbackText,
+    requestPayload: body,
+    requestRawPayload: raw,
+    buttonPayload
+  };
+}
+
 function rawHumanGateCallbackToken(input = {}) {
   const payload = input.payload && typeof input.payload === "object" ? input.payload : {};
   return firstText(
@@ -10739,10 +10936,50 @@ WHERE human_gate_id=${sqlValue(button.human_gate_id)}
   let archiveCheckpoint = null;
   const closeoutDispatches = [];
   if (["approved", "rejected"].includes(button.decision_status)) {
+    const catTailAudit = await catTailPreOrderRiskAuditDispatchSpec(paths, button, feedbackText, selectedAt);
     const nextAction = button.decision_status === "approved"
       ? "Continue the next workflow round under the selected Human Gate button boundary."
       : "Revise the plan according to the selected Human Gate rejection button and prepare a new next-action package.";
-    dispatch = await safeMeetingDispatchWithRetry(rootDir, paths, {
+    dispatch = await safeMeetingDispatchWithRetry(rootDir, paths, catTailAudit ? {
+      workflowRootDir: paths.root,
+      meetingId: catTailAudit.meetingId,
+      workflowId: catTailAudit.workflowId,
+      traceId: `${button.workflow_id}:pre_order_risk_audit:${button.button_id}`,
+      idempotencyKey: `workflow:${button.workflow_id}:pre_order_risk_audit:${button.button_id}`,
+      runtime: "openclaw",
+      agentId: "cat_tail",
+      dispatchType: "pre_order_risk_audit",
+      priority: "high",
+      createdBy: actor,
+      prompt: [
+        "你是猫之尾 cat_tail。闪电猫已经通过 Human Gate 批准进入下单前最后风控审计。",
+        `Workflow ID: ${catTailAudit.workflowId}`,
+        `Human Gate ID: ${catTailAudit.humanGateId}`,
+        `Trade proposal ID: ${catTailAudit.proposalId}`,
+        `Pre-order risk audit ID: ${catTailAudit.preOrderRiskAuditId}`,
+        `Selected option: ${catTailAudit.selectedOption}`,
+        `闪电猫原话/审核意见：${feedbackText}`,
+        "",
+        "只执行 pre_order_risk_audit。请基于证据包、Human Gate 原话和硬性风控规则输出中文风控 paper，并生成结构化 risk_decision。",
+        "risk_decision 必须包含 reviewerAgent=cat_tail、dispatchType=pre_order_risk_audit、decision、riskLimits、evidenceRefs、paperRef、humanGateId、proposalId、preOrderRiskAuditId。当前只能批准 paper execution 或拒绝。不要下单，不要向 trading_core 发送自然语言。"
+      ].filter(Boolean).join("\n"),
+      payload: {
+        dispatchType: "pre_order_risk_audit",
+        workflowId: catTailAudit.workflowId,
+        meetingId: catTailAudit.meetingId,
+        humanGateId: catTailAudit.humanGateId,
+        buttonId: catTailAudit.buttonId,
+        proposalId: catTailAudit.proposalId,
+        preOrderRiskAuditId: catTailAudit.preOrderRiskAuditId,
+        selectedOption: catTailAudit.selectedOption,
+        selectedAt,
+        selectedBy: actor,
+        flashcatOriginalWords: feedbackText,
+        requestPayload: catTailAudit.requestPayload,
+        requestRawPayload: catTailAudit.requestRawPayload,
+        buttonPayload: catTailAudit.buttonPayload
+      }
+    } : {
       workflowRootDir: paths.root,
       meetingId: button.meeting_id || button.workflow_id,
       workflowId: button.workflow_id,

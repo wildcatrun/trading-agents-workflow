@@ -35,25 +35,25 @@ function usage() {
   trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--source-channel CHANNEL] [--account-id ACCOUNT] [--chat-id ID] [--sender-id ID] [--return-policy POLICY] [--target-platform PLATFORM] [--target-adapter ADAPTER] [--drain-now true|false] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
-  trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--return-policy POLICY] [--source-channel CHANNEL] [--account-id ACCOUNT] [--chat-id ID] [--sender-id ID] [--source-message-id ID] [--root DIR]
+  trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--payload JSON] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--return-policy POLICY] [--source-channel CHANNEL] [--account-id ACCOUNT] [--chat-id ID] [--sender-id ID] [--source-message-id ID] [--root DIR]
   trading-agents-workflow meeting-ingest --meeting ID --runtime RUNTIME --agent AGENT --text TEXT [--type TYPE] [--phase PHASE] [--root DIR]
   trading-agents-workflow runtime-bridge [--runtime openclaw|hermers|openclaw_route_shell] [--dispatch ID] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--stability-profile-modes-path PATH] [--cold-profile-defer-seconds N] [--hibernate-profile-defer-seconds N] [--allow-hibernated-profiles true|false] [--openclaw-bin PATH] [--dry-run] [--report-delivery false] [--root DIR]
   trading-agents-workflow dispatch-reconcile [--limit N] [--stale-after-ms N] [--timeout-seconds N] [--root DIR]
-  trading-agents-workflow human-gate-request --meeting ID --text TEXT [--gate TYPE] [--button JSON_OR_LABEL] [--from AGENT] [--target CHAT_ID] [--channel CHANNEL_ID] [--deliver true|false] [--root DIR]
+  trading-agents-workflow human-gate-request --meeting ID --text TEXT [--workflow ID] [--trace-id ID] [--parent OBJECT_ID] [--payload JSON] [--expires-at ISO] [--gate TYPE] [--button JSON_OR_LABEL] [--from AGENT] [--target CHAT_ID] [--channel CHANNEL_ID] [--deliver true|false] [--root DIR]
   trading-agents-workflow human-gate-inbox [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
   trading-agents-workflow human-gate-console [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
   trading-agents-workflow human-gate-callback --token TOKEN [--actor flashcat] [--feedback TEXT] [--runtime openclaw] [--agent main] [--root DIR]
   trading-agents-workflow human-gate-feedback --text TEXT [--token TOKEN] [--actor flashcat] [--runtime openclaw] [--agent main] [--root DIR]
-  trading-agents-workflow human-gate-resume --token TOKEN --human-gate-id ID --button-id ID --text TEXT [--workflow ID] [--meeting ID] [--root DIR]
+  trading-agents-workflow human-gate-resume --token TOKEN --text TEXT [--human-gate-id ID] [--button-id ID] [--workflow ID] [--meeting ID] [--root DIR]
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
   trading-agents-workflow telegram-outbox [--status queued|sent|failed] [--limit N] [--mark OUTBOX_ID] [--deliver] [--account cat_claw] [--target CHAT_ID] [--root DIR]
   trading-agents-workflow message-flow-send --from AGENT --to runtime:agent --body TEXT [--subject TEXT] [--from-runtime RUNTIME] [--workflow ID] [--meeting ID] [--source-ref PATH] [--requires-ack true|false] [--root DIR]
   trading-agents-workflow message-flow [--flow ID] [--dispatch ID] [--status STATUS] [--limit N] [--root DIR]
   trading-agents-workflow trade-proposal --asset TYPE --symbol SYMBOL [--summary TEXT] [--side SIDE] [--quantity N] [--order-type TYPE] [--proposal-id ID] [--payload JSON] [--root DIR]
-  trading-agents-workflow risk-decision --proposal ID [--status approved|rejected|pending] [--summary TEXT] [--reviewer AGENT] [--risk-decision-id ID] [--root DIR]
-  trading-agents-workflow human-gate-workflow [--human-gate-id ID] [--parent ID] [--gate TYPE] [--status approved|rejected|paused|terminated|pending] [--text TEXT] [--assurance mtls] [--root DIR]
-  trading-agents-workflow trade-intent --asset TYPE --symbol SYMBOL --side SIDE --proposal ID --risk ID --human-gate ID [--intent-id ID] [--quantity N] [--order-type TYPE] [--actor flashcat] [--assurance mtls] [--cert FINGERPRINT] [--source codex_mtls] [--idempotency-key KEY] [--root DIR]
+  trading-agents-workflow risk-decision --proposal ID --human-gate ID --pre-order-risk-audit ID [--status approved|rejected|pending] [--summary TEXT] [--reviewer AGENT] [--risk-decision-id ID] [--risk-limits JSON] [--evidence-ref REF] [--paper-ref REF] [--root DIR]
+  trading-agents-workflow human-gate-workflow is retired; use human-gate-request plus human-gate-resume
+  trading-agents-workflow trade-intent --asset TYPE --symbol SYMBOL --side SIDE --proposal ID --risk ID --pre-order-risk-audit ID --human-gate ID --workflow-id ID --trace-id ID --expires-at ISO --price-constraints JSON --risk-limits JSON [--intent-id ID] [--quantity N] [--order-type TYPE] [--actor flashcat] [--assurance mtls] [--cert FINGERPRINT] [--source codex_mtls] [--idempotency-key KEY] [--root DIR]
   trading-agents-workflow trading-core-receipt --intent ID [--status accepted|submitted|filled|rejected] [--ref REF] [--receipt-id ID] [--summary TEXT] [--root DIR]
   trading-agents-workflow side-effect --type TYPE [--status planned|started|committed|failed|uncertain|rolled_back] [--trace-id ID] [--idempotency-key KEY] [--payload JSON] [--root DIR]
   trading-agents-workflow incident-state --incident ID [--status active|mitigating|monitoring|resolved] [--mode degraded|critical-only|paper-only|frozen|normal] [--plane NAME] [--summary TEXT] [--exit-criteria TEXT] [--root DIR]
@@ -95,6 +95,12 @@ function parseArgv(argv) {
 function listOption(value) {
   if (value === undefined) return [];
   return Array.isArray(value) ? value : [value];
+}
+
+function parseCliJson(value, fallback = {}) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "object") return value;
+  return JSON.parse(String(value));
 }
 
 function singleOption(options, key) {
@@ -485,7 +491,7 @@ function toAction({ command, positional, options }) {
     case "telegram-live":
       return { root, input: { action: "telegram.live", meetingId: options.meeting, chatId: options.chat, channelId: options.channel, humanGateChannelId: options["human-gate-channel"], mode: options.mode } };
     case "meeting-dispatch":
-      return { root, input: { action: "meeting.dispatch", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, prompt: options.prompt, dispatchType: options.type, priority: options.priority, createdBy: options.from, traceId: options["trace-id"], idempotencyKey: options["idempotency-key"], maxAttempts: options["max-attempts"], returnPolicy: options["return-policy"], deliveryPolicy: options["return-policy"], sourceChannel: options["source-channel"], accountId: options["account-id"], chatId: options["chat-id"], senderId: options["sender-id"], sourceMessageId: options["source-message-id"] } };
+      return { root, input: { action: "meeting.dispatch", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, prompt: options.prompt, dispatchType: options.type, payload: options.payload, priority: options.priority, createdBy: options.from, traceId: options["trace-id"], idempotencyKey: options["idempotency-key"], maxAttempts: options["max-attempts"], returnPolicy: options["return-policy"], deliveryPolicy: options["return-policy"], sourceChannel: options["source-channel"], accountId: options["account-id"], chatId: options["chat-id"], senderId: options["sender-id"], sourceMessageId: options["source-message-id"] } };
     case "meeting-ingest":
       return { root, input: { action: "meeting.ingest", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, text: options.text, messageType: options.type, phase: options.phase } };
     case "runtime-bridge":
@@ -516,7 +522,7 @@ function toAction({ command, positional, options }) {
     case "message-flow":
       return { root, input: { action: "message_flow.list", flowId: options.flow, dispatchId: options.dispatch || options["dispatch-id"], status: options.status, limit: options.limit } };
     case "human-gate-request":
-      return { root, input: { action: "human_gate.request", meetingId: options.meeting, text: options.text, gateType: options.gate, buttons: listOption(options.button), from: options.from, target: options.target, channelId: options.channel, autoDeliver: options.deliver === "true", account: options.account } };
+      return { root, input: { action: "human_gate.request", workflowId: options.workflow, meetingId: options.meeting, traceId: options["trace-id"], parentObjectId: options.parent, expiresAt: options["expires-at"], text: options.text, gateType: options.gate, buttons: listOption(options.button), payload: options.payload, from: options.from, target: options.target, channelId: options.channel, autoDeliver: options.deliver === "true", account: options.account } };
     case "human-gate-inbox":
     case "human-gate-console":
       return {
@@ -598,11 +604,11 @@ function toAction({ command, positional, options }) {
     case "trade-proposal":
       return { root, input: { action: "trade.proposal", assetType: options.asset, symbol: options.symbol, summary: options.summary, side: options.side, quantity: options.quantity, orderType: options["order-type"], proposalId: options["proposal-id"], from: options.from, payload: options.payload } };
     case "risk-decision":
-      return { root, input: { action: "risk.decision", assetType: options.asset, symbol: options.symbol, proposalId: options.proposal, riskDecisionId: options["risk-decision-id"], status: options.status, summary: options.summary, reviewerAgent: options.reviewer, payload: options.payload } };
+      return { root, input: { action: "risk.decision", assetType: options.asset, symbol: options.symbol, proposalId: options.proposal, humanGateId: options["human-gate"], preOrderRiskAuditId: options["pre-order-risk-audit"], riskDecisionId: options["risk-decision-id"], status: options.status, summary: options.summary, reviewerAgent: options.reviewer, dispatchType: options["dispatch-type"], decision: options.decision, riskLimits: parseCliJson(options["risk-limits"]), evidenceRefs: listOption(options["evidence-ref"]), paperRef: options["paper-ref"], payload: options.payload } };
     case "human-gate-workflow":
-      return { root, input: { action: "human_gate.record", humanGateId: options["human-gate-id"], parentObjectId: options.parent, gateType: options.gate, status: options.status, text: options.text, actor: options.actor, assurance: options.assurance, payload: options.payload } };
+      throw new Error("human-gate-workflow is retired; Human Gate records are button-first only. Use human-gate-request plus human-gate-resume.");
     case "trade-intent":
-      return { root, input: { action: "trade.intent", assetType: options.asset, symbol: options.symbol, side: options.side, quantity: options.quantity, orderType: options["order-type"], proposalId: options.proposal, riskDecisionId: options.risk, humanGateId: options["human-gate"], intentId: options["intent-id"], actor: options.actor, assurance: options.assurance, clientCertFingerprint: options.cert, sourceSystem: options.source, idempotencyKey: options["idempotency-key"], payload: options.payload } };
+      return { root, input: { action: "trade.intent", assetType: options.asset, symbol: options.symbol, side: options.side, quantity: options.quantity, orderType: options["order-type"], proposalId: options.proposal, riskDecisionId: options.risk, preOrderRiskAuditId: options["pre-order-risk-audit"], humanGateId: options["human-gate"], intentId: options["intent-id"], workflowId: options["workflow-id"], traceId: options["trace-id"], actor: options.actor, assurance: options.assurance, clientCertFingerprint: options.cert, sourceSystem: options.source, idempotencyKey: options["idempotency-key"], expiresAt: options["expires-at"], priceConstraints: parseCliJson(options["price-constraints"]), riskLimits: parseCliJson(options["risk-limits"]), executionMode: options["execution-mode"], marketType: options["market-type"], exchange: options.exchange, baseAsset: options["base-asset"], quoteAsset: options["quote-asset"], clientOrderId: options["client-order-id"], timeInForce: options["time-in-force"], payload: options.payload } };
     case "trading-core-receipt":
       return { root, input: { action: "trading_core.receipt", intentId: options.intent, status: options.status, tradingCoreRef: options.ref, receiptId: options["receipt-id"], summary: options.summary, payload: options.payload } };
     case "side-effect":
@@ -691,7 +697,7 @@ function toAction({ command, positional, options }) {
     case "cat_claw-digest":
       return { root, input: { action: "cat_claw.digest", period: options.period, date: options.date } };
     case "human-gate":
-      return { root, input: { action: "human_gate.record", meetingId: positional[0], gateType: options.gate, text: options.text, status: options.status, from: options.from } };
+      throw new Error("human-gate is retired; Human Gate records are button-first only. Use human-gate-request plus human-gate-resume.");
     case "telegram-bridge":
       return { root, input: { action: "telegram.bridge", meetingId: positional[0], type: options.type, text: options.text, from: options.from, chatId: options.chat, messageId: options.message } };
     case "handoff":
