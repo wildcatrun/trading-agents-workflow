@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -19,7 +20,7 @@ from typing import Any
 
 
 SERVER_NAME = "trading-agents-workflow-hermes"
-SERVER_VERSION = "0.1.1"
+SERVER_VERSION = "0.1.4"
 
 SCRIPT_WORKFLOW_PACKAGE = Path(__file__).resolve().parents[1]
 SERVER_WORKFLOW_PACKAGE = Path("/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout")
@@ -27,6 +28,18 @@ DEFAULT_WORKFLOW_PACKAGE = SCRIPT_WORKFLOW_PACKAGE if (SCRIPT_WORKFLOW_PACKAGE /
 DEFAULT_ACTIVE_WORKFLOW_ROOT = Path("/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow")
 LEGACY_WORKFLOW_ROOT = Path("/home/flashcat/.openclaw/shared/trading-agents-workflow")
 ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT"
+ALLOW_NONDEFAULT_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_NONDEFAULT_ROOT"
+EXPECTED_WORKFLOW_SCHEMA_VERSION = 13
+REQUIRED_TRACKING_TABLES = {
+    "control_loop_jobs",
+    "message_flows",
+    "runtime_agents",
+    "schema_meta",
+    "telegram_outbox",
+    "workflow_events",
+    "workflow_session_packs",
+    "workflow_session_runs",
+}
 MAX_TIMEOUT_SECONDS = 1800
 ALLOW_RAW_ACTION_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_RAW_ACTION"
 ALLOW_SCHEDULE_MUTATION_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_SCHEDULE_MUTATION"
@@ -77,7 +90,46 @@ def guard_workflow_root(value: str | Path) -> str:
             f"legacy trading-agents-workflow root has retired and is fail-closed: {LEGACY_WORKFLOW_ROOT}; "
             "set TRADING_AGENTS_WORKFLOW_ROOT to the active workflow state root"
         )
+    if root != normalized_root(DEFAULT_ACTIVE_WORKFLOW_ROOT) and not truthy_env(ALLOW_NONDEFAULT_ROOT_ENV):
+        raise ValueError(
+            f"non-default trading-agents-workflow root is not allowed through Hermers MCP: {root}; "
+            f"expected {DEFAULT_ACTIVE_WORKFLOW_ROOT}; set {ALLOW_NONDEFAULT_ROOT_ENV}=1 only for controlled smoke, "
+            "migration, or recovery sessions"
+        )
     return str(root)
+
+
+def guard_tracking_db(root_dir: str) -> None:
+    db_file = normalized_root(root_dir) / "tracking.db"
+    if db_file.exists() and db_file.is_file():
+        try:
+            conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+            try:
+                table_rows = conn.execute(
+                    "select name from sqlite_master where type='table' and name in ({})".format(
+                        ",".join("?" for _ in REQUIRED_TRACKING_TABLES)
+                    ),
+                    tuple(sorted(REQUIRED_TRACKING_TABLES)),
+                ).fetchall()
+                tables = {str(row[0]) for row in table_rows}
+                missing = sorted(REQUIRED_TRACKING_TABLES - tables)
+                if missing:
+                    raise RuntimeError(f"tracking.db missing required tables: {', '.join(missing)}")
+                row = conn.execute("select value from schema_meta where key='workflow_schema_version'").fetchone()
+                version = int(row[0]) if row and str(row[0]).strip() else 0
+                if version != EXPECTED_WORKFLOW_SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"tracking.db schema version {version} does not match expected {EXPECTED_WORKFLOW_SCHEMA_VERSION}"
+                    )
+            finally:
+                conn.close()
+            return
+        except Exception as exc:
+            raise RuntimeError(f"tracking.db at configured workflow root is not ready: {db_file}: {exc}") from exc
+    raise FileNotFoundError(
+        f"tracking.db not found at configured workflow root: {db_file}; "
+        "fix TRADING_AGENTS_WORKFLOW_ROOT or initialize the workflow state root outside the Hermers MCP runtime"
+    )
 
 
 def workflow_root(args: dict[str, Any] | None = None) -> str:
@@ -125,6 +177,7 @@ def run_workflow_action(input_payload: dict[str, Any], root_dir: str | None = No
     if not core.exists():
         raise RuntimeError(f"workflow core not found: {core}")
     resolved_root = root_dir or workflow_root(input_payload)
+    guard_tracking_db(resolved_root)
     guard_payload_root(input_payload, resolved_root)
     payload = {
         "rootDir": resolved_root,

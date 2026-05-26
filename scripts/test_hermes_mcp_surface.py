@@ -9,12 +9,24 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
+import tempfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "scripts" / "trading_agents_workflow_hermes_mcp.py"
+
+
+def server_env(env: dict[str, str]) -> dict[str, str]:
+    blocked = {"CAT_MEETING_GOVERNANCE_ROOT", "HERMES_HOME", "HERMES_PROFILE"}
+    base = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in blocked and not key.startswith("TRADING_AGENTS_WORKFLOW_")
+    }
+    return {**base, **env}
 
 
 def list_tools(env: dict[str, str]) -> set[str]:
@@ -28,7 +40,7 @@ def list_tools(env: dict[str, str]) -> set[str]:
     proc = subprocess.run(
         ["python3", str(SERVER)],
         cwd=str(ROOT),
-        env={**os.environ, **env},
+        env=server_env(env),
         input=requests,
         text=True,
         capture_output=True,
@@ -50,7 +62,7 @@ def call_tool(env: dict[str, str], name: str, arguments: dict[str, object]) -> d
     proc = subprocess.run(
         ["python3", str(SERVER)],
         cwd=str(ROOT),
-        env={**os.environ, **env},
+        env=server_env(env),
         input=requests,
         text=True,
         capture_output=True,
@@ -100,6 +112,94 @@ def main() -> int:
     )
     if not denied.get("isError") or "tool not available" not in str(denied.get("content")):
         raise AssertionError(f"raw action should be denied without opt-in, got {denied}")
+    with tempfile.TemporaryDirectory(prefix="hermes-mcp-nondefault-root-") as tmp:
+        nondefault_root = call_tool(
+            {
+                "HERMES_PROFILE": "catheart",
+                "TRADING_AGENTS_WORKFLOW_ROOT": tmp,
+            },
+            "workflow_status",
+            {"view": "status"},
+        )
+        if not nondefault_root.get("isError") or "non-default trading-agents-workflow root" not in str(nondefault_root.get("content")):
+            raise AssertionError(f"non-default root should fail closed, got {nondefault_root}")
+    with tempfile.TemporaryDirectory(prefix="hermes-mcp-missing-db-") as tmp:
+        missing_db = call_tool(
+            {
+                "HERMES_PROFILE": "catheart",
+                "TRADING_AGENTS_WORKFLOW_ROOT": tmp,
+                "TRADING_AGENTS_WORKFLOW_ALLOW_NONDEFAULT_ROOT": "1",
+            },
+            "workflow_status",
+            {"view": "status"},
+        )
+        if not missing_db.get("isError") or "tracking.db not found" not in str(missing_db.get("content")):
+            raise AssertionError(f"missing tracking.db should fail closed, got {missing_db}")
+        if (Path(tmp) / "tracking.db").exists():
+            raise AssertionError("missing tracking.db guard should not create a database")
+    with tempfile.TemporaryDirectory(prefix="hermes-mcp-empty-db-") as tmp:
+        (Path(tmp) / "tracking.db").touch()
+        empty_db = call_tool(
+            {
+                "HERMES_PROFILE": "catheart",
+                "TRADING_AGENTS_WORKFLOW_ROOT": tmp,
+                "TRADING_AGENTS_WORKFLOW_ALLOW_NONDEFAULT_ROOT": "1",
+            },
+            "workflow_status",
+            {"view": "status"},
+        )
+        if not empty_db.get("isError") or "tracking.db at configured workflow root is not ready" not in str(empty_db.get("content")):
+            raise AssertionError(f"empty tracking.db should fail closed, got {empty_db}")
+    with tempfile.TemporaryDirectory(prefix="hermes-mcp-old-db-") as tmp:
+        db_file = Path(tmp) / "tracking.db"
+        conn = sqlite3.connect(db_file)
+        try:
+            conn.execute("create table schema_meta(key text primary key, value text not null, updated_at text not null)")
+            conn.execute("insert into schema_meta(key, value, updated_at) values ('workflow_schema_version', '11', '2026-05-21T00:00:00Z')")
+            conn.commit()
+        finally:
+            conn.close()
+        old_db = call_tool(
+            {
+                "HERMES_PROFILE": "catheart",
+                "TRADING_AGENTS_WORKFLOW_ROOT": tmp,
+                "TRADING_AGENTS_WORKFLOW_ALLOW_NONDEFAULT_ROOT": "1",
+            },
+            "workflow_status",
+            {"view": "status"},
+        )
+        if not old_db.get("isError") or "tracking.db at configured workflow root is not ready" not in str(old_db.get("content")):
+            raise AssertionError(f"old/incomplete tracking.db should fail closed, got {old_db}")
+    with tempfile.TemporaryDirectory(prefix="hermes-mcp-future-db-") as tmp:
+        db_file = Path(tmp) / "tracking.db"
+        conn = sqlite3.connect(db_file)
+        try:
+            conn.execute("create table schema_meta(key text primary key, value text not null, updated_at text not null)")
+            conn.execute("insert into schema_meta(key, value, updated_at) values ('workflow_schema_version', '14', '2026-05-21T00:00:00Z')")
+            for table in [
+                "control_loop_jobs",
+                "message_flows",
+                "runtime_agents",
+                "telegram_outbox",
+                "workflow_events",
+                "workflow_session_packs",
+                "workflow_session_runs",
+            ]:
+                conn.execute(f"create table {table}(id text)")
+            conn.commit()
+        finally:
+            conn.close()
+        future_db = call_tool(
+            {
+                "HERMES_PROFILE": "catheart",
+                "TRADING_AGENTS_WORKFLOW_ROOT": tmp,
+                "TRADING_AGENTS_WORKFLOW_ALLOW_NONDEFAULT_ROOT": "1",
+            },
+            "workflow_status",
+            {"view": "status"},
+        )
+        if not future_db.get("isError") or "does not match expected" not in str(future_db.get("content")):
+            raise AssertionError(f"future schema tracking.db should fail closed, got {future_db}")
     print("Hermers MCP surface smoke passed")
     return 0
 
