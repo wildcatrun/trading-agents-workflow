@@ -9466,10 +9466,11 @@ SELECT changes() AS changed;`, { json: true });
 function classifyRuntimeError(error) {
   const message = error instanceof Error ? error.message : String(error || "");
   const lower = message.toLowerCase();
+  if (error?.killed || error?.signal || error?.code === "ETIMEDOUT") return "runtime_timeout";
+  if (lower.includes("abort") || lower.includes("timeout") || lower.includes("timed out")) return "runtime_timeout";
   if (lower.includes("permission prompt unavailable") || lower.includes("permission") && lower.includes("non-interactive")) return "permission_unavailable";
   if (lower.includes("ack contract violation")) return "ack_contract_violation";
   if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return "runtime_timeout";
-  if (lower.includes("abort") || lower.includes("timeout") || lower.includes("timed out")) return "runtime_timeout";
   if (lower.includes("acp runtime backend") || lower.includes("acp") && lower.includes("unavailable")) return "acp_unavailable";
   if (lower.includes("oauth") || lower.includes("auth")) return "auth_unavailable";
   if (lower.includes("empty output")) return "empty_output";
@@ -10142,7 +10143,7 @@ async function runOpenClawDispatch(paths, row, input = {}) {
   try {
     const { stdout, stderr } = await execFileAsync(openclawBin, args, {
       cwd: paths.root,
-      timeout: (ack.required ? timeoutSeconds : timeoutSeconds + 30) * 1000,
+      timeout: (ack.required ? timeoutSeconds + 10 : timeoutSeconds + 30) * 1000,
       maxBuffer: 20 * 1024 * 1024,
       env: { ...process.env, TRADING_AGENTS_WORKFLOW_BRIDGE: "openclaw" }
     });

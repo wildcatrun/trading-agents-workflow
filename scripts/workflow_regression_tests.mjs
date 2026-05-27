@@ -434,6 +434,8 @@ async function makeFakeOpenClaw(root, name, mode) {
     ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output without ack prefix"}]}}));\n`
     : mode === "empty-ack"
     ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:""}]}}));\n`
+    : mode === "slow-timeout"
+    ? `#!/usr/bin/env node\nsetTimeout(() => console.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"ACK_RECEIVED"}]}})), 20000);\n`
     : mode === "success"
     ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output"}]}}));\n`
     : `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"error",summary:"fake runtime failure"}));\n`;
@@ -942,6 +944,34 @@ FROM mixed_meeting_dispatches
 WHERE dispatch_type='message_flow_semantic'
   AND meeting_id IN ('meeting-message-flow-ack-retry', 'meeting-message-flow-empty-ack-retry');`)[0];
   assert.equal(semanticCount.count, 0);
+
+  const timeoutAck = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "requires ack timeout classification regression body",
+    workflowId: "workflow-message-flow-timeout-ack-retry",
+    meetingId: "meeting-message-flow-timeout-ack-retry",
+    requiresAck: true,
+    returnPolicy: "silent"
+  });
+  const timeoutAckDispatchId = timeoutAck.dispatches[0].dispatchId;
+  sqliteExec(dbFile, `
+UPDATE mixed_meeting_dispatches
+SET payload_json=json_set(payload_json, '$.payload.ackContract.timeoutSeconds', 5)
+WHERE dispatch_id='${timeoutAckDispatchId}';`);
+  const timeoutAckBin = await makeFakeOpenClaw(root, "fake-openclaw-timeout-ack.mjs", "slow-timeout");
+  const timeoutAckDrained = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: timeoutAckDispatchId,
+    openclawBin: timeoutAckBin,
+    reportDelivery: false
+  });
+  assert.equal(timeoutAckDrained.results?.[0]?.status, "queued");
+  assert.equal(timeoutAckDrained.results?.[0]?.retryScheduled, true);
+  assert.equal(timeoutAckDrained.results?.[0]?.failureType, "runtime_timeout");
 
 }
 
