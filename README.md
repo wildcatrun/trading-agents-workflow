@@ -118,6 +118,7 @@ Hermers ACP dispatch.
 - `radar/` - workflow protocol documentation.
 - `templates/` - workflow report and review templates.
 - `docs/governance-records.md` - policy for recording workflow incidents, fixes, delivery failures, and Human Gate packages inside this plugin.
+- `docs/engineering-changes-2026-05-27.md` - engineering changelog for the 2026-05-27 message_flow ACK, timeout classification, Task Launch Package, deployment, and in-flight cleanup work.
 - `docs/agent-registry-routing.md` - routing contract for platform, adapter, IM ingress, workflow ingress, and route-shell behavior.
 - `docs/companion-stability-plugin.md` - boundary contract with `cat-agents-stability`.
 - `docs/managed-agent-evolution-plan.md` - phased plan for workflow events, permission gates, managed worker runners, and financial evidence contracts.
