@@ -1949,6 +1949,112 @@ async function testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility() {
   assert.equal(single.spec.phases.some((phase) => phase.ownerAgent === "cat_claw"), false);
 }
 
+async function testWorkflowTaskLaunchPrepareAndApprove() {
+  const root = await tempRoot("task-launch");
+  const dbFile = path.join(root, "tracking.db");
+  const prepared = await runAction(root, {
+    action: "workflow.task.launch.prepare",
+    workflowId: "wf-task-launch",
+    subject: "股票长期追踪制度职责边界澄清",
+    objective: "猫爪通过多轮会话确认闪电猫意图后起草任务，猫之脑复核，闪电猫批准后启动。",
+    participants: ["cat_eyes", "cat_ears", "cat_nose", "cat_heart"],
+    template: "stock_longterm_tracking",
+    intentSummary: "闪电猫要求 task 起草先形成 canonical JSON，而不是口头 message_flow prompt。",
+    flashcatIntent: "猫爪负责意图澄清和起草，猫之脑复核，闪电猫决定是否 launch。",
+    draftId: "tlp-test-launch"
+  });
+  assert.equal(prepared.mutated, true);
+  assert.equal(prepared.status, "pending_cat_brain_review");
+  assert.equal(prepared.package.roles.drafterAgent, "cat_claw");
+  assert.equal(prepared.package.roles.reviewerAgent, "main");
+  assert.equal(prepared.package.roles.finalApprover, "flashcat");
+  assert.equal(await pathExists(path.join(root, prepared.artifacts.canonicalJson)), true);
+  assert.equal(await pathExists(path.join(root, prepared.artifacts.markdown)), true);
+  assert.equal(sqliteCount(dbFile, "protocol_objects", "object_type='workflow_task_launch_package'"), 1);
+  assert.equal(sqliteCount(dbFile, "review_gates", "gate_type='task_launch_cat_brain_review' AND status='pending'"), 1);
+  assert.equal(sqliteCount(dbFile, "artifact_index", "kind LIKE 'workflow_task_launch_package%'"), 2);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks"), 0);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
+
+  const listed = await runAction(root, {
+    action: "workflow.task.launch.list",
+    workflowId: "wf-task-launch"
+  });
+  assert.equal(listed.count, 1);
+  assert.equal(listed.taskLaunches[0].draftId, "tlp-test-launch");
+
+  await assertRejectsMessage(
+    () => runAction(root, { action: "workflow.task.launch.approve", draftId: "tlp-test-launch" }),
+    /original words|feedbackText/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.task.launch.approve",
+      draftId: "tlp-test-launch",
+      feedbackText: "闪电猫原话：先试图绕过猫之脑复核。"
+    }),
+    /Cat Brain review/
+  );
+
+  const reviewed = await runAction(root, {
+    action: "workflow.task.launch.review",
+    draftId: "tlp-test-launch",
+    status: "approved",
+    reviewerAgent: "main",
+    reviewOpinion: "猫之脑复核通过：任务包具备职责、阶段、审计和 Human Gate 启动边界。"
+  });
+  assert.equal(reviewed.status, "pending_flashcat_launch");
+  assert.equal(sqliteCount(dbFile, "review_gates", "gate_type='task_launch_cat_brain_review' AND status='approved'"), 1);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.task.launch.prepare",
+      workflowId: "wf-task-launch",
+      draftId: "tlp-test-launch",
+      objective: "不得覆盖已通过猫之脑复核的 package。",
+      participants: ["cat_eyes", "cat_ears"]
+    }),
+    /cannot be overwritten/
+  );
+
+  const approved = await runAction(root, {
+    action: "workflow.task.launch.approve",
+    draftId: "tlp-test-launch",
+    feedbackText: "闪电猫原话：批准启动，但先保持任务边界清楚，不要绕过猫爪记录。",
+    approvedBy: "flashcat"
+  });
+  assert.equal(approved.status, "launched");
+  assert.ok(approved.materializedTasks.length >= 5);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks", "workflow_id='wf-task-launch'"), approved.materializedTasks.length);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
+  const stored = sqliteJson(dbFile, "SELECT status, payload_json FROM protocol_objects WHERE object_id='tlp-test-launch';")[0];
+  assert.equal(stored.status, "launched");
+  assert.equal(stored.payload_json.includes("闪电猫原话：批准启动"), true);
+}
+
+async function testWorkflowTaskLaunchReviewPermissions() {
+  const root = await tempRoot("task-launch-permissions");
+  const prepared = await runAction(root, {
+    action: "workflow.task.launch.prepare",
+    workflowId: "wf-task-launch-perms",
+    draftId: "tlp-test-launch-perms",
+    objective: "验证猫爪不能伪装猫之脑完成 task launch review。",
+    participants: ["cat_eyes", "cat_ears"]
+  });
+  assert.equal(prepared.status, "pending_cat_brain_review");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.task.launch.review",
+      draftId: "tlp-test-launch-perms",
+      status: "approved",
+      reviewerAgent: "main",
+      callerAgent: "cat_claw",
+      actor: "cat_claw",
+      reviewOpinion: "伪装猫之脑复核。"
+    }),
+    /caller_not_registered|missing_capability|cannot impersonate/
+  );
+}
+
 async function testWorkflowEventStore() {
   const root = await tempRoot("workflow-events");
   const first = await runAction(root, {
@@ -2849,6 +2955,8 @@ try {
     ["workflow task draft pure preview", testWorkflowTaskDraftPurePreview],
     ["workflow task draft cli pure preview", testWorkflowTaskDraftCliPurePreview],
     ["workflow task draft no human gate and single task compatibility", testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility],
+    ["workflow task launch prepare and approve", testWorkflowTaskLaunchPrepareAndApprove],
+    ["workflow task launch review permissions", testWorkflowTaskLaunchReviewPermissions],
     ["workflow session store cli", testWorkflowSessionStoreCli],
     ["expired human_gate blocked", testExpiredHumanGateBlocked],
     ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],

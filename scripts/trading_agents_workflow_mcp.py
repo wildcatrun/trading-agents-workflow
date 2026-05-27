@@ -832,6 +832,180 @@ def workflow_task_draft(args: dict[str, Any]) -> dict[str, Any]:
     return response
 
 
+def workflow_task_launch_prepare(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    objective = str(args.get("objective") or args.get("goal") or args.get("prompt") or args.get("body") or "").strip()
+    subject = str(args.get("subject") or args.get("summary") or args.get("title") or "").strip()
+    participants = as_str_list(args.get("participants") or args.get("participant") or args.get("agents") or args.get("agentIds") or args.get("to_agents") or args.get("toAgents") or args.get("targets"))
+    if source == "local":
+        workflow_root = local_mutation_state_root(args)
+        cwd = local_code_path()
+    elif source == "remote":
+        workflow_root = remote_mutation_state_root(args)
+        cwd = remote_code_path()
+    else:
+        raise ValueError("source must be local or remote")
+    if not objective and not subject:
+        raise ValueError("objective/goal/prompt/body or subject/summary/title is required")
+
+    cli_args = [
+        "node",
+        "bin/cat-meeting-governance.mjs",
+        "workflow-task-launch-prepare",
+        "--objective",
+        objective or subject,
+        "--root",
+        workflow_root,
+    ]
+    optional_pairs = [
+        ("--draft", args.get("draft_id") or args.get("draftId")),
+        ("--workflow", args.get("workflow_id") or args.get("workflowId")),
+        ("--meeting", args.get("meeting_id") or args.get("meetingId")),
+        ("--trace-id", args.get("trace_id") or args.get("traceId")),
+        ("--idempotency-key", args.get("idempotency_key") or args.get("idempotencyKey")),
+        ("--subject", subject),
+        ("--type", args.get("task_type") or args.get("taskType")),
+        ("--chair", args.get("chair_agent") or args.get("chairAgent") or args.get("chair")),
+        ("--secretary", args.get("secretary_agent") or args.get("secretaryAgent") or args.get("secretary")),
+        ("--drafter", args.get("drafter_agent") or args.get("drafterAgent") or args.get("drafter")),
+        ("--consumer", args.get("consumer_agent") or args.get("consumerAgent") or args.get("consumer")),
+        ("--intent-summary", args.get("intent_summary") or args.get("intentSummary")),
+        ("--flashcat-intent", args.get("flashcat_intent") or args.get("flashcatIntent")),
+        ("--clarification-status", args.get("clarification_status") or args.get("clarificationStatus")),
+        ("--template", args.get("template")),
+        ("--priority", args.get("priority")),
+        ("--human-gate", str(bool(args.get("requires_human_gate") if "requires_human_gate" in args else args.get("requiresHumanGate", True))).lower()),
+        ("--stock-longterm-tracking", str(bool(args.get("stock_longterm_tracking") or args.get("stockLongTermTracking"))).lower() if ("stock_longterm_tracking" in args or "stockLongTermTracking" in args) else None),
+        ("--no-default-governance", str(bool(args.get("no_default_governance") or args.get("noDefaultGovernance"))).lower() if ("no_default_governance" in args or "noDefaultGovernance" in args) else None),
+    ]
+    for participant in participants:
+        cli_args.extend(["--participant", participant])
+    for question in as_str_list(args.get("open_questions") or args.get("openQuestions")):
+        cli_args.extend(["--open-question", question])
+    for key, value in optional_pairs:
+        if value not in (None, ""):
+            cli_args.extend([key, str(value)])
+
+    if source == "local":
+        result = run(cli_args, cwd=cwd, timeout=60)
+    else:
+        quoted = " ".join(shlex.quote(part) for part in cli_args)
+        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90)
+    try:
+        payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
+    except json.JSONDecodeError:
+        payload = {}
+    response = {
+        "source": source,
+        "ok": result.get("ok"),
+        "codePath": str(cwd),
+        "workflowRoot": workflow_root,
+        "result": payload,
+        "command": cli_args[:3] + ["..."],
+        "runner": result,
+    }
+    audit({"event": "workflow_task_launch_prepare", "source": source, "ok": result.get("ok"), "participant_count": len(participants)})
+    return response
+
+
+def workflow_task_launch_list(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    if source == "local":
+        workflow_root = local_mutation_state_root(args)
+        cwd = local_code_path()
+    elif source == "remote":
+        workflow_root = remote_mutation_state_root(args)
+        cwd = remote_code_path()
+    else:
+        raise ValueError("source must be local or remote")
+    cli_args = ["node", "bin/cat-meeting-governance.mjs", "workflow-task-launch-list", "--root", workflow_root]
+    for key, value in [
+        ("--workflow", args.get("workflow_id") or args.get("workflowId")),
+        ("--status", args.get("status")),
+        ("--limit", args.get("limit")),
+    ]:
+        if value not in (None, ""):
+            cli_args.extend([key, str(value)])
+    if source == "local":
+        result = run(cli_args, cwd=cwd, timeout=60)
+    else:
+        quoted = " ".join(shlex.quote(part) for part in cli_args)
+        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90)
+    payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
+    response = {"source": source, "ok": result.get("ok"), "codePath": str(cwd), "workflowRoot": workflow_root, "result": payload, "command": cli_args[:3] + ["..."], "runner": result}
+    audit({"event": "workflow_task_launch_list", "source": source, "ok": result.get("ok")})
+    return response
+
+
+def workflow_task_launch_approve(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    draft_id = str(args.get("draft_id") or args.get("draftId") or "").strip()
+    feedback = str(args.get("feedback_text") or args.get("feedbackText") or args.get("flashcat_original_words") or args.get("flashcatOriginalWords") or "").strip()
+    if not draft_id:
+        raise ValueError("draft_id/draftId is required")
+    if not feedback:
+        raise ValueError("feedback_text/flashcat_original_words is required")
+    if source == "local":
+        workflow_root = local_mutation_state_root(args)
+        cwd = local_code_path()
+    elif source == "remote":
+        workflow_root = remote_mutation_state_root(args)
+        cwd = remote_code_path()
+    else:
+        raise ValueError("source must be local or remote")
+    cli_args = [
+        "node", "bin/cat-meeting-governance.mjs", "workflow-task-launch-approve",
+        "--root", workflow_root,
+        "--draft", draft_id,
+        "--feedback", feedback,
+        "--by", str(args.get("approved_by") or args.get("approvedBy") or "flashcat"),
+    ]
+    if source == "local":
+        result = run(cli_args, cwd=cwd, timeout=60)
+    else:
+        quoted = " ".join(shlex.quote(part) for part in cli_args)
+        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90)
+    payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
+    response = {"source": source, "ok": result.get("ok"), "codePath": str(cwd), "workflowRoot": workflow_root, "result": payload, "command": cli_args[:3] + ["..."], "runner": result}
+    audit({"event": "workflow_task_launch_approve", "source": source, "ok": result.get("ok"), "draft_id": draft_id})
+    return response
+
+
+def workflow_task_launch_review(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    draft_id = str(args.get("draft_id") or args.get("draftId") or "").strip()
+    opinion = str(args.get("review_opinion") or args.get("reviewOpinion") or args.get("opinion") or args.get("text") or "").strip()
+    if not draft_id:
+        raise ValueError("draft_id/draftId is required")
+    if not opinion:
+        raise ValueError("review_opinion/reviewOpinion is required")
+    if source == "local":
+        workflow_root = local_mutation_state_root(args)
+        cwd = local_code_path()
+    elif source == "remote":
+        workflow_root = remote_mutation_state_root(args)
+        cwd = remote_code_path()
+    else:
+        raise ValueError("source must be local or remote")
+    cli_args = [
+        "node", "bin/cat-meeting-governance.mjs", "workflow-task-launch-review",
+        "--root", workflow_root,
+        "--draft", draft_id,
+        "--status", str(args.get("status") or args.get("decision") or "approved"),
+        "--reviewer", str(args.get("reviewer_agent") or args.get("reviewerAgent") or "main"),
+        "--opinion", opinion,
+    ]
+    if source == "local":
+        result = run(cli_args, cwd=cwd, timeout=60)
+    else:
+        quoted = " ".join(shlex.quote(part) for part in cli_args)
+        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90)
+    payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
+    response = {"source": source, "ok": result.get("ok"), "codePath": str(cwd), "workflowRoot": workflow_root, "result": payload, "command": cli_args[:3] + ["..."], "runner": result}
+    audit({"event": "workflow_task_launch_review", "source": source, "ok": result.get("ok"), "draft_id": draft_id})
+    return response
+
+
 TOOLS: dict[str, dict[str, Any]] = {
     "workflow_git_status": {
         "description": "Return local Git status for the trading-agents-workflow repository.",
@@ -1008,6 +1182,124 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "workflow_task_launch_prepare": {
+        "description": "Persist a Cat-Claw-drafted Task Launch Package as canonical JSON/Markdown for Cat Brain review. Mutates workflow state but does not launch tasks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "draft_id": {"type": "string"},
+                "draftId": {"type": "string"},
+                "workflow_id": {"type": "string"},
+                "workflowId": {"type": "string"},
+                "meeting_id": {"type": "string"},
+                "meetingId": {"type": "string"},
+                "trace_id": {"type": "string"},
+                "traceId": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+                "idempotencyKey": {"type": "string"},
+                "subject": {"type": "string"},
+                "summary": {"type": "string"},
+                "title": {"type": "string"},
+                "objective": {"type": "string"},
+                "goal": {"type": "string"},
+                "prompt": {"type": "string"},
+                "body": {"type": "string"},
+                "participants": {"type": "array", "items": {"type": "string"}},
+                "participant": {"type": "array", "items": {"type": "string"}},
+                "agents": {"type": "array", "items": {"type": "string"}},
+                "agentIds": {"type": "array", "items": {"type": "string"}},
+                "to_agents": {"type": "array", "items": {"type": "string"}},
+                "toAgents": {"type": "array", "items": {"type": "string"}},
+                "targets": {"type": "array", "items": {"type": "string"}},
+                "chair_agent": {"type": "string"},
+                "chairAgent": {"type": "string"},
+                "secretary_agent": {"type": "string"},
+                "secretaryAgent": {"type": "string"},
+                "drafter_agent": {"type": "string"},
+                "drafterAgent": {"type": "string"},
+                "consumer_agent": {"type": "string"},
+                "consumerAgent": {"type": "string"},
+                "task_type": {"type": "string"},
+                "taskType": {"type": "string"},
+                "template": {"type": "string"},
+                "priority": {"type": "string"},
+                "requires_human_gate": {"type": "boolean"},
+                "requiresHumanGate": {"type": "boolean"},
+                "stock_longterm_tracking": {"type": "boolean"},
+                "stockLongTermTracking": {"type": "boolean"},
+                "intent_summary": {"type": "string"},
+                "intentSummary": {"type": "string"},
+                "flashcat_intent": {"type": "string"},
+                "flashcatIntent": {"type": "string"},
+                "clarification_status": {"type": "string"},
+                "clarificationStatus": {"type": "string"},
+                "open_questions": {"type": "array", "items": {"type": "string"}},
+                "openQuestions": {"type": "array", "items": {"type": "string"}},
+                "workflow_root": {"type": "string"},
+                "workflowRoot": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "workflow_task_launch_list": {
+        "description": "List persisted Task Launch Packages.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "workflow_id": {"type": "string"},
+                "workflowId": {"type": "string"},
+                "status": {"type": "string"},
+                "limit": {"type": "number"},
+                "workflow_root": {"type": "string"},
+                "workflowRoot": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "workflow_task_launch_approve": {
+        "description": "Approve a Task Launch Package with Flashcat original words and materialize its workflow_tasks. Does not auto-dispatch.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "draft_id": {"type": "string"},
+                "draftId": {"type": "string"},
+                "feedback_text": {"type": "string"},
+                "feedbackText": {"type": "string"},
+                "flashcat_original_words": {"type": "string"},
+                "flashcatOriginalWords": {"type": "string"},
+                "approved_by": {"type": "string"},
+                "approvedBy": {"type": "string"},
+                "workflow_root": {"type": "string"},
+                "workflowRoot": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "workflow_task_launch_review": {
+        "description": "Record Cat Brain review of a Task Launch Package before Flashcat launch approval.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "draft_id": {"type": "string"},
+                "draftId": {"type": "string"},
+                "status": {"type": "string"},
+                "decision": {"type": "string"},
+                "review_opinion": {"type": "string"},
+                "reviewOpinion": {"type": "string"},
+                "opinion": {"type": "string"},
+                "text": {"type": "string"},
+                "reviewer_agent": {"type": "string"},
+                "reviewerAgent": {"type": "string"},
+                "workflow_root": {"type": "string"},
+                "workflowRoot": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
     "workflow_incidents": {
         "description": "Read workflow incident_states records.",
         "inputSchema": {
@@ -1094,6 +1386,14 @@ def handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
                 payload = message_flow_send(arguments)
             elif name == "workflow_task_draft":
                 payload = workflow_task_draft(arguments)
+            elif name == "workflow_task_launch_prepare":
+                payload = workflow_task_launch_prepare(arguments)
+            elif name == "workflow_task_launch_list":
+                payload = workflow_task_launch_list(arguments)
+            elif name == "workflow_task_launch_review":
+                payload = workflow_task_launch_review(arguments)
+            elif name == "workflow_task_launch_approve":
+                payload = workflow_task_launch_approve(arguments)
             elif name == "workflow_incidents":
                 payload = incidents(arguments)
             elif name == "workflow_reconcile_dry_run":

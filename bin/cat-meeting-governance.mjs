@@ -217,6 +217,72 @@ function toAction({ command, positional, options }) {
           stockLongTermTracking: options["stock-longterm-tracking"] === "true"
         }
       };
+    case "workflow-task-launch-prepare":
+      return {
+        root,
+        input: {
+          action: "workflow.task.launch.prepare",
+          draftId: options.draft,
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          traceId: options["trace-id"],
+          idempotencyKey: options["idempotency-key"],
+          taskType: options.type,
+          subject: options.subject || options.summary || options.title,
+          objective: options.objective || options.goal || options.prompt || options.body || options.text,
+          intentSummary: options["intent-summary"],
+          flashcatIntent: options["flashcat-intent"],
+          clarificationStatus: options["clarification-status"],
+          openQuestions: listOption(options["open-question"]),
+          participants: [
+            ...listOption(options.participant),
+            ...listOption(options.agent),
+            ...listOption(options.worker),
+            ...listOption(options.to)
+          ],
+          chairAgent: options.chair,
+          secretaryAgent: options.secretary,
+          drafterAgent: options.drafter,
+          consumerAgent: options.consumer,
+          template: options.template,
+          priority: options.priority,
+          requiresHumanGate: options["human-gate"] !== "false",
+          noDefaultGovernance: options["no-default-governance"] === "true",
+          stockLongTermTracking: options["stock-longterm-tracking"] === "true",
+          sourceSystem: options.source || "cat_claw_intent_drafting"
+        }
+      };
+    case "workflow-task-launch-list":
+      return {
+        root,
+        input: {
+          action: "workflow.task.launch.list",
+          workflowId: options.workflow,
+          status: options.status,
+          limit: options.limit
+        }
+      };
+    case "workflow-task-launch-review":
+      return {
+        root,
+        input: {
+          action: "workflow.task.launch.review",
+          draftId: options.draft,
+          status: options.status || options.decision || "approved",
+          reviewerAgent: options.reviewer || options.by || "main",
+          reviewOpinion: options.opinion || options.text || options.summary
+        }
+      };
+    case "workflow-task-launch-approve":
+      return {
+        root,
+        input: {
+          action: "workflow.task.launch.approve",
+          draftId: options.draft,
+          approvedBy: options.by || options.approver || "flashcat",
+          feedbackText: options.feedback || options.text || options["flashcat-original-words"] || options["original-words"]
+        }
+      };
     case "workflow-task":
       return {
         root,

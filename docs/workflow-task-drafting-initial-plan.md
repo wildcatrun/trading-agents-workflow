@@ -12,6 +12,34 @@ This is a preliminary reference, not a final implementation contract. Upgrade
 this design after Claude Code publishes complete, stable user documentation for
 its Workflow tool and any related `/workflow` or `/workflows` command surface.
 
+## 2026-05-27 v1 Implementation Note
+
+The first local implementation uses a `Task Launch Package` lifecycle instead
+of treating `message_flow` text as the workflow contract.
+
+- `workflow.task.draft` remains pure preview and does not create files,
+  database rows, tasks, dispatches, or Human Gate records.
+- `workflow.task.launch.prepare` is the Cat Claw drafting action. It calls the
+  draft normalizer, rejects blocking quality-gate errors, writes canonical JSON
+  and Markdown artifacts under `artifacts/task-launch/<workflowId>/`, records a
+  `protocol_objects` row with `object_type='workflow_task_launch_package'`, and
+  creates a pending Cat Brain review gate. It does not launch tasks.
+- `workflow.task.launch.list` lists persisted launch packages for CLI/MCP/GUI
+  read surfaces.
+- `workflow.task.launch.review` records Cat Brain's explicit review decision.
+  An approved review moves the package to `pending_flashcat_launch`; rejected
+  or revise-required reviews keep it out of launch.
+- `workflow.task.launch.approve` requires Flashcat original words and then
+  materializes only a Cat-Brain-approved package into `workflow_tasks`. It
+  creates tasks only; it does not auto-dispatch runtime work.
+
+The intended authority chain is: Cat Claw clarifies intent and drafts the
+canonical package; Cat Brain reviews the package and can reject it back to Cat
+Claw with audit comments; Flashcat decides whether to launch through a
+button-first Human Gate or an equivalent governed GUI approval surface; after
+approval, Cat Claw interprets Flashcat's original words for the next handoff
+and Cat Brain plans the next execution round.
+
 ## Problem
 
 The current control-plane entry point available to local Codex is mostly a

@@ -230,6 +230,40 @@ LIMIT 50;`);
     };
   }
 
+  async taskLaunches(query = {}) {
+    const limit = clampLimit(query.limit, 50, 200);
+    const filters = ["object_type='workflow_task_launch_package'"];
+    if (query.workflowId) filters.push(`parent_object_id=${sqlValue(query.workflowId)}`);
+    if (query.status) filters.push(`status=${sqlValue(query.status)}`);
+    const rows = await sqlite(this.paths.dbFile, `
+SELECT object_id, status, source_agent, parent_object_id, path, payload_json, created_at, updated_at
+FROM protocol_objects
+WHERE ${filters.join(" AND ")}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+    return {
+      count: rows.length,
+      taskLaunches: rows.map((row) => {
+        const payload = redact(parseJson(row.payload_json, {}));
+        return {
+          draftId: row.object_id,
+          status: row.status,
+          workflowId: row.parent_object_id || payload.workflowId || "",
+          subject: payload.subject || "",
+          objective: payload.objective || "",
+          sourceAgent: row.source_agent || "",
+          path: row.path || "",
+          artifacts: payload.artifactRefs || {},
+          roles: payload.roles || {},
+          taskCount: payload.launchMaterialization?.tasks?.length || 0,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          payload
+        };
+      })
+    };
+  }
+
   async messageFlows(workflowId, query = {}) {
     const limit = clampLimit(query.limit, 100, 500);
     const flowWhere = `(workflow_id=${sqlValue(workflowId)} OR meeting_id=${sqlValue(workflowId)})`;

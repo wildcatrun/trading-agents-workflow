@@ -154,6 +154,9 @@ export function createConsoleServer(options = {}) {
       if (req.method === "GET" && pathname === "/api/workflows") {
         return json(res, 200, await readModel.workflowList(Object.fromEntries(url.searchParams)));
       }
+      if (req.method === "GET" && pathname === "/api/task-launches") {
+        return json(res, 200, await readModel.taskLaunches(Object.fromEntries(url.searchParams)));
+      }
       const workflowMatch = pathname.match(/^\/api\/workflows\/([^/]+)(?:\/([^/]+))?$/);
       if (req.method === "GET" && workflowMatch) {
         const workflowId = decodeURIComponent(workflowMatch[1]);
