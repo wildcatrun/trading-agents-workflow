@@ -1,7 +1,7 @@
 # Message Flow Closure Contract
 
 This document records the governed closure rules for `message_flow` dispatch,
-runtime receipts, local Codex inbox delivery, return policies, and the 10s
+runtime receipts, local Codex inbox delivery, return policies, and the 30s
 control-loop drain path.
 
 ## Purpose
@@ -17,6 +17,8 @@ The closure contract separates three different facts:
 
 - runtime dispatch completed;
 - a target inbox or agent runtime accepted the message;
+- after an immediate ACK, the semantic task was actually dispatched and
+  completed;
 - a human-visible delivery, such as Telegram, was sent and acknowledged.
 
 Do not collapse those facts into one boolean. A dispatch ack is only runtime
@@ -35,6 +37,25 @@ route_registered
   -> outbound_queued
   -> telegram_sent | telegram_failed
 ```
+
+When `requiresAck=true`, ACK is an explicit first-turn receipt stage inside the
+same flow, not a replacement for the flow:
+
+```text
+route_registered
+  -> runtime_dispatched
+  -> runtime_acknowledged
+  -> semantic_dispatched
+  -> runtime_completed | runtime_failed
+  -> outbound_queued
+  -> telegram_sent | telegram_failed
+```
+
+The ACK turn must return `ACK_RECEIVED` within 30s. It only proves complete
+message receipt and must not set `final_output_present=1` or create the final
+human-visible outbox. After ACK, workflow queues one idempotent
+`message_flow_semantic` dispatch on the same `flow_id`; that continuation
+removes the ACK prompt and carries the original semantic task to completion.
 
 Not every flow needs every step. `return_policy=silent` stops at runtime
 closure. `local_codex` stops at local inbox receipt. A human-facing report or
@@ -94,7 +115,7 @@ to the local inbox, not as a completed downstream task.
 
 ## Control Loop Drain
 
-The 10s control loop is a mechanical reconciler. It should make bounded progress
+The 30s control loop is a mechanical reconciler. It should make bounded progress
 on queue and receipt state without doing semantic judging, trading decisions, or
 Human Gate decisions.
 

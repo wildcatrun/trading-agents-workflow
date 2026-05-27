@@ -12,6 +12,7 @@ function usage() {
   trading-agents-workflow workflow-topology [--root DIR]
   trading-agents-workflow workflow-run --workflow ID [--objective TEXT] [--acceptance-criteria TEXT] [--stop-condition TEXT] [--phase PHASE] [--flash-lane true|false] [--root DIR]
   trading-agents-workflow workflow-swarm --workflow ID --objective TEXT [--target TEXT] [--worker runtime:agent] [--reducer runtime:agent] [--fanout-limit N] [--root DIR]
+  trading-agents-workflow workflow-task-draft --workflow ID --objective TEXT [--participant AGENT] [--chair main] [--secretary cat_claw] [--consumer cat_heart] [--template NAME] [--root DIR]
   trading-agents-workflow workflow-task --workflow ID [--task ID] [--owner AGENT] [--runtime RUNTIME] [--agent AGENT] [--after TASK_IDS] [--expected-artifact PATH] [--root DIR]
   trading-agents-workflow workflow-task-update --task ID [--status STATUS] [--artifact PATH] [--blocked-reason TEXT] [--root DIR]
   trading-agents-workflow workflow-tasks [--workflow ID] [--status STATUS] [--owner AGENT] [--limit N] [--root DIR]
@@ -19,7 +20,7 @@ function usage() {
   trading-agents-workflow workflow-advance-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--goal-complete] [--root DIR]
   trading-agents-workflow workflow-supervise --workflow ID [--meeting ID] [--auto-dispatch] [--drain] [--max-cycles N] [--auto-report false] [--openclaw-bin PATH] [--root DIR]
   trading-agents-workflow workflow-supervise-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--drain true|false] [--max-cycles N] [--auto-report true|false] [--root DIR]
-  trading-agents-workflow workflow-control-loop-tick [--tick-ms 10000] [--max-workflows N] [--runtime hermers] [--limit N] [--job-limit N] [--tick-budget-ms N] [--message-flow-stuck-after-ms N] [--message-flow-reconcile-limit N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--enable-schedules true|false] [--root DIR]
+  trading-agents-workflow workflow-control-loop-tick [--tick-ms 30000] [--max-workflows N] [--runtime hermers] [--limit N] [--job-limit N] [--tick-budget-ms N] [--message-flow-stuck-after-ms N] [--message-flow-reconcile-limit N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--enable-schedules true|false] [--root DIR]
   trading-agents-workflow workflow-schedule-upsert --id ID --agent AGENT --prompt TEXT [--runtime hermers] [--kind cron|interval] [--cron EXPR] [--interval-seconds N] [--next-run-at ISO] [--root DIR]
   trading-agents-workflow workflow-schedule-list [--id ID] [--status active|paused|disabled] [--runtime RUNTIME] [--agent AGENT] [--run-limit N] [--root DIR]
   trading-agents-workflow workflow-schedule-pause --id ID [--root DIR]
@@ -188,18 +189,46 @@ function toAction({ command, positional, options }) {
           createdBy: options.from
         }
       };
+    case "workflow-task-draft":
+      return {
+        root,
+        input: {
+          action: "workflow.task.draft",
+          workflowId: options.workflow,
+          meetingId: options.meeting,
+          traceId: options["trace-id"],
+          idempotencyKey: options["idempotency-key"],
+          taskType: options.type,
+          subject: options.subject || options.summary || options.title,
+          objective: options.objective || options.goal || options.prompt || options.body || options.text,
+          participants: [
+            ...listOption(options.participant),
+            ...listOption(options.agent),
+            ...listOption(options.worker),
+            ...listOption(options.to)
+          ],
+          chairAgent: options.chair,
+          secretaryAgent: options.secretary,
+          consumerAgent: options.consumer,
+          template: options.template,
+          priority: options.priority,
+          requiresHumanGate: options["human-gate"] !== "false",
+          noDefaultGovernance: options["no-default-governance"] === "true",
+          stockLongTermTracking: options["stock-longterm-tracking"] === "true"
+        }
+      };
     case "workflow-task":
       return {
         root,
         input: {
-          action: "workflow.task.create",
+          action: options["dry-run"] === "true" ? "workflow.task.draft" : "workflow.task.create",
           workflowId: options.workflow,
           taskId: options.task,
           parentTaskId: options.parent,
           ownerAgent: options.owner,
           runtime: options.runtime,
           agentId: options.agent,
-          taskType: options.type,
+          taskType: options["dry-run"] === "true" ? (options.type || "task") : options.type,
           phase: options.phase,
           priority: options.priority,
           dependsOn: options.after ? String(options.after).split(",").map((item) => item.trim()).filter(Boolean) : [],
@@ -207,7 +236,14 @@ function toAction({ command, positional, options }) {
           prompt: options.prompt,
           expectedArtifact: options["expected-artifact"],
           receiptRequired: options["receipt-required"] !== "false",
-          humanGateRequired: options["human-gate"] === "true"
+          humanGateRequired: options["human-gate"] === "true",
+          requiresHumanGate: options["human-gate"] === "true",
+          participants: [
+            ...listOption(options.agent),
+            ...listOption(options.owner)
+          ],
+          subject: options.summary,
+          objective: options.prompt || options.summary
         }
       };
     case "workflow-task-update":

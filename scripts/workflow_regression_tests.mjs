@@ -29,6 +29,15 @@ function sqliteCount(dbFile, table, where = "1=1") {
   return Number(sqliteJson(dbFile, `SELECT COUNT(*) AS count FROM ${table} WHERE ${where};`)[0]?.count || 0);
 }
 
+async function pathExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function requireSqliteCli() {
   try {
     execFileSync("sqlite3", ["--version"], { encoding: "utf8" });
@@ -154,6 +163,10 @@ function assertNoTokenLeak(value, token, pathLabel = "payload") {
     }
     assertNoTokenLeak(item, token, nextPath);
   }
+}
+
+function draftPhaseOwners(draft) {
+  return new Set((draft.spec?.phases || []).flatMap((phase) => [phase.ownerAgent, ...(phase.ownerAgents || [])].filter(Boolean)));
 }
 
 async function testHumanGateLanguageAndResume() {
@@ -413,6 +426,14 @@ async function makeFakeOpenClaw(root, name, mode) {
   const file = path.join(root, name);
   const body = mode === "health-degraded"
     ? `#!/usr/bin/env node\nif (process.argv.includes("health")) { console.log("Gateway event loop: degraded reasons=event_loop_delay max=1374ms p99=32ms util=0.241 cpu=0.313"); process.exit(0); }\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output"}]}}));\n`
+    : mode === "inspect-ack"
+    ? `#!/usr/bin/env node\nimport fs from "node:fs";\nimport path from "node:path";\nconst argv = process.argv.slice(2);\nconst valueAfter = (flag) => { const index = argv.indexOf(flag); return index >= 0 ? argv[index + 1] || "" : ""; };\nfs.writeFileSync(path.join(process.cwd(), "ack-inspect.json"), JSON.stringify({ timeout: valueAfter("--timeout"), message: valueAfter("--message") }, null, 2));\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"ACK_RECEIVED\\nTimestamp: 2099-01-01T00:00:00.000Z\\nScope: complete dispatch received"}]}}));\n`
+    : mode === "inspect-semantic"
+    ? `#!/usr/bin/env node\nimport fs from "node:fs";\nimport path from "node:path";\nconst argv = process.argv.slice(2);\nconst valueAfter = (flag) => { const index = argv.indexOf(flag); return index >= 0 ? argv[index + 1] || "" : ""; };\nfs.writeFileSync(path.join(process.cwd(), "semantic-inspect.json"), JSON.stringify({ timeout: valueAfter("--timeout"), message: valueAfter("--message") }, null, 2));\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output"}]}}));\n`
+    : mode === "bad-ack"
+    ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output without ack prefix"}]}}));\n`
+    : mode === "empty-ack"
+    ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:""}]}}));\n`
     : mode === "success"
     ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output"}]}}));\n`
     : `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"error",summary:"fake runtime failure"}));\n`;
@@ -647,6 +668,281 @@ LIMIT 1;`)[0];
     status: "telegram_failed",
     deliveryReceiptPresent: 0
   });
+}
+
+async function testMessageFlowImmediateAckContract() {
+  const root = await tempRoot("message-flow-ack");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  const sent = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "requires ack regression body",
+    workflowId: "workflow-message-flow-ack",
+    meetingId: "meeting-message-flow-ack",
+    requiresAck: true,
+    returnPolicy: "silent"
+  });
+  const dispatchId = sent.dispatches[0].dispatchId;
+  const dbFile = path.join(root, "tracking.db");
+  const queued = sqliteJson(dbFile, `
+SELECT max_attempts AS maxAttempts, payload_json AS payloadJson
+FROM mixed_meeting_dispatches
+WHERE dispatch_id='${dispatchId}'
+LIMIT 1;`)[0];
+  assert.equal(queued.maxAttempts, 3);
+  const payload = JSON.parse(queued.payloadJson);
+  assert.equal(payload.payload.ackContract.required, true);
+  assert.equal(payload.payload.ackContract.timeoutSeconds, 30);
+  assert.equal(payload.payload.ackContract.retryDelaySeconds, 30);
+
+  const inspectBin = await makeFakeOpenClaw(root, "fake-openclaw-inspect-ack.mjs", "inspect-ack");
+  const drained = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId,
+    openclawBin: inspectBin,
+    reportDelivery: false
+  });
+  assert.equal(drained.results?.[0]?.status, "acked");
+  const semanticDispatchId = drained.results?.[0]?.semanticContinuation?.dispatchId;
+  assert.ok(semanticDispatchId);
+  const inspect = JSON.parse(await fs.readFile(path.join(root, "ack-inspect.json"), "utf8"));
+  assert.equal(inspect.timeout, "30");
+  assert.match(inspect.message, /First-turn ACK contract/);
+  assert.match(inspect.message, /ACK_RECEIVED/);
+  assert.match(inspect.message, /not the semantic task result/);
+  const flow = sqliteJson(dbFile, `
+SELECT status, final_output_present AS finalOutputPresent, delivery_receipt_present AS deliveryReceiptPresent
+FROM message_flows
+WHERE dispatch_id='${dispatchId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(flow, {
+    status: "runtime_acknowledged",
+    finalOutputPresent: 0,
+    deliveryReceiptPresent: 0
+  });
+  const semanticDispatch = sqliteJson(dbFile, `
+SELECT status, dispatch_type AS dispatchType, payload_json AS payloadJson
+FROM mixed_meeting_dispatches
+WHERE dispatch_id='${semanticDispatchId}'
+LIMIT 1;`)[0];
+  assert.equal(semanticDispatch.status, "queued");
+  assert.equal(semanticDispatch.dispatchType, "message_flow_semantic");
+  const semanticPayload = JSON.parse(semanticDispatch.payloadJson);
+  assert.equal(semanticPayload.payload.semanticContinuation, true);
+  assert.equal(semanticPayload.payload.ackContract.required, false);
+
+  const successBin = await makeFakeOpenClaw(root, "fake-openclaw-semantic-success.mjs", "inspect-semantic");
+  const semanticDrained = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: semanticDispatchId,
+    openclawBin: successBin,
+    reportDelivery: false
+  });
+  assert.equal(semanticDrained.results?.[0]?.status, "acked");
+  const semanticInspect = JSON.parse(await fs.readFile(path.join(root, "semantic-inspect.json"), "utf8"));
+  assert.equal(semanticInspect.message.includes("Immediate ACK required"), false);
+  assert.equal(semanticInspect.message.includes("First-turn ACK contract"), false);
+  assert.equal(semanticInspect.message.includes("ACK_RECEIVED"), false);
+  assert.equal(semanticInspect.message.includes("requires ack regression body"), true);
+  const completedFlow = sqliteJson(dbFile, `
+SELECT status, final_output_present AS finalOutputPresent, delivery_receipt_present AS deliveryReceiptPresent, dispatch_id AS dispatchId
+FROM message_flows
+WHERE flow_id='${sent.dispatches[0].messageFlowId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(completedFlow, {
+    status: "runtime_completed",
+    finalOutputPresent: 1,
+    deliveryReceiptPresent: 0,
+    dispatchId: semanticDispatchId
+  });
+  const listedByAckDispatch = await runAction(root, {
+    action: "message_flow.list",
+    dispatchId,
+    limit: 5
+  });
+  assert.equal(listedByAckDispatch.count, 1);
+  assert.equal(listedByAckDispatch.rows[0].flow_id, sent.dispatches[0].messageFlowId);
+
+  const recoveryAck = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "requires ack semantic continuation recovery body",
+    workflowId: "workflow-message-flow-ack-recovery",
+    meetingId: "meeting-message-flow-ack-recovery",
+    requiresAck: true,
+    returnPolicy: "silent"
+  });
+  const recoveryAckDispatchId = recoveryAck.dispatches[0].dispatchId;
+  const recoveryAckBin = await makeFakeOpenClaw(root, "fake-openclaw-recovery-ack.mjs", "inspect-ack");
+  const recoveryAckDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: recoveryAckDispatchId,
+    openclawBin: recoveryAckBin,
+    reportDelivery: false
+  });
+  const deletedSemanticDispatchId = recoveryAckDrain.results?.[0]?.semanticContinuation?.dispatchId;
+  assert.ok(deletedSemanticDispatchId);
+  sqliteExec(dbFile, `DELETE FROM mixed_meeting_dispatches WHERE dispatch_id='${deletedSemanticDispatchId}';`);
+  sqliteExec(dbFile, `UPDATE message_flows SET updated_at='2000-01-01T00:00:00.000Z' WHERE flow_id='${recoveryAck.dispatches[0].messageFlowId}';`);
+  const recovery = await runAction(root, {
+    action: "message_flow.reconcile",
+    messageFlowStuckAfterMs: 60000,
+    limit: 5
+  });
+  assert.equal(recovery.recoveredSemanticContinuations?.[0]?.status, "queued");
+  const recoveredSemanticCount = sqliteJson(dbFile, `
+SELECT COUNT(*) AS count
+FROM mixed_meeting_dispatches
+WHERE dispatch_type='message_flow_semantic'
+  AND idempotency_key='message-flow-semantic:${recoveryAck.dispatches[0].messageFlowId}:${recoveryAckDispatchId}';`)[0];
+  assert.equal(recoveredSemanticCount.count, 1);
+  const recoveredSemanticDispatchId = recovery.recoveredSemanticContinuations?.[0]?.semanticDispatchId;
+  const recoverySemanticBin = await makeFakeOpenClaw(root, "fake-openclaw-recovery-semantic.mjs", "success");
+  const recoveredSemanticDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: recoveredSemanticDispatchId,
+    openclawBin: recoverySemanticBin,
+    reportDelivery: false
+  });
+  assert.equal(recoveredSemanticDrain.results?.[0]?.status, "acked");
+
+  const loopAck = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "requires ack semantic continuation control loop body",
+    workflowId: "workflow-message-flow-ack-loop",
+    meetingId: "meeting-message-flow-ack-loop",
+    requiresAck: true,
+    returnPolicy: "silent"
+  });
+  const loopAckDispatchId = loopAck.dispatches[0].dispatchId;
+  const loopAckBin = await makeFakeOpenClaw(root, "fake-openclaw-loop-ack.mjs", "inspect-ack");
+  const loopAckDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: loopAckDispatchId,
+    openclawBin: loopAckBin,
+    reportDelivery: false
+  });
+  const loopSemanticDispatchId = loopAckDrain.results?.[0]?.semanticContinuation?.dispatchId;
+  assert.ok(loopSemanticDispatchId);
+  const loopSemanticBin = await makeFakeOpenClaw(root, "fake-openclaw-loop-semantic.mjs", "success");
+  const semanticTick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    runtimes: "hermers",
+    jobLimit: 1,
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    openclawBin: loopSemanticBin
+  });
+  assert.equal(semanticTick.claimedJobs?.[0]?.jobType, "runtime_drain");
+  assert.equal(semanticTick.jobResults?.[0]?.result?.results?.[0]?.dispatchId, loopSemanticDispatchId);
+}
+
+async function testMessageFlowImmediateAckRetryDelay() {
+  const root = await tempRoot("message-flow-ack-retry");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  const sent = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "requires ack retry regression body",
+    workflowId: "workflow-message-flow-ack-retry",
+    meetingId: "meeting-message-flow-ack-retry",
+    requiresAck: true,
+    returnPolicy: "silent"
+  });
+  const dispatchId = sent.dispatches[0].dispatchId;
+  const failBin = await makeFakeOpenClaw(root, "fake-openclaw-bad-ack.mjs", "bad-ack");
+  const before = Date.now();
+  const drained = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId,
+    openclawBin: failBin,
+    reportDelivery: false
+  });
+  assert.equal(drained.results?.[0]?.status, "queued");
+  assert.equal(drained.results?.[0]?.retryScheduled, true);
+
+  const dbFile = path.join(root, "tracking.db");
+  const dispatch = sqliteJson(dbFile, `
+SELECT status, attempt, next_retry_at AS nextRetryAt
+FROM mixed_meeting_dispatches
+WHERE dispatch_id='${dispatchId}'
+LIMIT 1;`)[0];
+  assert.equal(dispatch.status, "queued");
+  assert.equal(dispatch.attempt, 1);
+  assert.equal(drained.results?.[0]?.failureType, "ack_contract_violation");
+  const delaySeconds = (new Date(dispatch.nextRetryAt).getTime() - before) / 1000;
+  assert.ok(delaySeconds >= 25 && delaySeconds <= 35, `expected roughly 30s retry delay, got ${delaySeconds}`);
+  const run = sqliteJson(dbFile, `
+SELECT COUNT(*) AS count
+FROM runtime_runs
+WHERE dispatch_id='${dispatchId}'
+  AND status='retry_scheduled';`)[0];
+  assert.equal(run.count, 1);
+
+  const emptyAck = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "requires ack empty output retry regression body",
+    workflowId: "workflow-message-flow-empty-ack-retry",
+    meetingId: "meeting-message-flow-empty-ack-retry",
+    requiresAck: true,
+    returnPolicy: "silent"
+  });
+  const emptyAckDispatchId = emptyAck.dispatches[0].dispatchId;
+  const emptyAckBin = await makeFakeOpenClaw(root, "fake-openclaw-empty-ack.mjs", "empty-ack");
+  const emptyAckDrained = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: emptyAckDispatchId,
+    openclawBin: emptyAckBin,
+    reportDelivery: false
+  });
+  assert.equal(emptyAckDrained.results?.[0]?.status, "queued");
+  assert.equal(emptyAckDrained.results?.[0]?.retryScheduled, true);
+  assert.equal(emptyAckDrained.results?.[0]?.failureType, "empty_output");
+  const semanticCount = sqliteJson(dbFile, `
+SELECT COUNT(*) AS count
+FROM mixed_meeting_dispatches
+WHERE dispatch_type='message_flow_semantic'
+  AND meeting_id IN ('meeting-message-flow-ack-retry', 'meeting-message-flow-empty-ack-retry');`)[0];
+  assert.equal(semanticCount.count, 0);
+
 }
 
 async function testControlLoopDrainsMessageFlowRuntimes() {
@@ -1542,6 +1838,87 @@ LIMIT 1;`)[0];
   assert.equal(storedRun.outputJson.includes("[redacted]"), true);
 }
 
+async function testWorkflowTaskDraftPurePreview() {
+  const root = await tempRoot("task-draft");
+  const dbFile = path.join(root, "tracking.db");
+  const draft = await runAction(root, {
+    action: "workflow.task.draft",
+    workflowId: "wf-stock-boundary",
+    subject: "股票长期追踪制度职责边界澄清",
+    objective: "让猫之眼、猫之耳、猫之鼻检查各自执行职责边界，猫之心提供消费需求，猫之脑主持，猫爪记录并提交 Human Gate。",
+    participants: ["cat_eyes", "cat_ears", "cat_nose", "cat_heart"],
+    template: "stock_longterm_tracking"
+  });
+  assert.equal(draft.dryRun, true);
+  assert.equal(draft.mutated, false);
+  assert.equal(await pathExists(dbFile), false);
+  assert.equal(draft.spec.governance.chairAgent, "main");
+  assert.equal(draft.spec.governance.secretaryAgent, "cat_claw");
+  assert.ok(draft.spec.participants.some((participant) => participant.agentId === "main"));
+  assert.ok(draft.spec.participants.some((participant) => participant.agentId === "cat_claw"));
+  assert.ok(draft.spec.participants.some((participant) => participant.agentId === "cat_heart"));
+  assert.equal(draft.spec.appendix.template, "stock_longterm_tracking");
+  assert.equal(draft.spec.humanGateDraft.options.length, 3);
+  assert.ok(draft.spec.humanGateDraft.controls.some((control) => control.id === "pause_workflow"));
+  assert.ok(draft.spec.humanGateDraft.controls.some((control) => control.id === "terminate_workflow"));
+  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "cat_claw_secretary_present" && gate.status === "pass"));
+  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "three_options_required" && gate.status === "pass"));
+  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "pause_terminate_controls_required" && gate.status === "pass"));
+  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "cat_claw_audit_before_human_gate" && gate.status === "pass"));
+  const participants = new Set(draft.spec.participants.map((participant) => participant.agentId));
+  for (const owner of draftPhaseOwners(draft)) assert.equal(participants.has(owner), true, `${owner} phase owner must be a participant`);
+}
+
+async function testWorkflowTaskDraftCliPurePreview() {
+  const root = await tempRoot("task-draft-cli");
+  const dbFile = path.join(root, "tracking.db");
+  const draft = workflowCliJson([
+    "workflow-task-draft",
+    "--root", root,
+    "--workflow", "wf-cli-draft",
+    "--objective", "澄清跨 agent workflow task 默认主持、秘书、审计和 Human Gate 边界。",
+    "--participant", "cat_eyes",
+    "--participant", "cat_ears"
+  ]);
+  assert.equal(draft.dryRun, true);
+  assert.equal(draft.mutated, false);
+  assert.equal(await pathExists(dbFile), false);
+  assert.equal(draft.spec.governance.chairAgent, "main");
+  assert.equal(draft.spec.governance.secretaryAgent, "cat_claw");
+}
+
+async function testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility() {
+  const noGateRoot = await tempRoot("task-draft-no-hgate");
+  const noGate = workflowCliJson([
+    "workflow-task-draft",
+    "--root", noGateRoot,
+    "--workflow", "wf-no-hgate",
+    "--human-gate", "false",
+    "--objective", "澄清跨 agent workflow task 的非 Human Gate 草案路径。",
+    "--participant", "cat_eyes",
+    "--participant", "cat_ears"
+  ]);
+  assert.equal(noGate.dryRun, true);
+  assert.equal(noGate.spec.governance.humanGateRequired, false);
+  assert.equal(noGate.spec.phases.some((phase) => phase.id === "human_gate_package"), false);
+  assert.equal(noGate.spec.qualityGates.some((gate) => gate.status === "error"), false);
+
+  const singleRoot = await tempRoot("task-draft-single");
+  const single = workflowCliJson([
+    "workflow-task",
+    "--dry-run", "true",
+    "--root", singleRoot,
+    "--workflow", "wf-single",
+    "--owner", "cat_eyes",
+    "--summary", "单 agent 普通任务预览"
+  ]);
+  assert.equal(single.dryRun, true);
+  assert.equal(single.spec.taskType, "task");
+  assert.equal(single.spec.governance.crossAgent, false);
+  assert.deepEqual(single.spec.participants.map((participant) => participant.agentId), ["cat_eyes"]);
+  assert.equal(single.spec.phases.some((phase) => phase.ownerAgent === "cat_claw"), false);
+}
+
 async function testWorkflowEventStore() {
   const root = await tempRoot("workflow-events");
   const first = await runAction(root, {
@@ -2429,6 +2806,8 @@ try {
     ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
+    ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
+    ["message_flow immediate ack retry delay", testMessageFlowImmediateAckRetryDelay],
     ["message_flow control-loop runtime drains", testControlLoopDrainsMessageFlowRuntimes],
     ["control_loop stale delivering outbox", testControlLoopSeedsStaleDeliveringOutbox],
     ["trade_intent fail-closed", testTradeIntentFailClosed],
@@ -2437,6 +2816,9 @@ try {
     ["automatic workflow events", testAutomaticWorkflowEvents],
     ["workflow permission gate", testWorkflowPermissionGate],
     ["workflow session store", testWorkflowSessionStore],
+    ["workflow task draft pure preview", testWorkflowTaskDraftPurePreview],
+    ["workflow task draft cli pure preview", testWorkflowTaskDraftCliPurePreview],
+    ["workflow task draft no human gate and single task compatibility", testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility],
     ["workflow session store cli", testWorkflowSessionStoreCli],
     ["expired human_gate blocked", testExpiredHumanGateBlocked],
     ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],

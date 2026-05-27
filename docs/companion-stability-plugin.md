@@ -9,7 +9,7 @@ It improves observability, readiness checks, incident evidence, and governed rep
 `trading-agents-workflow` owns:
 
 - workflow state machines and task progression
-- `control_loop_jobs` and the 10s mechanical queue
+- `control_loop_jobs` and the 30s mechanical queue
 - dispatch and runtime bridge records
 - `message_flow` state
 - `telegram_outbox` and delivery receipts

@@ -112,9 +112,9 @@ Route-shell forwarding must be a Gateway pre-dispatch routing action, not an age
 - returns `handled=true` so OpenClaw does not run the route-shell agent model;
 - by default stays silent on successful routing; if `ack=true`, replies only with minimal `ROUTE_REGISTERED`, `trace_id`, and `flow_id`.
 
-This is fail-closed by default. If the registered Gateway ingress row, dispatch-capable target row, or required return path is missing, the hook handles the message and returns `ROUTE_FAILED`; it does not fall back to the OpenClaw route-shell agent. `drainNow` defaults to `false` because Gateway dispatch should not synchronously run external platform work. The 10s control loop should drain the queued dispatch.
+This is fail-closed by default. If the registered Gateway ingress row, dispatch-capable target row, or required return path is missing, the hook handles the message and returns `ROUTE_FAILED`; it does not fall back to the OpenClaw route-shell agent. `drainNow` defaults to `false` because Gateway dispatch should not synchronously run external platform work. The 30s control loop should drain the queued dispatch.
 
-For delivery-required non-OpenClaw replies, a route-shell acknowledgement is never a formal agent reply. The formal success condition is a completed message flow with `final_output_present=1` and `delivery_receipt_present=1`, normally with `message_flows.status=telegram_sent`. `dispatch.status=acked` means only that the runtime turn ended. `return_policy=silent` flows and local Codex inbox flows close on their runtime/inbox receipts and must not be treated as missing Telegram delivery.
+For delivery-required non-OpenClaw replies, a route-shell acknowledgement is never a formal agent reply. The formal success condition is a completed message flow with `final_output_present=1` and `delivery_receipt_present=1`, normally with `message_flows.status=telegram_sent`. `dispatch.status=acked` means only that the runtime turn ended. For `requiresAck=true`, the first runtime turn closes only the receipt stage with `runtime_acknowledged`; workflow then queues a `message_flow_semantic` continuation on the same `flow_id`, and only that continuation can produce `runtime_completed` final output. `return_policy=silent` flows and local Codex inbox flows close on their runtime/inbox receipts and must not be treated as missing Telegram delivery.
 
 The hook also applies in-process single-flight by route-shell agent, channel, and source message id. Concurrent provider retries for the same Telegram message wait on the same routing promise instead of creating a thundering herd against SQLite. SQLite unique idempotency still remains the durable backstop across process restarts.
 
@@ -428,11 +428,11 @@ node bin/cat-meeting-governance.mjs workflow-supervise --workflow demo-initiativ
 node bin/cat-meeting-governance.mjs workflow-supervise-preview --workflow demo-initiative --meeting demo-initiative --root "$ROOT"
 ```
 
-Use `workflow.control_loop.tick` as the plugin-internal 10s reconciler tick. The tick period is a scheduling cadence, not a promise that all workflow work finishes inside 10 seconds. Each tick records readiness, seeds durable `control_loop_jobs`, claims a bounded number of jobs, executes those jobs, and leaves unfinished work queued for later ticks. Queue jobs cover due workflow schedules, workflow supervision, stale dispatch reconciliation, stuck `message_flow` incident reconciliation, runtime drain, pending Human Gate request/button/outbox ensure, Telegram outbox delivery, and Human Gate inbox batch creation. Phase progress is written to `bridge/control-loop-events.jsonl`; tick summaries go to `bridge/control-loop.jsonl`. A file lease at `bridge/control-loop-lease.json` prevents overlapping ticks, while each queue job has its own DB lease, retry, and attempt state.
+Use `workflow.control_loop.tick` as the plugin-internal 30s reconciler tick. The tick period is a scheduling cadence, not a promise that all workflow work finishes inside 30 seconds. Each tick records readiness, seeds durable `control_loop_jobs`, claims a bounded number of jobs, executes those jobs, and leaves unfinished work queued for later ticks. Queue jobs cover due workflow schedules, workflow supervision, stale dispatch reconciliation, stuck `message_flow` incident reconciliation, runtime drain, pending Human Gate request/button/outbox ensure, Telegram outbox delivery, and Human Gate inbox batch creation. Phase progress is written to `bridge/control-loop-events.jsonl`; tick summaries go to `bridge/control-loop.jsonl`. A file lease at `bridge/control-loop-lease.json` prevents overlapping ticks, while each queue job has its own DB lease, retry, and attempt state.
 
 Workflow-native schedules are stored in `workflow_schedules`; each due tick writes a `scheduled_runs` row and queues one `scheduled_dispatch` job. The schedule layer does not execute agent work inline. It calls `meeting.dispatch` with a deterministic idempotency key, and normal `runtime_drain` later invokes the registered runtime, such as `platform=hermers` plus `workflow_ingress_adapter=acp`. This is the replacement path for OpenClaw cron driving migrated professional agents through prompt-based route-shell forwarding.
 
-The OpenClaw plugin can run this loop when `controlLoop.enabled=true` in plugin config or `TRADING_AGENTS_WORKFLOW_CONTROL_LOOP=1` is set. The recommended tick period is `10000` ms. Startup does not run an immediate tick by default; set `controlLoop.startupTick=true` only after Gateway startup load is known to be safe. The default `controlLoop.workerMode` is `process`, so the plugin launches a bounded Node worker process for each tick instead of running jobs inside the Gateway event loop. Defaults are conservative: `jobLimit=4`, `runtimeLimit=1`, `timeoutSeconds=45`, `tickBudgetMs=60000`, and `autoReport=false`. Runtime drain defaults to `openclaw_route_shell,hermers`: route-shell rows are redirected by registry, while professional work registered on Hermers drains through ACP. Add `openclaw` only as an explicit, reviewed exception because it calls back into the Gateway process.
+The OpenClaw plugin can run this loop when `controlLoop.enabled=true` in plugin config or `TRADING_AGENTS_WORKFLOW_CONTROL_LOOP=1` is set. The recommended tick period is `30000` ms. Startup does not run an immediate tick by default; set `controlLoop.startupTick=true` only after Gateway startup load is known to be safe. The default `controlLoop.workerMode` is `process`, so the plugin launches a bounded Node worker process for each tick instead of running jobs inside the Gateway event loop. Defaults are conservative: `jobLimit=4`, `runtimeLimit=1`, `timeoutSeconds=45`, `tickBudgetMs=60000`, and `autoReport=false`. Runtime drain defaults to `openclaw_route_shell,hermers`: route-shell rows are redirected by registry, while professional work registered on Hermers drains through ACP. Add `openclaw` only as an explicit, reviewed exception because it calls back into the Gateway process.
 
 Timeouts are layered. `tickMs` is only cadence. `timeoutSeconds` bounds runtime dispatch work. `tickBudgetMs` is the per-worker budget. `jobLeaseMs` is the queue lease and is automatically raised to at least `max(tickBudgetMs + 30000, (timeoutSeconds + 30) * 1000)`, so a long but valid job should not be re-claimed while its worker can still be alive. If a worker crashes or is killed, the job becomes claimable again only after its lease expires.
 
@@ -448,13 +448,13 @@ Cat Claw `cat_claw` is an OpenClaw secretary/Human Gate agent, not a Hermers pro
 
 - Cat-brain `main` 30min heartbeat checks institutional compliance and evidence completeness.
 - Cat Claw `cat_claw` 30min heartbeat audits whether Human Gate delivery, buttons, callback, and resume closed correctly.
-- The 10s loop is the timely queue driver for structured workflow state; 30min heartbeat is not the primary Human Gate trigger.
+- The 30s loop is the timely queue driver for structured workflow state; 30min heartbeat is not the primary Human Gate trigger.
 
 CLI example:
 
 ```bash
 node bin/cat-meeting-governance.mjs workflow-control-loop-tick \
-  --tick-ms 10000 \
+  --tick-ms 30000 \
   --max-workflows 2 \
   --runtime openclaw_route_shell,hermers \
   --limit 1 \

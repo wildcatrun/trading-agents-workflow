@@ -223,6 +223,10 @@ const toolParameters = {
         "workflow.initiative.upsert",
         "workflow.swarm.plan",
         "workflow.swarm",
+        "workflow.task.draft",
+        "workflow.task.preview",
+        "workflow.task.create.preview",
+        "workflow.meeting_task.draft",
         "workflow.task.create",
         "workflow.task.update",
         "workflow.task.list",
@@ -351,6 +355,7 @@ const toolParameters = {
     chair: { type: "string" },
     chairAgent: { type: "string" },
     secretaryAgent: { type: "string" },
+    consumerAgent: { type: "string" },
     participants: { type: "array", items: { type: "string" } },
     observers: { type: "array", items: { type: "string" } },
     notifyTargets: { type: "array", items: { type: "string" } },
@@ -368,6 +373,10 @@ const toolParameters = {
     requiredArtifact: { type: "string" },
     evidence: { type: "array", items: { type: "string" } },
     humanGateRequired: { type: "boolean" },
+    requiresHumanGate: { type: "boolean" },
+    noDefaultGovernance: { type: "boolean" },
+    stockLongTermTracking: { type: "boolean" },
+    template: { type: "string" },
     autoDeliver: { type: "boolean" },
     target: { type: "string" },
     account: { type: "string" },
@@ -661,6 +670,10 @@ const governanceWorkflowActions = new Set([
   "workflow.runtime.registry",
   "workflow.permission.check",
   "workflow.permission.explain",
+  "workflow.task.draft",
+  "workflow.task.preview",
+  "workflow.task.create.preview",
+  "workflow.meeting_task.draft",
   "workflow.task.list",
   "workflow.tasks",
   "workflow.event.list",
@@ -1253,7 +1266,7 @@ function registerCli(api) {
       });
 
     command.command("workflow-control-loop-tick")
-      .option("--tick-ms <ms>", "Control-loop tick period metadata", "10000")
+      .option("--tick-ms <ms>", "Control-loop tick period metadata", "30000")
       .option("--max-workflows <count>", "Max workflows to supervise", "2")
       .option("--limit <limit>", "Runtime drain limit", "1")
       .option("--outbox-limit <limit>", "Telegram outbox delivery limit", "5")
@@ -2404,7 +2417,7 @@ function controlLoopConfig(api) {
   const jobLeaseMs = Math.max(requestedJobLeaseMs, minSafeJobLeaseMs);
   return {
     enabled,
-    tickMs: numberValue(configured.tickMs ?? process.env.TRADING_AGENTS_WORKFLOW_CONTROL_LOOP_TICK_MS, 10_000, 5_000, 300_000),
+    tickMs: numberValue(configured.tickMs ?? process.env.TRADING_AGENTS_WORKFLOW_CONTROL_LOOP_TICK_MS, 30_000, 5_000, 300_000),
     startupTick: configured.startupTick === true,
     startupDelayMs: numberValue(configured.startupDelayMs, 10_000, 0, 300_000),
     tickBudgetMs,

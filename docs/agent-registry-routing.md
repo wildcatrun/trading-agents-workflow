@@ -90,7 +90,7 @@ Required return-path fields for `return_policy=reply_to_source_chat`:
 
 For non-OpenClaw agents, completion is not `dispatch.status=acked`. A user-visible reply is complete only when the selected return policy requires delivery and the flow has `final_output_present=1` plus `delivery_receipt_present=1`, normally with status `telegram_sent`. Empty output, interrupted output, cancelled ACP turns, missing return path, and Telegram delivery failure are flow failures even if the dispatch row was already acknowledged at the runtime layer. A `silent` flow with runtime closure and a local Codex inbox flow with `local_codex_inbox_received` are not user-visible replies and must not be reconciled as missing Telegram delivery.
 
-The 10s control loop must reconcile stuck message flows. A delivery-required flow with runtime final output but no Telegram delivery receipt after the configured stuck window is not successful; it must create an incident and leave evidence in `message_flow_events`. The detailed closure contract is maintained in [message-flow-closure.md](message-flow-closure.md).
+The 30s control loop must reconcile stuck message flows. A delivery-required flow with runtime final output but no Telegram delivery receipt after the configured stuck window is not successful; it must create an incident and leave evidence in `message_flow_events`. The detailed closure contract is maintained in [message-flow-closure.md](message-flow-closure.md).
 
 ## Examples
 

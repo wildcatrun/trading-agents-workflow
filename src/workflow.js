@@ -44,7 +44,7 @@ const TRADING_CORE_RECEIPT_TRANSITIONS = {
 };
 const RUNTIMES = new Set(["openclaw", "openclaw_route_shell", "hermers", "telegram", "local_codex", "codex", "claude_code", "claude-code", "opencode", "trading_sim", "trading_core", "system", "other"]);
 const DISPATCH_STATUSES = new Set(["queued", "sent", "acked", "failed", "cancelled"]);
-const MESSAGE_FLOW_STATUSES = new Set(["inbound_received", "route_registered", "runtime_dispatched", "runtime_completed", "runtime_failed", "outbound_queued", "telegram_sent", "telegram_failed"]);
+const MESSAGE_FLOW_STATUSES = new Set(["inbound_received", "route_registered", "runtime_dispatched", "runtime_acknowledged", "semantic_dispatched", "runtime_completed", "runtime_failed", "outbound_queued", "telegram_sent", "telegram_failed"]);
 const MESSAGE_FLOW_RETURN_POLICIES = new Set(["reply_to_source_chat", "report_to_flashcat", "silent"]);
 const MESSAGE_FLOW_DELIVERY_RETURN_POLICIES = new Set(["reply_to_source_chat", "report_to_flashcat"]);
 const WORKFLOW_RUN_STATUSES = new Set(["active", "waiting_human", "blocked", "paused", "completed", "stopped", "cancelled"]);
@@ -59,7 +59,10 @@ const WORKFLOW_SCHEDULE_MISFIRE_POLICIES = new Set(["skip", "run_once"]);
 const RETIRED_RUNTIME_AGENT_STATUSES = new Set(["retired", "archived"]);
 const INCIDENT_STATUSES = new Set(["active", "mitigating", "monitoring", "resolved", "cancelled"]);
 const INCIDENT_MODES = new Set(["normal", "degraded", "critical-only", "paper-only", "frozen"]);
-const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout", "acp_unavailable", "transient_runtime"]);
+const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout", "acp_unavailable", "transient_runtime", "ack_contract_violation"]);
+const DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS = 30;
+const DEFAULT_RUNTIME_ACK_RETRY_SECONDS = 30;
+const DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS = 3;
 const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_report"]);
 const TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES = new Set(["human_gate_request", "human_gate_report", "workflow_secretary_report", "message_flow_reply", "meeting_live"]);
 const INTERNAL_HUMAN_GATE_RECORD = Symbol("internal_human_gate_record");
@@ -131,6 +134,7 @@ const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.readiness",
   "workflow.topology",
   "workflow.runtime_agents",
+  "workflow.task.draft",
   "workflow.task.list",
   "workflow.event.list",
   "workflow.event.timeline",
@@ -143,6 +147,10 @@ const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.permission.check"
 ]);
 
+const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
+  "workflow.task.draft"
+]);
+
 const WORKFLOW_ACTION_ALIASES = {
   status: "workflow.status",
   "trading_workflow.init": "workflow.init",
@@ -153,6 +161,9 @@ const WORKFLOW_ACTION_ALIASES = {
   "workflow.runtime.registry": "workflow.runtime_agents",
   "workflow.initiative.upsert": "workflow.run.upsert",
   "workflow.swarm": "workflow.swarm.plan",
+  "workflow.task.preview": "workflow.task.draft",
+  "workflow.task.create.preview": "workflow.task.draft",
+  "workflow.meeting_task.draft": "workflow.task.draft",
   "workflow.tasks": "workflow.task.list",
   "workflow.preview.advance": "workflow.advance.preview",
   "workflow.supervisor": "workflow.supervise",
@@ -1379,6 +1390,21 @@ async function evaluateWorkflowPermission(paths, input = {}) {
 async function authorizeWorkflowAction(rootDir, input = {}) {
   const action = canonicalWorkflowAction(input.action || "workflow.status");
   if (action === "workflow.permission.check") return null;
+  if (WORKFLOW_PURE_PREVIEW_ACTIONS.has(action)) {
+    return {
+      allowed: true,
+      action,
+      originalAction: String(input.action || ""),
+      risk: "low",
+      mutating: false,
+      readOnly: true,
+      requiredCapability: "read",
+      caller: workflowPermissionCaller(input),
+      registered: false,
+      reason: "pure_preview_allowed",
+      row: null
+    };
+  }
   const paths = await ensureWorkflowLayout(rootDir, input);
   const decision = await evaluateWorkflowPermission(paths, input);
   if (!decision.allowed) {
@@ -3273,6 +3299,315 @@ INSERT OR IGNORE INTO workflow_task_dependencies(task_id, depends_on_task_id, cr
 VALUES (${sqlValue(taskId)}, ${sqlValue(dependency)}, ${sqlValue(createdAt)});`);
   }
   return { taskId, workflowId, status, priority, ownerAgent, runtime, agentId, dependsOn, dbFile: paths.dbFile };
+}
+
+function uniqueAgentIds(values = []) {
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const [, agentPart] = text.includes(":") ? text.split(":", 2) : ["", text];
+    const agentId = normalizeAgentId(agentPart || text);
+    if (seen.has(agentId)) continue;
+    seen.add(agentId);
+    result.push(agentId);
+  }
+  return result;
+}
+
+function taskDraftInputAgents(input = {}) {
+  return uniqueAgentIds([
+    ...toList(input.participants || input.participant),
+    ...toList(input.agents || input.agentIds || input.agent_ids),
+    ...toList(input.toAgents || input.to_agents || input.targets || input.to),
+    ...toList(input.workers || input.worker),
+    input.ownerAgent || input.owner_agent || input.owner,
+    input.agentId || input.agent_id,
+    input.consumerAgent || input.consumer_agent || input.consumer
+  ]);
+}
+
+function stockLongTermTrackingDraftAppendix(input = {}) {
+  const template = String(input.template || input.taskTemplate || input.task_template || "").trim().toLowerCase();
+  const enabled = template === "stock_longterm_tracking"
+    || template === "stock-longterm-tracking"
+    || boolOption(input.stockLongTermTracking ?? input.stock_longterm_tracking, false);
+  if (!enabled) return null;
+  return {
+    template: "stock_longterm_tracking",
+    scope: [
+      "Clarify cron ownership and failure response for long-term stock tracking.",
+      "Clarify market_intelligence.db schema/data ownership and freshness evidence.",
+      "Clarify data supplement boundaries across cat_eyes, cat_ears, cat_nose, and cat_heart consumption needs."
+    ],
+    proposedResponsibilityMap: [
+      {
+        agentId: "cat_eyes",
+        focus: "price, technical, filing, chart, and visual inspection evidence",
+        expectedOutput: "owned jobs, source boundaries, freshness checks, and supplementation gaps"
+      },
+      {
+        agentId: "cat_ears",
+        focus: "news, public narrative, catalyst, social and macro signal intake",
+        expectedOutput: "owned jobs, source boundaries, freshness checks, and supplementation gaps"
+      },
+      {
+        agentId: "cat_nose",
+        focus: "data quality smell, anomaly detection, cross-source consistency, and stale-data alarms",
+        expectedOutput: "owned jobs, source boundaries, freshness checks, and supplementation gaps"
+      },
+      {
+        agentId: "cat_heart",
+        focus: "consumer requirements for long-term tracking outputs and decision-readiness signals",
+        expectedOutput: "consumer contract, minimum data set, freshness SLA, and acceptance criteria"
+      }
+    ],
+    requiredArtifacts: [
+      "current cron/job inventory with owner and state",
+      "market_intelligence.db table/data-source ownership map",
+      "data supplement backlog with owner and acceptance criteria",
+      "executable division-of-responsibility plan with rollback/stop conditions"
+    ]
+  };
+}
+
+async function resolveDraftParticipant(paths, agentId) {
+  try {
+    await fs.access(paths.dbFile);
+  } catch {
+    return {
+      agentId,
+      registered: false,
+      runtime: "",
+      platform: "",
+      workflowIngressAdapter: "",
+      endpointRef: "",
+      canReceiveDispatch: false,
+      error: "tracking.db not found; registry resolution skipped for pure preview"
+    };
+  }
+  try {
+    const resolved = await resolveRegisteredDispatchTarget(paths, { agentId });
+    return {
+      agentId,
+      registered: true,
+      runtime: resolved.target.runtime || "",
+      platform: resolved.registry.platform || "",
+      workflowIngressAdapter: resolved.registry.workflowIngressAdapter || "",
+      endpointRef: resolved.registry.endpointRef || "",
+      canReceiveDispatch: resolved.registry.canReceiveDispatch
+    };
+  } catch (error) {
+    return {
+      agentId,
+      registered: false,
+      runtime: "",
+      platform: "",
+      workflowIngressAdapter: "",
+      endpointRef: "",
+      canReceiveDispatch: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+function draftGate(name, ok, message, severity = "error") {
+  return { name, status: ok ? "pass" : severity, message };
+}
+
+export async function workflowTaskDraft(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const createdAt = nowIso();
+  const workflowId = String(input.workflowId || input.workflow_id || input.meetingId || input.meeting_id || safeId("workflow")).trim();
+  const traceId = String(input.traceId || input.trace_id || safeId("trace")).trim();
+  const subject = String(input.subject || input.summary || input.title || "").trim();
+  const objective = String(input.objective || input.goal || input.prompt || input.body || input.text || subject).trim();
+  const taskType = String(input.taskType || input.task_type || input.type || "meeting_task").trim();
+  const defaultGovernance = boolOption(input.defaultGovernance ?? input.default_governance, true)
+    && !boolOption(input.noDefaultGovernance ?? input.no_default_governance, false);
+  const chairAgent = normalizeAgentId(input.chairAgent || input.chair_agent || input.chair || "main");
+  const secretaryAgent = normalizeAgentId(input.secretaryAgent || input.secretary_agent || input.secretary || "cat_claw");
+  const consumerAgent = input.consumerAgent || input.consumer_agent || input.consumer
+    ? normalizeAgentId(input.consumerAgent || input.consumer_agent || input.consumer)
+    : "";
+  const requestedAgents = taskDraftInputAgents(input);
+  const crossAgent = boolOption(input.crossAgent || input.cross_agent, false)
+    || requestedAgents.length > 1
+    || taskType.includes("meeting")
+    || taskType.includes("cross");
+  const requiresHumanGate = boolOption(input.requiresHumanGate ?? input.requires_human_gate ?? input.humanGateRequired ?? input.human_gate_required, true);
+  const primaryOwner = requestedAgents[0] || chairAgent;
+  const consumerPhaseOwner = consumerAgent || (crossAgent ? "cat_heart" : "");
+  const needsSecretary = crossAgent || requiresHumanGate;
+  const participants = uniqueAgentIds([
+    ...(defaultGovernance && crossAgent ? [chairAgent] : []),
+    ...requestedAgents,
+    ...(consumerPhaseOwner ? [consumerPhaseOwner] : []),
+    ...(defaultGovernance && needsSecretary ? [secretaryAgent] : [])
+  ]);
+  const participantRecords = [];
+  for (const agentId of participants) {
+    participantRecords.push(await resolveDraftParticipant(paths, agentId));
+  }
+  const participantIds = new Set(participants);
+  const stockAppendix = stockLongTermTrackingDraftAppendix(input);
+  const phases = crossAgent
+    ? [
+        {
+          id: "scope",
+          ownerAgent: chairAgent,
+          objective: "Confirm task scope, participants, artifacts, and stop conditions before execution."
+        },
+        {
+          id: "responsibility_self_check",
+          ownerAgents: participants.filter((agentId) => ![chairAgent, secretaryAgent].includes(agentId)),
+          objective: "Each participating owner audits its own current execution responsibilities, boundaries, inputs, and gaps."
+        },
+        {
+          id: "cross_discussion",
+          ownerAgent: chairAgent,
+          objective: "Cat Brain hosts discussion, resolves overlaps, and records open conflicts for evidence-backed decisions."
+        },
+        ...(consumerPhaseOwner ? [{
+          id: "consumer_requirements",
+          ownerAgent: consumerPhaseOwner,
+          objective: "Primary consuming agent states required outputs, freshness needs, acceptance criteria, and failure visibility."
+        }] : []),
+        {
+          id: "plan_synthesis",
+          ownerAgent: chairAgent,
+          objective: "Cat Brain forms at least three mutually exclusive executable options with rollback and stop boundaries."
+        },
+        ...(requiresHumanGate ? [
+          {
+            id: "secretary_audit",
+            ownerAgent: secretaryAgent,
+            objective: "Cat Claw audits evidence completeness, receipt references, Chinese report quality, and button-first Human Gate structure."
+          },
+          {
+            id: "human_gate_package",
+            ownerAgent: secretaryAgent,
+            objective: "Cat Claw submits the audited package to Flashcat with A/B/C approve options plus pause and terminate controls."
+          }
+        ] : [])
+      ]
+	    : [
+	        {
+	          id: "task_preview",
+	          ownerAgent: primaryOwner,
+	          objective: "Preview normalized single-agent workflow task ownership, runtime resolution, receipt expectation, and stop conditions."
+	        },
+	        ...(requiresHumanGate ? [
+	          {
+	            id: "secretary_audit",
+	            ownerAgent: secretaryAgent,
+	            objective: "Cat Claw audits evidence completeness, receipt references, Chinese report quality, and button-first Human Gate structure."
+	          },
+	          {
+	            id: "human_gate_package",
+	            ownerAgent: secretaryAgent,
+	            objective: "Cat Claw submits the audited package to Flashcat before execution."
+	          }
+	        ] : [])
+	      ];
+  const humanGateDraft = requiresHumanGate ? {
+    options: [
+      {
+        id: "A",
+        title: "Option A",
+        required: true,
+        ownerAgent: chairAgent,
+        acceptance: "Executable, mutually exclusive, evidence-backed plan option with rollback and stop boundaries."
+      },
+      {
+        id: "B",
+        title: "Option B",
+        required: true,
+        ownerAgent: chairAgent,
+        acceptance: "Executable, mutually exclusive, evidence-backed plan option with rollback and stop boundaries."
+      },
+      {
+        id: "C",
+        title: "Option C",
+        required: true,
+        ownerAgent: chairAgent,
+        acceptance: "Executable, mutually exclusive, evidence-backed plan option with rollback and stop boundaries."
+      }
+    ],
+    controls: [
+      { id: "pause_workflow", required: true, ownerAgent: secretaryAgent },
+      { id: "terminate_workflow", required: true, ownerAgent: secretaryAgent }
+    ],
+    language: "zh-CN",
+    contentOwnerAgent: chairAgent,
+    auditOwnerAgent: secretaryAgent
+  } : null;
+  const humanGateControls = new Set((humanGateDraft?.controls || []).map((control) => control.id));
+  const gates = [
+    draftGate("cross_agent_governance_defaults", !crossAgent || (participantIds.has(chairAgent) && participantIds.has(secretaryAgent)), "Cross-agent workflow drafts must include Cat Brain as chair and Cat Claw as secretary."),
+    draftGate("cat_brain_chair_present", !crossAgent || participantIds.has(chairAgent), "Cat Brain/main is present as meeting host."),
+    draftGate("cat_claw_secretary_present", !needsSecretary || participantIds.has(secretaryAgent), "Cat Claw/cat_claw is present as secretary, recorder, evidence auditor, and Human Gate reporter."),
+    draftGate("participant_registry_resolution", participantRecords.every((row) => row.registered), "Every draft participant resolves through runtime_agents.", "warning"),
+    draftGate("phase_owners_in_participants", phases.every((phase) => {
+      const owners = [phase.ownerAgent, ...(phase.ownerAgents || [])].filter(Boolean);
+      return owners.every((owner) => participantIds.has(owner));
+    }), "Every phase owner is listed in participants and covered by registry resolution."),
+    requiresHumanGate
+      ? draftGate("three_options_required", (humanGateDraft?.options || []).length >= 3, "Human Gate package requires at least A/B/C executable options.")
+      : { name: "three_options_required", status: "not_applicable", message: "Human Gate is not required for this draft." },
+    requiresHumanGate
+      ? draftGate("pause_terminate_controls_required", humanGateControls.has("pause_workflow") && humanGateControls.has("terminate_workflow"), "Human Gate package must include pause and terminate controls.")
+      : { name: "pause_terminate_controls_required", status: "not_applicable", message: "Human Gate is not required for this draft." },
+    requiresHumanGate
+      ? draftGate("cat_claw_audit_before_human_gate", phases.some((phase) => phase.id === "secretary_audit"), "Cat Claw audit phase is placed before Human Gate submission.")
+      : { name: "cat_claw_audit_before_human_gate", status: "not_applicable", message: "Human Gate is not required for this draft." }
+  ];
+  const warnings = gates.filter((gate) => ["error", "warning"].includes(gate.status)).map((gate) => gate.message);
+  const spec = {
+    workflowId,
+    traceId,
+    idempotencyKey: String(input.idempotencyKey || input.idempotency_key || `draft:${workflowId}`).trim(),
+    taskType,
+    subject,
+    objective,
+    priority: String(input.priority || "normal").trim(),
+    createdAt,
+    governance: {
+      defaultGovernance,
+      crossAgent,
+      chairAgent,
+      secretaryAgent,
+      consumerAgent,
+      humanGateRequired: requiresHumanGate,
+      humanGatePolicy: {
+        language: "zh-CN",
+        optionsMinimum: 3,
+        requiredControls: ["pause_workflow", "terminate_workflow"],
+        catBrainOwnsPlanContent: true,
+        catClawAuditsAndSubmits: true
+      }
+    },
+	    participants: participantRecords,
+	    phases,
+	    humanGateDraft,
+	    qualityGates: gates,
+    resumePolicy: {
+      stableWorkflowId: true,
+      stableTraceId: true,
+      checkpointBeforeHumanGate: true,
+      idempotencyKeyRequired: true
+    },
+    appendix: stockAppendix
+  };
+  return {
+    operation: "workflow.task.draft",
+    dryRun: true,
+    mutated: false,
+    dbFile: paths.dbFile,
+    warnings,
+    spec
+  };
 }
 
 export async function workflowTaskUpdate(rootDir, input = {}) {
@@ -6739,12 +7074,21 @@ function messageFlowSendPrompt(input = {}) {
   const subject = String(input.subject || input.title || "").trim();
   const body = String(input.body || input.text || input.message || input.content || "").trim();
   const sourceRefs = toList(input.sourceRefs || input.source_refs || input.artifacts || input.artifactRefs || input.artifact_refs);
+  const requiresAck = boolOption(input.requiresAck ?? input.requires_ack, false);
   if (!subject && !body) throw new Error("body/text/message or subject is required for workflow.message_flow.send");
   const lines = [];
   if (subject) lines.push(`Subject: ${subject}`);
   if (body) lines.push(body);
   if (sourceRefs.length) lines.push(["Source refs:", ...sourceRefs.map((ref) => `- ${ref}`)].join("\n"));
-  if (boolOption(input.requiresAck ?? input.requires_ack, false)) lines.push("Ack required: record a workflow receipt or explicit reply after checking this message.");
+  if (requiresAck) {
+    lines.push([
+      "Immediate ACK required:",
+      `- First runtime turn must return ACK_RECEIVED within ${DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS}s after receiving the complete message.`,
+      "- The ACK only confirms receipt and message integrity; it is not the semantic task result.",
+      "- Include an ISO timestamp, dispatch id if visible, message_flow id if visible, and a one-line received scope.",
+      `- If no ACK is received, workflow retries on the ${DEFAULT_RUNTIME_ACK_RETRY_SECONDS}s governed control-loop path.`
+    ].join("\n"));
+  }
   return { subject, body, sourceRefs, prompt: lines.join("\n\n") };
 }
 
@@ -6753,6 +7097,8 @@ function messageFlowStatusTimestampColumn(status) {
     inbound_received: "inbound_received_at",
     route_registered: "route_registered_at",
     runtime_dispatched: "runtime_dispatched_at",
+    runtime_acknowledged: "",
+    semantic_dispatched: "",
     runtime_completed: "runtime_completed_at",
     runtime_failed: "runtime_failed_at",
     outbound_queued: "outbound_queued_at",
@@ -6765,11 +7111,13 @@ const MESSAGE_FLOW_STATUS_RANK = {
   inbound_received: 1,
   route_registered: 2,
   runtime_dispatched: 3,
-  runtime_failed: 4,
-  runtime_completed: 4,
-  outbound_queued: 5,
-  telegram_failed: 6,
-  telegram_sent: 7
+  runtime_acknowledged: 4,
+  semantic_dispatched: 5,
+  runtime_failed: 6,
+  runtime_completed: 6,
+  outbound_queued: 7,
+  telegram_failed: 8,
+  telegram_sent: 9
 };
 
 function isMessageFlowStatusRegression(currentStatus, nextStatus) {
@@ -6859,6 +7207,20 @@ function messageFlowIdFromDispatchPayload(row = {}) {
   return String(payload.messageFlowId || payload.message_flow_id || payload.routeShell?.messageFlowId || payload.routeShell?.message_flow_id || payload.payload?.messageFlowId || payload.payload?.routeShell?.messageFlowId || "").trim();
 }
 
+function dispatchPayloadObject(row = {}) {
+  return parseJsonValue(row.payload_json, {});
+}
+
+function isSemanticContinuationDispatch(row = {}) {
+  const payload = dispatchPayloadObject(row);
+  const nested = objectValue(payload.payload);
+  return boolOption(payload.semanticContinuation ?? payload.semantic_continuation ?? nested.semanticContinuation ?? nested.semantic_continuation, false);
+}
+
+function messageFlowDispatchStartedStatus(row = {}) {
+  return isSemanticContinuationDispatch(row) ? "semantic_dispatched" : "runtime_dispatched";
+}
+
 async function messageFlowForDispatch(paths, row = {}) {
   const flowId = messageFlowIdFromDispatchPayload(row);
   if (flowId) return readMessageFlow(paths, flowId);
@@ -6917,6 +7279,32 @@ function messageFlowOutputIsFinal(text = "") {
   if (lower.startsWith("operation interrupted:")) return false;
   if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return false;
   return true;
+}
+
+function messageFlowSemanticPromptFromPayload(payload = {}, fallback = "") {
+  const subject = String(payload.subject || payload.title || "").trim();
+  const body = String(payload.body || payload.text || payload.message || payload.content || "").trim();
+  const sourceRefs = toList(payload.sourceRefs || payload.source_refs || payload.artifacts || payload.artifactRefs || payload.artifact_refs);
+  const lines = [];
+  if (subject) lines.push(`Subject: ${subject}`);
+  if (body) lines.push(body);
+  if (sourceRefs.length) lines.push(["Source refs:", ...sourceRefs.map((ref) => `- ${ref}`)].join("\n"));
+  return lines.join("\n\n") || String(fallback || "").trim();
+}
+
+function messageFlowAckDispatchId(flow = {}) {
+  const payload = parseJsonValue(flow.payload_json, {});
+  return firstText(
+    payload.ackDispatchId,
+    payload.ack_dispatch_id,
+    payload.ack?.dispatchId,
+    payload.ack?.dispatch_id,
+    flow.dispatch_id
+  );
+}
+
+function messageFlowSemanticIdempotencyKey(flowId, ackDispatchId) {
+  return `message-flow-semantic:${flowId}:${ackDispatchId}`;
 }
 
 function messageFlowDeliveryTarget(flow = {}) {
@@ -7076,6 +7464,118 @@ async function finishMessageFlowRuntime(paths, row, data = {}, input = {}) {
   });
 }
 
+async function acknowledgeMessageFlowRuntime(paths, row, data = {}) {
+  const flow = await messageFlowForDispatch(paths, row);
+  if (!flow) return null;
+  const runtimeRunId = data.runtimeRunId || data.runtime_run_id || "";
+  const messageId = data.messageId || data.message_id || "";
+  const text = String(data.text || "").trim();
+  const updated = await updateMessageFlow(paths, flow.flow_id, "runtime_acknowledged", {
+    runtimeRunId,
+    messageId,
+    finalOutputPresent: false,
+    deliveryReceiptPresent: false,
+    payload: {
+      runtimeStatus: "runtime_acknowledged",
+      runtimeRunId,
+      messageId,
+      ackDispatchId: row.dispatch_id,
+      outputHash: data.outputHash || data.output_hash || "",
+      dispatchStatus: row.status,
+      ack: {
+        receivedAt: data.receivedAt || data.received_at || nowIso(),
+        text: text.slice(0, 1000)
+      }
+    }
+  });
+  return {
+    status: updated?.status || "runtime_acknowledged",
+    flowId: flow.flow_id,
+    finalOutputPresent: false,
+    deliveryQueued: false
+  };
+}
+
+async function queueMessageFlowSemanticContinuation(paths, row, data = {}, input = {}) {
+  const ack = runtimeAckContract(row, input);
+  if (!ack.required || !ack.semanticContinuation) return null;
+  const flow = await messageFlowForDispatch(paths, row);
+  if (!flow) return null;
+  const payload = dispatchPayloadObject(row);
+  const nested = objectValue(payload.payload);
+  if (isSemanticContinuationDispatch(row)) return null;
+  const idempotencyKey = messageFlowSemanticIdempotencyKey(flow.flow_id, row.dispatch_id);
+  const semanticDispatchId = `dispatch.semantic.${textHash(idempotencyKey).slice(0, 24)}`;
+  const semanticPrompt = messageFlowSemanticPromptFromPayload(nested, row.prompt || payload.prompt || "");
+  const semanticPayload = {
+    ...nested,
+    requiresAck: false,
+    ackContract: {
+      ...(objectValue(nested.ackContract || nested.ack_contract)),
+      required: false,
+      acknowledgedByDispatch: row.dispatch_id,
+      acknowledgedByRuntimeRun: data.runtimeRunId || data.runtime_run_id || "",
+      acknowledgedAt: data.receivedAt || data.received_at || nowIso()
+    },
+    semanticContinuation: true,
+    semanticContinuationOf: row.dispatch_id,
+    ackDispatchId: row.dispatch_id,
+    ackRuntimeRunId: data.runtimeRunId || data.runtime_run_id || "",
+    ackMessageId: data.messageId || data.message_id || "",
+    messageFlowId: flow.flow_id
+  };
+  let dispatch;
+  try {
+    dispatch = await meetingDispatch(paths.root, {
+	    meetingId: row.meeting_id,
+	    workflowId: row.workflow_id || payload.workflowId || payload.workflow_id || flow.workflow_id || row.meeting_id,
+	    traceId: row.trace_id || payload.traceId || payload.trace_id || flow.trace_id || safeId("trace"),
+	    idempotencyKey,
+	    dispatchId: semanticDispatchId,
+	    runtime: row.runtime,
+    agentId: row.agent_id,
+    dispatchType: "message_flow_semantic",
+    prompt: semanticPrompt,
+    priority: row.priority || "normal",
+    createdBy: "workflow:message_flow_ack",
+    maxAttempts: input.semanticMaxAttempts || input.semantic_max_attempts || nested.semanticMaxAttempts || nested.semantic_max_attempts || 1,
+    returnPolicy: "silent",
+    deliveryPolicy: "silent",
+    sourceChannel: flow.source_channel || nested.source?.sourceChannel || nested.source?.source_channel || "",
+    sourceSystem: "workflow.message_flow.semantic_continuation",
+    sourceRuntime: flow.source_runtime || nested.source?.runtime || "",
+    sourceAccountId: flow.source_account_id || nested.source?.sourceAccountId || nested.source?.source_account_id || "",
+    sourceChatId: flow.source_chat_id || nested.source?.sourceChatId || nested.source?.source_chat_id || "",
+    senderId: flow.sender_id || nested.source?.senderId || nested.source?.sender_id || "",
+    sourceMessageId: flow.source_message_id || nested.source?.sourceMessageId || nested.source?.source_message_id || "",
+    messageFlowId: flow.flow_id,
+    payload: semanticPayload
+  });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_failed", {
+      ackDispatchId: row.dispatch_id,
+      idempotencyKey,
+      error: message.slice(0, 2000)
+    });
+    return { status: "failed", reason: "semantic_continuation_dispatch_failed", error: message };
+  }
+  await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_queued", {
+    ackDispatchId: row.dispatch_id,
+    semanticDispatchId: dispatch.dispatchId,
+    deduped: Boolean(dispatch.deduped),
+    idempotencyKey
+  });
+  return {
+    status: dispatch.status,
+    dispatchId: dispatch.dispatchId,
+    runtime: dispatch.runtime,
+    agentId: dispatch.agentId,
+    deduped: Boolean(dispatch.deduped),
+    idempotencyKey
+  };
+}
+
 async function runLocalCodexDispatch(paths, row, input = {}) {
   const adapter = "local_codex_inbox";
   const startedAt = nowIso();
@@ -7090,7 +7590,8 @@ async function runLocalCodexDispatch(paths, row, input = {}) {
   });
   const flow = await messageFlowForDispatch(paths, row);
   if (flow) {
-    await updateMessageFlow(paths, flow.flow_id, "runtime_dispatched", {
+    await updateMessageFlow(paths, flow.flow_id, messageFlowDispatchStartedStatus(row), {
+      dispatchId: row.dispatch_id,
       runtimeRunId,
       payload: { dispatchId: row.dispatch_id, runtimeRunId, adapter }
     });
@@ -8743,8 +9244,91 @@ function isHumanGateDispatchContext(row, payload, dispatchType) {
   return String(dispatchType || "").toLowerCase().startsWith("human_gate");
 }
 
+function runtimeAckContract(row = {}, input = {}) {
+  const payload = parseJsonValue(row.payload_json, {});
+  const nestedPayload = objectValue(payload.payload);
+  const rawContract = objectValue(
+    input.ackContract ||
+    input.ack_contract ||
+    payload.ackContract ||
+    payload.ack_contract ||
+    nestedPayload.ackContract ||
+    nestedPayload.ack_contract
+  );
+  const required = boolOption(
+    rawContract.required ??
+    rawContract.requiresAck ??
+    rawContract.requires_ack ??
+    input.requiresAck ??
+    input.requires_ack ??
+    payload.requiresAck ??
+    payload.requires_ack ??
+    nestedPayload.requiresAck ??
+    nestedPayload.requires_ack,
+    false
+  );
+  const timeoutSeconds = Math.max(5, Math.min(300, Number(
+    rawContract.timeoutSeconds ??
+    rawContract.timeout_seconds ??
+    input.ackTimeoutSeconds ??
+    input.ack_timeout_seconds ??
+    DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS
+  ) || DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS));
+  const retryDelaySeconds = Math.max(5, Math.min(900, Number(
+    rawContract.retryDelaySeconds ??
+    rawContract.retry_delay_seconds ??
+    input.ackRetrySeconds ??
+    input.ack_retry_seconds ??
+    DEFAULT_RUNTIME_ACK_RETRY_SECONDS
+  ) || DEFAULT_RUNTIME_ACK_RETRY_SECONDS));
+  const maxAttempts = Math.max(1, Math.min(10, Number(
+    rawContract.maxAttempts ??
+    rawContract.max_attempts ??
+    DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS
+  ) || DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS));
+  const semanticContinuation = boolOption(
+    rawContract.semanticContinuation ??
+    rawContract.semantic_continuation,
+    true
+  );
+  return {
+    required,
+    firstTurnOnly: boolOption(rawContract.firstTurnOnly ?? rawContract.first_turn_only, true),
+    timeoutSeconds,
+    retryDelaySeconds,
+    maxAttempts,
+    semanticContinuation,
+    expectedPrefix: String(rawContract.expectedPrefix || rawContract.expected_prefix || "ACK_RECEIVED").trim() || "ACK_RECEIVED"
+  };
+}
+
+function runtimeDispatchTimeoutSeconds(row, input = {}, fallbackSeconds = 300, maxSeconds = 1800) {
+  const ack = runtimeAckContract(row, input);
+  if (ack.required) return Math.max(5, Math.min(maxSeconds, ack.timeoutSeconds));
+  return Math.max(30, Math.min(maxSeconds, Number(input.timeoutSeconds || input.timeout_seconds || fallbackSeconds)));
+}
+
+function validateRuntimeAckOutput(text = "", ack = {}) {
+  if (!ack.required) return true;
+  const firstLine = String(text || "").trim().split(/\r?\n/, 1)[0] || "";
+  const expectedPrefix = String(ack.expectedPrefix || "ACK_RECEIVED").trim() || "ACK_RECEIVED";
+  if (firstLine === expectedPrefix || firstLine.startsWith(`${expectedPrefix} `) || firstLine.startsWith(`${expectedPrefix}:`)) return true;
+  throw new Error(`ACK contract violation: expected first line to start with ${expectedPrefix}`);
+}
+
+function runtimeFailureShouldRetry(failureType, ack = {}) {
+  if (AUTO_RETRY_FAILURE_TYPES.has(failureType)) return true;
+  return Boolean(ack.required && failureType === "empty_output");
+}
+
+function assertSemanticContinuationQueued(semanticContinuation) {
+  if (!semanticContinuation || semanticContinuation.status !== "failed") return;
+  throw new Error(`semantic continuation dispatch failed: ${semanticContinuation.error || semanticContinuation.reason || "unknown"}`);
+}
+
 function buildRuntimeBridgePrompt(row) {
   const payload = parseJsonValue(row.payload_json, {});
+  const ack = runtimeAckContract(row);
   const role = row.role ? `Runtime role: ${row.role}` : "";
   const createdBy = row.created_by || payload.chair || "main";
   const invocationTs = nowIso();
@@ -8781,8 +9365,18 @@ function buildRuntimeBridgePrompt(row) {
     "Task:",
     row.prompt || payload.prompt || "",
     "",
+    ...(ack.required
+      ? [
+          "First-turn ACK contract:",
+          `- Return ${ack.expectedPrefix} as the first line within ${ack.timeoutSeconds}s of receiving this complete dispatch.`,
+          "- This turn is only a receipt/integrity confirmation, not the semantic task result.",
+          `- Include: ISO timestamp, Dispatch ID ${row.dispatch_id}, Message Flow ID ${payload.payload?.messageFlowId || payload.messageFlowId || ""}, received scope, and any obvious truncation/integrity issue.`,
+          `- If no ACK is returned, workflow will retry through the ${ack.retryDelaySeconds}s governed retry loop.`
+        ]
+      : []),
+    ...(ack.required ? [""] : []),
     "Output requirements:",
-    "- Return the final answer only.",
+    ack.required ? "- Return the ACK only for this first runtime turn." : "- Return the final answer only.",
     "- Include an ISO timestamp in the answer.",
     "- State evidence, assumptions, uncertainty, and next workflow action clearly.",
     humanGateRequirement,
@@ -8873,6 +9467,7 @@ function classifyRuntimeError(error) {
   const message = error instanceof Error ? error.message : String(error || "");
   const lower = message.toLowerCase();
   if (lower.includes("permission prompt unavailable") || lower.includes("permission") && lower.includes("non-interactive")) return "permission_unavailable";
+  if (lower.includes("ack contract violation")) return "ack_contract_violation";
   if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return "runtime_timeout";
   if (lower.includes("abort") || lower.includes("timeout") || lower.includes("timed out")) return "runtime_timeout";
   if (lower.includes("acp runtime backend") || lower.includes("acp") && lower.includes("unavailable")) return "acp_unavailable";
@@ -8885,7 +9480,11 @@ function classifyRuntimeError(error) {
   return "transient_runtime";
 }
 
-function nextRetryAt(attempt) {
+function nextRetryAt(attempt, retryDelaySeconds = 0) {
+  const fixedDelay = Number(retryDelaySeconds || 0);
+  if (Number.isFinite(fixedDelay) && fixedDelay > 0) {
+    return new Date(Date.now() + Math.max(5, Math.min(900, fixedDelay)) * 1000).toISOString();
+  }
   const base = Math.min(900, 30 * Math.max(1, 2 ** Math.max(0, attempt - 1)));
   const jitter = Math.floor(Math.random() * Math.min(30, base));
   return new Date(Date.now() + (base + jitter) * 1000).toISOString();
@@ -8913,7 +9512,8 @@ async function runHermesDispatch(paths, row, input = {}) {
   };
   const profile = hermesProfileFromEndpoint(row.endpoint_ref, row.agent_id);
   if (!profile) throw new Error(`Hermes profile is required for ${row.agent_id}`);
-  const timeoutSeconds = Math.max(30, Math.min(3600, Number(input.timeoutSeconds || input.timeout_seconds || 900)));
+  const ack = runtimeAckContract(row, input);
+  const timeoutSeconds = runtimeDispatchTimeoutSeconds(row, input, 900, 3600);
   const prompt = buildRuntimeBridgePrompt(row);
   const args = ["--profile", profile, "--accept-hooks", "-z", prompt];
   const startedAt = nowIso();
@@ -8922,7 +9522,8 @@ async function runHermesDispatch(paths, row, input = {}) {
   const runtimeRunId = await recordRuntimeRun(paths, row, { adapter, status: "started", startedAt, attempt, payload: { profile } });
   const flow = await messageFlowForDispatch(paths, row);
   if (flow) {
-    await updateMessageFlow(paths, flow.flow_id, "runtime_dispatched", {
+    await updateMessageFlow(paths, flow.flow_id, messageFlowDispatchStartedStatus(row), {
+      dispatchId: row.dispatch_id,
       runtimeRunId,
       payload: { dispatchId: row.dispatch_id, runtimeRunId, adapter, profile }
     });
@@ -8949,6 +9550,7 @@ async function runHermesDispatch(paths, row, input = {}) {
     const text = String(stdout || "").trim();
     if (!text) throw new Error(String(stderr || "Hermes returned empty output").trim());
     if (!messageFlowOutputIsFinal(text)) throw new Error(`Hermes returned incomplete output: ${compactText(text, 500)}`);
+    validateRuntimeAckOutput(text, ack);
     const completedAt = nowIso();
     const outputHash = textHash(text);
     const ingest = await meetingIngest(paths.root, {
@@ -8965,16 +9567,28 @@ async function runHermesDispatch(paths, row, input = {}) {
         stderr: String(stderr || "").trim().slice(0, 2000)
       }
     });
-    const reportDelivery = await autoDeliverReportOutbox(paths, ingest, input);
+    const reportDelivery = ack.required ? null : await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter, profile, completedAt, messageId: ingest.messageId, attempt });
     const ackRuntimeRunId = safeId("runtime_run_ack");
     await recordRuntimeRun(paths, row, { runtimeRunId: ackRuntimeRunId, adapter, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { profile } });
-    const messageFlowDelivery = await finishMessageFlowRuntime(paths, row, {
+    const messageFlowDelivery = ack.required ? await acknowledgeMessageFlowRuntime(paths, row, {
+      runtimeRunId: ackRuntimeRunId,
+      messageId: ingest.messageId,
+      text,
+      outputHash,
+      receivedAt: completedAt
+    }) : await finishMessageFlowRuntime(paths, row, {
       runtimeRunId: ackRuntimeRunId,
       messageId: ingest.messageId,
       text,
       outputHash
     }, input);
+    const semanticContinuation = ack.required ? await queueMessageFlowSemanticContinuation(paths, row, {
+      runtimeRunId: ackRuntimeRunId,
+      messageId: ingest.messageId,
+      receivedAt: completedAt
+    }, input) : null;
+    assertSemanticContinuationQueued(semanticContinuation);
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       event: "runtime_dispatch_acked",
       dispatchId: row.dispatch_id,
@@ -8987,15 +9601,16 @@ async function runHermesDispatch(paths, row, input = {}) {
       completedAt,
       attempt,
       runtimeRunId: ackRuntimeRunId,
-      messageFlowDelivery
+      messageFlowDelivery,
+      semanticContinuation
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter, profile, messageId: ingest.messageId, runtimeRunId: ackRuntimeRunId, messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "", reportDelivery, messageFlowDelivery };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter, profile, messageId: ingest.messageId, runtimeRunId: ackRuntimeRunId, messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "", reportDelivery, messageFlowDelivery, semanticContinuation };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
     const failureType = classifyRuntimeError(error);
-    const shouldRetry = AUTO_RETRY_FAILURE_TYPES.has(failureType) && attempt < Number(row.max_attempts || 1);
-    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter, profile, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
+    const shouldRetry = runtimeFailureShouldRetry(failureType, ack) && attempt < Number(row.max_attempts || 1);
+    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter, profile, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt, ack.required ? ack.retryDelaySeconds : 0) : "" });
     const failedRuntimeRunId = await recordRuntimeRun(paths, row, { adapter, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { profile, retry: shouldRetry } });
     if (!shouldRetry) {
       await finishMessageFlowRuntime(paths, row, {
@@ -9280,7 +9895,8 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
   const acpAgent = registryAcpAgent;
   if (!acpAgent) throw new Error(`Hermes ACP agent alias is required for ${row.agent_id}`);
   const sessionMode = String(input.sessionMode || input.session_mode || "persistent").trim() === "oneshot" ? "oneshot" : "persistent";
-  const timeoutSeconds = Math.max(30, Math.min(3600, Number(input.timeoutSeconds || input.timeout_seconds || 900)));
+  const ack = runtimeAckContract(row, input);
+  const timeoutSeconds = runtimeDispatchTimeoutSeconds(row, input, 900, 3600);
   const sessionKey = cleanFileSegment(input.sessionKey || input.session_key || `workflow-${row.meeting_id}-${row.agent_id}`);
   const prompt = buildRuntimeBridgePrompt(row);
   const startedAt = nowIso();
@@ -9298,7 +9914,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     const message = error instanceof Error ? error.message : String(error);
     const failureType = "acp_unavailable";
     const shouldRetry = attempt < Number(row.max_attempts || 1);
-    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
+    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt, ack.required ? ack.retryDelaySeconds : 0) : "" });
     const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, retry: shouldRetry, failClosed: true } });
     if (!shouldRetry) {
       await finishMessageFlowRuntime(paths, row, {
@@ -9334,7 +9950,8 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
   const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "started", startedAt, attempt, payload: { sessionMode, backendSource } });
   const flow = await messageFlowForDispatch(paths, row);
   if (flow) {
-    await updateMessageFlow(paths, flow.flow_id, "runtime_dispatched", {
+    await updateMessageFlow(paths, flow.flow_id, messageFlowDispatchStartedStatus(row), {
+      dispatchId: row.dispatch_id,
       runtimeRunId,
       payload: { dispatchId: row.dispatch_id, runtimeRunId, adapter: "acp", backend: backendId, acpAgent, sessionMode }
     });
@@ -9376,6 +9993,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     if (!text && controller.signal.aborted) throw acpTimeoutError(timeoutSeconds);
     if (!text) throw new Error("Hermes ACP returned empty output");
     if (!messageFlowOutputIsFinal(text)) throw new Error(`Hermes ACP returned incomplete output: ${compactText(text, 500)}`);
+    validateRuntimeAckOutput(text, ack);
     const completedAt = nowIso();
     const outputHash = textHash(text);
     const ingest = await meetingIngest(paths.root, {
@@ -9397,16 +10015,28 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
         events: acpEvents.slice(-20)
       }
     });
-    const reportDelivery = await autoDeliverReportOutbox(paths, ingest, input);
+    const reportDelivery = ack.required ? null : await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "acp", backend: backendId, acpAgent, completedAt, messageId: ingest.messageId, attempt });
     const ackRuntimeRunId = safeId("runtime_run_ack");
     await recordRuntimeRun(paths, row, { runtimeRunId: ackRuntimeRunId, adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { sessionMode, backendSource, events: acpEvents.slice(-20) } });
-    const messageFlowDelivery = await finishMessageFlowRuntime(paths, row, {
+    const messageFlowDelivery = ack.required ? await acknowledgeMessageFlowRuntime(paths, row, {
+      runtimeRunId: ackRuntimeRunId,
+      messageId: ingest.messageId,
+      text,
+      outputHash,
+      receivedAt: completedAt
+    }) : await finishMessageFlowRuntime(paths, row, {
       runtimeRunId: ackRuntimeRunId,
       messageId: ingest.messageId,
       text,
       outputHash
     }, input);
+    const semanticContinuation = ack.required ? await queueMessageFlowSemanticContinuation(paths, row, {
+      runtimeRunId: ackRuntimeRunId,
+      messageId: ingest.messageId,
+      receivedAt: completedAt
+    }, input) : null;
+    assertSemanticContinuationQueued(semanticContinuation);
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: completedAt,
       event: "runtime_dispatch_acked",
@@ -9424,16 +10054,17 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       completedAt,
       attempt,
       runtimeRunId: ackRuntimeRunId,
-      messageFlowDelivery
+      messageFlowDelivery,
+      semanticContinuation
     });
     if (sessionMode === "oneshot") await backend.runtime.close({ handle, reason: "trading-agents-workflow oneshot completed", discardPersistentState: true }).catch(() => {});
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "acp", backend: backendId, acpAgent, sessionKey, messageId: ingest.messageId, runtimeRunId: ackRuntimeRunId, messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "", reportDelivery, messageFlowDelivery };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "acp", backend: backendId, acpAgent, sessionKey, messageId: ingest.messageId, runtimeRunId: ackRuntimeRunId, messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "", reportDelivery, messageFlowDelivery, semanticContinuation };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
     const failureType = classifyRuntimeError(error);
-    const shouldRetry = AUTO_RETRY_FAILURE_TYPES.has(failureType) && attempt < Number(row.max_attempts || 1);
-    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
+    const shouldRetry = runtimeFailureShouldRetry(failureType, ack) && attempt < Number(row.max_attempts || 1);
+    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt, ack.required ? ack.retryDelaySeconds : 0) : "" });
     const failedRuntimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, backendSource, retry: shouldRetry } });
     if (!shouldRetry) {
       await finishMessageFlowRuntime(paths, row, {
@@ -9472,7 +10103,8 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
 
 async function runOpenClawDispatch(paths, row, input = {}) {
   const openclawBin = String(input.openclawBin || input.openclaw_bin || process.env.OPENCLAW_BIN || "openclaw").trim();
-  const timeoutSeconds = Math.max(30, Math.min(1800, Number(input.timeoutSeconds || input.timeout_seconds || 300)));
+  const ack = runtimeAckContract(row, input);
+  const timeoutSeconds = runtimeDispatchTimeoutSeconds(row, input, 300, 1800);
   const prompt = buildRuntimeBridgePrompt(row);
   const startedAt = nowIso();
   const attempt = Number(row.attempt || 0) + 1;
@@ -9490,7 +10122,8 @@ async function runOpenClawDispatch(paths, row, input = {}) {
   const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "openclaw", status: "started", startedAt, attempt, payload: { openclawBin } });
   const flow = await messageFlowForDispatch(paths, row);
   if (flow) {
-    await updateMessageFlow(paths, flow.flow_id, "runtime_dispatched", {
+    await updateMessageFlow(paths, flow.flow_id, messageFlowDispatchStartedStatus(row), {
+      dispatchId: row.dispatch_id,
       runtimeRunId,
       payload: { dispatchId: row.dispatch_id, runtimeRunId, adapter: "openclaw", openclawBin }
     });
@@ -9509,7 +10142,7 @@ async function runOpenClawDispatch(paths, row, input = {}) {
   try {
     const { stdout, stderr } = await execFileAsync(openclawBin, args, {
       cwd: paths.root,
-      timeout: (timeoutSeconds + 30) * 1000,
+      timeout: (ack.required ? timeoutSeconds : timeoutSeconds + 30) * 1000,
       maxBuffer: 20 * 1024 * 1024,
       env: { ...process.env, TRADING_AGENTS_WORKFLOW_BRIDGE: "openclaw" }
     });
@@ -9522,6 +10155,7 @@ async function runOpenClawDispatch(paths, row, input = {}) {
       : [];
     const text = payloadTexts.join("\n\n").trim() || String(parsed.summary || "").trim();
     if (!text) throw new Error(`OpenClaw returned empty output: ${String(stderr || "").slice(0, 1000)}`);
+    validateRuntimeAckOutput(text, ack);
     const completedAt = nowIso();
     const outputHash = textHash(text);
     const ingest = await meetingIngest(paths.root, {
@@ -9539,16 +10173,28 @@ async function runOpenClawDispatch(paths, row, input = {}) {
         stderr: String(stderr || "").trim().slice(0, 2000)
       }
     });
-    const reportDelivery = await autoDeliverReportOutbox(paths, ingest, input);
+    const reportDelivery = ack.required ? null : await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "openclaw", completedAt, messageId: ingest.messageId, attempt, runId: parsed.runId || "" });
     const ackRuntimeRunId = safeId("runtime_run_ack");
     await recordRuntimeRun(paths, row, { runtimeRunId: ackRuntimeRunId, adapter: "openclaw", status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { runId: parsed.runId || "" } });
-    const messageFlowDelivery = await finishMessageFlowRuntime(paths, row, {
+    const messageFlowDelivery = ack.required ? await acknowledgeMessageFlowRuntime(paths, row, {
+      runtimeRunId: ackRuntimeRunId,
+      messageId: ingest.messageId,
+      text,
+      outputHash,
+      receivedAt: completedAt
+    }) : await finishMessageFlowRuntime(paths, row, {
       runtimeRunId: ackRuntimeRunId,
       messageId: ingest.messageId,
       text,
       outputHash
     }, input);
+    const semanticContinuation = ack.required ? await queueMessageFlowSemanticContinuation(paths, row, {
+      runtimeRunId: ackRuntimeRunId,
+      messageId: ingest.messageId,
+      receivedAt: completedAt
+    }, input) : null;
+    assertSemanticContinuationQueued(semanticContinuation);
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: completedAt,
       event: "runtime_dispatch_acked",
@@ -9562,15 +10208,16 @@ async function runOpenClawDispatch(paths, row, input = {}) {
       attempt,
       runtimeRunId: ackRuntimeRunId,
       runId: parsed.runId || "",
-      messageFlowDelivery
+      messageFlowDelivery,
+      semanticContinuation
     });
-    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "openclaw", messageId: ingest.messageId, runId: parsed.runId || "", runtimeRunId: ackRuntimeRunId, messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "", reportDelivery, messageFlowDelivery };
+    return { dispatchId: row.dispatch_id, runtime: row.runtime, agentId: row.agent_id, status: "acked", adapter: "openclaw", messageId: ingest.messageId, runId: parsed.runId || "", runtimeRunId: ackRuntimeRunId, messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "", reportDelivery, messageFlowDelivery, semanticContinuation };
   } catch (error) {
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
     const failureType = classifyRuntimeError(error);
-    const shouldRetry = AUTO_RETRY_FAILURE_TYPES.has(failureType) && attempt < Number(row.max_attempts || 1);
-    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "openclaw", failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt) : "" });
+    const shouldRetry = runtimeFailureShouldRetry(failureType, ack) && attempt < Number(row.max_attempts || 1);
+    await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "openclaw", failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt, ack.required ? ack.retryDelaySeconds : 0) : "" });
     const failedRuntimeRunId = await recordRuntimeRun(paths, row, { adapter: "openclaw", status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { retry: shouldRetry } });
     if (!shouldRetry) {
       await finishMessageFlowRuntime(paths, row, {
@@ -9803,13 +10450,14 @@ LIMIT ${limit};`, { json: true });
     if (terminalStatus === "failed" || terminalStatus === "retry_scheduled") {
       const attempt = Math.max(Number(row.attempt || 0) + 1, Number(row.terminal_attempt || 0) || 0);
       const shouldRetry = terminalStatus === "retry_scheduled" && attempt < Number(row.max_attempts || 1);
+      const ack = runtimeAckContract(row, input);
       await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", {
         adapter: "stale_dispatch_reconcile",
         failedAt: row.terminal_completed_at || nowIso(),
         failureType: row.terminal_failure_type || "runtime_stale",
         error: row.terminal_error || "stale sent dispatch reconciled from terminal runtime receipt",
         attempt,
-        nextRetryAt: shouldRetry ? nextRetryAt(attempt) : ""
+        nextRetryAt: shouldRetry ? nextRetryAt(attempt, ack.required ? ack.retryDelaySeconds : 0) : ""
       });
       results.push({ dispatchId: row.dispatch_id, status: shouldRetry ? "queued" : "failed", reason: "terminal_runtime_receipt" });
       continue;
@@ -9817,6 +10465,7 @@ LIMIT ${limit};`, { json: true });
     const maxAttempts = Number(row.max_attempts || 1);
     const attempt = Number(row.attempt || 0) + 1;
     const retry = attempt < maxAttempts;
+    const ack = runtimeAckContract(row, input);
     const completedAt = nowIso();
     const error = `stale sent dispatch exceeded ${Math.round(staleAfterMs / 1000)}s without terminal runtime receipt`;
     await updateDispatch(paths, row.dispatch_id, retry ? "queued" : "failed", {
@@ -9825,7 +10474,7 @@ LIMIT ${limit};`, { json: true });
       failureType: "runtime_stale",
       error,
       attempt,
-      nextRetryAt: retry ? nextRetryAt(attempt) : ""
+      nextRetryAt: retry ? nextRetryAt(attempt, ack.required ? ack.retryDelaySeconds : 0) : ""
     });
     const staleRuntimeRunId = await recordRuntimeRun(paths, row, {
       runtimeRunId: safeId(retry ? "runtime_run_retry" : "runtime_run_failed"),
@@ -11285,7 +11934,10 @@ export async function messageFlowList(rootDir, input = {}) {
   const status = String(input.status || "").trim();
   const where = [];
   if (flowId) where.push(`flow_id=${sqlValue(flowId)}`);
-  if (dispatchId) where.push(`dispatch_id=${sqlValue(dispatchId)}`);
+  if (dispatchId) {
+    const dispatchJson = JSON.stringify(dispatchId).slice(1, -1);
+    where.push(`(dispatch_id=${sqlValue(dispatchId)} OR payload_json LIKE ${sqlValue(`%"ackDispatchId":"${dispatchJson}"%`)} OR payload_json LIKE ${sqlValue(`%"semanticDispatchId":"${dispatchJson}"%`)})`);
+  }
   if (status) where.push(`status=${sqlValue(status)}`);
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const limit = Math.max(1, Math.min(200, Number(input.limit || 20)));
@@ -11332,6 +11984,16 @@ export async function messageFlowSend(rootDir, input = {}) {
     throw new Error("workflow.message_flow.send with return_policy=reply_to_source_chat requires source_channel, account_id, chat_id, sender_id, source_message_id");
   }
   const rawPayload = parseJsonValue(input.payload, input.payload || {});
+  const ackContract = requiresAck
+    ? {
+        required: true,
+        firstTurnOnly: true,
+        timeoutSeconds: DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS,
+        retryDelaySeconds: DEFAULT_RUNTIME_ACK_RETRY_SECONDS,
+        maxAttempts: DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS,
+        expectedPrefix: "ACK_RECEIVED"
+      }
+    : null;
   const sourcePayload = {
     messageType,
     subject,
@@ -11348,6 +12010,7 @@ export async function messageFlowSend(rootDir, input = {}) {
       senderId,
       sourceMessageId
     },
+    ...(ackContract ? { ackContract } : {}),
     raw: rawPayload
   };
 
@@ -11397,7 +12060,7 @@ export async function messageFlowSend(rootDir, input = {}) {
       prompt,
       priority: input.priority || "normal",
       createdBy: input.createdBy || input.created_by || `${sourceRuntime}:${fromAgent}`,
-      maxAttempts: input.maxAttempts || input.max_attempts || 1,
+      maxAttempts: input.maxAttempts || input.max_attempts || (requiresAck ? DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS : 1),
       returnPolicy: "silent",
       deliveryPolicy: "silent",
       sourceChannel,
@@ -11487,6 +12150,7 @@ export async function messageFlowReconcile(rootDir, input = {}) {
   const stuckAfterMs = Math.max(60_000, Math.min(24 * 3600_000, Number(input.messageFlowStuckAfterMs || input.message_flow_stuck_after_ms || input.stuckAfterMs || input.stuck_after_ms || 5 * 60_000)));
   const limit = Math.max(1, Math.min(200, Number(input.messageFlowReconcileLimit || input.message_flow_reconcile_limit || input.limit || 20)));
   const cutoff = new Date(Date.now() - stuckAfterMs).toISOString();
+  const recoveredSemanticContinuations = await recoverAckedMessageFlowSemanticContinuations(paths, { cutoff, limit });
   const rows = await sqlite(paths.dbFile, `
 SELECT mf.*, o.status AS outbox_status, o.updated_at AS outbox_updated_at, o.target_kind, o.target_ref, o.payload_json AS outbox_payload_json
 FROM message_flows mf
@@ -11563,7 +12227,7 @@ LIMIT ${limit};`, { json: true });
       currentHypothesis: row.outbox_id
         ? `telegram_outbox ${row.outbox_id} status=${row.outbox_status || "missing"}`
         : "message_flow has no outbound outbox id after runtime completion",
-      mitigation: "10s control loop records this incident and lets telegram_outbox delivery/retry continue under queue governance.",
+      mitigation: "30s control loop records this incident and lets telegram_outbox delivery/retry continue under queue governance.",
       rollbackOptions: "No destructive rollback. Preserve flow, dispatch, runtime_run, and outbox evidence; inspect Telegram delivery and return path.",
       exitCriteria: "message_flows.delivery_receipt_present=1 and status=telegram_sent, or the flow is explicitly marked telegram_failed with evidence.",
       timeline: [
@@ -11600,7 +12264,71 @@ LIMIT ${limit};`, { json: true });
       runtimeCompletedAt: row.runtime_completed_at || ""
     });
   }
-  return { operation: "message_flow.reconcile", stuckAfterMs, cutoff, count: rows.length, incidents, dbFile: paths.dbFile };
+  return { operation: "message_flow.reconcile", stuckAfterMs, cutoff, count: rows.length, recoveredSemanticContinuations, incidents, dbFile: paths.dbFile };
+}
+
+async function recoverAckedMessageFlowSemanticContinuations(paths, input = {}) {
+  const cutoff = input.cutoff || new Date(Date.now() - 5 * 60_000).toISOString();
+  const limit = Math.max(1, Math.min(200, Number(input.limit || 20)));
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM message_flows
+WHERE status='runtime_acknowledged'
+  AND final_output_present=0
+  AND delivery_receipt_present=0
+  AND updated_at < ${sqlValue(cutoff)}
+ORDER BY updated_at
+LIMIT ${limit};`, { json: true });
+  const results = [];
+  for (const flow of rows) {
+    const ackDispatchId = messageFlowAckDispatchId(flow);
+    if (!ackDispatchId) {
+      await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_reconcile_skipped", {
+        reason: "missing_ack_dispatch_id"
+      });
+      results.push({ flowId: flow.flow_id, status: "skipped", reason: "missing_ack_dispatch_id" });
+      continue;
+    }
+    const idempotencyKey = messageFlowSemanticIdempotencyKey(flow.flow_id, ackDispatchId);
+    const existing = await sqlite(paths.dbFile, `
+SELECT dispatch_id, status
+FROM mixed_meeting_dispatches
+WHERE dispatch_type='message_flow_semantic'
+  AND idempotency_key=${sqlValue(idempotencyKey)}
+LIMIT 1;`, { json: true });
+    if (existing[0]) {
+      await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_reconcile_existing", {
+        ackDispatchId,
+        semanticDispatchId: existing[0].dispatch_id,
+        semanticStatus: existing[0].status,
+        idempotencyKey
+      });
+      results.push({ flowId: flow.flow_id, status: "existing", dispatchId: existing[0].dispatch_id, semanticStatus: existing[0].status });
+      continue;
+    }
+    const dispatchRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM mixed_meeting_dispatches
+WHERE dispatch_id=${sqlValue(ackDispatchId)}
+LIMIT 1;`, { json: true });
+    const ackDispatch = dispatchRows[0];
+    if (!ackDispatch) {
+      await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_reconcile_failed", {
+        ackDispatchId,
+        reason: "ack_dispatch_missing"
+      });
+      results.push({ flowId: flow.flow_id, status: "failed", reason: "ack_dispatch_missing", ackDispatchId });
+      continue;
+    }
+    const continuation = await queueMessageFlowSemanticContinuation(paths, ackDispatch, {
+      runtimeRunId: flow.runtime_run_id || "",
+      messageId: flow.message_id || "",
+      receivedAt: flow.updated_at || nowIso()
+    }, input);
+    assertSemanticContinuationQueued(continuation);
+    results.push({ flowId: flow.flow_id, status: "queued", ackDispatchId, semanticDispatchId: continuation.dispatchId });
+  }
+  return results;
 }
 
 async function acquireControlLoopLease(paths, input = {}) {
@@ -12172,6 +12900,18 @@ WHERE (
     AND runtime_failed_at IS NOT NULL
     AND runtime_failed_at != ''
     AND runtime_failed_at < ${sqlValue(messageFlowStuckCutoff)}
+  )
+  OR (
+    final_output_present=0
+    AND delivery_receipt_present=0
+    AND status='runtime_acknowledged'
+    AND updated_at < ${sqlValue(messageFlowStuckCutoff)}
+    AND NOT EXISTS (
+      SELECT 1
+      FROM mixed_meeting_dispatches d
+      WHERE d.dispatch_type='message_flow_semantic'
+        AND d.idempotency_key=('message-flow-semantic:' || message_flows.flow_id || ':' || message_flows.dispatch_id)
+    )
   );`, { json: true });
   if (Number(stuckMessageFlowRows[0]?.count || 0) > 0) {
     seeded.push(await enqueueControlLoopJob(paths, {
@@ -12210,7 +12950,7 @@ WHERE status='queued' AND runtime=${sqlValue(runtime)} AND priority='flash'
 SELECT dispatch_id, runtime, priority
 FROM mixed_meeting_dispatches
 WHERE status='queued'
-  AND dispatch_type='message_flow_send'
+  AND dispatch_type IN ('message_flow_send','message_flow_semantic')
   ${preciseRuntimeExclusion}
   AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())})
 ORDER BY
@@ -12637,6 +13377,11 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.swarm.plan":
     case "workflow.swarm":
       return workflowSwarmPlan(rootDir, input);
+    case "workflow.task.draft":
+    case "workflow.task.preview":
+    case "workflow.task.create.preview":
+    case "workflow.meeting_task.draft":
+      return workflowTaskDraft(rootDir, input);
     case "workflow.task.create":
       return workflowTaskCreate(rootDir, input);
     case "workflow.task.update":

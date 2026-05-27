@@ -73,7 +73,7 @@ runtime records may store an empty string instead of SQL `NULL`.
 
 ## Runtime Drain Visibility
 
-The 10s control loop can create two runtime-drain job shapes:
+The 30s control loop can create two runtime-drain job shapes:
 
 - generic drain: `runtime_drain:<runtime>`;
 - exact drain: `runtime_drain:<runtime>:<dispatch_id>`.
