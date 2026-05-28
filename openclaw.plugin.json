@@ -154,6 +154,21 @@
           "jobLeaseMs": {
             "type": "number"
           },
+          "messageFlowStuckAfterMs": {
+            "type": "number"
+          },
+          "messageFlowReconcileLimit": {
+            "type": "number"
+          },
+          "workflowSuperviseCooldownMs": {
+            "type": "number"
+          },
+          "idleWorkflowSuperviseCooldownMs": {
+            "type": "number"
+          },
+          "blockedWorkflowSuperviseCooldownMs": {
+            "type": "number"
+          },
           "timeoutSeconds": {
             "type": "number"
           },
