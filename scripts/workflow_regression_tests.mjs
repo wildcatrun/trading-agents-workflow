@@ -1146,6 +1146,45 @@ WHERE outbox_id='${request.telegramOutbox.outboxId}';`);
   assert.equal(tick.claimedJobs?.[0]?.jobType, "telegram_outbox_deliver");
 }
 
+async function testControlLoopBacksOffBlockedWorkflowSupervise() {
+  const root = await tempRoot("control-loop-supervise-cooldown");
+  const workflowId = "workflow-blocked-cooldown";
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId,
+    status: "blocked",
+    summary: "blocked workflow should not be supervised every tick"
+  });
+
+  const first = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    autoDispatch: false,
+    drainQueued: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    idleWorkflowSuperviseCooldownMs: 300_000
+  });
+  assert.equal(first.claimedJobs?.[0]?.jobType, "workflow_supervise");
+  assert.equal(first.jobResults?.[0]?.status, "done");
+
+  const second = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    autoDispatch: false,
+    drainQueued: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    idleWorkflowSuperviseCooldownMs: 300_000
+  });
+  assert.equal(second.claimedJobs?.length || 0, 0);
+  assert.equal(second.seededJobs?.[0]?.reason, "cooldown");
+  const dbFile = path.join(root, "tracking.db");
+  assert.equal(sqliteCount(dbFile, "control_loop_jobs", `job_type='workflow_supervise' AND workflow_id='${workflowId}'`), 1);
+}
+
 async function testTradeIntentFailClosed() {
   const root = await tempRoot("trade-intent");
   const intent = await runAction(root, {
@@ -2946,6 +2985,7 @@ try {
     ["message_flow immediate ack retry delay", testMessageFlowImmediateAckRetryDelay],
     ["message_flow control-loop runtime drains", testControlLoopDrainsMessageFlowRuntimes],
     ["control_loop stale delivering outbox", testControlLoopSeedsStaleDeliveringOutbox],
+    ["control_loop blocked workflow supervise cooldown", testControlLoopBacksOffBlockedWorkflowSupervise],
     ["trade_intent fail-closed", testTradeIntentFailClosed],
     ["trade chain and receipt guardrails", testTradeIntentChainAndReceiptGuardrails],
     ["workflow event store", testWorkflowEventStore],

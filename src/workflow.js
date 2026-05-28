@@ -13328,6 +13328,20 @@ function controlLoopTimeoutSeconds(input = {}) {
   return Math.max(5, Math.min(900, Number(input.timeoutSeconds || input.timeout_seconds || 45)));
 }
 
+function controlLoopWorkflowSuperviseCooldownMs(input = {}, status = "") {
+  const defaultIdleCooldownMs = 5 * 60_000;
+  const idleValue = input.idleWorkflowSuperviseCooldownMs
+    ?? input.idle_workflow_supervise_cooldown_ms
+    ?? input.blockedWorkflowSuperviseCooldownMs
+    ?? input.blocked_workflow_supervise_cooldown_ms
+    ?? defaultIdleCooldownMs;
+  const generalValue = input.workflowSuperviseCooldownMs ?? input.workflow_supervise_cooldown_ms ?? 0;
+  const value = ["blocked", "waiting_human"].includes(String(status || "")) ? idleValue : generalValue;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  return Math.min(24 * 3600_000, Math.max(0, number));
+}
+
 function controlLoopJobLeaseMs(input = {}) {
   const requested = Math.max(10_000, Math.min(60 * 60_000, Number(input.jobLeaseMs || input.job_lease_ms || 120_000)));
   const minSafe = Math.max(controlLoopTickBudgetMs(input) + 30_000, (controlLoopTimeoutSeconds(input) + 30) * 1000);
@@ -13345,6 +13359,31 @@ FROM control_loop_jobs
 WHERE dedupe_key=${sqlValue(dedupeKey)} AND status IN (${activeStatuses})
 LIMIT 1;`, { json: true });
   if (existing[0]) return { jobId: existing[0].job_id, jobType, dedupeKey, status: existing[0].status, deduped: true };
+  const cooldownMs = Math.max(0, Number(input.cooldownMs || input.cooldown_ms || 0));
+  if (cooldownMs > 0) {
+    const cooldownCutoff = new Date(Date.now() - cooldownMs).toISOString();
+    const recent = await sqlite(paths.dbFile, `
+SELECT job_id, job_type, status, updated_at
+FROM control_loop_jobs
+WHERE dedupe_key=${sqlValue(dedupeKey)}
+  AND status NOT IN (${activeStatuses})
+  AND updated_at >= ${sqlValue(cooldownCutoff)}
+ORDER BY updated_at DESC
+LIMIT 1;`, { json: true });
+    if (recent[0]) {
+      return {
+        jobId: recent[0].job_id,
+        jobType,
+        dedupeKey,
+        status: recent[0].status,
+        deduped: true,
+        skipped: true,
+        reason: "cooldown",
+        cooldownMs,
+        recentUpdatedAt: recent[0].updated_at
+      };
+    }
+  }
   const jobId = input.jobId || input.job_id || safeId("ctljob");
   const createdAt = nowIso();
   const payload = parseJsonValue(input.payload, input.payload || {});
@@ -13389,15 +13428,19 @@ LIMIT ${maxWorkflows};`, { json: true });
   for (const row of workflowRows) {
     const payload = parseJsonValue(row.payload_json, {});
     const flashLane = boolOption(payload.flashLane ?? payload.flash_lane ?? payload.tradingExecution ?? payload.trading_execution, false);
+    const superviseCooldownMs = flashLane ? 0 : controlLoopWorkflowSuperviseCooldownMs(input, row.status);
     seeded.push(await enqueueControlLoopJob(paths, {
       jobType: "workflow_supervise",
       dedupeKey: `workflow_supervise:${row.workflow_id}`,
       priority: flashLane ? "flash" : row.status === "waiting_human" ? "steer" : row.status === "blocked" ? "high" : "normal",
       workflowId: row.workflow_id,
+      cooldownMs: superviseCooldownMs,
       payload: {
         workflowId: row.workflow_id,
         meetingId: row.workflow_id,
         flashLane,
+        workflowStatus: row.status,
+        superviseCooldownMs,
         autoDispatch,
         autoReport,
         reportRuntime,

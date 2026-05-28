@@ -1292,6 +1292,8 @@ function registerCli(api) {
       .option("--job-lease-ms <ms>", "Control-loop job lease", "120000")
       .option("--message-flow-stuck-after-ms <ms>", "Create an incident when a completed message flow has no Telegram receipt after this window", "300000")
       .option("--message-flow-reconcile-limit <limit>", "Max stuck message flows to inspect per reconcile job", "20")
+      .option("--workflow-supervise-cooldown-ms <ms>", "Cooldown before reseeding any completed workflow_supervise job", "0")
+      .option("--idle-workflow-supervise-cooldown-ms <ms>", "Cooldown before reseeding blocked/waiting_human workflow_supervise jobs", "300000")
       .option("--timeout-seconds <seconds>", "Runtime dispatch timeout", "45")
       .option("--tick-budget-ms <ms>", "Soft per-tick budget", "60000")
       .option("--runtime <runtimeList>", "Comma-separated platforms to drain", "hermers")
@@ -1325,6 +1327,8 @@ function registerCli(api) {
           jobLeaseMs: Number(options.jobLeaseMs),
           messageFlowStuckAfterMs: Number(options.messageFlowStuckAfterMs),
           messageFlowReconcileLimit: Number(options.messageFlowReconcileLimit),
+          workflowSuperviseCooldownMs: Number(options.workflowSuperviseCooldownMs),
+          idleWorkflowSuperviseCooldownMs: Number(options.idleWorkflowSuperviseCooldownMs),
           timeoutSeconds: Number(options.timeoutSeconds),
           tickBudgetMs: Number(options.tickBudgetMs),
           runtimes: options.runtime,
@@ -2428,6 +2432,16 @@ function controlLoopConfig(api) {
   const timeoutSeconds = numberValue(configured.timeoutSeconds, 45, 5, 900);
   const messageFlowStuckAfterMs = numberValue(configured.messageFlowStuckAfterMs ?? configured.message_flow_stuck_after_ms, 5 * 60_000, 60_000, 24 * 3600_000);
   const messageFlowReconcileLimit = numberValue(configured.messageFlowReconcileLimit ?? configured.message_flow_reconcile_limit, 20, 1, 200);
+  const workflowSuperviseCooldownMs = numberValue(configured.workflowSuperviseCooldownMs ?? configured.workflow_supervise_cooldown_ms, 0, 0, 24 * 3600_000);
+  const idleWorkflowSuperviseCooldownMs = numberValue(
+    configured.idleWorkflowSuperviseCooldownMs
+      ?? configured.idle_workflow_supervise_cooldown_ms
+      ?? configured.blockedWorkflowSuperviseCooldownMs
+      ?? configured.blocked_workflow_supervise_cooldown_ms,
+    5 * 60_000,
+    0,
+    24 * 3600_000
+  );
   const retentionHours = numberValue(configured.retentionHours ?? configured.retention_hours ?? process.env.TRADING_AGENTS_WORKFLOW_RETENTION_HOURS, 72, 1, 30 * 24);
   const retentionIntervalMs = numberValue(configured.retentionIntervalMs ?? configured.retention_interval_ms ?? process.env.TRADING_AGENTS_WORKFLOW_RETENTION_INTERVAL_MS, 60 * 60_000, 60_000, 24 * 3600_000);
   const requestedJobLeaseMs = numberValue(configured.jobLeaseMs, 120_000, 10_000, 60 * 60_000);
@@ -2446,6 +2460,8 @@ function controlLoopConfig(api) {
     jobLeaseMs,
     messageFlowStuckAfterMs,
     messageFlowReconcileLimit,
+    workflowSuperviseCooldownMs,
+    idleWorkflowSuperviseCooldownMs,
     timeoutSeconds,
     owner: String(configured.owner || "openclaw-plugin").trim() || "openclaw-plugin",
     workerMode: String(configured.workerMode || "process").trim() || "process",
@@ -2483,6 +2499,8 @@ function controlLoopWorkerArgs(config, root, reason) {
     "--job-lease-ms", String(config.jobLeaseMs),
     "--message-flow-stuck-after-ms", String(config.messageFlowStuckAfterMs),
     "--message-flow-reconcile-limit", String(config.messageFlowReconcileLimit),
+    "--workflow-supervise-cooldown-ms", String(config.workflowSuperviseCooldownMs),
+    "--idle-workflow-supervise-cooldown-ms", String(config.idleWorkflowSuperviseCooldownMs),
     "--outbox-limit", String(config.outboxLimit),
     "--timeout-seconds", String(config.timeoutSeconds),
     "--tick-budget-ms", String(config.tickBudgetMs),
@@ -2556,6 +2574,8 @@ function runControlLoopWorker(api, config, reason) {
       jobLeaseMs: config.jobLeaseMs,
       messageFlowStuckAfterMs: config.messageFlowStuckAfterMs,
       messageFlowReconcileLimit: config.messageFlowReconcileLimit,
+      workflowSuperviseCooldownMs: config.workflowSuperviseCooldownMs,
+      idleWorkflowSuperviseCooldownMs: config.idleWorkflowSuperviseCooldownMs,
       timeoutSeconds: config.timeoutSeconds,
       tickBudgetMs: config.tickBudgetMs,
       owner: config.owner,
@@ -3194,6 +3214,11 @@ export default definePluginEntry({
           outboxLimit: { type: "number" },
           jobLimit: { type: "number" },
           jobLeaseMs: { type: "number" },
+          messageFlowStuckAfterMs: { type: "number" },
+          messageFlowReconcileLimit: { type: "number" },
+          workflowSuperviseCooldownMs: { type: "number" },
+          idleWorkflowSuperviseCooldownMs: { type: "number" },
+          blockedWorkflowSuperviseCooldownMs: { type: "number" },
           timeoutSeconds: { type: "number" },
           owner: { type: "string" },
           workerMode: { type: "string" },
