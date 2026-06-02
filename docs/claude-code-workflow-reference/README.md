@@ -58,6 +58,9 @@ This program has two tracks:
   development log for governed pause/resume/stop execution.
 - `development-log-2026-05-31-p1.5-dead-letter-observability.md`: detailed
   development log for dead-letter and stuck attention observability.
+- `development-log-2026-06-02-openclaw-stable-upgrade.md`: OpenClaw stable
+  upgrade impact audit, stabilityd/workflow compatibility notes, and upgrade
+  smoke checklist.
 - `update-log.md`: dated changes to the reference set and adaptation plan.
 
 ## Operating Rules

@@ -187,6 +187,11 @@ Inspected current `trading-agents-workflow` docs and code surfaces:
   requires Cat Claw/secretary audit evidence and freshness evidence before a
   `risk_decision` protocol object can be written, while preserving the existing
   proposal/Human Gate/Cat Tail dispatch/numeric risk/evidenceRefs chain checks.
+- 2026-06-02: Recorded the OpenClaw stable upgrade impact audit in
+  `development-log-2026-06-02-openclaw-stable-upgrade.md`. The development
+  server OpenClaw update channel was backed up and changed from `beta` to
+  `stable`; `trading-agents-workflow` now skips control-loop startup during
+  OpenClaw doctor/update/config/status/health/plugin diagnostic processes.
 - Console phase view and supervise preview remain read-only/preview-only.
 
 ### Development Summary

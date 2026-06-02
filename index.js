@@ -175,11 +175,23 @@ function withWorkflowToolCaller(params = {}, toolContext = {}, mode = "") {
   });
 }
 
-function isPluginInspectionProcess() {
+function openClawCommandArgs(args) {
+  const openClawIndex = args.findIndex((arg) => /(^|[/\\])openclaw(\.mjs)?$/.test(arg));
+  if (openClawIndex >= 0) return args.slice(openClawIndex + 1);
+  return args.slice(2);
+}
+
+function isOpenClawDiagnosticProcess() {
   const args = process.argv.map((arg) => String(arg || ""));
-  const pluginsIndex = args.indexOf("plugins");
+  const commandArgs = openClawCommandArgs(args);
+  const [command, subcommand] = commandArgs;
+  if (command === "doctor" || command === "status" || command === "health") return true;
+  if (command === "update" && (!subcommand || subcommand === "status" || subcommand === "--dry-run" || subcommand === "--json")) return true;
+  if (command === "config" && subcommand === "validate") return true;
+  if (["gateway", "nodes", "agents", "cron", "models", "memory"].includes(command) && ["status", "health", "list", "show"].includes(subcommand)) return true;
+  const pluginsIndex = commandArgs.indexOf("plugins");
   if (pluginsIndex < 0) return false;
-  return args.slice(pluginsIndex + 1).some((arg) => arg === "inspect" || arg === "doctor");
+  return ["list", "info", "inspect", "doctor"].includes(commandArgs[pluginsIndex + 1]);
 }
 
 const toolParameters = {
@@ -2655,7 +2667,7 @@ function runControlLoopWorker(api, config, reason) {
 }
 
 function registerControlLoop(api) {
-  if (isPluginInspectionProcess()) return;
+  if (isOpenClawDiagnosticProcess()) return;
   const config = controlLoopConfig(api);
   if (!config.enabled) return;
   const singletonKey = "__tradingAgentsWorkflowControlLoop";
