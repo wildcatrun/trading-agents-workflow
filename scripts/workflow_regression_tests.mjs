@@ -6,6 +6,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { workflowChildPayload } from "../src/console/server.js";
+import { WorkflowActionGateway } from "../src/console/action-gateway.js";
+import { WorkflowReadModel } from "../src/console/read-model.js";
 import { runAction } from "../src/core.js";
 
 const createdRoots = [];
@@ -234,6 +237,1804 @@ ORDER BY status;`);
     { status: "selected", count: 1 },
     { status: "superseded", count: 5 }
   ]);
+}
+
+async function testHumanGateReadinessChecklist() {
+  const root = await tempRoot("hgate-readiness");
+  const request = await requestHumanGate(root);
+  assert.equal(request.status, "pending");
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT OR REPLACE INTO workflow_runs(workflow_id, workflow_type, status, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
+VALUES ('workflow-regression', 'regression', 'waiting_human', 'main', 'Human Gate readiness regression', '验证 Human Gate readiness checklist。', 'A/B/C、暂停、终止、证据和回执完整。', '人工停止', 'review', 'submit_human_gate', '{}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+UPDATE protocol_objects
+SET source_agent='cat_claw'
+WHERE object_type='human_gate_record' AND json_extract(payload_json, '$.workflowId')='workflow-regression';
+UPDATE human_gate_buttons
+SET created_by='cat_claw'
+WHERE workflow_id='workflow-regression';
+UPDATE human_gate_buttons
+SET summary=summary || ' tawhg:summary-secret-token token=summary-secret',
+    prompt=prompt || ' tawhg:prompt-secret-token token=prompt-secret'
+WHERE workflow_id='workflow-regression';
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES ('checkpoint-hgate-readiness', 'workflow-regression', 'ready', 'review', 'submit_human_gate', '猫爪提交 Human Gate 前 checkpoint。', '{}', '[]', '[]', '["artifact-hgate-readiness"]', '["提交猫爪复核"]', '{}', 'artifact://checkpoint-hgate-readiness', 'main', '2026-05-31T00:00:02.000Z');
+INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES ('artifact-hgate-readiness', 'workflow-regression', 'human_gate_evidence', 'artifact://hgate-readiness', 'Human Gate 证据包。', 'main', '2026-05-31T00:00:03.000Z');
+INSERT INTO workflow_agent_runs(agent_run_id, workflow_id, phase_key, task_id, dispatch_id, runtime, agent_id, status, output_hash, receipt_ref, payload_json, created_at, updated_at)
+VALUES ('agent-hgate-readiness', 'workflow-regression', 'review', 'task-hgate-readiness', 'dispatch-hgate-readiness', 'openclaw', 'cat_claw', 'completed', 'hash-hgate-readiness', 'artifact://receipt-hgate-readiness', '{}', '2026-05-31T00:00:04.000Z', '2026-05-31T00:00:05.000Z');
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES ('outbox-hgate-readiness', 'workflow-regression', 'telegram', '8390724843', 'human_gate_request', 'sent', '猫爪正式汇报：请选择 A/B/C。 /hgate tawhg:readiness-secret', '{}', '2026-05-31T00:00:06.000Z', '2026-05-31T00:00:07.000Z');
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('noise-hgate-readiness', 'human_gate_record', 'pending', NULL, 'regression', 'cat_claw', '', 'artifact://noise', '{"workflowId":"workflow-regression-extra"}', 'hash-noise', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('legacy-workflow-id-hgate', 'human_gate_record', 'pending', NULL, 'regression', 'cat_claw', '', 'artifact://legacy-workflow-id', '{"workflow":{"id":"workflow-json-id"}}', 'hash-workflow-id', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('legacy-workflow-id-receipt', 'evidence_pack', 'ready', NULL, 'regression', 'cat_claw', '', 'artifact://legacy-workflow-id-receipt', '{"workflow":{"id":"workflow-json-id"}}', 'hash-workflow-id-receipt', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('legacy-workflow-id-noise', 'evidence_pack', 'ready', NULL, 'regression', 'cat_claw', '', 'artifact://legacy-workflow-id-noise', '{"workflow":{"id":"workflow-json-id-extra"}}', 'hash-workflow-id-noise', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+INSERT INTO human_gate_buttons(button_id, human_gate_id, callback_token, workflow_id, meeting_id, label, decision_status, button_role, artifact_ref, summary, prompt, payload_json, status, created_by, created_at, updated_at)
+VALUES
+  ('classifier-plan-a', 'classifier-hgate', 'classifier-token-a', 'workflow-classifier', 'workflow-classifier', 'Plan A', 'approved', 'option', '', '中文方案 A。', '执行 Plan A。', '{}', 'pending', 'cat_claw', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z'),
+  ('classifier-alternative-b', 'classifier-hgate', 'classifier-token-b', 'workflow-classifier', 'workflow-classifier', 'Alternative B', 'approved', 'option', '', '中文方案 B。', '执行 Alternative B。', '{}', 'pending', 'cat_claw', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z'),
+  ('classifier-cn-one', 'classifier-hgate', 'classifier-token-c', 'workflow-classifier', 'workflow-classifier', '方案一', 'approved', 'option', '', '中文方案一。', '执行方案一。', '{}', 'pending', 'cat_claw', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z'),
+  ('classifier-pause', 'classifier-hgate', 'classifier-token-p', 'workflow-classifier', 'workflow-classifier', '暂停工作流', 'paused', 'pause', '', '暂停。', '暂停。', '{}', 'pending', 'cat_claw', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z'),
+  ('classifier-terminate', 'classifier-hgate', 'classifier-token-t', 'workflow-classifier', 'workflow-classifier', '终止工作流', 'terminated', 'terminate', '', '终止。', '终止。', '{}', 'pending', 'cat_claw', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');`);
+
+  const readiness = await new WorkflowReadModel({ dbFile }).humanGateReadiness("workflow-regression");
+  assert.equal(readiness.schemaVersion, "human_gate_readiness.v1");
+  assert.equal(readiness.readyForCatClawAudit, true);
+  assert.equal(readiness.readyForHumanGateSubmission, true);
+  assert.equal(readiness.summary.approveOptionCount, 3);
+  assert.equal(readiness.summary.recordCount, 1);
+  assert.equal(readiness.refs.sentOutboxIds.includes("outbox-hgate-readiness"), true);
+  assert.equal(readiness.checklist.find((item) => item.key === "three_approve_options")?.status, "pass");
+  assert.equal(readiness.checklist.find((item) => item.key === "pause_control")?.status, "pass");
+  assert.equal(readiness.checklist.find((item) => item.key === "terminate_control")?.status, "pass");
+  assert.equal(readiness.checklist.find((item) => item.key === "checkpoint_available")?.status, "pass");
+  assert.equal(readiness.checklist.find((item) => item.key === "evidence_artifacts")?.status, "pass");
+  assert.equal(JSON.stringify(readiness).includes("readiness-secret"), false);
+  assert.equal(JSON.stringify(readiness).includes("summary-secret"), false);
+  assert.equal(JSON.stringify(readiness).includes("prompt-secret"), false);
+
+  const routeReadiness = await workflowChildPayload(new WorkflowReadModel({ dbFile }), "workflow-regression", "human-gate-readiness");
+  assert.equal(routeReadiness.schemaVersion, "human_gate_readiness.v1");
+  assert.equal(routeReadiness.summary.recordCount, 1);
+  const legacyJsonGate = await new WorkflowReadModel({ dbFile }).humanGates("workflow-json-id");
+  assert.equal(legacyJsonGate.records.length, 1);
+  const legacyJsonReceipts = await new WorkflowReadModel({ dbFile }).receipts("workflow-json-id");
+  assert.equal(Boolean(legacyJsonReceipts.receipts.some((receipt) => receipt.receiptId === "legacy-workflow-id-receipt")), true);
+  assert.equal(Boolean(legacyJsonReceipts.receipts.some((receipt) => receipt.receiptId === "legacy-workflow-id-noise")), false);
+  const legacyJsonPack = await new WorkflowReadModel({ dbFile }).evidencePack("workflow-json-id", { limit: 50 });
+  assert.equal(Boolean(legacyJsonPack.receipts.receipts.some((receipt) => receipt.receiptId === "legacy-workflow-id-receipt")), true);
+  assert.equal(Boolean(legacyJsonPack.receipts.receipts.some((receipt) => receipt.receiptId === "legacy-workflow-id-noise")), false);
+  const classifierReadiness = await new WorkflowReadModel({ dbFile }).humanGateReadiness("workflow-classifier");
+  assert.equal(classifierReadiness.summary.approveOptionCount, 3);
+  assert.equal(classifierReadiness.checklist.find((item) => item.key === "pause_control")?.status, "pass");
+  assert.equal(classifierReadiness.checklist.find((item) => item.key === "terminate_control")?.status, "pass");
+  const evidencePack = await new WorkflowReadModel({ dbFile }).evidencePack("workflow-regression", { limit: 50 });
+  assert.equal(JSON.stringify(evidencePack).includes("summary-secret"), false);
+  assert.equal(JSON.stringify(evidencePack).includes("prompt-secret"), false);
+}
+
+async function testHumanGateReadinessLegacySchemaFallback() {
+  const root = await tempRoot("hgate-readiness-legacy");
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+CREATE TABLE legacy_marker (
+  id TEXT PRIMARY KEY
+);
+INSERT INTO legacy_marker(id) VALUES ('legacy-only');`);
+
+  const readiness = await new WorkflowReadModel({ dbFile }).humanGateReadiness("workflow-legacy-readiness");
+  assert.equal(readiness.schemaVersion, "human_gate_readiness.v1");
+  assert.equal(readiness.status, "not_ready");
+  assert.equal(readiness.readyForCatClawAudit, false);
+  assert.equal(readiness.summary.recordCount, 0);
+  assert.equal(readiness.summary.buttonCount, 0);
+  assert.equal(readiness.summary.checkpointCount, 0);
+  assert.equal(readiness.summary.artifactCount, 0);
+  assert.equal(readiness.summary.receiptPresentCount, 0);
+  assert.equal(readiness.checklist.find((item) => item.key === "human_gate_record")?.status, "fail");
+  assert.equal(readiness.checklist.find((item) => item.key === "telegram_delivery_observed")?.status, "warn");
+
+  const routeReadiness = await workflowChildPayload(new WorkflowReadModel({ dbFile }), "workflow-legacy-readiness", "human-gate-readiness");
+  assert.equal(routeReadiness.schemaVersion, "human_gate_readiness.v1");
+  assert.equal(routeReadiness.status, "not_ready");
+
+  const evidencePack = await new WorkflowReadModel({ dbFile }).evidencePack("workflow-legacy-readiness", { limit: 20 });
+  assert.equal(evidencePack.schemaVersion, "workflow_evidence_pack.v1");
+  assert.equal(evidencePack.found, false);
+  assert.equal(evidencePack.manifest.taskCount, 0);
+  assert.equal(evidencePack.manifest.humanGateRecordCount, 0);
+}
+
+async function testWorkflowOperationsConsoleAudit() {
+  const root = await tempRoot("workflow-operations");
+  const dbFile = path.join(root, "tracking.db");
+  const bridgeDir = path.join(root, "bridge");
+  const workflowId = "wf-console-operations";
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId,
+    status: "active",
+    summary: "Console operation audit regression"
+  });
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId: "wf-console-operations-other",
+    status: "active",
+    summary: "Other workflow operation audit regression"
+  });
+
+  const gateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { readOnly: true });
+  const preview = await gateway.handle({
+    action: "workflow.supervise.preview",
+    actor: "flashcat",
+    reason: "检查 workflow.supervise.preview token=reason-secret token reasonSpaceSecret token zzz Bearer bearer.secret.token tawhg:reason-secret-token",
+    payload: {
+      workflowId,
+      idempotencyKey: "op-idempotency-key",
+      humanGateId: "hgate-console-op",
+      note: "payload token payloadSpaceSecret callback qqq Bearer payload.bearer.secret"
+    }
+  });
+  assert.equal(preview.ok, true);
+  assert.equal(preview.dryRun, true);
+  const other = await gateway.handle({
+    action: "workflow.supervise.preview",
+    actor: "flashcat",
+    reason: "other workflow",
+    payload: { workflowId: "wf-console-operations-other" }
+  });
+  assert.equal(other.ok, true);
+
+  const rejected = await gateway.handle({
+    action: "workflow.pause",
+    actor: "flashcat",
+    reason: "should be rejected token=rejected-secret",
+    payload: { workflowId }
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.errorCode, "action_not_allowed");
+
+  const rows = sqliteJson(dbFile, `
+SELECT operation_id AS operationId, action, scope_type AS scopeType, scope_id AS scopeId,
+  workflow_id AS workflowId, requested_by AS requestedBy, reason, risk_tier AS riskTier,
+  status, dry_run AS dryRun, idempotency_key AS idempotencyKey, human_gate_id AS humanGateId,
+  preview_result_json AS previewResultJson, result_json AS resultJson, error
+FROM workflow_operations
+ORDER BY created_at ASC;`);
+  assert.equal(rows.length, 3);
+  const previewRow = rows.find((row) => row.operationId === preview.operationId);
+  assert.ok(previewRow);
+  assert.equal(previewRow.action, "workflow.supervise.preview");
+  assert.equal(previewRow.scopeType, "workflow");
+  assert.equal(previewRow.scopeId, workflowId);
+  assert.equal(previewRow.workflowId, workflowId);
+  assert.equal(previewRow.requestedBy, "flashcat");
+  assert.equal(previewRow.status, "completed");
+  assert.equal(previewRow.dryRun, 1);
+  assert.equal(previewRow.idempotencyKey, "op-idempotency-key");
+  assert.equal(previewRow.humanGateId, "hgate-console-op");
+  assert.equal(previewRow.reason.includes("reason-secret"), false);
+  assert.equal(previewRow.reason.includes("reasonSpaceSecret"), false);
+  assert.equal(previewRow.reason.includes("zzz"), false);
+  assert.equal(previewRow.reason.includes("bearer.secret.token"), false);
+  assert.notEqual(previewRow.previewResultJson, "{}");
+  assert.equal(previewRow.previewResultJson.includes("payloadSpaceSecret"), false);
+  assert.equal(previewRow.previewResultJson.includes("qqq"), false);
+  assert.equal(previewRow.previewResultJson.includes("payload.bearer.secret"), false);
+  assert.equal(previewRow.resultJson, "{}");
+  const rejectedRow = rows.find((row) => row.operationId === rejected.operationId);
+  assert.ok(rejectedRow);
+  assert.equal(rejectedRow.action, "workflow.pause");
+  assert.equal(rejectedRow.status, "rejected");
+  assert.equal(rejectedRow.reason.includes("rejected-secret"), false);
+  assert.match(rejectedRow.error, /not allowed/);
+
+  sqliteExec(dbFile, `
+INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at)
+VALUES
+  ('job-dead-failed', 'runtime_drain', 'runtime_drain:hermes:dispatch-dead', 'high', 'failed', '${workflowId}', 'hermes', '{"dispatchId":"dispatch-dead"}', '{}', 3, 3, '2026-05-31T00:00:00.000Z', '', '', 'token job-secret', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', ''),
+  ('job-dead-expired-lease', 'message_flow_reconcile', 'message_flow_reconcile', 'normal', 'running', '${workflowId}', '', '{}', '{}', 1, 20, '2026-05-31T00:00:00.000Z', 'worker-1', '2000-01-01T00:00:00.000Z', 'lease token lease-secret', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:02.000Z', ''),
+  ('job-related-exact-dispatch', 'runtime_drain', 'runtime_drain:hermes:unrelated', 'normal', 'completed', '${workflowId}', 'hermes', '{"dispatchId":"dispatch-max-attempts"}', '{}', 1, 3, '', '', '', '', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:03.000Z', '2026-05-31T00:00:04.000Z'),
+  ('job-related-fuzzy-dedupe', 'runtime_drain', 'runtime_drain:hermes:dispatch-max-attempts-extra', 'normal', 'completed', '${workflowId}', 'hermes', '{}', '{}', 1, 3, '', '', '', '', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:04.000Z', '2026-05-31T00:00:05.000Z');
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-max-attempts', '${workflowId}', '${workflowId}', 'trace-max-attempts', 'idem-max-attempts', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'sent', 'normal', 3, 3, '', 'timeout', 'dispatch token dispatch-secret', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2026-05-31T00:00:03.000Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES ('runtime-dead-letter-evidence', 'dispatch-max-attempts', '${workflowId}', '${workflowId}', 'trace-runtime-evidence', 'hermes', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'timeout', 3, '2026-05-31T00:00:01.000Z', '2026-05-31T00:00:02.000Z', 1000, '', '', '', 'runtime token runtime-secret', '{}');
+INSERT INTO human_gate_buttons(button_id, human_gate_id, callback_token, workflow_id, meeting_id, label, decision_status, button_role, artifact_ref, summary, prompt, payload_json, status, created_by, created_at, updated_at)
+VALUES ('button-stuck-feedback', 'hgate-stuck-feedback', 'callback-stuck-feedback', '${workflowId}', '${workflowId}', '方案 A', 'approved', 'option', '', 'summary', 'prompt', '{}', 'feedback_pending', 'cat_claw', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:00.000Z');
+INSERT INTO side_effect_ledger(side_effect_id, trace_id, workflow_id, dispatch_id, idempotency_key, owner_agent, side_effect_type, status, input_hash, output_hash, artifact_ref, payload_json, created_at, updated_at)
+VALUES ('side-effect-uncertain-op', 'trace-side-effect', '${workflowId}', 'dispatch-max-attempts', 'idem-side-effect', 'cat_body', 'telegram_delivery', 'uncertain', '', '', 'artifact://token side-secret', '{}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:04.000Z');
+INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, outbox_id, target_runtime, target_agent_id, return_policy, status, runtime_completed_at, runtime_failed_at, final_output_present, delivery_receipt_present, last_error, created_at, updated_at)
+VALUES
+  ('flow-dead-delivery-completed', 'trace-flow-dead-completed', 'idem-flow-dead-completed', '${workflowId}', '${workflowId}', 'dispatch-max-attempts', 'outbox-flow-dead-completed', 'openclaw', 'cat_claw', 'report_to_flashcat', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, 'message_flow token flow-secret-completed', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z'),
+  ('flow-dead-delivery-runtime-failed', 'trace-flow-dead-failed', 'idem-flow-dead-failed', '${workflowId}', '${workflowId}', 'dispatch-max-attempts', 'outbox-flow-dead-failed', 'openclaw', 'cat_claw', 'report_to_flashcat', 'runtime_failed', '', '2000-01-01T00:00:00.000Z', 0, 0, 'message_flow token flow-secret-failed', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:02.000Z'),
+  ('flow-dead-delivery-telegram-failed', 'trace-flow-telegram-failed', 'idem-flow-telegram-failed', '${workflowId}', '${workflowId}', 'dispatch-max-attempts', 'outbox-flow-telegram-failed', 'openclaw', 'cat_claw', 'report_to_flashcat', 'telegram_failed', '', '', 1, 0, 'message_flow token flow-secret-telegram', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:03.000Z'),
+  ('flow-silent-delivery', 'trace-flow-silent', 'idem-flow-silent', '${workflowId}', '${workflowId}', 'dispatch-max-attempts', 'outbox-flow-silent', 'openclaw', 'cat_claw', 'silent', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, 'message_flow token flow-secret-silent', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:04.000Z'),
+  ('flow-local-codex-delivery', 'trace-flow-local', 'idem-flow-local', '${workflowId}', '${workflowId}', 'dispatch-max-attempts', 'outbox-flow-local', 'local_codex', 'codex', 'report_to_flashcat', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, 'message_flow token flow-secret-local', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:05.000Z'),
+  ('flow-receipt-present', 'trace-flow-receipt', 'idem-flow-receipt', '${workflowId}', '${workflowId}', 'dispatch-max-attempts', 'outbox-flow-receipt', 'openclaw', 'cat_claw', 'report_to_flashcat', 'telegram_sent', '2000-01-01T00:00:00.000Z', '', 1, 1, 'message_flow token flow-secret-receipt', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:06.000Z'),
+  ('flow-recent-delivery', 'trace-flow-recent', 'idem-flow-recent', '${workflowId}', '${workflowId}', 'dispatch-max-attempts', 'outbox-flow-recent', 'openclaw', 'cat_claw', 'report_to_flashcat', 'runtime_completed', '2999-01-01T00:00:00.000Z', '', 1, 0, 'message_flow token flow-secret-recent', '2026-05-31T00:00:00.000Z', '2999-01-01T00:00:00.000Z'),
+  ('flow-other-workflow-dead', 'trace-flow-other', 'idem-flow-other', 'wf-console-operations-other', 'wf-console-operations-other', 'dispatch-max-attempts', 'outbox-flow-other', 'openclaw', 'cat_claw', 'report_to_flashcat', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, 'message_flow token flow-secret-other', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:07.000Z');
+INSERT INTO message_flow_events(event_id, flow_id, status, event_type, payload_json, created_at)
+VALUES ('event-flow-dead-delivery', 'flow-dead-delivery-completed', 'runtime_completed', 'runtime_output', '{"token":"event-secret"}', '2026-05-31T00:00:03.000Z');
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES ('outbox-flow-dead-completed', '${workflowId}', 'telegram', '8390724843', 'message_flow_reply', 'queued', 'outbox token outbox-secret tawhg:outbox-secret-token', '{}', '2026-05-31T00:00:04.000Z', '2026-05-31T00:00:05.000Z');
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('malformed-json-human-gate', 'human_gate_record', 'pending', NULL, 'regression', 'cat_claw', '', 'artifact://malformed-json-human-gate', '{not-json', 'hash-malformed-json-human-gate', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at)
+VALUES ('job-other-workflow-failed', 'runtime_drain', 'runtime_drain:other', 'high', 'failed', 'wf-console-operations-other', 'hermes', '{}', '{}', 3, 3, '', '', '', 'other', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '');`);
+
+  const jsonl = await fs.readFile(path.join(bridgeDir, "console-operations.jsonl"), "utf8");
+  assert.equal(jsonl.includes("reason-secret"), false);
+  assert.equal(jsonl.includes("reasonSpaceSecret"), false);
+  assert.equal(jsonl.includes("zzz"), false);
+  assert.equal(jsonl.includes("bearer.secret.token"), false);
+  assert.equal(jsonl.includes("payloadSpaceSecret"), false);
+  assert.equal(jsonl.includes("qqq"), false);
+  assert.equal(jsonl.includes("payload.bearer.secret"), false);
+  assert.equal(jsonl.includes("rejected-secret"), false);
+  assert.equal(jsonl.includes("tawhg:reason-secret-token"), false);
+  const operations = await new WorkflowReadModel({ dbFile }).operationsSummary({ workflowId });
+  assert.equal(Boolean(operations.workflowOperations.some((row) => row.operationId === preview.operationId && row.status === "completed")), true);
+  assert.equal(Boolean(operations.workflowOperations.some((row) => row.operationId === rejected.operationId && row.status === "rejected")), true);
+  assert.equal(Boolean(operations.workflowOperations.some((row) => row.operationId === other.operationId)), false);
+  assert.equal(Boolean(operations.workflowOperationSummary.some((row) => row.action === "workflow.supervise.preview" && row.dryRun && row.count === 1)), true);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "control_loop_job" && row.refId === "job-dead-failed")), true);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "expired_lease" && row.refId === "job-dead-expired-lease")), true);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "max_attempt_dispatch" && row.refId === "dispatch-max-attempts")), true);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "human_gate_feedback" && row.refId === "button-stuck-feedback")), true);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "side_effect_uncertain" && row.refId === "side-effect-uncertain-op")), true);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "message_flow_delivery_missing" && row.refId === "flow-dead-delivery-completed")), true);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "message_flow_delivery_missing" && row.refId === "flow-dead-delivery-runtime-failed")), true);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "message_flow_delivery_missing" && row.refId === "flow-dead-delivery-telegram-failed")), true);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.refId === "flow-silent-delivery")), false);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.refId === "flow-local-codex-delivery")), false);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.refId === "flow-receipt-present")), false);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.refId === "flow-recent-delivery")), false);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.refId === "flow-other-workflow-dead")), false);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.refId === "job-other-workflow-failed")), false);
+  assert.equal(operations.humanGate.reduce((total, row) => total + Number(row.count || 0), 0), 0);
+  assert.equal(JSON.stringify(operations.deadLetters).includes("job-secret"), false);
+  assert.equal(JSON.stringify(operations.deadLetters).includes("dispatch-secret"), false);
+  assert.equal(JSON.stringify(operations.deadLetters).includes("side-secret"), false);
+  assert.equal(JSON.stringify(operations.deadLetters).includes("flow-secret"), false);
+  const readOnlyEvidenceCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states")
+  };
+  const deadLetterEvidence = await new WorkflowReadModel({ dbFile }).deadLetterEvidence({
+    workflowId,
+    kind: "message_flow_delivery_missing",
+    refId: "flow-dead-delivery-completed"
+  });
+  assert.equal(deadLetterEvidence.schemaVersion, "workflow_dead_letter_evidence.v1");
+  assert.equal(deadLetterEvidence.writeMode, "read_only_derived_export");
+  assert.equal(deadLetterEvidence.found, true);
+  assert.equal(deadLetterEvidence.primary.messageFlows[0].flow_id, "flow-dead-delivery-completed");
+  assert.equal(deadLetterEvidence.manifest.relatedDispatchCount, 1);
+  assert.equal(deadLetterEvidence.manifest.relatedRuntimeRunCount, 1);
+  assert.equal(deadLetterEvidence.manifest.relatedMessageFlowEventCount, 1);
+  assert.equal(deadLetterEvidence.manifest.relatedOutboxCount, 1);
+  assert.equal(deadLetterEvidence.manifest.relatedControlLoopJobCount, 1);
+  assert.equal(deadLetterEvidence.related.controlLoopJobs[0].job_id, "job-related-exact-dispatch");
+  assert.equal(deadLetterEvidence.incidentCandidate.schemaVersion, "workflow_incident_candidate.v1");
+  assert.equal(deadLetterEvidence.incidentCandidate.writeMode, "read_only_preview");
+  assert.equal(deadLetterEvidence.incidentCandidate.workflowId, workflowId);
+  assert.equal(deadLetterEvidence.incidentCandidate.kind, "message_flow_delivery_missing");
+  assert.equal(deadLetterEvidence.incidentCandidate.refId, "flow-dead-delivery-completed");
+  assert.equal(deadLetterEvidence.incidentCandidate.recommended, true);
+  assert.equal(deadLetterEvidence.incidentCandidate.suggestedMode, "monitoring");
+  assert.equal(deadLetterEvidence.incidentCandidate.affectedPlanes.includes("message_flow"), true);
+  assert.equal(deadLetterEvidence.incidentCandidate.affectedPlanes.includes("delivery"), true);
+  assert.equal(Boolean(deadLetterEvidence.incidentCandidate.evidenceRefs.some((row) => row.id === "flow-dead-delivery-completed")), true);
+  assert.equal(Boolean(deadLetterEvidence.incidentCandidate.evidenceRefs.some((row) => row.id === "dispatch-max-attempts")), true);
+  assert.equal(Boolean(deadLetterEvidence.incidentCandidate.evidenceRefs.some((row) => row.id === "outbox-flow-dead-completed")), true);
+  assert.equal(JSON.stringify(deadLetterEvidence).includes("flow-secret"), false);
+  assert.equal(JSON.stringify(deadLetterEvidence).includes("event-secret"), false);
+  assert.equal(JSON.stringify(deadLetterEvidence).includes("outbox-secret"), false);
+  assert.equal(JSON.stringify(deadLetterEvidence).includes("runtime-secret"), false);
+  assert.equal(JSON.stringify(deadLetterEvidence).includes("job-related-fuzzy-dedupe"), false);
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states")
+  }, readOnlyEvidenceCountsBefore);
+  const wrongScopeEvidence = await new WorkflowReadModel({ dbFile }).deadLetterEvidence({
+    workflowId: "wf-console-operations-other",
+    kind: "message_flow_delivery_missing",
+    refId: "flow-dead-delivery-completed"
+  });
+  assert.equal(wrongScopeEvidence.found, false);
+  const notDeadLetterEvidence = await new WorkflowReadModel({ dbFile }).deadLetterEvidence({
+    workflowId,
+    kind: "message_flow_delivery_missing",
+    refId: "flow-receipt-present"
+  });
+  assert.equal(notDeadLetterEvidence.found, false);
+  assert.equal(notDeadLetterEvidence.status, "not_found");
+  assert.equal(notDeadLetterEvidence.incidentCandidate, null);
+  const invalidDeadLetterEvidence = await new WorkflowReadModel({ dbFile }).deadLetterEvidence({});
+  assert.equal(invalidDeadLetterEvidence.status, "invalid_request");
+  sqliteExec(dbFile, `
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hg-dead-letter-link', 'human_gate_record', 'approved', NULL, 'regression', 'cat_claw', '', 'artifact://hg-dead-letter-link', '{"workflowId":"${workflowId}","summary":"Human Gate evidence for flow-dead-delivery-completed token=hg-option-secret"}', 'hash-hg-dead-letter-link', '2026-05-31T00:00:06.000Z', '2026-05-31T00:00:07.000Z');
+INSERT INTO workflow_verification_results(verification_id, workflow_id, phase_id, phase_key, task_id, agent_run_id, dispatch_id, runtime_run_id, result_type, decision, verifier_agent, refuter_agent, source_runtime, source_agent, confidence, risk_band, summary, findings_json, recommendations_json, evidence_refs_json, artifact_refs_json, receipt_refs_json, payload_hash, payload_json, created_by, created_at)
+VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', '', 'dispatch-max-attempts', '', 'secretary_audit', 'pass', '', '', 'openclaw', 'cat_claw', 'high', 'P2', 'Cat Claw audit evidence token=audit-option-secret', '[]', '[]', '[]', '[]', '[]', 'hash-audit-dead-letter-link', '{}', 'cat_claw', '2026-05-31T00:00:08.000Z');`);
+  const evidenceOptions = await new WorkflowReadModel({ dbFile }).incidentEvidenceOptions(workflowId, {
+    kind: "message_flow_delivery_missing",
+    refId: "flow-dead-delivery-completed"
+  });
+  assert.equal(evidenceOptions.schemaVersion, "workflow_incident_evidence_options.v1");
+  assert.equal(evidenceOptions.writeMode, "read_only_derived_options");
+  assert.equal(Boolean(evidenceOptions.humanGateOptions.some((row) => row.id === "hg-dead-letter-link" && row.recommended)), true);
+  assert.equal(Boolean(evidenceOptions.catClawAuditOptions.some((row) => row.id === "audit-dead-letter-link" && row.recommended)), true);
+  const linkedHumanGateOption = evidenceOptions.humanGateOptions.find((row) => row.id === "hg-dead-letter-link");
+  const linkedCatClawOption = evidenceOptions.catClawAuditOptions.find((row) => row.id === "audit-dead-letter-link");
+  assert.ok(linkedHumanGateOption);
+  assert.ok(linkedCatClawOption);
+  assert.equal(Boolean(linkedHumanGateOption.recommendationReasons.some((row) => row.code === "same_workflow")), true);
+  assert.equal(Boolean(linkedHumanGateOption.recommendationReasons.some((row) => row.code === "cat_claw_source")), true);
+  assert.equal(Boolean(linkedHumanGateOption.recommendationReasons.some((row) => row.code === "positive_status")), true);
+  assert.equal(Boolean(linkedHumanGateOption.recommendationReasons.some((row) => row.code === "references_dead_letter")), true);
+  assert.equal(Boolean(linkedCatClawOption.recommendationReasons.some((row) => row.code === "secretary_audit")), true);
+  assert.equal(Boolean(linkedCatClawOption.recommendationReasons.some((row) => row.code === "cat_claw_source")), true);
+  assert.equal(Boolean(linkedCatClawOption.recommendationReasons.some((row) => row.code === "positive_decision")), true);
+  assert.equal(Boolean(linkedCatClawOption.recommendationReasons.some((row) => row.code === "references_dead_letter")), true);
+  assert.match(linkedHumanGateOption.recommendationSummary, /same workflow/);
+  assert.match(linkedCatClawOption.recommendationSummary, /secretary audit result/);
+  assert.equal(JSON.stringify(evidenceOptions).includes("hg-option-secret"), false);
+  assert.equal(JSON.stringify(evidenceOptions).includes("audit-option-secret"), false);
+  const routedEvidenceOptions = await workflowChildPayload(new WorkflowReadModel({ dbFile }), workflowId, "incident-evidence-options", {
+    kind: "message_flow_delivery_missing",
+    refId: "flow-dead-delivery-completed"
+  });
+  assert.equal(routedEvidenceOptions.counts.humanGateOptions, evidenceOptions.counts.humanGateOptions);
+  const wrongWorkflowEvidenceOptions = await new WorkflowReadModel({ dbFile }).incidentEvidenceOptions("wf-console-operations-other", {
+    kind: "message_flow_delivery_missing",
+    refId: "flow-dead-delivery-completed"
+  });
+  assert.equal(wrongWorkflowEvidenceOptions.counts.humanGateOptions, 0);
+  assert.equal(wrongWorkflowEvidenceOptions.counts.catClawAuditOptions, 0);
+  const emptyWorkflowEvidenceOptions = await new WorkflowReadModel({ dbFile }).incidentEvidenceOptions("", {
+    kind: "message_flow_delivery_missing",
+    refId: "flow-dead-delivery-completed"
+  });
+  assert.equal(emptyWorkflowEvidenceOptions.counts.humanGateOptions, 0);
+  assert.equal(emptyWorkflowEvidenceOptions.counts.catClawAuditOptions, 0);
+  const incidentPreview = await runAction(root, {
+    action: "workflow.incident.from_dead_letter.preview",
+    workflowId,
+    kind: "message_flow_delivery_missing",
+    refId: "flow-dead-delivery-completed"
+  });
+  assert.equal(incidentPreview.schemaVersion, "workflow_dead_letter_incident_preview.v1");
+  assert.equal(incidentPreview.readOnly, true);
+  assert.equal(incidentPreview.eligible, true);
+  assert.equal(incidentPreview.wouldWriteIncident.incidentId.startsWith("incident.dead_letter."), true);
+  assert.equal(incidentPreview.wouldRetryOrRepair, false);
+  assert.equal(incidentPreview.wouldMutate.workflowRuns, 0);
+  assert.equal(sqliteCount(dbFile, "incident_states"), 0);
+  const missingEvidenceBefore = sqliteCount(dbFile, "incident_states");
+  await assert.rejects(
+    () => runAction(root, {
+      action: "workflow.incident.from_dead_letter",
+      workflowId,
+      kind: "message_flow_delivery_missing",
+      refId: "flow-dead-delivery-completed",
+      operatorReason: "try without gate"
+    }),
+    /workflow policy blocked: action=workflow\.incident\.from_dead_letter/
+  );
+  assert.equal(sqliteCount(dbFile, "incident_states"), missingEvidenceBefore);
+  const incidentWriteCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states")
+  };
+  const incidentLinked = await runAction(root, {
+    action: "workflow.incident.from_dead_letter",
+    workflowId,
+    kind: "message_flow_delivery_missing",
+    refId: "flow-dead-delivery-completed",
+    humanGateId: "hg-dead-letter-link",
+    catClawAuditId: "audit-dead-letter-link",
+    operatorReason: "猫爪复核通过，建立 incident 跟踪。 token=incident-secret"
+  });
+  assert.equal(incidentLinked.schemaVersion, "workflow_dead_letter_incident_link_result.v1");
+  assert.equal(incidentLinked.writeBoundary, "incident_state_only");
+  assert.equal(incidentLinked.didRetryOrRepair, false);
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states")
+  }, {
+    ...incidentWriteCountsBefore,
+    incidents: incidentWriteCountsBefore.incidents + 1
+  });
+  const incidentRows = sqliteJson(dbFile, `SELECT * FROM incident_states WHERE incident_id='${incidentLinked.incidentId}' LIMIT 1;`);
+  assert.equal(incidentRows.length, 1);
+  assert.equal(incidentRows[0].status, "monitoring");
+  assert.equal(incidentRows[0].mode, "degraded");
+  assert.equal(JSON.stringify(incidentRows[0]).includes("incident-secret"), false);
+  assert.equal(JSON.stringify(incidentRows[0]).includes("workflow_dead_letter_incident_link.v1"), true);
+  const closeoutCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  };
+  const incidentCloseout = await new WorkflowReadModel({ dbFile }).incidentCloseout(workflowId);
+  assert.equal(incidentCloseout.schemaVersion, "workflow_incident_closeout.v1");
+  assert.equal(incidentCloseout.writeMode, "read_only_derived_closeout");
+  assert.equal(incidentCloseout.incidentId, incidentLinked.incidentId);
+  assert.equal(incidentCloseout.selectedIncident.status, "monitoring");
+  const incidentWorkflowDetail = await new WorkflowReadModel({ dbFile }).workflowDetail(workflowId);
+  assert.equal(Number(incidentWorkflowDetail.counts.openIncidents) >= 1, true);
+  const incidentWorkflowTimeline = await new WorkflowReadModel({ dbFile }).timeline(workflowId);
+  assert.equal(Boolean(incidentWorkflowTimeline.events.some((row) => row.refId === incidentLinked.incidentId)), true);
+  assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "incident_state" && row.status === "pass")), true);
+  assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "dead_letter_evidence_current" && row.status === "pass")), true);
+  assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "human_gate_evidence" && row.status === "pass")), true);
+  assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "cat_claw_audit" && row.status === "pass")), true);
+  assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "operator_reason" && row.status === "pass")), true);
+  assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "rollback_boundary" && row.status === "pass")), true);
+  assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "side_effect_boundary" && row.status === "pass")), true);
+  assert.equal(Boolean(incidentCloseout.timeline.some((row) => row.kind === "incident.created")), true);
+  assert.equal(JSON.stringify(incidentCloseout).includes("incident-secret"), false);
+  assert.equal(JSON.stringify(incidentCloseout).includes("hg-option-secret"), false);
+  assert.equal(JSON.stringify(incidentCloseout).includes("audit-option-secret"), false);
+  const routedIncidentCloseout = await workflowChildPayload(new WorkflowReadModel({ dbFile }), workflowId, "incident-closeout", {
+    incidentId: incidentLinked.incidentId
+  });
+  assert.equal(routedIncidentCloseout.incidentId, incidentLinked.incidentId);
+  const catClawCloseoutPreview = await runAction(root, {
+    action: "workflow.incident.closeout.cat_claw_report.preview",
+    workflowId,
+    incidentId: incidentLinked.incidentId
+  });
+  assert.equal(catClawCloseoutPreview.schemaVersion, "workflow_incident_closeout_preview.v1");
+  assert.equal(catClawCloseoutPreview.readOnly, true);
+  assert.equal(catClawCloseoutPreview.writeMode, "read_only_closeout_package_preview");
+  assert.equal(catClawCloseoutPreview.packageKind, "cat_claw_report");
+  assert.equal(catClawCloseoutPreview.eligible, true);
+  assert.equal(catClawCloseoutPreview.wouldCreate.artifacts, 0);
+  assert.equal(catClawCloseoutPreview.wouldCreate.humanGateRequests, 0);
+  assert.equal(catClawCloseoutPreview.wouldCreate.telegramOutbox, 0);
+  assert.equal(catClawCloseoutPreview.reportDraft.audience, "cat_claw");
+  assert.equal(JSON.stringify(catClawCloseoutPreview).includes("incident-secret"), false);
+  assert.equal(JSON.stringify(catClawCloseoutPreview).includes("hg-option-secret"), false);
+  assert.equal(JSON.stringify(catClawCloseoutPreview).includes("audit-option-secret"), false);
+  const humanGateCloseoutPreview = await runAction(root, {
+    action: "workflow.incident.closeout.human_gate_package.preview",
+    workflowId,
+    incidentId: incidentLinked.incidentId
+  });
+  assert.equal(humanGateCloseoutPreview.schemaVersion, "workflow_incident_closeout_preview.v1");
+  assert.equal(humanGateCloseoutPreview.packageKind, "human_gate_package");
+  assert.equal(humanGateCloseoutPreview.eligible, true);
+  assert.equal(humanGateCloseoutPreview.reportDraft.audience, "flashcat_human_gate");
+  assert.equal(humanGateCloseoutPreview.reportDraft.humanGateOptions.length >= 5, true);
+  assert.equal(Boolean(humanGateCloseoutPreview.reportDraft.humanGateOptions.some((row) => row.optionId === "terminate" && row.style === "danger")), true);
+  assert.equal(humanGateCloseoutPreview.wouldCreate.humanGateButtons, 0);
+  assert.equal(humanGateCloseoutPreview.wouldCreate.runtimeDispatches, 0);
+  assert.equal(JSON.stringify(humanGateCloseoutPreview).includes("incident-secret"), false);
+  const closeoutArtifactPreview = await runAction(root, {
+    action: "workflow.incident.closeout.artifact.preview",
+    workflowId,
+    incidentId: incidentLinked.incidentId,
+    packageKind: "human_gate_package",
+    artifactId: "artifact-closeout-regression"
+  });
+  assert.equal(closeoutArtifactPreview.schemaVersion, "workflow_incident_closeout_artifact_preview.v1");
+  assert.equal(closeoutArtifactPreview.readOnly, true);
+  assert.equal(closeoutArtifactPreview.packageKind, "human_gate_package");
+  assert.equal(closeoutArtifactPreview.eligible, true);
+  assert.equal(closeoutArtifactPreview.writeReady, false);
+  assert.equal(closeoutArtifactPreview.wouldCreate.artifactIndexRows, 2);
+  assert.equal(closeoutArtifactPreview.wouldCreate.humanGateRequests, 0);
+  assert.equal(Boolean(closeoutArtifactPreview.violations.some((row) => row.code === "operator_reason_required")), true);
+  assert.equal(JSON.stringify(closeoutArtifactPreview).includes("incident-secret"), false);
+  const closeoutArtifactReadyPreview = await runAction(root, {
+    action: "workflow.incident.closeout.artifact.preview",
+    workflowId,
+    incidentId: incidentLinked.incidentId,
+    packageKind: "human_gate_package",
+    artifactId: "artifact-closeout-regression-ready-preview",
+    flashcatOriginalWords: "闪电猫原话：允许持久化 closeout artifact。",
+    secretaryAuditId: "audit-dead-letter-link",
+    operatorReason: "ready preview with alternative evidence"
+  });
+  assert.equal(closeoutArtifactReadyPreview.writeReady, true);
+  assert.equal(closeoutArtifactReadyPreview.violations.length, 0);
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  }, closeoutCountsBefore);
+  const blockedCloseoutArtifactEventsBefore = sqliteCount(dbFile, "workflow_events");
+  await assert.rejects(
+    () => runAction(root, {
+      action: "workflow.incident.closeout.artifact",
+      workflowId,
+      incidentId: incidentLinked.incidentId,
+      packageKind: "human_gate_package",
+      artifactId: "artifact-closeout-regression-blocked",
+      operatorReason: "try without governed evidence"
+    }),
+    /workflow policy blocked: action=workflow\.incident\.closeout\.artifact/
+  );
+  assert.equal(sqliteCount(dbFile, "artifact_index"), closeoutCountsBefore.artifacts);
+  assert.equal(sqliteCount(dbFile, "workflow_events"), blockedCloseoutArtifactEventsBefore + 1);
+  const closeoutArtifactWriteCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  };
+  const closeoutArtifact = await runAction(root, {
+    action: "workflow.incident.closeout.artifact",
+    workflowId,
+    incidentId: incidentLinked.incidentId,
+    packageKind: "human_gate_package",
+    artifactId: "artifact-closeout-regression",
+    humanGateId: "hg-dead-letter-link",
+    catClawAuditId: "audit-dead-letter-link",
+    operatorReason: "猫爪复核通过，持久化收口证据包。 token=closeout-artifact-secret"
+  });
+  assert.equal(closeoutArtifact.schemaVersion, "workflow_incident_closeout_artifact_result.v1");
+  assert.equal(closeoutArtifact.writeBoundary, "closeout_artifact_only");
+  assert.equal(closeoutArtifact.didCloseIncident, false);
+  assert.equal(closeoutArtifact.didCreateHumanGate, false);
+  assert.equal(closeoutArtifact.didSendTelegram, false);
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  }, {
+    ...closeoutArtifactWriteCountsBefore,
+    artifacts: closeoutArtifactWriteCountsBefore.artifacts + 2,
+    events: closeoutArtifactWriteCountsBefore.events + 1
+  });
+  const closeoutArtifactRows = sqliteJson(dbFile, `
+SELECT artifact_id AS artifactId, kind, path, summary
+FROM artifact_index
+WHERE artifact_id IN ('artifact-closeout-regression.json','artifact-closeout-regression.md')
+ORDER BY artifact_id;`);
+  assert.equal(closeoutArtifactRows.length, 2);
+  assert.equal(Boolean(closeoutArtifactRows.some((row) => row.kind === "incident_closeout_human_gate_package_json")), true);
+  assert.equal(Boolean(closeoutArtifactRows.some((row) => row.kind === "incident_closeout_human_gate_package_markdown")), true);
+  const closeoutMarkdown = await fs.readFile(path.join(root, closeoutArtifact.markdownRelativePath), "utf8");
+  assert.match(closeoutMarkdown, /Human Gate 收口证据包预览/);
+  assert.equal(closeoutMarkdown.includes("closeout-artifact-secret"), false);
+  const closeoutArtifactJsonPath = path.join(root, closeoutArtifact.jsonRelativePath);
+  const closeoutArtifactRecord = JSON.parse(await fs.readFile(closeoutArtifactJsonPath, "utf8"));
+  closeoutArtifactRecord.reportDraft = {
+    ...(closeoutArtifactRecord.reportDraft || {}),
+    summaryZh: `${closeoutArtifactRecord.reportDraft?.summaryZh || "请闪电猫审核收口方案。"} token=human-gate-preview-secret`,
+    evidenceRefs: [
+      ...((closeoutArtifactRecord.reportDraft?.evidenceRefs || []).filter(Boolean)),
+      "secret=human-gate-preview-secret"
+    ]
+  };
+  await fs.writeFile(closeoutArtifactJsonPath, JSON.stringify(closeoutArtifactRecord, null, 2));
+  const humanGateRequestPreviewCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  };
+  const humanGateRequestPreview = await runAction(root, {
+    action: "workflow.incident.closeout.human_gate_request.preview",
+    workflowId,
+    incidentId: incidentLinked.incidentId,
+    closeoutArtifactId: "artifact-closeout-regression"
+  });
+  assert.equal(humanGateRequestPreview.schemaVersion, "workflow_incident_closeout_human_gate_request_preview.v1");
+  assert.equal(humanGateRequestPreview.readOnly, true);
+  assert.equal(humanGateRequestPreview.eligible, true);
+  assert.equal(humanGateRequestPreview.requestReady, true);
+  assert.equal(humanGateRequestPreview.buttonSummary.planCount >= 3, true);
+  assert.equal(humanGateRequestPreview.buttonSummary.hasA, true);
+  assert.equal(humanGateRequestPreview.buttonSummary.hasB, true);
+  assert.equal(humanGateRequestPreview.buttonSummary.hasC, true);
+  assert.equal(humanGateRequestPreview.buttonSummary.hasPause, true);
+  assert.equal(humanGateRequestPreview.buttonSummary.hasTerminate, true);
+  assert.equal(humanGateRequestPreview.wouldCreate.humanGateRecords, 1);
+  assert.equal(humanGateRequestPreview.wouldCreate.humanGateButtons >= 5, true);
+  assert.equal(humanGateRequestPreview.wouldCreate.telegramOutbox, 1);
+  assert.equal(humanGateRequestPreview.wouldCreate.runtimeDispatches, 0);
+  assert.equal(JSON.stringify(humanGateRequestPreview).includes("closeout-artifact-secret"), false);
+  assert.equal(JSON.stringify(humanGateRequestPreview).includes("human-gate-preview-secret"), false);
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  }, humanGateRequestPreviewCountsBefore);
+  const missingHumanGateRequestPreview = await runAction(root, {
+    action: "workflow.incident.closeout.human_gate_request.preview",
+    workflowId,
+    incidentId: incidentLinked.incidentId,
+    closeoutArtifactId: "artifact-closeout-missing"
+  });
+  assert.equal(missingHumanGateRequestPreview.schemaVersion, "workflow_incident_closeout_human_gate_request_preview.v1");
+  assert.equal(missingHumanGateRequestPreview.eligible, false);
+  assert.equal(missingHumanGateRequestPreview.wouldCreate.humanGateRecords, 0);
+  assert.equal(Boolean(missingHumanGateRequestPreview.violations.some((row) => row.code === "closeout_artifact_not_found")), true);
+  const blockedCloseoutHumanGateEventsBefore = sqliteCount(dbFile, "workflow_events");
+  await assert.rejects(
+    () => runAction(root, {
+      action: "workflow.incident.closeout.human_gate_request",
+      workflowId,
+      incidentId: incidentLinked.incidentId,
+      closeoutArtifactId: "artifact-closeout-regression",
+      operatorReason: "try without governed evidence"
+    }),
+    /workflow policy blocked: action=workflow\.incident\.closeout\.human_gate_request/
+  );
+  assert.equal(sqliteCount(dbFile, "telegram_outbox"), humanGateRequestPreviewCountsBefore.outbox);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons"), humanGateRequestPreviewCountsBefore.humanGateButtons);
+  assert.equal(sqliteCount(dbFile, "workflow_events"), blockedCloseoutHumanGateEventsBefore + 1);
+  const gatewayIncidentPreview = await gateway.handle({
+    action: "workflow.incident.from_dead_letter.preview",
+    actor: "flashcat",
+    reason: "console incident preview",
+    payload: {
+      workflowId,
+      kind: "message_flow_delivery_missing",
+      refId: "flow-dead-delivery-completed"
+    }
+  });
+  assert.equal(gatewayIncidentPreview.ok, true);
+  assert.equal(gatewayIncidentPreview.dryRun, true);
+  const gatewayCloseoutPreview = await gateway.handle({
+    action: "workflow.incident.closeout.human_gate_package.preview",
+    actor: "flashcat",
+    reason: "console closeout package preview",
+    payload: {
+      workflowId,
+      incidentId: incidentLinked.incidentId
+    }
+  });
+  assert.equal(gatewayCloseoutPreview.ok, true);
+  assert.equal(gatewayCloseoutPreview.dryRun, true);
+  assert.equal(gatewayCloseoutPreview.result.packageKind, "human_gate_package");
+  assert.equal(gatewayCloseoutPreview.result.wouldCreate.humanGateRequests, 0);
+  const gatewayCloseoutArtifactPreview = await gateway.handle({
+    action: "workflow.incident.closeout.artifact.preview",
+    actor: "flashcat",
+    reason: "console closeout artifact preview",
+    payload: {
+      workflowId,
+      incidentId: incidentLinked.incidentId,
+      packageKind: "human_gate_package"
+    }
+  });
+  assert.equal(gatewayCloseoutArtifactPreview.ok, true);
+  assert.equal(gatewayCloseoutArtifactPreview.dryRun, true);
+  assert.equal(gatewayCloseoutArtifactPreview.result.wouldCreate.humanGateRequests, 0);
+  const gatewayHumanGateRequestPreview = await gateway.handle({
+    action: "workflow.incident.closeout.human_gate_request.preview",
+    actor: "flashcat",
+    reason: "console closeout Human Gate request preview",
+    payload: {
+      workflowId,
+      incidentId: incidentLinked.incidentId,
+      closeoutArtifactId: "artifact-closeout-regression"
+    }
+  });
+  assert.equal(gatewayHumanGateRequestPreview.ok, true);
+  assert.equal(gatewayHumanGateRequestPreview.dryRun, true);
+  assert.equal(gatewayHumanGateRequestPreview.result.wouldCreate.humanGateRecords, 1);
+  assert.equal(gatewayHumanGateRequestPreview.result.wouldCreate.telegramOutbox, 1);
+  assert.equal(gatewayHumanGateRequestPreview.result.wouldCreate.runtimeDispatches, 0);
+  const gatewayCloseoutHumanGateRejected = await gateway.handle({
+    action: "workflow.incident.closeout.human_gate_request",
+    actor: "flashcat",
+    reason: "console closeout Human Gate write disabled",
+    payload: {
+      workflowId,
+      incidentId: incidentLinked.incidentId,
+      closeoutArtifactId: "artifact-closeout-regression",
+      humanGateEvidence: "hg-console-dead-letter-link",
+      catClawAuditId: "audit-console-dead-letter-link",
+      operatorReason: "should not create Human Gate"
+    }
+  });
+  assert.equal(gatewayCloseoutHumanGateRejected.ok, false);
+  assert.equal(gatewayCloseoutHumanGateRejected.errorCode, "action_not_allowed");
+  const gatewayCloseoutArtifactRejected = await gateway.handle({
+    action: "workflow.incident.closeout.artifact",
+    actor: "flashcat",
+    reason: "console closeout artifact write disabled",
+    payload: {
+      workflowId,
+      incidentId: incidentLinked.incidentId,
+      packageKind: "human_gate_package",
+      humanGateId: "hg-console-dead-letter-link",
+      catClawAuditId: "audit-console-dead-letter-link",
+      operatorReason: "should not persist"
+    }
+  });
+  assert.equal(gatewayCloseoutArtifactRejected.ok, false);
+  assert.equal(gatewayCloseoutArtifactRejected.errorCode, "action_not_allowed");
+  const gatewayIncidentRejected = await gateway.handle({
+    action: "workflow.incident.from_dead_letter",
+    actor: "flashcat",
+    reason: "console write disabled",
+    payload: {
+      workflowId,
+      kind: "message_flow_delivery_missing",
+      refId: "flow-dead-delivery-completed",
+      humanGateId: "hg-console-dead-letter-link",
+      catClawAuditId: "audit-console-dead-letter-link",
+      operatorReason: "should not run"
+    }
+  });
+  assert.equal(gatewayIncidentRejected.ok, false);
+  assert.equal(gatewayIncidentRejected.errorCode, "action_not_allowed");
+  const writeGateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { allowWrites: true });
+  const closeoutHumanGateWriteCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events"),
+    protocolObjects: sqliteCount(dbFile, "protocol_objects"),
+    meetingControlEvents: sqliteCount(dbFile, "meeting_control_events")
+  };
+  const gatewayCloseoutHumanGateWrite = await writeGateway.handle({
+    action: "workflow.incident.closeout.human_gate_request",
+    actor: "flashcat",
+    reason: "console governed closeout Human Gate request token=closeout-hgate-secret",
+    payload: {
+      workflowId,
+      incidentId: incidentLinked.incidentId,
+      closeoutArtifactId: "artifact-closeout-regression",
+      humanGateEvidence: "hg-console-dead-letter-link",
+      catClawAuditId: "audit-console-dead-letter-link",
+      operatorReason: "console governed closeout Human Gate request token=closeout-hgate-secret"
+    }
+  });
+  assert.equal(gatewayCloseoutHumanGateWrite.ok, true);
+  assert.equal(gatewayCloseoutHumanGateWrite.result.schemaVersion, "workflow_incident_closeout_human_gate_request_result.v1");
+  assert.equal(gatewayCloseoutHumanGateWrite.result.writeBoundary, "human_gate_request_only");
+  assert.equal(gatewayCloseoutHumanGateWrite.result.didEnsureHumanGate, true);
+  assert.equal(gatewayCloseoutHumanGateWrite.result.didCreateHumanGate, true);
+  assert.equal(gatewayCloseoutHumanGateWrite.result.didEnsureTelegramOutbox, true);
+  assert.equal(gatewayCloseoutHumanGateWrite.result.didCreateTelegramOutbox, true);
+  assert.equal(gatewayCloseoutHumanGateWrite.result.telegramOutboxDeduped, false);
+  assert.equal(gatewayCloseoutHumanGateWrite.result.didSendTelegram, false);
+  assert.equal(gatewayCloseoutHumanGateWrite.result.didDispatchRuntime, false);
+  assert.equal(gatewayCloseoutHumanGateWrite.result.didCloseIncident, false);
+  assert.ok(gatewayCloseoutHumanGateWrite.result.telegramOutboxId);
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events"),
+    protocolObjects: sqliteCount(dbFile, "protocol_objects"),
+    meetingControlEvents: sqliteCount(dbFile, "meeting_control_events")
+  }, {
+    ...closeoutHumanGateWriteCountsBefore,
+    outbox: closeoutHumanGateWriteCountsBefore.outbox + 1,
+    humanGateButtons: closeoutHumanGateWriteCountsBefore.humanGateButtons + gatewayCloseoutHumanGateWrite.result.humanGateButtonCount,
+    events: closeoutHumanGateWriteCountsBefore.events + 1,
+    protocolObjects: closeoutHumanGateWriteCountsBefore.protocolObjects + 1,
+    meetingControlEvents: closeoutHumanGateWriteCountsBefore.meetingControlEvents + 1
+  });
+  const closeoutHumanGateOperationRows = sqliteJson(dbFile, `
+SELECT reason, result_json AS resultJson
+FROM workflow_operations
+WHERE operation_id='${gatewayCloseoutHumanGateWrite.operationId}'
+LIMIT 1;`);
+  assert.equal(closeoutHumanGateOperationRows.length, 1);
+  assert.equal(JSON.stringify(closeoutHumanGateOperationRows[0]).includes("closeout-hgate-secret"), false);
+  const telegramDeliveryPreviewCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events"),
+    protocolObjects: sqliteCount(dbFile, "protocol_objects"),
+    meetingControlEvents: sqliteCount(dbFile, "meeting_control_events")
+  };
+  const gatewayTelegramDeliveryPreview = await gateway.handle({
+    action: "telegram.outbox.delivery.preview",
+    actor: "flashcat",
+    reason: "console telegram delivery preview",
+    payload: {
+      outboxId: gatewayCloseoutHumanGateWrite.result.telegramOutboxId
+    }
+  });
+  assert.equal(gatewayTelegramDeliveryPreview.ok, true);
+  assert.equal(gatewayTelegramDeliveryPreview.dryRun, true);
+  assert.equal(gatewayTelegramDeliveryPreview.result.schemaVersion, "telegram_outbox_delivery_preview.v1");
+  assert.equal(gatewayTelegramDeliveryPreview.result.readOnly, true);
+  assert.equal(gatewayTelegramDeliveryPreview.result.writeBoundary, "preview_only");
+  assert.equal(gatewayTelegramDeliveryPreview.result.eligible, true);
+  assert.equal(gatewayTelegramDeliveryPreview.result.claimEligible, true);
+  assert.equal(gatewayTelegramDeliveryPreview.result.wouldSendTelegram, true);
+  assert.equal(gatewayTelegramDeliveryPreview.result.wouldUpdate.telegramOutboxStatus, "delivering_then_sent_or_failed");
+  assert.equal(gatewayTelegramDeliveryPreview.result.buttonSummary.buttonCount >= 5, true);
+  assert.equal(gatewayTelegramDeliveryPreview.result.executionPolicy.previewOnly, true);
+  assert.equal(gatewayTelegramDeliveryPreview.result.executionPolicy.governanceReady, false);
+  assert.equal(gatewayTelegramDeliveryPreview.result.executionPolicy.evidencePresence.deliveryOperatorReason, false);
+  assert.equal(gatewayTelegramDeliveryPreview.result.executionPolicy.evidencePresence.catClawAudit, false);
+  assert.equal(Boolean(gatewayTelegramDeliveryPreview.result.governanceViolations.some((row) => row.code === "delivery_operator_reason_required")), true);
+  assert.equal(Boolean(gatewayTelegramDeliveryPreview.result.governanceViolations.some((row) => row.code === "cat_claw_audit_required")), true);
+  assert.equal(gatewayTelegramDeliveryPreview.result.receiptPolicy.deliveryReceiptRequired, true);
+  assert.equal(gatewayTelegramDeliveryPreview.result.receiptPolicy.humanGateDeliveryEvidence, "telegram_outbox_payload_delivery_required_before_closeout");
+  assert.equal(JSON.stringify(gatewayTelegramDeliveryPreview).includes("closeout-hgate-secret"), false);
+  assert.equal(JSON.stringify(gatewayTelegramDeliveryPreview).includes("human-gate-preview-secret"), false);
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events"),
+    protocolObjects: sqliteCount(dbFile, "protocol_objects"),
+    meetingControlEvents: sqliteCount(dbFile, "meeting_control_events")
+  }, telegramDeliveryPreviewCountsBefore);
+  const deliveryPreviewMissingTargetAt = new Date().toISOString();
+  sqliteExec(dbFile, `
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES ('outbox-delivery-preview-missing-target', '${workflowId}', 'private', '', 'human_gate_request', 'queued', 'delivery preview missing target', '{}', '${deliveryPreviewMissingTargetAt}', '${deliveryPreviewMissingTargetAt}');`);
+  const gatewayTelegramDeliveryMissingTarget = await gateway.handle({
+    action: "telegram.outbox.delivery.preview",
+    actor: "flashcat",
+    reason: "console telegram missing target preview",
+    payload: {
+      outboxId: "outbox-delivery-preview-missing-target"
+    }
+  });
+  assert.equal(gatewayTelegramDeliveryMissingTarget.ok, true);
+  assert.equal(gatewayTelegramDeliveryMissingTarget.result.eligible, false);
+  assert.equal(gatewayTelegramDeliveryMissingTarget.result.wouldSendTelegram, false);
+  assert.equal(Boolean(gatewayTelegramDeliveryMissingTarget.result.violations.some((row) => row.code === "target_missing")), true);
+  const requeuePreviewCreatedAt = new Date().toISOString();
+  sqliteExec(dbFile, `
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES
+  ('outbox-requeue-preview-failed', '${workflowId}', 'private', '8390724843', 'human_gate_request', 'failed', 'failed delivery requeue preview', '{"account":"cat_claw","humanGateId":"hgate-requeue-preview","buttons":[{"optionId":"A"},{"optionId":"B"},{"optionId":"C"},{"control":"pause"},{"control":"terminate"}],"delivery":{"channel":"telegram","account":"cat_claw","target":"8390724843","failedAt":"2026-05-31T00:00:00.000Z","error":"network timeout token=requeue-secret"}}', '${requeuePreviewCreatedAt}', '${requeuePreviewCreatedAt}'),
+  ('outbox-requeue-preview-stale', '${workflowId}', 'private', '8390724843', 'human_gate_request', 'delivering', 'stale delivery requeue preview', '{"account":"cat_claw","humanGateId":"hgate-requeue-preview","buttons":[{"optionId":"A"},{"optionId":"B"},{"optionId":"C"},{"control":"pause"},{"control":"terminate"}],"deliveryClaim":{"claimId":"claim-stale","claimedAt":"2000-01-01T00:00:00.000Z","owner":"worker-stale","previousStatus":"queued"}}', '${requeuePreviewCreatedAt}', '2000-01-01T00:00:00.000Z'),
+  ('outbox-requeue-preview-fresh', '${workflowId}', 'private', '8390724843', 'human_gate_request', 'delivering', 'fresh delivery requeue preview', '{"account":"cat_claw","humanGateId":"hgate-requeue-preview","buttons":[{"optionId":"A"},{"optionId":"B"},{"optionId":"C"},{"control":"pause"},{"control":"terminate"}]}', '${requeuePreviewCreatedAt}', '${requeuePreviewCreatedAt}'),
+  ('outbox-requeue-preview-sent', '${workflowId}', 'private', '8390724843', 'human_gate_request', 'sent', 'sent delivery requeue preview', '{"account":"cat_claw","humanGateId":"hgate-requeue-preview","buttons":[{"optionId":"A"},{"optionId":"B"},{"optionId":"C"},{"control":"pause"},{"control":"terminate"}],"delivery":{"channel":"telegram","account":"cat_claw","target":"8390724843","deliveredAt":"2026-05-31T00:00:00.000Z","receipts":[{"ok":true}]}}', '${requeuePreviewCreatedAt}', '${requeuePreviewCreatedAt}');`);
+  const requeuePreviewCountsBefore = {
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    events: sqliteCount(dbFile, "workflow_events"),
+    protocolObjects: sqliteCount(dbFile, "protocol_objects"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger")
+  };
+  const failedRequeuePreview = await gateway.handle({
+    action: "telegram.outbox.requeue.preview",
+    actor: "flashcat",
+    reason: "console failed requeue preview",
+    payload: {
+      outboxId: "outbox-requeue-preview-failed"
+    }
+  });
+  assert.equal(failedRequeuePreview.ok, true);
+  assert.equal(failedRequeuePreview.result.schemaVersion, "telegram_outbox_requeue_preview.v1");
+  assert.equal(failedRequeuePreview.result.readOnly, true);
+  assert.equal(failedRequeuePreview.result.writeBoundary, "preview_only");
+  assert.equal(failedRequeuePreview.result.requeueEligible, true);
+  assert.equal(failedRequeuePreview.result.strategy, "retry_failed_delivery");
+  assert.equal(failedRequeuePreview.result.governanceReady, false);
+  assert.equal(failedRequeuePreview.result.requeuePolicy.preserveOutboxId, true);
+  assert.equal(failedRequeuePreview.result.requeuePolicy.createNewHumanGateRequest, false);
+  assert.equal(failedRequeuePreview.result.requeuePolicy.createNewTelegramOutbox, false);
+  assert.equal(Boolean(failedRequeuePreview.result.governanceViolations.some((row) => row.code === "requeue_operator_reason_required")), true);
+  assert.equal(JSON.stringify(failedRequeuePreview).includes("requeue-secret"), false);
+  const governedFailedRequeuePreview = await gateway.handle({
+    action: "telegram.outbox.requeue.preview",
+    actor: "flashcat",
+    reason: "console governed failed requeue preview",
+    payload: {
+      outboxId: "outbox-requeue-preview-failed",
+      catClawAuditId: "audit-console-dead-letter-link",
+      deliveryApprovalId: "delivery-approval-preview-only",
+      requeueOperatorReason: "explicit requeue reason"
+    }
+  });
+  assert.equal(governedFailedRequeuePreview.ok, true);
+  assert.equal(governedFailedRequeuePreview.result.governanceReady, true);
+  assert.equal(governedFailedRequeuePreview.result.recommendedNextAction, "telegram.outbox.delivery");
+  assert.equal(governedFailedRequeuePreview.result.wouldUpdate.telegramOutboxStatus, "delivering_then_sent_or_failed");
+  assert.equal(governedFailedRequeuePreview.result.executionPolicy.evidencePresence.requeueOperatorReason, true);
+  assert.equal(governedFailedRequeuePreview.result.executionPolicy.evidencePresence.catClawAudit, true);
+  assert.equal(governedFailedRequeuePreview.result.deliveryPreview.executionPolicy.evidencePresence.deliveryOperatorReason, true);
+  const requeuePackagePreview = await gateway.handle({
+    action: "telegram.outbox.requeue.execution_package.preview",
+    actor: "flashcat",
+    reason: "console failed requeue package preview",
+    payload: {
+      outboxId: "outbox-requeue-preview-failed",
+      catClawAuditId: "audit-console-dead-letter-link",
+      deliveryApprovalId: "delivery-approval-preview-only",
+      requeueOperatorReason: "explicit requeue package reason"
+    }
+  });
+  assert.equal(requeuePackagePreview.ok, true);
+  assert.equal(requeuePackagePreview.dryRun, true);
+  assert.equal(requeuePackagePreview.result.schemaVersion, "telegram_outbox_requeue_execution_package_preview.v1");
+  assert.equal(requeuePackagePreview.result.readOnly, true);
+  assert.equal(requeuePackagePreview.result.writeBoundary, "preview_only");
+  assert.equal(requeuePackagePreview.result.futureExecutionAction, "telegram.outbox.delivery");
+  assert.equal(requeuePackagePreview.result.didWrite, false);
+  assert.equal(requeuePackagePreview.result.didSendTelegram, false);
+  assert.equal(requeuePackagePreview.result.didCreateHumanGate, false);
+  assert.equal(requeuePackagePreview.result.didCreateOutbox, false);
+  assert.equal(requeuePackagePreview.result.didTouchTradingState, false);
+  assert.equal(requeuePackagePreview.result.readyForCatClawReview, true);
+  assert.equal(requeuePackagePreview.result.readyForExecutionRequest, true);
+  assert.equal(requeuePackagePreview.result.package.options.length, 3);
+  assert.deepEqual(requeuePackagePreview.result.package.options.map((row) => row.optionId), ["A", "B", "C"]);
+  assert.equal(Boolean(requeuePackagePreview.result.package.controls.some((row) => row.controlId === "pause_workflow" && row.buttonStyle === "primary")), true);
+  assert.equal(Boolean(requeuePackagePreview.result.package.controls.some((row) => row.controlId === "terminate_workflow" && row.buttonStyle === "danger")), true);
+  assert.equal(requeuePackagePreview.result.auditBoundary.noParallelHumanGate, true);
+  assert.equal(requeuePackagePreview.result.auditBoundary.noParallelOutbox, true);
+  assert.equal(requeuePackagePreview.result.package.packageTextZh.includes("Telegram outbox 重投递执行前确认包"), true);
+  assert.equal(requeuePackagePreview.result.package.packageTextZh.includes("猫爪"), true);
+  assert.equal(JSON.stringify(requeuePackagePreview).includes("requeue-secret"), false);
+  const directRequeuePackagePreview = await runAction(root, {
+    action: "telegram.outbox.requeue.execution_package.preview",
+    outboxId: "outbox-requeue-preview-failed",
+    catClawAuditId: "audit-console-dead-letter-link",
+    deliveryApprovalId: "delivery-approval-preview-only",
+    requeueOperatorReason: "explicit direct requeue package reason"
+  });
+  assert.equal(directRequeuePackagePreview.schemaVersion, "telegram_outbox_requeue_execution_package_preview.v1");
+  assert.equal(directRequeuePackagePreview.readOnly, true);
+  assert.equal(directRequeuePackagePreview.readyForExecutionRequest, true);
+  const aliasRequeuePackagePreview = await gateway.handle({
+    action: "workflow.telegram.outbox.requeue.package.preview",
+    actor: "flashcat",
+    reason: "console alias requeue package preview",
+    payload: {
+      outboxId: "outbox-requeue-preview-failed",
+      catClawAuditId: "audit-console-dead-letter-link",
+      deliveryApprovalId: "delivery-approval-preview-only",
+      requeueOperatorReason: "explicit alias requeue package reason"
+    }
+  });
+  assert.equal(aliasRequeuePackagePreview.ok, true);
+  assert.equal(aliasRequeuePackagePreview.errorCode, undefined);
+  assert.equal(aliasRequeuePackagePreview.action, "telegram.outbox.requeue.execution_package.preview");
+  assert.equal(aliasRequeuePackagePreview.result.schemaVersion, "telegram_outbox_requeue_execution_package_preview.v1");
+  assert.equal(aliasRequeuePackagePreview.result.readyForExecutionRequest, true);
+  const staleRequeuePreview = await gateway.handle({
+    action: "telegram.outbox.requeue.preview",
+    actor: "flashcat",
+    reason: "console stale requeue preview",
+    payload: {
+      outboxId: "outbox-requeue-preview-stale",
+      catClawAuditId: "audit-console-dead-letter-link",
+      requeueOperatorReason: "explicit stale requeue reason"
+    }
+  });
+  assert.equal(staleRequeuePreview.ok, true);
+  assert.equal(staleRequeuePreview.result.requeueEligible, true);
+  assert.equal(staleRequeuePreview.result.strategy, "reclaim_stale_delivery_lease");
+  assert.equal(staleRequeuePreview.result.governanceReady, true);
+  assert.equal(Boolean(staleRequeuePreview.result.warnings.some((row) => row.code === "stale_delivery_lease")), true);
+  const freshRequeuePreview = await gateway.handle({
+    action: "telegram.outbox.requeue.preview",
+    actor: "flashcat",
+    reason: "console fresh delivery requeue preview",
+    payload: {
+      outboxId: "outbox-requeue-preview-fresh",
+      catClawAuditId: "audit-console-dead-letter-link",
+      deliveryOperatorReason: "explicit fresh delivery reason"
+    }
+  });
+  assert.equal(freshRequeuePreview.ok, true);
+  assert.equal(freshRequeuePreview.result.requeueEligible, false);
+  assert.equal(freshRequeuePreview.result.strategy, "wait_for_active_delivery_lease");
+  assert.equal(Boolean(freshRequeuePreview.result.violations.some((row) => row.code === "delivery_lease_active")), true);
+  const sentRequeuePreview = await gateway.handle({
+    action: "telegram.outbox.requeue.preview",
+    actor: "flashcat",
+    reason: "console sent requeue preview",
+    payload: {
+      outboxId: "outbox-requeue-preview-sent",
+      catClawAuditId: "audit-console-dead-letter-link",
+      deliveryOperatorReason: "explicit sent delivery reason"
+    }
+  });
+  assert.equal(sentRequeuePreview.ok, true);
+  assert.equal(sentRequeuePreview.result.requeueEligible, false);
+  assert.equal(sentRequeuePreview.result.strategy, "terminal_sent_idempotent_replay_only");
+  assert.equal(sentRequeuePreview.result.wouldResendTelegram, false);
+  assert.deepEqual({
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    events: sqliteCount(dbFile, "workflow_events"),
+    protocolObjects: sqliteCount(dbFile, "protocol_objects"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger")
+  }, requeuePreviewCountsBefore);
+  const requeueStatusRows = sqliteJson(dbFile, `
+SELECT outbox_id AS outboxId, status
+FROM telegram_outbox
+WHERE outbox_id LIKE 'outbox-requeue-preview-%'
+ORDER BY outbox_id;`);
+  assert.deepEqual(requeueStatusRows.map((row) => row.status), ["failed", "delivering", "sent", "delivering"]);
+  const gatewayTelegramDeliveryGovernedReady = await gateway.handle({
+    action: "telegram.outbox.delivery.preview",
+    actor: "flashcat",
+    reason: "console telegram governed delivery preview",
+    payload: {
+      outboxId: gatewayCloseoutHumanGateWrite.result.telegramOutboxId,
+      catClawAuditId: "audit-console-dead-letter-link",
+      deliveryApprovalId: "delivery-approval-preview-only",
+      deliveryOperatorReason: "explicit delivery execution reason"
+    }
+  });
+  assert.equal(gatewayTelegramDeliveryGovernedReady.ok, true);
+  assert.equal(gatewayTelegramDeliveryGovernedReady.result.executionPolicy.governanceReady, true);
+  assert.equal(gatewayTelegramDeliveryGovernedReady.result.executionPolicy.evidencePresence.deliveryOperatorReason, true);
+  assert.equal(gatewayTelegramDeliveryGovernedReady.result.executionPolicy.evidencePresence.catClawAudit, true);
+  assert.equal(gatewayTelegramDeliveryGovernedReady.result.didSendTelegram, undefined);
+  assert.equal(sqliteJson(dbFile, `
+SELECT status, payload_json LIKE '%deliveryClaim%' AS hasClaim
+FROM telegram_outbox
+WHERE outbox_id='${gatewayCloseoutHumanGateWrite.result.telegramOutboxId}'
+LIMIT 1;`)[0].status, "queued");
+  const fakeTelegramBin = path.join(root, "fake-openclaw-telegram.mjs");
+  await fs.writeFile(fakeTelegramBin, [
+    "#!/usr/bin/env node",
+    "console.log(JSON.stringify({ ok: true, payload: { ok: true, provider: 'fake-openclaw', message_id: 'fake-message-id' } }));",
+    ""
+  ].join("\n"), "utf8");
+  await fs.chmod(fakeTelegramBin, 0o755);
+  const deliveryExecutionWorkflowId = `${workflowId}-delivery-exec-clean`;
+  const deliveryExecutionOutboxId = "outbox-delivery-exec-clean";
+  const deliveryExecutionCreatedAt = new Date().toISOString();
+  sqliteExec(dbFile, `
+INSERT INTO workflow_runs(workflow_id, workflow_type, status, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
+VALUES ('${deliveryExecutionWorkflowId}', 'regression', 'running', 'main', 'Telegram delivery execution regression', 'Verify governed Telegram delivery execution.', 'Delivery writes terminal outbox receipt only.', 'manual stop', 'delivery', '', '{}', '${deliveryExecutionCreatedAt}', '${deliveryExecutionCreatedAt}');
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES ('${deliveryExecutionOutboxId}', '${deliveryExecutionWorkflowId}', 'private', '8390724843', 'human_gate_request', 'queued', 'delivery execution regression text', '{"account":"cat_claw","buttons":[{"optionId":"A"},{"optionId":"B"},{"optionId":"C"},{"control":"pause"},{"control":"terminate"}]}', '${deliveryExecutionCreatedAt}', '${deliveryExecutionCreatedAt}');`);
+  const deliveryExecutionBlockedEventsBefore = sqliteCount(dbFile, "workflow_events");
+  const gatewayTelegramDeliveryBlocked = await writeGateway.handle({
+    action: "telegram.outbox.delivery",
+    actor: "flashcat",
+    reason: "console delivery execution without explicit delivery reason",
+    payload: {
+      workflowId: deliveryExecutionWorkflowId,
+      outboxId: deliveryExecutionOutboxId,
+      catClawAuditId: "audit-console-dead-letter-link",
+      deliveryApprovalId: "delivery-approval-preview-only",
+      openclawBin: fakeTelegramBin
+    }
+  });
+  assert.equal(gatewayTelegramDeliveryBlocked.ok, false);
+  assert.equal(gatewayTelegramDeliveryBlocked.errorCode, "action_failed");
+  assert.match(gatewayTelegramDeliveryBlocked.message, /delivery_operator_reason_required/);
+  assert.equal(sqliteCount(dbFile, "workflow_events"), deliveryExecutionBlockedEventsBefore);
+  const deliveryExecutionEventsBefore = sqliteCount(dbFile, "workflow_events");
+  const gatewayTelegramDeliveryExecuted = await writeGateway.handle({
+    action: "telegram.outbox.delivery",
+    actor: "flashcat",
+    reason: "console governed telegram delivery execution",
+    payload: {
+      workflowId: deliveryExecutionWorkflowId,
+      outboxId: deliveryExecutionOutboxId,
+      catClawAuditId: "audit-console-dead-letter-link",
+      deliveryApprovalId: "delivery-approval-preview-only",
+      deliveryOperatorReason: "explicit delivery execution reason",
+      openclawBin: fakeTelegramBin
+    }
+  });
+  assert.equal(gatewayTelegramDeliveryExecuted.ok, true);
+  assert.equal(gatewayTelegramDeliveryExecuted.dryRun, false);
+  assert.equal(gatewayTelegramDeliveryExecuted.result.schemaVersion, "telegram_outbox_delivery_result.v1");
+  assert.equal(gatewayTelegramDeliveryExecuted.result.writeBoundary, "telegram_delivery_only");
+  assert.equal(gatewayTelegramDeliveryExecuted.result.didSendTelegram, true);
+  assert.equal(gatewayTelegramDeliveryExecuted.result.didTouchTradingState, false);
+  assert.equal(gatewayTelegramDeliveryExecuted.result.deliveryStatus, "sent");
+  assert.equal(gatewayTelegramDeliveryExecuted.result.executionPolicy.previewOnly, false);
+  assert.equal(gatewayTelegramDeliveryExecuted.result.receiptPolicy.deliveryReceiptRequired, true);
+  const deliveredOutboxRow = sqliteJson(dbFile, `
+SELECT status, payload_json AS payloadJson
+FROM telegram_outbox
+WHERE outbox_id='${deliveryExecutionOutboxId}'
+LIMIT 1;`)[0];
+  assert.equal(deliveredOutboxRow.status, "sent");
+  assert.equal(JSON.parse(deliveredOutboxRow.payloadJson).delivery.channel, "telegram");
+  assert.equal(sqliteCount(dbFile, "workflow_events"), deliveryExecutionEventsBefore + 1);
+  const deliveryReplayEventsBefore = sqliteCount(dbFile, "workflow_events");
+  const gatewayTelegramDeliveryReplay = await writeGateway.handle({
+    action: "telegram.outbox.delivery",
+    actor: "flashcat",
+    reason: "console governed telegram delivery replay",
+    payload: {
+      workflowId: deliveryExecutionWorkflowId,
+      outboxId: deliveryExecutionOutboxId,
+      catClawAuditId: "audit-console-dead-letter-link",
+      deliveryApprovalId: "delivery-approval-preview-only",
+      deliveryOperatorReason: "explicit delivery execution reason",
+      openclawBin: fakeTelegramBin
+    }
+  });
+  assert.equal(gatewayTelegramDeliveryReplay.ok, true);
+  assert.equal(gatewayTelegramDeliveryReplay.result.idempotentReplay, true);
+  assert.equal(gatewayTelegramDeliveryReplay.result.didSendTelegram, false);
+  assert.equal(sqliteCount(dbFile, "workflow_events"), deliveryReplayEventsBefore);
+  const deliveryReadModel = new WorkflowReadModel({ dbFile });
+  const deliveryOutboxView = await deliveryReadModel.outbox(deliveryExecutionWorkflowId);
+  const deliveryOutboxReadRow = deliveryOutboxView.outbox.find((row) => row.outboxId === deliveryExecutionOutboxId);
+  assert.ok(deliveryOutboxReadRow);
+  assert.equal(deliveryOutboxReadRow.deliveryReceipt.receiptComplete, true);
+  assert.equal(deliveryOutboxReadRow.deliveryReceipt.receiptState, "complete");
+  assert.equal(deliveryOutboxReadRow.deliveryReceipt.receiptCount, 1);
+  const deliveryReceiptsView = await deliveryReadModel.receipts(deliveryExecutionWorkflowId);
+  const deliveryReceiptRow = deliveryReceiptsView.receipts.find((row) => row.kind === "telegram_outbox" && row.outboxId === deliveryExecutionOutboxId);
+  assert.ok(deliveryReceiptRow);
+  assert.equal(deliveryReceiptRow.present, true);
+  assert.equal(deliveryReceiptRow.deliveryReceipt.receiptComplete, true);
+  const deliveryReadiness = await deliveryReadModel.humanGateReadiness(deliveryExecutionWorkflowId);
+  assert.equal(deliveryReadiness.summary.sentOutboxCompleteReceiptCount, 1);
+  assert.equal(deliveryReadiness.delivery.sentCompleteReceipt, 1);
+  const deliveryOperations = await deliveryReadModel.operationsSummary({ workflowId: deliveryExecutionWorkflowId });
+  assert.equal(deliveryOperations.deliveryExecutions.length >= 2, true);
+  assert.equal(Boolean(deliveryOperations.deliveryExecutions.some((row) => row.outboxId === deliveryExecutionOutboxId && row.deliveryStatus === "sent" && row.didSendTelegram)), true);
+  assert.equal(Boolean(deliveryOperations.deliveryExecutions.some((row) => row.outboxId === deliveryExecutionOutboxId && row.idempotentReplay)), true);
+  const deliveryPack = await deliveryReadModel.evidencePack(deliveryExecutionWorkflowId, { limit: 80 });
+  assert.equal(deliveryPack.manifest.deliveryExecutionCount >= 2, true);
+  assert.equal(Boolean(deliveryPack.operations.deliveryExecutions.some((row) => row.outboxId === deliveryExecutionOutboxId)), true);
+  sqliteExec(dbFile, `
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-delivery-closeout', 'monitoring', 'delivery', '["telegram"]', 'Delivery closeout regression', 'main', 'Telegram delivery receipt audit', 'Delivery completed and should be visible for closeout.', '', 'rollback boundary recorded', 'terminal delivery receipt complete', '[]', '{"workflowId":"${deliveryExecutionWorkflowId}","createdByAction":"workflow.incident.from_dead_letter","operatorReason":"delivery closeout regression","catClawAuditId":"audit-console-dead-letter-link","incidentCandidate":{"rollbackBoundary":"rollback boundary recorded"}}', '${deliveryExecutionCreatedAt}', '', '', '${deliveryExecutionCreatedAt}');`);
+  const deliveryCloseout = await deliveryReadModel.incidentCloseout(deliveryExecutionWorkflowId, { incidentId: "incident-delivery-closeout" });
+  const deliveryCloseoutCheck = deliveryCloseout.checklist.find((row) => row.key === "telegram_delivery_receipt");
+  assert.ok(deliveryCloseoutCheck);
+  assert.equal(deliveryCloseoutCheck.status, "pass");
+  const gatewayIncidentLinked = await writeGateway.handle({
+    action: "workflow.incident.from_dead_letter",
+    actor: "flashcat",
+    reason: "console governed write token=gateway-incident-secret",
+    payload: {
+      workflowId,
+      kind: "message_flow_delivery_missing",
+      refId: "flow-dead-delivery-completed",
+      humanGateId: "hg-console-dead-letter-link",
+      catClawAuditId: "audit-console-dead-letter-link",
+      operatorReason: "console governed write token=gateway-incident-secret"
+    }
+  });
+  assert.equal(gatewayIncidentLinked.ok, true);
+  assert.equal(gatewayIncidentLinked.result.writeBoundary, "incident_state_only");
+  assert.equal(gatewayIncidentLinked.result.didRetryOrRepair, false);
+  const gatewayIncidentRows = sqliteJson(dbFile, `
+SELECT reason, result_json AS resultJson
+FROM workflow_operations
+WHERE operation_id='${gatewayIncidentLinked.operationId}'
+LIMIT 1;`);
+  assert.equal(gatewayIncidentRows.length, 1);
+  assert.equal(JSON.stringify(gatewayIncidentRows[0]).includes("gateway-incident-secret"), false);
+  const operationsWithBadQuery = await new WorkflowReadModel({ dbFile }).operationsSummary({
+    workflowId,
+    staleDispatchMinutes: "not-a-number",
+    humanGateFeedbackHours: "also-bad",
+    messageFlowStuckMinutes: "bad-message-flow-window"
+  });
+  assert.equal(operationsWithBadQuery.deadLetters.length >= 8, true);
+  const messageFlowOnlyOperations = await new WorkflowReadModel({ dbFile }).operationsSummary({
+    workflowId,
+    deadLetterKind: "message_flow_delivery_missing"
+  });
+  assert.equal(messageFlowOnlyOperations.deadLetterFilter.totalBeforeFilter >= 8, true);
+  assert.equal(messageFlowOnlyOperations.deadLetterFilter.totalAfterFilter, 3);
+  assert.equal(messageFlowOnlyOperations.deadLetters.every((row) => row.kind === "message_flow_delivery_missing"), true);
+  const failedStatusOperations = await new WorkflowReadModel({ dbFile }).operationsSummary({
+    workflowId,
+    deadLetterStatus: "failed"
+  });
+  assert.equal(failedStatusOperations.deadLetterFilter.totalAfterFilter, 1);
+  assert.equal(failedStatusOperations.deadLetters[0].status, "failed");
+  assert.equal(Boolean(failedStatusOperations.deadLetterAvailableStatuses.some((row) => row.status === "failed")), true);
+  const genericLimitOperations = await new WorkflowReadModel({ dbFile }).operationsSummary({
+    workflowId,
+    limit: 1
+  });
+  assert.equal(genericLimitOperations.deadLetterFilter.limit, 200);
+  assert.equal(genericLimitOperations.deadLetters.length >= 8, true);
+  const warningOperations = await new WorkflowReadModel({ dbFile }).operationsSummary({
+    workflowId,
+    deadLetterSeverity: "warning",
+    deadLetterLimit: 1
+  });
+  assert.equal(warningOperations.deadLetterFilter.totalAfterFilter >= 2, true);
+  assert.equal(warningOperations.deadLetterFilter.returned, 1);
+  assert.equal(warningOperations.deadLetters.length, 1);
+  assert.equal(warningOperations.deadLetters[0].severity, "warning");
+  assert.equal(
+    warningOperations.deadLetterSummary.reduce((total, row) => total + Number(row.count || 0), 0),
+    warningOperations.deadLetterFilter.totalAfterFilter
+  );
+  const legacyRoot = await tempRoot("workflow-operations-legacy");
+  const legacyDbFile = path.join(legacyRoot, "tracking.db");
+  sqliteExec(legacyDbFile, "CREATE TABLE legacy_marker(id TEXT PRIMARY KEY);");
+  const legacyOperations = await new WorkflowReadModel({ dbFile: legacyDbFile }).operationsSummary({ workflowId: "missing" });
+  assert.equal(legacyOperations.source, "workflow_scoped");
+  assert.deepEqual(legacyOperations.controlLoopJobs, []);
+  assert.deepEqual(legacyOperations.workflowOperations, []);
+  assert.deepEqual(legacyOperations.deadLetters, []);
+  assert.deepEqual(legacyOperations.telegramOutbox, []);
+  const partialRoot = await tempRoot("workflow-operations-partial");
+  const partialDbFile = path.join(partialRoot, "tracking.db");
+  sqliteExec(partialDbFile, `
+CREATE TABLE workflow_operations(operation_id TEXT, action TEXT, status TEXT);
+INSERT INTO workflow_operations(operation_id, action, status)
+VALUES ('legacy-op-1', 'workflow.supervise.preview', 'completed');`);
+  const partialScoped = await new WorkflowReadModel({ dbFile: partialDbFile }).operationsSummary({ workflowId });
+  assert.deepEqual(partialScoped.workflowOperations, []);
+  const partialGlobal = await new WorkflowReadModel({ dbFile: partialDbFile }).operationsSummary();
+  assert.equal(partialGlobal.workflowOperations[0].operationId, "legacy-op-1");
+  assert.equal(partialGlobal.workflowOperations[0].workflowId, "");
+  await runAction(partialRoot, {
+    action: "workflow.run.upsert",
+    workflowId: "wf-console-operations-partial",
+    status: "active",
+    summary: "Partial workflow operations migration"
+  });
+  const partialGateway = new WorkflowActionGateway({ root: partialRoot, dbFile: partialDbFile, bridgeDir: path.join(partialRoot, "bridge") }, { readOnly: true });
+  const partialPreview = await partialGateway.handle({
+    action: "workflow.supervise.preview",
+    actor: "flashcat",
+    reason: "partial schema token abc",
+    payload: { workflowId: "wf-console-operations-partial" }
+  });
+  assert.equal(partialPreview.ok, true);
+  const partialRows = sqliteJson(partialDbFile, `SELECT workflow_id AS workflowId, reason FROM workflow_operations WHERE operation_id = '${partialPreview.operationId}';`);
+  assert.equal(partialRows[0].workflowId, "wf-console-operations-partial");
+  assert.equal(partialRows[0].reason.includes("abc"), false);
+}
+
+async function testWorkflowInterventionPreviews() {
+  const root = await tempRoot("workflow-intervention-preview");
+  const dbFile = path.join(root, "tracking.db");
+  const bridgeDir = path.join(root, "bridge");
+  const workflowId = "wf-intervention-preview";
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId,
+    status: "active",
+    phase: "research",
+    summary: "Controlled intervention preview regression"
+  });
+  sqliteExec(dbFile, `
+INSERT INTO workflow_phases(phase_id, workflow_id, phase_key, ordinal, status, owner_agent, owner_agents_json, depends_on_json, acceptance_criteria_json, verifier_agent, human_gate_required, plan_node_refs_json, payload_json, created_at, started_at, completed_at, updated_at)
+VALUES ('phase-intervention-research', '${workflowId}', 'research', 1, 'in_progress', 'cat_body', '["cat_body"]', '[]', '["evidence present"]', 'cat_claw', 0, '[]', '{}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '2026-05-31T00:00:02.000Z');
+INSERT INTO workflow_tasks(task_id, workflow_id, parent_task_id, phase, owner_agent, runtime, agent_id, task_type, status, priority, depends_on_json, expected_artifact, actual_artifact_ref, receipt_required, human_gate_required, summary, prompt, payload_json, blocked_reason, created_by, created_at, due_at, started_at, completed_at, updated_at)
+VALUES ('task-intervention-research', '${workflowId}', '', 'research', 'cat_body', 'hermes', 'cat_body', 'research', 'in_progress', 'normal', '[]', 'artifact://expected', '', 1, 0, 'Research task', 'Do research', '{}', '', 'main', '2026-05-31T00:00:00.000Z', '', '2026-05-31T00:00:01.000Z', '', '2026-05-31T00:00:02.000Z');
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-intervention-agent', '${workflowId}', '${workflowId}', 'trace-intervention', 'idem-intervention', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'sent', 'normal', 1, 3, '', '', '', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2026-05-31T00:00:02.000Z');
+INSERT INTO workflow_agent_runs(agent_run_id, workflow_id, phase_id, phase_key, task_id, dispatch_id, runtime_run_id, session_run_id, runtime, agent_id, status, attempt, input_hash, output_hash, receipt_ref, error, payload_json, started_at, completed_at, created_at, updated_at)
+VALUES ('agent-run-intervention', '${workflowId}', 'phase-intervention-research', 'research', 'task-intervention-research', 'dispatch-intervention-agent', 'runtime-run-intervention', '', 'hermes', 'cat_body', 'completed', 1, 'hash-in', 'hash-out', 'artifact://receipt-intervention', '', '{}', '2026-05-31T00:00:01.000Z', '2026-05-31T00:00:03.000Z', '2026-05-31T00:00:01.000Z', '2026-05-31T00:00:03.000Z');
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES ('checkpoint-intervention', '${workflowId}', 'active', 'research', 'dispatch_ready', 'Checkpoint before intervention preview', '{}', '[]', '[]', '[]', '[]', '{}', 'artifact://checkpoint-intervention', 'main', '2026-05-31T00:00:04.000Z');`);
+
+  const gateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { readOnly: true });
+  const pause = await gateway.handle({
+    action: "workflow.pause.preview",
+    actor: "flashcat",
+    reason: "preview pause token abc",
+    payload: { workflowId }
+  });
+  assert.equal(pause.ok, true);
+  assert.equal(pause.dryRun, true);
+  assert.equal(pause.result.kind, "pause_workflow");
+  assert.equal(pause.result.eligible, true);
+  assert.equal(pause.result.wouldUpdateWorkflow.status, "paused");
+  assert.equal(pause.result.humanGateRequired, true);
+  assert.equal(pause.result.wouldAffect.activeDispatches, 1);
+
+  const resume = await gateway.handle({
+    action: "workflow.resume.preview",
+    actor: "flashcat",
+    reason: "preview resume",
+    payload: { workflowId }
+  });
+  assert.equal(resume.ok, true);
+  assert.equal(resume.result.kind, "resume_workflow");
+  assert.equal(resume.result.eligible, false);
+  assert.equal(Boolean(resume.result.violations.some((item) => item.code === "resume_invalid_status")), true);
+
+  const rerunPhase = await gateway.handle({
+    action: "workflow.rerun.phase.preview",
+    actor: "flashcat",
+    reason: "preview rerun phase",
+    payload: { workflowId, phaseKey: "research" }
+  });
+  assert.equal(rerunPhase.ok, true);
+  assert.equal(rerunPhase.result.kind, "rerun_phase");
+  assert.equal(rerunPhase.result.eligible, true);
+  assert.equal(rerunPhase.result.wouldAffect.targetPhases, 1);
+
+  const rerunAgent = await gateway.handle({
+    action: "workflow.rerun.agent.preview",
+    actor: "flashcat",
+    reason: "preview rerun agent",
+    payload: { workflowId, agentId: "cat_body" }
+  });
+  assert.equal(rerunAgent.ok, true);
+  assert.equal(rerunAgent.result.kind, "rerun_agent");
+  assert.equal(rerunAgent.result.eligible, true);
+  assert.equal(rerunAgent.result.wouldAffect.targetAgentRuns, 1);
+
+  const rejectedWrite = await gateway.handle({
+    action: "workflow.stop",
+    actor: "flashcat",
+    reason: "real stop remains disabled",
+    payload: { workflowId }
+  });
+  assert.equal(rejectedWrite.ok, false);
+  assert.equal(rejectedWrite.errorCode, "action_not_allowed");
+  const rows = sqliteJson(dbFile, `
+SELECT action, status, dry_run AS dryRun, preview_result_json AS previewResultJson, reason
+FROM workflow_operations
+WHERE workflow_id='${workflowId}'
+ORDER BY created_at ASC;`);
+  assert.equal(rows.filter((row) => row.action.endsWith(".preview") && row.status === "completed" && row.dryRun === 1).length, 4);
+  assert.equal(Boolean(rows.some((row) => row.action === "workflow.stop" && row.status === "rejected")), true);
+  assert.equal(rows.some((row) => row.reason.includes("abc")), false);
+  const workflowRows = sqliteJson(dbFile, `SELECT status FROM workflow_runs WHERE workflow_id='${workflowId}';`);
+  assert.equal(workflowRows[0].status, "active");
+}
+
+async function testWorkflowInterventionExecution() {
+  const root = await tempRoot("workflow-intervention-execution");
+  const bridgeDir = path.join(root, "bridge");
+  const workflowId = "workflow-intervention-execute";
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId,
+    status: "active",
+    ownerAgent: "main",
+    summary: "Intervention execution regression",
+    objective: "Verify governed pause/resume/stop execution."
+  });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES ('checkpoint-intervention-execute', '${workflowId}', 'active', 'research', 'dispatch_ready', 'Checkpoint before real intervention', '{}', '[]', '[]', '[]', '[]', '{}', 'artifact://checkpoint-intervention-execute', 'main', '2026-05-31T00:00:04.000Z');
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-intervention-execute', '${workflowId}', '${workflowId}', 'trace-intervention-execute', 'idem-intervention-execute-dispatch', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'sent', 'normal', 1, 3, '', '', '', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2026-05-31T00:00:02.000Z');`);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.pause",
+      workflowId,
+      operatorReason: "missing policy evidence",
+      rollbackBoundary: "artifact://checkpoint-intervention-execute"
+    }),
+    /workflow policy blocked: action=workflow\.pause policyOutcome=requires_human_gate/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.resume",
+      workflowId,
+      humanGateId: "hg-intervention-execute",
+      catClawAuditId: "audit-intervention-execute",
+      operatorReason: "resume from invalid status",
+      rollbackBoundary: "artifact://checkpoint-intervention-execute"
+    }),
+    /workflow intervention not eligible: action=workflow\.resume violations=resume_invalid_status/
+  );
+
+  const pause = await runAction(root, {
+    action: "workflow.pause",
+    workflowId,
+    traceId: "trace-intervention-pause",
+    humanGateId: "hg-intervention-execute",
+    catClawAuditId: "audit-intervention-execute",
+    actor: "flashcat",
+    operatorReason: "pause token abc before review",
+    rollbackBoundary: "artifact://checkpoint-intervention-execute",
+    idempotencyKey: "idem-intervention-pause"
+  });
+  assert.equal(pause.status, "executed");
+  assert.equal(pause.previousStatus, "active");
+  assert.equal(pause.nextStatus, "paused");
+  assert.equal(pause.affected.dispatches, 0);
+  let workflowRow = sqliteJson(dbFile, `SELECT status, current_decision AS currentDecision FROM workflow_runs WHERE workflow_id='${workflowId}' LIMIT 1;`)[0];
+  assert.equal(workflowRow.status, "paused");
+  assert.equal(workflowRow.currentDecision, "pause_workflow_executed");
+
+  const resume = await runAction(root, {
+    action: "workflow.resume",
+    workflowId,
+    traceId: "trace-intervention-resume",
+    humanGateId: "hg-intervention-execute",
+    catClawAuditId: "audit-intervention-execute",
+    actor: "flashcat",
+    operatorReason: "resume after review",
+    rollbackBoundary: "artifact://checkpoint-intervention-execute",
+    idempotencyKey: "idem-intervention-resume"
+  });
+  assert.equal(resume.status, "executed");
+  assert.equal(resume.previousStatus, "paused");
+  assert.equal(resume.nextStatus, "active");
+
+  const gateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { readOnly: false, allowWrites: true });
+  const stop = await gateway.handle({
+    action: "workflow.stop",
+    actor: "flashcat",
+    reason: "stop token abc after final review",
+    payload: {
+      workflowId,
+      traceId: "trace-intervention-stop",
+      humanGateId: "hg-intervention-execute",
+      catClawAuditId: "audit-intervention-execute",
+      rollbackBoundary: "artifact://checkpoint-intervention-execute"
+    }
+  });
+  assert.equal(stop.ok, true);
+  assert.equal(stop.dryRun, false);
+  assert.equal(stop.result.nextStatus, "stopped");
+  workflowRow = sqliteJson(dbFile, `SELECT status, current_decision AS currentDecision FROM workflow_runs WHERE workflow_id='${workflowId}' LIMIT 1;`)[0];
+  assert.equal(workflowRow.status, "stopped");
+  assert.equal(workflowRow.currentDecision, "stop_workflow_executed");
+
+  const dispatchRow = sqliteJson(dbFile, `SELECT status FROM mixed_meeting_dispatches WHERE dispatch_id='dispatch-intervention-execute' LIMIT 1;`)[0];
+  assert.equal(dispatchRow.status, "sent");
+  const eventRows = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, payload_json AS payloadJson
+FROM workflow_events
+WHERE workflow_id='${workflowId}'
+  AND event_type='workflow.intervention.executed'
+ORDER BY created_at ASC;`);
+  assert.equal(eventRows.length, 3);
+  assert.equal(eventRows.some((row) => row.payloadJson.includes("abc")), false);
+  const operationRow = sqliteJson(dbFile, `
+SELECT action, status, dry_run AS dryRun, preview_result_json AS previewResultJson, result_json AS resultJson, reason
+FROM workflow_operations
+WHERE workflow_id='${workflowId}' AND action='workflow.stop'
+LIMIT 1;`)[0];
+  assert.equal(operationRow.status, "completed");
+  assert.equal(operationRow.dryRun, 0);
+  assert.equal(operationRow.previewResultJson, "{}");
+  assert.equal(operationRow.resultJson.includes("\"nextStatus\":\"stopped\""), true);
+  assert.equal(operationRow.reason.includes("abc"), false);
+
+  const readOnlyGateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { readOnly: true, allowWrites: true });
+  const readOnlyStop = await readOnlyGateway.handle({
+    action: "workflow.stop",
+    actor: "flashcat",
+    reason: "read-only stop blocked",
+    payload: { workflowId, humanGateId: "hg", catClawAuditId: "audit", rollbackBoundary: "artifact://checkpoint" }
+  });
+  assert.equal(readOnlyStop.ok, false);
+  assert.equal(readOnlyStop.errorCode, "console_readonly");
+
+  const terminateWorkflowId = "workflow-intervention-terminate-alias";
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId: terminateWorkflowId,
+    status: "active",
+    ownerAgent: "main",
+    summary: "Terminate alias regression"
+  });
+  const terminateAlias = await runAction(root, {
+    action: "workflow.terminate",
+    workflowId: terminateWorkflowId,
+    humanGateId: "hg-intervention-terminate",
+    catClawAuditId: "audit-intervention-terminate",
+    operatorReason: "terminate alias with evidence",
+    rollbackBoundary: "artifact://checkpoint-intervention-terminate",
+    idempotencyKey: "idem-intervention-terminate"
+  });
+  assert.equal(terminateAlias.kind, "stop_workflow");
+  assert.equal(terminateAlias.nextStatus, "stopped");
+  const terminateRow = sqliteJson(dbFile, `SELECT status, current_decision AS currentDecision FROM workflow_runs WHERE workflow_id='${terminateWorkflowId}' LIMIT 1;`)[0];
+  assert.equal(terminateRow.status, "stopped");
+  assert.equal(terminateRow.currentDecision, "stop_workflow_executed");
+}
+
+async function testWorkflowVerificationResults() {
+  const root = await tempRoot("workflow-verification");
+  const workflowId = "workflow-verification-regression";
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId,
+    status: "active",
+    phase: "verify",
+    acceptanceCriteria: "Verifier/refuter evidence is recorded without mutating workflow state.",
+    summary: "Workflow verification regression"
+  });
+  const verifier = await runAction(root, {
+    action: "workflow.verification.record",
+    verificationId: "verification-pass-regression",
+    workflowId,
+    phaseKey: "verify",
+    taskId: "task-verify",
+    agentRunId: "agent-run-verify",
+    resultType: "verifier",
+    decision: "pass",
+    callerAgent: "local_codex",
+    verifierAgent: "cat_claw",
+    sourceRuntime: "openclaw",
+    sourceAgent: "cat_claw",
+    confidence: "high",
+    riskBand: "low",
+    summary: "验收通过，token abc 不应泄漏。",
+    findings: ["证据完整", "callback token should redact"],
+    recommendations: ["允许进入猫爪复核"],
+    evidenceRefs: ["artifact://evidence-verification", "artifact://token abc"],
+    artifactRefs: ["artifact://artifact-verification"],
+    receiptRefs: ["artifact://receipt-verification"],
+    payload: {
+      callbackToken: "secret-callback-token",
+      command: "/hgate tawhg:verification-secret approve",
+      nested: { apiKey: "secret-api-key" }
+    },
+    createdBy: "cat_claw"
+  });
+  assert.equal(verifier.verificationId, "verification-pass-regression");
+  assert.equal(verifier.decision, "pass");
+  assert.equal(verifier.resultType, "verifier");
+
+  const refuter = await runAction(root, {
+    action: "workflow.verifier_refuter.record",
+    verificationId: "verification-refuter-regression",
+    workflowId,
+    phaseKey: "verify",
+    resultType: "refuter",
+    decision: "uncertain",
+    callerAgent: "local_codex",
+    refuterAgent: "cat_heart",
+    summary: "反证未发现阻断项。",
+    findings: ["未发现反证"],
+    createdBy: "cat_heart"
+  });
+  assert.equal(refuter.resultType, "refuter");
+  assert.equal(refuter.decision, "uncertain");
+
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "verifier_bot",
+    displayName: "Verifier Bot",
+    capabilities: { permissions: ["workflow.verify"] }
+  });
+  await runAction(root, {
+    action: "workflow.verification.record",
+    verificationId: "verification-spoof-regression",
+    workflowId,
+    phaseKey: "verify",
+    resultType: "verifier",
+    decision: "pass",
+    callerAgent: "verifier_bot",
+    callerRuntime: "hermers",
+    verifierAgent: "cat_claw",
+    sourceAgent: "cat_claw",
+    createdBy: "cat_claw",
+    summary: "Registered verifier must not spoof cat_claw attribution."
+  });
+
+  const dbFile = path.join(root, "tracking.db");
+  const rows = sqliteJson(dbFile, `
+SELECT verification_id AS verificationId, result_type AS resultType, decision, verifier_agent AS verifierAgent, source_agent AS sourceAgent, created_by AS createdBy, summary, evidence_refs_json AS evidenceRefsJson, payload_json AS payloadJson
+FROM workflow_verification_results
+WHERE workflow_id='${workflowId}'
+ORDER BY created_at ASC;`);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].verificationId, "verification-pass-regression");
+  assert.equal(rows[0].payloadJson.includes("secret-callback-token"), false);
+  assert.equal(rows[0].payloadJson.includes("verification-secret"), false);
+  assert.equal(rows[0].payloadJson.includes("secret-api-key"), false);
+  assert.equal(rows[0].summary.includes("abc"), false);
+  assert.equal(rows[0].evidenceRefsJson.includes("abc"), false);
+  const spoofRow = rows.find((row) => row.verificationId === "verification-spoof-regression");
+  assert.equal(spoofRow.verifierAgent, "verifier_bot");
+  assert.equal(spoofRow.sourceAgent, "verifier_bot");
+  assert.equal(spoofRow.createdBy, "verifier_bot");
+  assert.equal(sqliteJson(dbFile, `SELECT status FROM workflow_runs WHERE workflow_id='${workflowId}';`)[0].status, "active");
+
+  const view = await new WorkflowReadModel({ dbFile }).verification(workflowId);
+  assert.equal(view.source, "workflow_verification_results");
+  assert.equal(view.count, 3);
+  assert.equal(view.summary.byDecision.pass, 2);
+  assert.equal(view.summary.byDecision.uncertain, 1);
+  assert.equal(JSON.stringify(view).includes("abc"), false);
+  assert.equal(JSON.stringify(view).includes("secret-callback-token"), false);
+  assert.equal(JSON.stringify(view).includes("verification-secret"), false);
+  const routeView = await workflowChildPayload(new WorkflowReadModel({ dbFile }), workflowId, "verification");
+  assert.equal(routeView.count, 3);
+  const verificationListAlias = await runAction(root, {
+    action: "workflow.verifications",
+    workflowId,
+    limit: 10
+  });
+  assert.equal(verificationListAlias.count, 3);
+  assert.equal(Boolean(verificationListAlias.results.some((row) => row.verification_id === "verification-pass-regression")), true);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.verification.record",
+      verificationId: "verification-pass-regression",
+      workflowId,
+      callerAgent: "local_codex",
+      resultType: "verifier",
+      decision: "pass"
+    }),
+    /already exists/
+  );
+  sqliteExec(dbFile, "DROP TABLE workflow_verification_results;");
+  sqliteExec(dbFile, "CREATE TABLE workflow_verification_results (verification_id TEXT PRIMARY KEY, workflow_id TEXT);");
+  sqliteExec(dbFile, `INSERT INTO workflow_verification_results(verification_id, workflow_id) VALUES ('partial-verification', '${workflowId}');`);
+  const partialView = await new WorkflowReadModel({ dbFile }).verification(workflowId);
+  assert.equal(partialView.source, "workflow_verification_results");
+  assert.equal(partialView.count, 1);
+  assert.equal(partialView.results[0].verificationId, "partial-verification");
+}
+
+async function testWorkflowEvaluatorEvidence() {
+  const root = await tempRoot("workflow-evaluator");
+  const workflowId = "workflow-evaluator-regression";
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId,
+    status: "active",
+    acceptanceCriteria: "All tasks are done, evidence exists, and verifier passes.",
+    summary: "Workflow evaluator regression",
+    payload: { planSpecV2: { objective: { acceptanceCriteria: ["done", "verified"] } } }
+  });
+  await runAction(root, {
+    action: "workflow.task.create",
+    workflowId,
+    taskId: "task-evaluator-done",
+    phase: "verify",
+    status: "done",
+    ownerAgent: "main",
+    createdBy: "local_codex",
+    summary: "Evaluator task done"
+  });
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId,
+    status: "active",
+    acceptanceCriteria: "All tasks are done, evidence exists, and verifier passes.",
+    payload: { planSpecV2: { objective: { acceptanceCriteria: ["done", "verified"] } } }
+  });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES ('artifact-evaluator', '${workflowId}', 'evidence', 'artifact://evaluator', 'Evaluator evidence', 'local_codex', '2026-05-31T00:00:00.000Z');`);
+  await runAction(root, {
+    action: "workflow.verification.record",
+    verificationId: "verification-evaluator-input",
+    workflowId,
+    phaseKey: "verify",
+    resultType: "verifier",
+    decision: "pass",
+    callerAgent: "local_codex",
+    sourceAgent: "cat_claw",
+    summary: "Verifier pass."
+  });
+  const beforeEvaluatorCounts = {
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger")
+  };
+  const first = await runAction(root, {
+    action: "workflow.evaluate",
+    verificationId: "evaluation-met-regression",
+    workflowId,
+    phaseKey: "verify",
+    callerAgent: "local_codex",
+    evaluatorAgent: "main"
+  });
+  assert.equal(first.resultType, "evaluator");
+  assert.equal(first.decision, "met");
+  assert.equal(sqliteJson(dbFile, `SELECT status FROM workflow_runs WHERE workflow_id='${workflowId}';`)[0].status, "active");
+  assert.equal(sqliteJson(dbFile, `SELECT status FROM workflow_tasks WHERE task_id='task-evaluator-done';`)[0].status, "done");
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons"), 0);
+  assert.deepEqual({
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger")
+  }, beforeEvaluatorCounts);
+
+  sqliteExec(dbFile, `
+INSERT INTO side_effect_ledger(side_effect_id, workflow_id, side_effect_type, status, payload_json, created_at, updated_at)
+VALUES ('side-effect-evaluator-uncertain', '${workflowId}', 'test', 'uncertain', '{}', '2026-05-31T00:01:00.000Z', '2026-05-31T00:01:00.000Z');`);
+  const sideEffectsBeforeSecondEvaluation = sqliteCount(dbFile, "side_effect_ledger");
+  const second = await runAction(root, {
+    action: "workflow.evaluator.run",
+    verificationId: "evaluation-side-effect-regression",
+    workflowId,
+    callerAgent: "local_codex",
+    evaluatorAgent: "main"
+  });
+  assert.equal(second.resultType, "evaluator");
+  assert.equal(second.decision, "side_effect_uncertain");
+  assert.equal(sqliteCount(dbFile, "side_effect_ledger"), sideEffectsBeforeSecondEvaluation);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), beforeEvaluatorCounts.dispatches);
+  assert.equal(sqliteCount(dbFile, "runtime_runs"), beforeEvaluatorCounts.runtimeRuns);
+  assert.equal(sqliteCount(dbFile, "telegram_outbox"), beforeEvaluatorCounts.outbox);
+
+  const view = await new WorkflowReadModel({ dbFile }).verification(workflowId);
+  assert.equal(view.summary.byType.evaluator, 2);
+  assert.equal(view.summary.byDecision.met, 1);
+  assert.equal(view.summary.byDecision.side_effect_uncertain, 1);
+  const evaluatorPayload = view.results.find((row) => row.verificationId === "evaluation-met-regression")?.payload || {};
+  assert.equal(evaluatorPayload.evaluator, "workflow_evaluator_v1");
+  assert.equal(evaluatorPayload.snapshot.planSpecPresent, true);
 }
 
 async function testHumanGatePendingCleanupAndRetryRedaction() {
@@ -914,6 +2715,21 @@ FROM runtime_runs
 WHERE dispatch_id='${dispatchId}'
   AND status='retry_scheduled';`)[0];
   assert.equal(run.count, 1);
+  const indexedAgentRun = sqliteJson(dbFile, `
+SELECT agent_run_id AS agentRunId, workflow_id AS workflowId, dispatch_id AS dispatchId,
+  runtime_run_id AS runtimeRunId, runtime, agent_id AS agentId, status, attempt, error
+FROM workflow_agent_runs
+WHERE dispatch_id='${dispatchId}'
+  AND status='retry_scheduled'
+LIMIT 1;`)[0];
+  assert.ok(indexedAgentRun.agentRunId.startsWith("runtime."));
+  assert.equal(indexedAgentRun.workflowId, "workflow-message-flow-ack-retry");
+  assert.equal(indexedAgentRun.dispatchId, dispatchId);
+  assert.ok(indexedAgentRun.runtimeRunId);
+  assert.equal(indexedAgentRun.runtime, "openclaw");
+  assert.equal(indexedAgentRun.agentId, "main");
+  assert.equal(indexedAgentRun.attempt, 1);
+  assert.match(indexedAgentRun.error, /ack/i);
 
   const emptyAck = await runAction(root, {
     action: "workflow.message_flow.send",
@@ -1196,7 +3012,10 @@ async function testTradeIntentFailClosed() {
     orderType: "limit",
     actor: "flashcat",
     assurance: "mtls",
-    clientCertFingerprint: "test-cert"
+    clientCertFingerprint: "test-cert",
+    humanGateId: "hg-fail-closed-policy-evidence",
+    catClawAuditId: "audit-fail-closed-policy-evidence",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
   });
   assert.equal(intent.status, "rejected");
   assert.ok(intent.rejectionReasons.includes("missing_idempotency_key"));
@@ -1222,6 +3041,10 @@ async function createApprovedHumanGate(root, input = {}) {
 async function testTradeIntentChainAndReceiptGuardrails() {
   const root = await tempRoot("trade-chain");
   const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+  const riskDecisionPolicyEvidence = {
+    catClawAuditId: "audit-risk-decision-policy",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+  };
   const proposalA = await runAction(root, {
     action: "trade.proposal",
     proposalId: "proposal-A",
@@ -1259,7 +3082,8 @@ async function testTradeIntentChainAndReceiptGuardrails() {
       action: "risk.decision",
       riskDecisionId: "risk-missing",
       proposalId: "proposal-missing",
-      status: "approved"
+      status: "approved",
+      ...riskDecisionPolicyEvidence
     }),
     /approved risk\.decision requires an existing trade_proposal parent/
   );
@@ -1315,7 +3139,8 @@ LIMIT 1;`);
       preOrderRiskAuditId: "pora-empty",
       status: "approved",
       reviewerAgent: "cat_tail",
-      dispatchType: "pre_order_risk_audit"
+      dispatchType: "pre_order_risk_audit",
+      ...riskDecisionPolicyEvidence
     }),
     /approved risk\.decision requires numeric riskLimits/
   );
@@ -1330,7 +3155,8 @@ LIMIT 1;`);
       decision: "rejected",
       reviewerAgent: "cat_tail",
       dispatchType: "pre_order_risk_audit",
-      riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 }
+      riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 },
+      ...riskDecisionPolicyEvidence
     }),
     /rejected risk\.decision requires evidenceRefs/
   );
@@ -1347,8 +3173,17 @@ LIMIT 1;`);
     dispatchType: "pre_order_risk_audit",
     riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 },
     evidenceRefs: ["artifact://trade-chain/evidence"],
-    paperRef: "artifact://trade-chain/cat_tail-risk-paper"
+    paperRef: "artifact://trade-chain/cat_tail-risk-paper",
+    ...riskDecisionPolicyEvidence
   });
+  const tradeIntentPolicyEvidence = {
+    catClawAuditId: "audit-trade-chain",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+  };
+  const receiptPolicyEvidence = {
+    humanGateId,
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+  };
   const ready = await runAction(root, {
     action: "trade.intent",
     intentId: "intent-ready",
@@ -1363,6 +3198,7 @@ LIMIT 1;`);
     riskDecisionId: "risk-A",
     preOrderRiskAuditId: "pora-A",
     humanGateId,
+    ...tradeIntentPolicyEvidence,
     actor: "flashcat",
     assurance: "mtls",
     sourceSystem: "codex_mtls",
@@ -1413,6 +3249,7 @@ LIMIT 1;`);
     riskDecisionId: "risk-A",
     preOrderRiskAuditId: "pora-A",
     humanGateId,
+    ...tradeIntentPolicyEvidence,
     actor: "flashcat",
     assurance: "mtls",
     sourceSystem: "codex_mtls",
@@ -1445,6 +3282,7 @@ LIMIT 1;`);
     riskDecisionId: "risk-A",
     preOrderRiskAuditId: "pora-A",
     humanGateId,
+    ...tradeIntentPolicyEvidence,
     actor: "flashcat",
     assurance: "mtls",
     sourceSystem: "codex_mtls",
@@ -1478,6 +3316,7 @@ LIMIT 1;`);
       riskDecisionId: "risk-A",
       preOrderRiskAuditId: "pora-A",
       humanGateId,
+      ...tradeIntentPolicyEvidence,
       actor: "flashcat",
       assurance: "mtls",
       sourceSystem: "codex_mtls",
@@ -1511,6 +3350,7 @@ LIMIT 1;`);
       riskDecisionId: "risk-A",
       preOrderRiskAuditId: "pora-A",
       humanGateId,
+      ...tradeIntentPolicyEvidence,
       actor: "flashcat",
       assurance: "mtls",
       sourceSystem: "codex_mtls",
@@ -1537,6 +3377,7 @@ LIMIT 1;`);
     riskDecisionId: "risk-A",
     preOrderRiskAuditId: "pora-A",
     humanGateId,
+    ...tradeIntentPolicyEvidence,
     actor: "flashcat",
     assurance: "mtls",
     sourceSystem: "codex_mtls",
@@ -1569,6 +3410,7 @@ LIMIT 1;`);
     riskDecisionId: "risk-A",
     preOrderRiskAuditId: "pora-A",
     humanGateId,
+    ...tradeIntentPolicyEvidence,
     actor: "flashcat",
     assurance: "mtls",
     sourceSystem: "codex_mtls",
@@ -1610,7 +3452,8 @@ LIMIT 1;`);
       dispatchType: "pre_order_risk_audit",
       riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 },
       evidenceRefs: ["artifact://trade-chain/fallback-evidence"],
-      paperRef: "artifact://trade-chain/fallback-risk-paper"
+      paperRef: "artifact://trade-chain/fallback-risk-paper",
+      ...riskDecisionPolicyEvidence
     }),
     /approved risk\.decision requires matching cat_tail pre_order_risk_audit dispatch/
   );
@@ -1628,6 +3471,7 @@ LIMIT 1;`);
     riskDecisionId: "risk-A",
     preOrderRiskAuditId: "pora-A",
     humanGateId,
+    ...tradeIntentPolicyEvidence,
     actor: "flashcat",
     assurance: "mtls",
     sourceSystem: "codex_mtls",
@@ -1645,20 +3489,23 @@ LIMIT 1;`);
     intentId: "intent-ready",
     status: "accepted",
     tradingCoreRef: "paper-order-1",
+    ...receiptPolicyEvidence,
     payload: { apiSecret: "should-not-persist" }
   });
   assert.equal(receipt.status, "accepted");
   const filledReceipt = await runAction(root, {
     action: "trading_core.receipt",
     intentId: "intent-ready",
-    status: "filled"
+    status: "filled",
+    ...receiptPolicyEvidence
   });
   assert.equal(filledReceipt.status, "filled");
   await assertRejectsMessage(
     () => runAction(root, {
       action: "trading_core.receipt",
       intentId: "intent-ready",
-      status: "mystery"
+      status: "mystery",
+      ...receiptPolicyEvidence
     }),
     /unknown trading_core receipt status/
   );
@@ -1666,7 +3513,8 @@ LIMIT 1;`);
     () => runAction(root, {
       action: "trading_core.receipt",
       intentId: "intent-ready",
-      status: "submitted"
+      status: "submitted",
+      ...receiptPolicyEvidence
     }),
     /invalid trading_core receipt transition/
   );
@@ -1685,6 +3533,7 @@ LIMIT 1;`);
     riskDecisionId: "risk-A",
     preOrderRiskAuditId: "pora-A",
     humanGateId,
+    ...tradeIntentPolicyEvidence,
     actor: "flashcat",
     assurance: "mtls",
     sourceSystem: "codex_mtls",
@@ -1699,7 +3548,8 @@ LIMIT 1;`);
     () => runAction(root, {
       action: "trading_core.receipt",
       intentId: "intent-rejected",
-      status: "filled"
+      status: "filled",
+      ...receiptPolicyEvidence
     }),
     /invalid trading_core receipt transition/
   );
@@ -1829,13 +3679,18 @@ async function testWorkflowSessionStore() {
   assert.ok(started.workerInput.toolPolicy.forbiddenActions.includes("live_order"));
   assert.equal(JSON.stringify(started.workerInput).includes("run-secret"), false);
 
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, "DELETE FROM workflow_agent_runs WHERE agent_run_id='session.session-run-contract-smoke';");
   const duplicateStart = await runAction(root, {
     action: "workflow.session_run.start",
     runId: "session-run-contract-smoke",
-    sessionId: "session-pack-contract-smoke"
+    sessionId: "session-pack-contract-smoke",
+    dispatchId: "dispatch-session-store"
   });
   assert.equal(duplicateStart.deduped, true);
   assert.equal(duplicateStart.runId, "session-run-contract-smoke");
+  assert.equal(duplicateStart.dispatchId, "dispatch-session-store");
+  assert.equal(sqliteCount(dbFile, "workflow_agent_runs", "agent_run_id='session.session-run-contract-smoke' AND dispatch_id='dispatch-session-store'"), 1);
 
   await assertRejectsMessage(
     () => runAction(root, {
@@ -1893,18 +3748,80 @@ async function testWorkflowSessionStore() {
   const status = await runAction(root, { action: "workflow.status" });
   assert.equal(status.counts.workflow_session_packs, 1);
   assert.equal(status.counts.workflow_session_runs, 1);
+  assert.equal(status.counts.workflow_agent_runs, 1);
 
-  const dbFile = path.join(root, "tracking.db");
   const storedRun = sqliteJson(dbFile, `
-SELECT input_json AS inputJson, worker_input_json AS workerInputJson, output_json AS outputJson
+SELECT dispatch_id AS dispatchId, input_json AS inputJson, worker_input_json AS workerInputJson, output_json AS outputJson
 FROM workflow_session_runs
 WHERE run_id='session-run-contract-smoke'
 LIMIT 1;`)[0];
+  assert.equal(storedRun.dispatchId, "dispatch-session-store");
   assert.equal(storedRun.inputJson.includes("run-secret"), false);
   assert.equal(storedRun.workerInputJson.includes("run-secret"), false);
   assert.equal(storedRun.outputJson.includes("output-secret"), false);
   assert.equal(storedRun.inputJson.includes("[redacted]"), true);
   assert.equal(storedRun.outputJson.includes("[redacted]"), true);
+  const agentRun = sqliteJson(dbFile, `
+SELECT agent_run_id AS agentRunId, workflow_id AS workflowId, task_id AS taskId, dispatch_id AS dispatchId,
+  session_run_id AS sessionRunId, runtime, agent_id AS agentId, status, receipt_ref AS receiptRef, output_hash AS outputHash
+FROM workflow_agent_runs
+WHERE agent_run_id='session.session-run-contract-smoke'
+LIMIT 1;`)[0];
+  assert.equal(agentRun.workflowId, "workflow-session-store");
+  assert.equal(agentRun.taskId, "task-contract-smoke");
+  assert.equal(agentRun.dispatchId, "dispatch-session-store");
+  assert.equal(agentRun.sessionRunId, "session-run-contract-smoke");
+  assert.equal(agentRun.runtime, "worker:local_codex");
+  assert.equal(agentRun.agentId, "worker-1");
+  assert.equal(agentRun.status, "completed");
+  assert.equal(agentRun.receiptRef, "artifact://receipts/session-run-contract-smoke");
+  assert.ok(agentRun.outputHash);
+  const agentRunView = await new WorkflowReadModel({ dbFile }).agentRuns("workflow-session-store");
+  assert.equal(agentRunView.source, "workflow_agent_runs");
+  assert.equal(agentRunView.count, 1);
+  assert.equal(agentRunView.phaseSummary[0].phaseKey, "unphased");
+  assert.equal(agentRunView.phaseSummary[0].withReceipt, 1);
+  assert.equal(agentRunView.agentRuns[0].agent_run_id, "session.session-run-contract-smoke");
+  sqliteExec(dbFile, `
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES ('outbox-receipts-secret', 'workflow-session-store', 'telegram', 'flashcat', 'human_gate_request', 'sent', '/hgate tawhg:secret-token-123 token=abc123', '{}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('protocol-receipts-exact', 'evidence_pack', 'ready', NULL, 'regression', 'tester', '', 'artifact://exact', '{"workflowId":"workflow-session-store"}', 'hash-exact', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('protocol-receipts-substring-noise', 'evidence_pack', 'ready', NULL, 'regression', 'tester', '', 'artifact://noise', '{"workflowId":"workflow-session-store-extra"}', 'hash-noise', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');`);
+  const receiptsView = await new WorkflowReadModel({ dbFile }).receipts("workflow-session-store");
+  assert.equal(receiptsView.source, "derived_from_existing_ledgers");
+  assert.equal(receiptsView.summaryScope, "shown");
+  assert.equal(receiptsView.summary.scope, "shown");
+  assert.equal(receiptsView.summary.present >= 1, true);
+  assert.equal(Boolean(receiptsView.receipts.some((receipt) => receipt.kind === "agent_run" && receipt.agentRunId === "session.session-run-contract-smoke" && receipt.dispatchId === "dispatch-session-store")), true);
+  assert.equal(Boolean(receiptsView.receipts.some((receipt) => receipt.receiptId === "protocol-receipts-exact")), true);
+  assert.equal(Boolean(receiptsView.receipts.some((receipt) => receipt.receiptId === "protocol-receipts-substring-noise")), false);
+  const outboxReceipt = receiptsView.receipts.find((receipt) => receipt.receiptId === "outbox-receipts-secret");
+  assert.ok(outboxReceipt);
+  assert.equal(outboxReceipt.summary.includes("secret-token-123"), false);
+  assert.equal(outboxReceipt.summary.includes("tawhg:<redacted>"), true);
+  const limitedReceiptsView = await new WorkflowReadModel({ dbFile }).receipts("workflow-session-store", { limit: 1 });
+  assert.equal(limitedReceiptsView.summary.total, 1);
+  assert.equal(limitedReceiptsView.count, 1);
+  assert.equal(limitedReceiptsView.candidateCount >= limitedReceiptsView.count, true);
+  const evidencePack = await new WorkflowReadModel({ dbFile }).evidencePack("workflow-session-store", { limit: 20 });
+  assert.equal(evidencePack.schemaVersion, "workflow_evidence_pack.v1");
+  assert.equal(evidencePack.writeMode, "read_only_derived_export");
+  assert.equal(evidencePack.manifest.receiptCount >= receiptsView.count, true);
+  for (const section of ["workflow", "phases", "tasks", "dispatches", "runtimeRuns", "agentRuns", "messageFlows", "humanGates", "outbox", "checkpoints", "evidence", "receipts", "timeline"]) {
+    assert.equal(Object.hasOwn(evidencePack, section), true, `missing evidence pack section: ${section}`);
+  }
+  assert.equal(Boolean(evidencePack.receipts.receipts.some((receipt) => receipt.agentRunId === "session.session-run-contract-smoke")), true);
+  const evidencePackText = JSON.stringify(evidencePack);
+  assert.equal(evidencePackText.includes("secret-token-123"), false);
+  assert.equal(evidencePack.outbox.outbox.some((row) => row.textPreview.includes("tawhg:<redacted>")), true);
+  assert.equal(evidencePack.timeline.events.some((event) => event.kind === "outbox" && event.subtitle.includes("tawhg:<redacted>")), true);
+  const routePack = await workflowChildPayload(new WorkflowReadModel({ dbFile }), "workflow-session-store", "evidence-pack", { limit: 20 });
+  assert.equal(routePack.schemaVersion, "workflow_evidence_pack.v1");
+  assert.equal(routePack.workflowId, "workflow-session-store");
+  assert.equal(routePack.manifest.receiptCount, evidencePack.manifest.receiptCount);
+  assert.equal(JSON.stringify(routePack).includes("secret-token-123"), false);
 }
 
 async function testWorkflowTaskDraftPurePreview() {
@@ -1923,6 +3840,28 @@ async function testWorkflowTaskDraftPurePreview() {
   assert.equal(await pathExists(dbFile), false);
   assert.equal(draft.spec.governance.chairAgent, "main");
   assert.equal(draft.spec.governance.secretaryAgent, "cat_claw");
+  assert.equal(draft.spec.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
+  assert.equal(draft.spec.planSpecV2.meta.workflowId, draft.spec.workflowId);
+  assert.equal(draft.spec.planSpecV2.meta.traceId, draft.spec.traceId);
+  assert.equal(draft.spec.planSpecV2.meta.idempotencyKey, draft.spec.idempotencyKey);
+  assert.equal(draft.spec.planSpecV2.meta.timezone, "Asia/Shanghai");
+  assert.equal(draft.spec.planSpecV2.phaseGraph.length, draft.spec.phases.length);
+  assert.ok(draft.spec.planSpecV2.nodes.length >= draft.spec.phases.length);
+  assert.ok(draft.spec.planSpecV2.nodes.every((node) => Array.isArray(node.acceptanceCriteria) && node.acceptanceCriteria.length > 0));
+  assert.ok(draft.spec.planSpecV2.nodes.every((node) => node.nodeType && Array.isArray(node.inputRefs) && node.prompt && Array.isArray(node.allowedCapabilities) && node.maxAttempts >= 1 && node.policyGate && node.verifier && node.failureRoute && node.idempotencyKey));
+  assert.ok(Array.isArray(draft.spec.planSpecV2.acceptance.workflowSuccess));
+  assert.ok(Array.isArray(draft.spec.planSpecV2.acceptance.requiredReceipts));
+  assert.equal(draft.spec.planSpecV2.verification.mode, "human_gate");
+  assert.equal(draft.spec.planSpecV2.permissionPolicy.defaultOutcome, "allow");
+  assert.ok(Array.isArray(draft.spec.planSpecV2.evidencePolicy.artifactRefs));
+  assert.equal(draft.spec.planSpecV2.resumePolicy.checkpointBeforeSideEffect, true);
+  assert.ok(draft.spec.planSpecV2.failureRoutes.every((route) => route.routeId && route.match && route.action && route.ownerAgent));
+  assert.ok(draft.spec.planSpecV2.artifacts);
+  assert.equal(draft.spec.planSpecV2.audit.generatedBy, "workflow.task.draft");
+  assert.equal(draft.spec.planSpecV2.humanGatePolicy.required, true);
+  assert.equal(draft.spec.planSpecV2.humanGatePolicy.requiresOriginalWords, true);
+  assert.equal(draft.spec.planSpecV2.humanGatePolicy.submitterAgent, "cat_claw");
+  assert.equal(draft.spec.planSpecV2.evidencePolicy.rawLogsInPlan, false);
   assert.ok(draft.spec.participants.some((participant) => participant.agentId === "main"));
   assert.ok(draft.spec.participants.some((participant) => participant.agentId === "cat_claw"));
   assert.ok(draft.spec.participants.some((participant) => participant.agentId === "cat_heart"));
@@ -1934,6 +3873,10 @@ async function testWorkflowTaskDraftPurePreview() {
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "three_options_required" && gate.status === "pass"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "pause_terminate_controls_required" && gate.status === "pass"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "cat_claw_audit_before_human_gate" && gate.status === "pass"));
+  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "plan_spec_v2_required_ids" && gate.status === "pass"));
+  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "plan_spec_v2_contract_shape" && gate.status === "pass"));
+  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "node_acceptance_required" && gate.status === "pass"));
+  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "human_gate_original_words_required" && gate.status === "pass"));
   const participants = new Set(draft.spec.participants.map((participant) => participant.agentId));
   for (const owner of draftPhaseOwners(draft)) assert.equal(participants.has(owner), true, `${owner} phase owner must be a participant`);
 }
@@ -1969,6 +3912,9 @@ async function testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility() {
   ]);
   assert.equal(noGate.dryRun, true);
   assert.equal(noGate.spec.governance.humanGateRequired, false);
+  assert.equal(noGate.spec.planSpecV2.humanGatePolicy.required, false);
+  assert.equal(noGate.spec.planSpecV2.humanGatePolicy.requiresOriginalWords, false);
+  assert.equal(noGate.spec.planSpecV2.nodes.some((node) => node.humanGateRequired), false);
   assert.equal(noGate.spec.phases.some((phase) => phase.id === "human_gate_package"), false);
   assert.equal(noGate.spec.qualityGates.some((gate) => gate.status === "error"), false);
 
@@ -2007,13 +3953,21 @@ async function testWorkflowTaskLaunchPrepareAndApprove() {
   assert.equal(prepared.package.roles.drafterAgent, "cat_claw");
   assert.equal(prepared.package.roles.reviewerAgent, "main");
   assert.equal(prepared.package.roles.finalApprover, "flashcat");
+  assert.equal(prepared.package.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
+  assert.equal(prepared.package.planSpecV2.meta.workflowId, "wf-task-launch");
+  assert.equal(prepared.package.planSpecV2.nodes.some((node) => node.phaseId === "human_gate_package" && node.humanGateRequired), true);
   assert.equal(await pathExists(path.join(root, prepared.artifacts.canonicalJson)), true);
   assert.equal(await pathExists(path.join(root, prepared.artifacts.markdown)), true);
+  const canonical = JSON.parse(await fs.readFile(path.join(root, prepared.artifacts.canonicalJson), "utf8"));
+  assert.equal(canonical.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
   assert.equal(sqliteCount(dbFile, "protocol_objects", "object_type='workflow_task_launch_package'"), 1);
   assert.equal(sqliteCount(dbFile, "review_gates", "gate_type='task_launch_cat_brain_review' AND status='pending'"), 1);
   assert.equal(sqliteCount(dbFile, "artifact_index", "kind LIKE 'workflow_task_launch_package%'"), 2);
+  assert.equal(sqliteCount(dbFile, "workflow_phases"), 0);
   assert.equal(sqliteCount(dbFile, "workflow_tasks"), 0);
   assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
+  const preparedStored = sqliteJson(dbFile, "SELECT payload_json FROM protocol_objects WHERE object_id='tlp-test-launch';")[0];
+  assert.equal(preparedStored.payload_json.includes("\"schemaVersion\":\"workflow_plan_spec.v2\""), true);
 
   const listed = await runAction(root, {
     action: "workflow.task.launch.list",
@@ -2063,11 +4017,74 @@ async function testWorkflowTaskLaunchPrepareAndApprove() {
   });
   assert.equal(approved.status, "launched");
   assert.ok(approved.materializedTasks.length >= 5);
+  assert.equal(approved.materializedPhases.length, prepared.package.planSpecV2.phaseGraph.length);
+  assert.equal(sqliteCount(dbFile, "workflow_phases", "workflow_id='wf-task-launch'"), prepared.package.planSpecV2.phaseGraph.length);
   assert.equal(sqliteCount(dbFile, "workflow_tasks", "workflow_id='wf-task-launch'"), approved.materializedTasks.length);
   assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
+  const phaseRows = sqliteJson(dbFile, "SELECT phase_id, phase_key, ordinal, status, owner_agents_json, plan_node_refs_json FROM workflow_phases WHERE workflow_id='wf-task-launch' ORDER BY ordinal;");
+  assert.equal(phaseRows[0].phase_key, "scope");
+  assert.equal(phaseRows.some((row) => row.phase_key === "human_gate_package"), true);
+  assert.equal(JSON.parse(phaseRows[0].owner_agents_json).includes("main"), true);
+  assert.ok(JSON.parse(phaseRows[0].plan_node_refs_json).length >= 1);
+  sqliteExec(dbFile, `
+INSERT INTO workflow_agent_runs(agent_run_id, workflow_id, phase_id, phase_key, task_id, dispatch_id, runtime_run_id, runtime, agent_id, status, attempt, input_hash, output_hash, receipt_ref, error, payload_json, started_at, completed_at, created_at, updated_at)
+VALUES ('runtime.scope-phase-id-only', 'wf-task-launch', '${phaseRows[0].phase_id}', '', '', 'dispatch-scope-phase-id-only', 'runtime-scope-phase-id-only', 'openclaw', 'main', 'acked', 1, 'input-hash', 'output-hash', 'message://scope-phase-id-only', '', '{"source":"regression"}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:02.000Z', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:02.000Z');`);
+  const phaseView = await new WorkflowReadModel({ dbFile }).phases("wf-task-launch");
+  assert.equal(phaseView.inferred, false);
+  assert.equal(phaseView.source, "workflow_phases+workflow_tasks");
+  assert.equal(phaseView.phaseCount, prepared.package.planSpecV2.phaseGraph.length);
+  assert.equal(phaseView.phases[0].phaseKey, "scope");
+  assert.equal(phaseView.phases[0].source, "workflow_phases");
+  assert.equal(phaseView.phases[0].counts.agentRuns, 1);
+  assert.equal(phaseView.phases[0].agentRuns[0].receiptRef, "message://scope-phase-id-only");
+  const agentRunPhaseView = await new WorkflowReadModel({ dbFile }).agentRuns("wf-task-launch");
+  assert.equal(agentRunPhaseView.phaseSummary[0].phaseKey, "scope");
+  assert.equal(agentRunPhaseView.agentRuns[0].phase_key, "scope");
   const stored = sqliteJson(dbFile, "SELECT status, payload_json FROM protocol_objects WHERE object_id='tlp-test-launch';")[0];
   assert.equal(stored.status, "launched");
   assert.equal(stored.payload_json.includes("闪电猫原话：批准启动"), true);
+  assert.equal(stored.payload_json.includes("\"materializedPhases\""), true);
+}
+
+async function testWorkflowPhaseReadModelFallbackWithEmptyPhaseTable() {
+  const root = await tempRoot("phase-readmodel-fallback");
+  const dbFile = path.join(root, "tracking.db");
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId: "wf-legacy-phase",
+    workflowType: "initiative",
+    status: "active",
+    ownerAgent: "main",
+    objective: "legacy phase fallback"
+  });
+  await runAction(root, {
+    action: "workflow.task.create",
+    workflowId: "wf-legacy-phase",
+    taskId: "legacy-task",
+    ownerAgent: "main",
+    runtime: "openclaw",
+    agentId: "main",
+    phase: "legacy_phase",
+    summary: "legacy task"
+  });
+  sqliteExec(dbFile, `
+INSERT INTO workflow_agent_runs(agent_run_id, workflow_id, phase_key, task_id, dispatch_id, runtime_run_id, runtime, agent_id, status, attempt, input_hash, output_hash, receipt_ref, error, payload_json, started_at, completed_at, created_at, updated_at)
+VALUES ('runtime.legacy-phase-proof', 'wf-legacy-phase', 'legacy_phase', 'legacy-task', 'dispatch-legacy-phase-proof', 'runtime-legacy-phase-proof', 'openclaw', 'main', 'acked', 1, 'input-hash', 'output-hash', 'message://legacy-phase-proof', '', '{"source":"regression"}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:02.000Z', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:02.000Z');`);
+  sqliteExec(dbFile, "DROP TABLE runtime_runs;");
+  assert.equal(sqliteCount(dbFile, "workflow_phases", "workflow_id='wf-legacy-phase'"), 0);
+  const phaseView = await new WorkflowReadModel({ dbFile }).phases("wf-legacy-phase");
+  assert.equal(phaseView.inferred, true);
+  assert.equal(phaseView.source, "workflow_tasks.phase");
+  assert.equal(phaseView.evidenceSources.runtimeRuns, "missing_table");
+  assert.equal(phaseView.phaseCount, 1);
+  assert.equal(phaseView.phases[0].phaseKey, "legacy_phase");
+  assert.equal(phaseView.phases[0].source, "workflow_tasks.phase");
+  assert.equal(phaseView.totals.agentRuns, 1);
+  assert.equal(phaseView.totals.agentWithReceipt, 1);
+  assert.equal(phaseView.phases[0].counts.agentRuns, 1);
+  assert.equal(phaseView.phases[0].counts.agentCompleted, 1);
+  assert.equal(phaseView.phases[0].agentRuns[0].dispatchId, "dispatch-legacy-phase-proof");
+  assert.equal(phaseView.phases[0].agentRuns[0].receiptRef, "message://legacy-phase-proof");
 }
 
 async function testWorkflowTaskLaunchReviewPermissions() {
@@ -2393,6 +4410,8 @@ async function testWorkflowPermissionGate() {
   });
   assert.equal(deniedRuntime.allowed, false);
   assert.equal(deniedRuntime.reason, "missing_capability:runtime.dispatch");
+  assert.equal(deniedRuntime.policyOutcome, "deny");
+  assert.equal(deniedRuntime.actionable, false);
 
   const unregisteredSpoof = await runAction(root, {
     action: "workflow.permission.check",
@@ -2403,6 +4422,8 @@ async function testWorkflowPermissionGate() {
   });
   assert.equal(unregisteredSpoof.allowed, false);
   assert.equal(unregisteredSpoof.reason, "caller_not_registered");
+  assert.equal(unregisteredSpoof.policyOutcome, "deny");
+  assert.equal(unregisteredSpoof.actionable, false);
 
   const auditDenied = await runAction(root, {
     action: "workflow.permission.check",
@@ -2412,6 +4433,46 @@ async function testWorkflowPermissionGate() {
   });
   assert.equal(auditDenied.allowed, false);
   assert.equal(auditDenied.reason, "missing_capability:cat_claw.audit");
+  assert.equal(auditDenied.policyOutcome, "deny");
+  assert.equal(auditDenied.actionable, false);
+
+  const verifySpoofDenied = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.verification.record",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers",
+    toolMode: "governance"
+  });
+  assert.equal(verifySpoofDenied.allowed, false);
+  assert.equal(verifySpoofDenied.reason, "missing_capability:workflow.verify");
+  assert.equal(verifySpoofDenied.policyOutcome, "deny");
+  assert.equal(verifySpoofDenied.actionable, false);
+
+  const evaluateSpoofDenied = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.evaluate",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers",
+    toolMode: "governance"
+  });
+  assert.equal(evaluateSpoofDenied.allowed, false);
+  assert.equal(evaluateSpoofDenied.reason, "missing_capability:workflow.verify");
+  assert.equal(evaluateSpoofDenied.policyOutcome, "deny");
+  assert.equal(evaluateSpoofDenied.actionable, false);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.verification.record",
+      workflowId: "workflow-permission-gate",
+      callerAgent: "cat_body",
+      callerRuntime: "hermers",
+      toolMode: "governance",
+      sourceAgent: "cat_claw",
+      resultType: "verifier",
+      decision: "pass"
+    }),
+    /workflow permission denied: action=workflow\.verification\.record/
+  );
 
   await assertRejectsMessage(
     () => runAction(root, {
@@ -2443,6 +4504,227 @@ LIMIT 1;`)[0];
   });
   assert.equal(catClawGate.allowed, true);
   assert.equal(catClawGate.reason, "capability_allowed");
+  assert.equal(catClawGate.policyOutcome, "requires_cat_claw_audit");
+  assert.equal(catClawGate.actionable, false);
+  assert.equal(catClawGate.requirements.some((item) => item.type === "cat_claw_audit"), true);
+
+  const catClawGateWithAudit = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "human_gate.request",
+    callerAgent: "cat_claw",
+    callerRuntime: "openclaw",
+    catClawAuditId: "audit-permission-regression"
+  });
+  assert.equal(catClawGateWithAudit.allowed, true);
+  assert.equal(catClawGateWithAudit.policyOutcome, "allow");
+  assert.equal(catClawGateWithAudit.actionable, true);
+
+  const tradeIntentPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "trade.intent",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate"
+  });
+  assert.equal(tradeIntentPolicy.allowed, true);
+  assert.equal(tradeIntentPolicy.policyOutcome, "requires_human_gate");
+  assert.equal(tradeIntentPolicy.requirements.some((item) => item.type === "human_gate"), true);
+  assert.equal(tradeIntentPolicy.requirements.some((item) => item.type === "cat_claw_audit"), true);
+  assert.equal(tradeIntentPolicy.requirements.some((item) => item.type === "freshness_check"), true);
+
+  const riskDecisionPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "risk.decision",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate"
+  });
+  assert.equal(riskDecisionPolicy.allowed, true);
+  assert.equal(riskDecisionPolicy.policyOutcome, "requires_cat_claw_audit");
+  assert.equal(riskDecisionPolicy.requirements.some((item) => item.type === "cat_claw_audit"), true);
+  assert.equal(riskDecisionPolicy.requirements.some((item) => item.type === "freshness_check"), true);
+
+  const riskDecisionFreshnessPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "risk.decision",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate",
+    catClawAuditId: "audit-permission-risk-decision"
+  });
+  assert.equal(riskDecisionFreshnessPolicy.allowed, true);
+  assert.equal(riskDecisionFreshnessPolicy.policyOutcome, "requires_freshness_check");
+
+  const riskDecisionAllowedPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "risk.decision",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate",
+    catClawAuditId: "audit-permission-risk-decision",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+  });
+  assert.equal(riskDecisionAllowedPolicy.allowed, true);
+  assert.equal(riskDecisionAllowedPolicy.policyOutcome, "allow");
+  assert.equal(riskDecisionAllowedPolicy.actionable, true);
+
+  const tradeIntentFreshnessPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "trade.intent",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate",
+    humanGateId: "hg-permission-regression",
+    catClawAuditId: "audit-permission-regression"
+  });
+  assert.equal(tradeIntentFreshnessPolicy.allowed, true);
+  assert.equal(tradeIntentFreshnessPolicy.policyOutcome, "requires_freshness_check");
+
+  const tradeIntentAllowedPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "trade.intent",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate",
+    humanGateId: "hg-permission-regression",
+    catClawAuditId: "audit-permission-regression",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+  });
+  assert.equal(tradeIntentAllowedPolicy.allowed, true);
+  assert.equal(tradeIntentAllowedPolicy.policyOutcome, "allow");
+  assert.equal(tradeIntentAllowedPolicy.actionable, true);
+
+  const receiptPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "trading_core.receipt",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate"
+  });
+  assert.equal(receiptPolicy.allowed, true);
+  assert.equal(receiptPolicy.policyOutcome, "requires_human_gate");
+  assert.equal(receiptPolicy.requirements.some((item) => item.type === "human_gate"), true);
+  assert.equal(receiptPolicy.requirements.some((item) => item.type === "freshness_check"), true);
+  assert.equal(receiptPolicy.requirements.some((item) => item.type === "cat_claw_audit"), false);
+
+  const receiptAllowedPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "trading_core.receipt",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate",
+    humanGateId: "hg-permission-regression",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+  });
+  assert.equal(receiptAllowedPolicy.allowed, true);
+  assert.equal(receiptAllowedPolicy.policyOutcome, "allow");
+  assert.equal(receiptAllowedPolicy.actionable, true);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "risk.decision",
+      workflowId: "workflow-permission-hard-risk-decision",
+      traceId: "trace-permission-hard-risk-decision",
+      callerAgent: "local_codex",
+      riskDecisionId: "risk-permission-hard",
+      proposalId: "proposal-permission-hard",
+      status: "approved"
+    }),
+    /workflow policy blocked: action=risk\.decision policyOutcome=requires_cat_claw_audit/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "risk.decision",
+      workflowId: "workflow-permission-hard-risk-draft",
+      traceId: "trace-permission-hard-risk-draft",
+      callerAgent: "local_codex",
+      riskDecisionId: "risk-permission-draft",
+      proposalId: "proposal-permission-draft",
+      status: "pending"
+    }),
+    /workflow policy blocked: action=risk\.decision policyOutcome=requires_cat_claw_audit/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "trade.intent",
+      workflowId: "workflow-permission-hard-gate",
+      traceId: "trace-permission-hard-gate",
+      callerAgent: "local_codex"
+    }),
+    /workflow policy blocked: action=trade\.intent policyOutcome=requires_human_gate/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "trading_core.receipt",
+      workflowId: "workflow-permission-hard-receipt",
+      traceId: "trace-permission-hard-receipt",
+      callerAgent: "local_codex",
+      intentId: "intent-missing",
+      status: "accepted"
+    }),
+    /workflow policy blocked: action=trading_core\.receipt policyOutcome=requires_human_gate/
+  );
+  const hardBlockedEvents = sqliteJson(dbFile, `
+SELECT COUNT(*) AS count
+FROM workflow_events
+WHERE event_type='permission.policy_blocked';`)[0];
+  assert.equal(hardBlockedEvents.count, 4);
+
+  sqliteExec(dbFile, `
+INSERT INTO side_effect_ledger(side_effect_id, workflow_id, side_effect_type, status, payload_json, created_at, updated_at)
+VALUES ('side-effect-other-workflow-uncertain', 'workflow-permission-gate-other', 'test', 'uncertain', '{}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:00.000Z');`);
+  const otherWorkflowSideEffectIgnored = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "trade.intent",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate",
+    humanGateId: "hg-permission-regression",
+    catClawAuditId: "audit-permission-regression",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+  });
+  assert.equal(otherWorkflowSideEffectIgnored.policyOutcome, "allow");
+
+  sqliteExec(dbFile, `
+INSERT INTO side_effect_ledger(side_effect_id, workflow_id, side_effect_type, status, payload_json, created_at, updated_at)
+VALUES ('side-effect-permission-uncertain', 'workflow-permission-gate', 'test', 'uncertain', '{}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:00.000Z');`);
+  const sideEffectBlockedPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "trade.intent",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate",
+    humanGateId: "hg-permission-regression",
+    catClawAuditId: "audit-permission-regression",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+  });
+  assert.equal(sideEffectBlockedPolicy.policyOutcome, "side_effect_uncertain");
+  assert.equal(sideEffectBlockedPolicy.requirements.some((item) => item.type === "side_effect_uncertain"), true);
+
+  const sideEffectReceiptPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "trading_core.receipt",
+    callerAgent: "local_codex",
+    workflowId: "workflow-permission-gate",
+    humanGateId: "hg-permission-regression",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+  });
+  assert.equal(sideEffectReceiptPolicy.policyOutcome, "side_effect_uncertain");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "trade.intent",
+      workflowId: "workflow-permission-gate",
+      traceId: "trace-permission-side-effect-intent",
+      callerAgent: "local_codex",
+      humanGateId: "hg-permission-regression",
+      catClawAuditId: "audit-permission-regression",
+      freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+    }),
+    /workflow policy blocked: action=trade\.intent policyOutcome=side_effect_uncertain/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "trading_core.receipt",
+      workflowId: "workflow-permission-gate",
+      traceId: "trace-permission-side-effect-receipt",
+      callerAgent: "local_codex",
+      intentId: "intent-missing",
+      status: "accepted",
+      humanGateId: "hg-permission-regression",
+      freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+    }),
+    /workflow policy blocked: action=trading_core\.receipt policyOutcome=side_effect_uncertain/
+  );
 
   await runAction(root, {
     action: "runtime.agent.upsert",
@@ -2977,6 +5259,13 @@ try {
   requireSqliteCli();
   const tests = [
     ["human_gate language/resume", testHumanGateLanguageAndResume],
+    ["human_gate readiness checklist", testHumanGateReadinessChecklist],
+    ["human_gate readiness legacy schema fallback", testHumanGateReadinessLegacySchemaFallback],
+    ["workflow operations console audit", testWorkflowOperationsConsoleAudit],
+    ["workflow intervention previews", testWorkflowInterventionPreviews],
+    ["workflow intervention execution", testWorkflowInterventionExecution],
+    ["workflow verification results", testWorkflowVerificationResults],
+    ["workflow evaluator evidence", testWorkflowEvaluatorEvidence],
     ["human_gate pending cleanup/retry", testHumanGatePendingCleanupAndRetryRedaction],
     ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
     ["schedule resume semantics", testScheduleResumeSemantics],
@@ -2996,6 +5285,7 @@ try {
     ["workflow task draft cli pure preview", testWorkflowTaskDraftCliPurePreview],
     ["workflow task draft no human gate and single task compatibility", testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility],
     ["workflow task launch prepare and approve", testWorkflowTaskLaunchPrepareAndApprove],
+    ["workflow phase read-model fallback with empty phase table", testWorkflowPhaseReadModelFallbackWithEmptyPhaseTable],
     ["workflow task launch review permissions", testWorkflowTaskLaunchReviewPermissions],
     ["workflow session store cli", testWorkflowSessionStoreCli],
     ["expired human_gate blocked", testExpiredHumanGateBlocked],

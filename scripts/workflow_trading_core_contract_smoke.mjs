@@ -135,6 +135,8 @@ async function createWorkflowIntent(root) {
     riskDecisionId: "risk-smoke",
     preOrderRiskAuditId: "pora-smoke",
     humanGateId: request.humanGateId,
+    catClawAuditId: "audit-smoke",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z",
     actor: "flashcat",
     assurance: "mtls",
     sourceSystem: "codex_mtls",
@@ -152,7 +154,11 @@ async function createWorkflowIntent(root) {
     riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 }
   });
   assert.equal(intent.status, "ready_for_trading_core");
-  return intent;
+  return {
+    ...intent,
+    humanGateId: request.humanGateId,
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
+  };
 }
 
 async function main() {
@@ -179,6 +185,8 @@ async function main() {
   const receipt = JSON.parse(await fs.readFile(receiptOut, "utf8"));
   const workflowReceipt = await runAction(root, {
     ...receipt.payload.workflowReceiptAction,
+    humanGateId: intent.humanGateId,
+    freshnessCheckedAt: intent.freshnessCheckedAt,
     payload: receipt.payload
   });
   assert.equal(workflowReceipt.status, "filled");

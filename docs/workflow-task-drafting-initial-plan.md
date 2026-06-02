@@ -286,14 +286,13 @@ Phase 4: Human Gate hardening
   refs, and rollback boundary before submission.
 - Preserve the same Human Gate object and button ids for resend behavior.
 
-Phase 5: Claude Code Workflow follow-up
+Phase 5: Claude Code Workflow reference program
 
-- Revisit this design after Claude Code publishes complete Workflow user
-  documentation.
-- Compare official script semantics, resume behavior, progress UI, and
-  built-in workflow examples.
-- Upgrade this plan only through normal Git review, tests, and governance
-  record.
+- Long-term Claude Code workflow tracking now lives in
+  `docs/claude-code-workflow-reference/`.
+- Use that subproject for official reference updates, workflow feature
+  comparison, and future `Workflow Plan Spec v2` adaptation work.
+- Keep this document as the Task Launch Package v1 design record.
 
 ## Non-Goals
 

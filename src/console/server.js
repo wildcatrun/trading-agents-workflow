@@ -85,6 +85,28 @@ function mutationOriginOk(req) {
   return true;
 }
 
+export async function workflowChildPayload(readModel, workflowId, child = "", query = {}) {
+  if (!child) return await readModel.workflowDetail(workflowId);
+  if (child === "phases") return await readModel.phases(workflowId);
+  if (child === "tasks") return await readModel.tasks(workflowId);
+  if (child === "dispatches") return await readModel.dispatches(workflowId, query);
+  if (child === "runtime-runs") return await readModel.runtimeRuns(workflowId, query);
+  if (child === "agent-runs") return await readModel.agentRuns(workflowId, query);
+  if (child === "verification") return await readModel.verification(workflowId, query);
+  if (child === "message-flows") return await readModel.messageFlows(workflowId, query);
+  if (child === "human-gates") return await readModel.humanGates(workflowId);
+  if (child === "human-gate-readiness") return await readModel.humanGateReadiness(workflowId);
+  if (child === "incident-evidence-options") return await readModel.incidentEvidenceOptions(workflowId, query);
+  if (child === "incident-closeout") return await readModel.incidentCloseout(workflowId, query);
+  if (child === "outbox") return await readModel.outbox(workflowId, query);
+  if (child === "checkpoints") return await readModel.checkpoints(workflowId);
+  if (child === "evidence") return await readModel.evidence(workflowId);
+  if (child === "receipts") return await readModel.receipts(workflowId, query);
+  if (child === "evidence-pack") return await readModel.evidencePack(workflowId, query);
+  if (child === "timeline") return await readModel.timeline(workflowId, query);
+  return undefined;
+}
+
 async function serveStatic(req, res, pathname) {
   const clean = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const target = path.resolve(CONSOLE_DIR, clean);
@@ -162,22 +184,14 @@ export function createConsoleServer(options = {}) {
         const workflowId = decodeURIComponent(workflowMatch[1]);
         const child = workflowMatch[2] || "";
         const query = Object.fromEntries(url.searchParams);
-        if (!child) {
-          const detail = await readModel.workflowDetail(workflowId);
-          return detail ? json(res, 200, detail) : json(res, 404, { ok: false, error: "workflow_not_found" });
-        }
-        if (child === "tasks") return json(res, 200, await readModel.tasks(workflowId));
-        if (child === "dispatches") return json(res, 200, await readModel.dispatches(workflowId, query));
-        if (child === "runtime-runs") return json(res, 200, await readModel.runtimeRuns(workflowId, query));
-        if (child === "message-flows") return json(res, 200, await readModel.messageFlows(workflowId, query));
-        if (child === "human-gates") return json(res, 200, await readModel.humanGates(workflowId));
-        if (child === "outbox") return json(res, 200, await readModel.outbox(workflowId, query));
-        if (child === "checkpoints") return json(res, 200, await readModel.checkpoints(workflowId));
-        if (child === "evidence") return json(res, 200, await readModel.evidence(workflowId));
-        if (child === "timeline") return json(res, 200, await readModel.timeline(workflowId, query));
+        const payload = await workflowChildPayload(readModel, workflowId, child, query);
+        if (payload === undefined) return json(res, 404, { ok: false, error: "not_found" });
+        if (!child && !payload) return json(res, 404, { ok: false, error: "workflow_not_found" });
+        return json(res, 200, payload);
       }
       if (req.method === "GET" && pathname === "/api/runtime-agents") return json(res, 200, await readModel.runtimeAgents());
-      if (req.method === "GET" && pathname === "/api/operations/summary") return json(res, 200, await readModel.operationsSummary());
+      if (req.method === "GET" && pathname === "/api/operations/summary") return json(res, 200, await readModel.operationsSummary(Object.fromEntries(url.searchParams)));
+      if (req.method === "GET" && pathname === "/api/operations/dead-letter-evidence") return json(res, 200, await readModel.deadLetterEvidence(Object.fromEntries(url.searchParams)));
       if (req.method === "GET" && pathname === "/api/readiness/latest") return json(res, 200, await readModel.readinessLatest());
       if (req.method === "POST" && pathname === "/api/actions") return json(res, 200, await actionGateway.handle(await readBody(req)));
 

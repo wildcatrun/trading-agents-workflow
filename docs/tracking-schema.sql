@@ -125,6 +125,28 @@ CREATE TABLE workflow_runs (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE workflow_phases (
+  phase_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  phase_key TEXT NOT NULL,
+  ordinal INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'planned',
+  owner_agent TEXT,
+  owner_agents_json TEXT NOT NULL DEFAULT '[]',
+  depends_on_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+  verifier_agent TEXT,
+  human_gate_required INTEGER NOT NULL DEFAULT 0,
+  plan_node_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX idx_workflow_phases_workflow_key ON workflow_phases(workflow_id, phase_key);
+CREATE INDEX idx_workflow_phases_workflow ON workflow_phases(workflow_id, ordinal, phase_key);
 CREATE TABLE workflow_tasks (
   task_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
@@ -240,6 +262,7 @@ CREATE TABLE workflow_session_runs (
   pack_version INTEGER NOT NULL,
   workflow_id TEXT,
   task_id TEXT,
+  dispatch_id TEXT,
   worker_id TEXT,
   status TEXT NOT NULL,
   input_json TEXT NOT NULL DEFAULT '{}',
@@ -254,6 +277,33 @@ CREATE TABLE workflow_session_runs (
 );
 CREATE INDEX idx_session_runs_session ON workflow_session_runs(session_id, status, created_at DESC);
 CREATE INDEX idx_session_runs_workflow ON workflow_session_runs(workflow_id, task_id, created_at DESC);
+CREATE INDEX idx_session_runs_dispatch ON workflow_session_runs(dispatch_id);
+CREATE TABLE workflow_agent_runs (
+  agent_run_id TEXT PRIMARY KEY,
+  workflow_id TEXT,
+  phase_id TEXT,
+  phase_key TEXT,
+  task_id TEXT,
+  dispatch_id TEXT,
+  runtime_run_id TEXT,
+  session_run_id TEXT,
+  runtime TEXT NOT NULL DEFAULT '',
+  agent_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  input_hash TEXT,
+  output_hash TEXT,
+  receipt_ref TEXT,
+  error TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_workflow_agent_runs_workflow ON workflow_agent_runs(workflow_id, phase_key, task_id, updated_at DESC);
+CREATE INDEX idx_workflow_agent_runs_dispatch ON workflow_agent_runs(dispatch_id, runtime_run_id);
+CREATE INDEX idx_workflow_agent_runs_session ON workflow_agent_runs(session_run_id);
 CREATE TABLE artifact_index (
   artifact_id TEXT PRIMARY KEY,
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,
@@ -679,6 +729,62 @@ CREATE TABLE control_loop_jobs (
 CREATE INDEX idx_control_loop_jobs_status ON control_loop_jobs(status, next_run_at, priority, created_at);
 CREATE INDEX idx_control_loop_jobs_workflow ON control_loop_jobs(workflow_id, status, updated_at);
 CREATE UNIQUE INDEX idx_control_loop_jobs_active_dedupe ON control_loop_jobs(dedupe_key) WHERE status IN ('queued','running','retry_scheduled');
+CREATE TABLE workflow_operations (
+  operation_id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'workflow',
+  scope_id TEXT NOT NULL DEFAULT '',
+  workflow_id TEXT,
+  requested_by TEXT NOT NULL DEFAULT '',
+  reason TEXT,
+  risk_tier TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  dry_run INTEGER NOT NULL DEFAULT 0,
+  idempotency_key TEXT,
+  human_gate_id TEXT,
+  input_hash TEXT,
+  preview_result_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX idx_workflow_operations_status ON workflow_operations(status, updated_at DESC);
+CREATE INDEX idx_workflow_operations_scope ON workflow_operations(scope_type, scope_id, updated_at DESC);
+CREATE INDEX idx_workflow_operations_workflow ON workflow_operations(workflow_id, updated_at DESC);
+CREATE TABLE workflow_verification_results (
+  verification_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  phase_id TEXT,
+  phase_key TEXT,
+  task_id TEXT,
+  agent_run_id TEXT,
+  dispatch_id TEXT,
+  runtime_run_id TEXT,
+  result_type TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  verifier_agent TEXT,
+  refuter_agent TEXT,
+  source_runtime TEXT,
+  source_agent TEXT,
+  confidence TEXT,
+  risk_band TEXT,
+  summary TEXT,
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  recommendations_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  receipt_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_workflow_verification_workflow ON workflow_verification_results(workflow_id, created_at DESC);
+CREATE INDEX idx_workflow_verification_phase ON workflow_verification_results(workflow_id, phase_key, created_at DESC);
+CREATE INDEX idx_workflow_verification_task ON workflow_verification_results(workflow_id, task_id, created_at DESC);
+CREATE INDEX idx_workflow_verification_decision ON workflow_verification_results(workflow_id, decision, created_at DESC);
 CREATE UNIQUE INDEX idx_mixed_dispatches_idempotency ON mixed_meeting_dispatches(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE INDEX idx_mixed_dispatches_trace ON mixed_meeting_dispatches(trace_id, created_at DESC);
 CREATE INDEX idx_mixed_dispatches_retry ON mixed_meeting_dispatches(status, next_retry_at);

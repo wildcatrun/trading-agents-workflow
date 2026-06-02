@@ -346,6 +346,8 @@ const toolParameters = {
         "side_effect.ledger",
         "incident.state",
         "workflow.incident",
+        "workflow.incident.from_dead_letter.preview",
+        "workflow.incident.from_dead_letter",
         "gate.review",
         "human_gate.record",
         "workflow.human_gate",
@@ -700,6 +702,8 @@ const governanceWorkflowActions = new Set([
   "workflow.event.timeline",
   "workflow.timeline",
   "workflow.events.timeline",
+  "workflow.incident.from_dead_letter.preview",
+  "workflow.incident.from_dead_letter",
   "workflow.schedule.list",
   "workflow.schedules",
   "workflow.scheduler.list",
@@ -2158,6 +2162,8 @@ function registerCli(api) {
       .requiredOption("--risk <riskDecisionId>", "Risk decision id")
       .requiredOption("--pre-order-risk-audit <preOrderRiskAuditId>", "Cat Tail pre-order risk audit id")
       .requiredOption("--human-gate <humanGateId>", "Human Gate id")
+      .requiredOption("--cat-claw-audit <catClawAuditId>", "Cat Claw secretary audit evidence id")
+      .requiredOption("--freshness-checked-at <iso>", "Freshness check timestamp or evidence time")
       .option("--intent-id <intentId>", "Intent id")
       .requiredOption("--workflow-id <workflowId>", "Workflow id bound to this executable intent")
       .requiredOption("--trace-id <traceId>", "Trace id bound to this executable intent")
@@ -2194,6 +2200,8 @@ function registerCli(api) {
           riskDecisionId: options.risk,
           preOrderRiskAuditId: options.preOrderRiskAudit,
           humanGateId: options.humanGate,
+          catClawAuditId: options.catClawAudit,
+          freshnessCheckedAt: options.freshnessCheckedAt,
           intentId: options.intentId,
           workflowId: options.workflowId,
           traceId: options.traceId,
@@ -2221,6 +2229,10 @@ function registerCli(api) {
       .option("--status <status>", "accepted, rejected, submitted, filled, partial, cancelled, failed", "accepted")
       .option("--ref <tradingCoreRef>", "Trading core reference")
       .option("--receipt-id <receiptId>", "Receipt id")
+      .requiredOption("--human-gate <humanGateId>", "Human Gate id or evidence for this receipt")
+      .requiredOption("--freshness-checked-at <iso>", "Freshness check timestamp or evidence time")
+      .option("--workflow-id <workflowId>", "Workflow id bound to side-effect and policy checks")
+      .option("--trace-id <traceId>", "Trace id bound to this receipt")
       .option("--summary <summary>", "Receipt summary")
       .option("--payload <json>", "Extra JSON payload")
       .option("--workflow-root <dir>", "Trading agents workflow root directory")
@@ -2233,6 +2245,10 @@ function registerCli(api) {
           status: options.status,
           tradingCoreRef: options.ref,
           receiptId: options.receiptId,
+          humanGateId: options.humanGate,
+          freshnessCheckedAt: options.freshnessCheckedAt,
+          workflowId: options.workflowId,
+          traceId: options.traceId,
           summary: options.summary,
           payload: options.payload
         }), null, 2));

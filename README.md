@@ -118,6 +118,7 @@ Hermers ACP dispatch.
 - `radar/` - workflow protocol documentation.
 - `templates/` - workflow report and review templates.
 - `docs/governance-records.md` - policy for recording workflow incidents, fixes, delivery failures, and Human Gate packages inside this plugin.
+- `docs/claude-code-workflow-reference/` - long-running reference and adaptation program for using Claude Code Dynamic workflows to guide `trading-agents-workflow` plan specs, phase/node execution, verification, console observability, Human Gate boundaries, and future live-trading readiness.
 - `docs/engineering-changes-2026-05-27.md` - engineering changelog for the 2026-05-27 message_flow ACK, timeout classification, Task Launch Package, deployment, and in-flight cleanup work.
 - `docs/gateway-memory-control-loop-incident-2026-05-28.md` - maintenance record for Gateway cgroup memory diagnosis, workflow control-loop load amplification, the blocked workflow supervision cooldown fix, and future verification commands.
 - `docs/agent-registry-routing.md` - routing contract for platform, adapter, IM ingress, workflow ingress, and route-shell behavior.
@@ -127,7 +128,7 @@ Hermers ACP dispatch.
 - `docs/runtime-profile-modes.md` - registry-first notes for runtime profile-mode evidence, workflow admission, readiness, and stability boundaries.
 - `docs/workflow-console-v0.3-message-flow-observability.md` - v0.3 console round record for message_flow visibility, attention rules, runtime drain job display, smoke evidence, and rollout notes.
 - `docs/workflow-session-store.md` - development notes for session packs, session runs, worker input, CLI, invariants, and roadmap.
-- `docs/workflow-task-drafting-initial-plan.md` - initial design reference for a higher-level workflow task drafting layer, default Cat Brain/Cat Claw governance roles, structured phases, quality gates, resume/idempotency, and future Claude Code Workflow follow-up.
+- `docs/workflow-task-drafting-initial-plan.md` - initial design reference for a higher-level workflow task drafting layer, default Cat Brain/Cat Claw governance roles, structured phases, quality gates, resume/idempotency, and Task Launch Package v1.
 - `docs/tracking-schema.sql` - schema export for `tracking.db`.
 - `scripts/trading_agents_workflow_mcp.py` - local Codex MCP server.
 - `skills/trading-agents-workflow/` - Codex skill instructions for this integration.

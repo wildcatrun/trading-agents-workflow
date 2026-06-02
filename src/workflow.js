@@ -11,6 +11,7 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { WorkflowReadModel } from "./console/read-model.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -139,13 +140,27 @@ const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.task.list",
   "workflow.event.list",
   "workflow.event.timeline",
+  "workflow.verification.list",
   "workflow.session_pack.get",
   "workflow.session_pack.list",
   "workflow.schedule.list",
   "human_gate.web_app_review",
   "human_gate.inbox",
   "message_flow.list",
-  "workflow.permission.check"
+  "workflow.permission.check",
+  "workflow.pause.preview",
+  "workflow.resume.preview",
+  "workflow.stop.preview",
+  "workflow.incident.from_dead_letter.preview",
+  "workflow.incident.closeout.cat_claw_report.preview",
+  "workflow.incident.closeout.human_gate_package.preview",
+  "workflow.incident.closeout.artifact.preview",
+  "workflow.incident.closeout.human_gate_request.preview",
+  "telegram.outbox.delivery.preview",
+  "telegram.outbox.requeue.preview",
+  "telegram.outbox.requeue.execution_package.preview",
+  "workflow.rerun.agent.preview",
+  "workflow.rerun.phase.preview"
 ]);
 
 const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
@@ -174,6 +189,48 @@ const WORKFLOW_ACTION_ALIASES = {
   "workflow.supervisor": "workflow.supervise",
   "workflow.supervisor.preview": "workflow.supervise.preview",
   "workflow.preview.supervise": "workflow.supervise.preview",
+  "workflow.preview.pause": "workflow.pause.preview",
+  "workflow.preview.resume": "workflow.resume.preview",
+  "workflow.preview.stop": "workflow.stop.preview",
+  "workflow.terminate.preview": "workflow.stop.preview",
+  "workflow.preview.terminate": "workflow.stop.preview",
+  "workflow.terminate": "workflow.stop",
+  "workflow.rerun_agent.preview": "workflow.rerun.agent.preview",
+  "workflow.preview.rerun_agent": "workflow.rerun.agent.preview",
+  "workflow.rerun_phase.preview": "workflow.rerun.phase.preview",
+  "workflow.preview.rerun_phase": "workflow.rerun.phase.preview",
+  "workflow.incident.dead_letter.preview": "workflow.incident.from_dead_letter.preview",
+  "workflow.incident.dead-letter.preview": "workflow.incident.from_dead_letter.preview",
+  "workflow.incident.from_dead-letter.preview": "workflow.incident.from_dead_letter.preview",
+  "workflow.incident.dead_letter": "workflow.incident.from_dead_letter",
+  "workflow.incident.dead-letter": "workflow.incident.from_dead_letter",
+  "workflow.incident.from_dead-letter": "workflow.incident.from_dead_letter",
+  "workflow.incident.closeout.report.preview": "workflow.incident.closeout.cat_claw_report.preview",
+  "workflow.incident.closeout.cat-claw-report.preview": "workflow.incident.closeout.cat_claw_report.preview",
+  "workflow.incident.closeout.hgate.preview": "workflow.incident.closeout.human_gate_package.preview",
+  "workflow.incident.closeout.human-gate-package.preview": "workflow.incident.closeout.human_gate_package.preview",
+  "workflow.incident.closeout.persist.preview": "workflow.incident.closeout.artifact.preview",
+  "workflow.incident.closeout.persist": "workflow.incident.closeout.artifact",
+  "workflow.incident.closeout.hgate-request.preview": "workflow.incident.closeout.human_gate_request.preview",
+  "workflow.incident.closeout.human-gate-request.preview": "workflow.incident.closeout.human_gate_request.preview",
+  "workflow.incident.closeout.hgate-request": "workflow.incident.closeout.human_gate_request",
+  "workflow.incident.closeout.human-gate-request": "workflow.incident.closeout.human_gate_request",
+  "telegram.outbox.preview_delivery": "telegram.outbox.delivery.preview",
+  "telegram.outbox.delivery-preview": "telegram.outbox.delivery.preview",
+  "telegram.outbox.preview_requeue": "telegram.outbox.requeue.preview",
+  "telegram.outbox.requeue-preview": "telegram.outbox.requeue.preview",
+  "telegram.outbox.resend.preview": "telegram.outbox.requeue.preview",
+  "telegram.outbox.redelivery.preview": "telegram.outbox.requeue.preview",
+  "telegram.outbox.requeue.package.preview": "telegram.outbox.requeue.execution_package.preview",
+  "telegram.outbox.requeue.execution-package.preview": "telegram.outbox.requeue.execution_package.preview",
+  "telegram.outbox.resend.package.preview": "telegram.outbox.requeue.execution_package.preview",
+  "telegram.outbox.redelivery.package.preview": "telegram.outbox.requeue.execution_package.preview",
+  "telegram.outbox.deliver": "telegram.outbox.delivery",
+  "telegram.outbox.delivery.execute": "telegram.outbox.delivery",
+  "workflow.telegram.outbox.delivery": "telegram.outbox.delivery",
+  "workflow.telegram.outbox.delivery.preview": "telegram.outbox.delivery.preview",
+  "workflow.telegram.outbox.requeue.preview": "telegram.outbox.requeue.preview",
+  "workflow.telegram.outbox.requeue.package.preview": "telegram.outbox.requeue.execution_package.preview",
   "workflow.loop.tick": "workflow.control_loop.tick",
   "workflow.reconciler.tick": "workflow.control_loop.tick",
   "workflow.scheduler.upsert": "workflow.schedule.upsert",
@@ -189,6 +246,17 @@ const WORKFLOW_ACTION_ALIASES = {
   "workflow.events.list": "workflow.event.list",
   "workflow.timeline": "workflow.event.timeline",
   "workflow.events.timeline": "workflow.event.timeline",
+  "workflow.verifier_refuter.record": "workflow.verification.record",
+  "workflow.verifier-refuter.record": "workflow.verification.record",
+  "verifier_refuter.record": "workflow.verification.record",
+  "verifier.refuter.record": "workflow.verification.record",
+  "workflow.verification": "workflow.verification.record",
+  "workflow.verifications": "workflow.verification.list",
+  "workflow.evaluator.run": "workflow.evaluate",
+  "workflow.evaluation.run": "workflow.evaluate",
+  "workflow.goal.evaluate": "workflow.evaluate",
+  "workflow.evaluator.record": "workflow.verification.record",
+  "workflow.evaluation.record": "workflow.verification.record",
   "workflow.session.pack.upsert": "workflow.session_pack.upsert",
   "session_pack.upsert": "workflow.session_pack.upsert",
   "workflow.session.pack.get": "workflow.session_pack.get",
@@ -235,31 +303,36 @@ const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.run.upsert": { capability: "workflow.write", risk: "medium", mutating: true },
   "workflow.swarm.plan": { capability: "workflow.plan", risk: "medium", mutating: true },
   "workflow.task.launch.prepare": { capability: "workflow.task.launch.prepare", risk: "medium", mutating: true },
-  "workflow.task.launch.review": { capability: "workflow.task.launch.review", risk: "high", mutating: true },
-  "workflow.task.launch.approve": { capability: "workflow.task.launch.approve", risk: "high", mutating: true },
+  "workflow.task.launch.review": { capability: "workflow.task.launch.review", risk: "high", mutating: true, requiresCatClawAudit: true },
+  "workflow.task.launch.approve": { capability: "workflow.task.launch.approve", risk: "high", mutating: true, requiresCatClawAudit: true },
   "workflow.task.create": { capability: "workflow.task.write", risk: "medium", mutating: true },
   "workflow.task.update": { capability: "workflow.task.write", risk: "medium", mutating: true },
-  "workflow.advance": { capability: "workflow.operate", risk: "high", mutating: true },
+  "workflow.advance": { capability: "workflow.operate", risk: "high", mutating: true, requiresCatClawAudit: true },
+  "workflow.pause": { capability: "workflow.operate", risk: "high", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
+  "workflow.resume": { capability: "workflow.operate", risk: "high", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
+  "workflow.stop": { capability: "workflow.operate", risk: "high", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
   "workflow.supervise": { capability: "workflow.operate", risk: "high", mutating: true },
   "workflow.control_loop.tick": { capability: "workflow.operate", risk: "high", mutating: true },
-  "workflow.schedule.upsert": { capability: "schedule.write", risk: "high", mutating: true },
+  "workflow.schedule.upsert": { capability: "schedule.write", risk: "high", mutating: true, requiresCatClawAudit: true },
   "workflow.schedule.pause": { capability: "schedule.write", risk: "high", mutating: true },
   "workflow.schedule.resume": { capability: "schedule.write", risk: "high", mutating: true },
   "workflow.schedule.disable": { capability: "schedule.write", risk: "high", mutating: true },
   "workflow.checkpoint": { capability: "workflow.checkpoint", risk: "medium", mutating: true },
   "workflow.event.append": { capability: "workflow.event.write", risk: "medium", mutating: true },
+  "workflow.verification.record": { capability: "workflow.verify", risk: "medium", mutating: true },
+  "workflow.evaluate": { capability: "workflow.verify", risk: "medium", mutating: true },
   "workflow.session_pack.upsert": { capability: "session.write", risk: "medium", mutating: true },
   "workflow.session_run.start": { capability: "session.run", risk: "medium", mutating: true },
   "workflow.session_run.complete": { capability: "session.run", risk: "medium", mutating: true },
-  "runtime.agent.upsert": { capability: "registry.write", risk: "high", mutating: true },
+  "runtime.agent.upsert": { capability: "registry.write", risk: "high", mutating: true, requiresCatClawAudit: true },
   "route_shell.ingest": { capability: "message_flow.send", risk: "low", mutating: true },
   "meeting.runtime_participant": { capability: "registry.write", risk: "high", mutating: true },
-  "telegram.live": { capability: "telegram.configure", risk: "high", mutating: true },
+  "telegram.live": { capability: "telegram.configure", risk: "high", mutating: true, requiresCatClawAudit: true },
   "meeting.dispatch": { capability: "dispatch.write", risk: "high", mutating: true },
   "meeting.ingest": { capability: "receipt.write", risk: "medium", mutating: true },
   "workflow.dispatch.reconcile": { capability: "dispatch.reconcile", risk: "high", mutating: true },
   "runtime.bridge.drain": { capability: "runtime.dispatch", risk: "high", mutating: true },
-  "human_gate.request": { capability: "human_gate.write", risk: "high", mutating: true, requiresHumanGateEvidence: true },
+  "human_gate.request": { capability: "human_gate.write", risk: "high", mutating: true, requiresCatClawAudit: true },
   "human_gate.web_app_submit": { capability: "human_gate.submit", risk: "high", mutating: true },
   "human_gate.button_callback": { capability: "human_gate.submit", risk: "high", mutating: true },
   "human_gate.feedback": { capability: "human_gate.submit", risk: "high", mutating: true },
@@ -267,16 +340,20 @@ const WORKFLOW_ACTION_PERMISSION_RULES = {
   "meeting.resume": { capability: "workflow.operate", risk: "high", mutating: true },
   "meeting.disperse": { capability: "dispatch.write", risk: "high", mutating: true },
   "telegram.outbox": { capability: "telegram.outbox", risk: "high", mutating: true },
+  "telegram.outbox.delivery": { capability: "telegram.outbox", risk: "medium", mutating: true, requiresCatClawAudit: true },
   "message_flow.send": { capability: "message_flow.send", risk: "low", mutating: true },
   "message_flow.reconcile": { capability: "message_flow.reconcile", risk: "medium", mutating: true },
   "protocol.record": { capability: "protocol.write", risk: "medium", mutating: true },
-  "trade.proposal": { capability: "trade.proposal", risk: "high", mutating: true },
-  "risk.decision": { capability: "risk.decision", risk: "critical", mutating: true },
-  "human_gate.record": { capability: "human_gate.record", risk: "critical", mutating: true },
-  "trade.intent": { capability: "trade.intent", risk: "critical", mutating: true, requiresHumanGateEvidence: true },
-  "trading_core.receipt": { capability: "trading_core.receipt", risk: "critical", mutating: true },
-  "side_effect.record": { capability: "side_effect.record", risk: "high", mutating: true },
+  "trade.proposal": { capability: "trade.proposal", risk: "high", mutating: true, requiresCatClawAudit: true, requiresFreshnessCheck: true },
+  "risk.decision": { capability: "risk.decision", risk: "critical", mutating: true, requiresCatClawAudit: true, requiresFreshnessCheck: true },
+  "human_gate.record": { capability: "human_gate.record", risk: "critical", mutating: true, requiresCatClawAudit: true },
+  "trade.intent": { capability: "trade.intent", risk: "critical", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true, requiresFreshnessCheck: true },
+  "trading_core.receipt": { capability: "trading_core.receipt", risk: "critical", mutating: true, requiresHumanGateEvidence: true, requiresFreshnessCheck: true },
+  "side_effect.record": { capability: "side_effect.record", risk: "high", mutating: true, requiresCatClawAudit: true },
   "incident.state": { capability: "incident.write", risk: "medium", mutating: true },
+  "workflow.incident.from_dead_letter": { capability: "incident.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
+  "workflow.incident.closeout.artifact": { capability: "incident.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
+  "workflow.incident.closeout.human_gate_request": { capability: "human_gate.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
   "instrument.upsert": { capability: "research.write", risk: "medium", mutating: true },
   "radar.update": { capability: "research.write", risk: "medium", mutating: true },
   "thesis.update": { capability: "research.write", risk: "medium", mutating: true },
@@ -285,6 +362,19 @@ const WORKFLOW_ACTION_PERMISSION_RULES = {
   "gate.review": { capability: "gate.review", risk: "medium", mutating: true },
   "cat_claw.audit": { capability: "cat_claw.audit", risk: "low", mutating: true }
 };
+
+const WORKFLOW_POLICY_HARD_GATE_ACTIONS = new Set([
+  "risk.decision",
+  "trade.intent",
+  "trading_core.receipt",
+  "workflow.pause",
+  "workflow.resume",
+  "workflow.stop",
+  "workflow.incident.from_dead_letter",
+  "workflow.incident.closeout.artifact",
+  "workflow.incident.closeout.human_gate_request",
+  "telegram.outbox.delivery"
+]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -735,10 +825,18 @@ function isSensitivePersistenceKey(key) {
   return SENSITIVE_PERSISTENCE_KEY.test(normalized);
 }
 
+function redactSensitiveTextForPersistence(value) {
+  return String(value || "")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/tawhg:[A-Za-z0-9._=-]+/g, "tawhg:<redacted>")
+    .replace(/(callback|token|secret|password|api[_-]?key|access[_-]?key|refresh)(\s*[:=]\s*)([^\s,;]+)/gi, "$1$2[redacted]")
+    .replace(/\b(callback|token|secret|password|api[_-]?key|access[_-]?key|refresh)\s+([^\s,;]+)/gi, "$1 [redacted]");
+}
+
 function redactSensitiveForPersistence(value, depth = 0) {
   if (value === null || value === undefined) return value;
   if (typeof value === "string") {
-    return value.replace(/tawhg:[A-Za-z0-9._=-]+/g, "tawhg:<redacted>");
+    return redactSensitiveTextForPersistence(value);
   }
   if (typeof value !== "object") return value;
   if (depth > 8) return "[nested redacted]";
@@ -805,6 +903,22 @@ function protocolObjectReferences(protocolObject = {}, objectId = "") {
     raw.workflow_id
   ];
   return fields.some((value) => String(value || "").trim() === needle);
+}
+
+function workflowPayloadSqlWhere(workflowId, { payloadColumn = "payload_json", parentColumn = "parent_object_id" } = {}) {
+  const value = sqlValue(workflowId);
+  const parentClause = parentColumn ? `${parentColumn}=${value} OR ` : "";
+  return `(
+    ${parentClause}json_extract(${payloadColumn}, '$.workflowId')=${value}
+    OR json_extract(${payloadColumn}, '$.workflow_id')=${value}
+    OR json_extract(${payloadColumn}, '$.workflow.workflowId')=${value}
+    OR json_extract(${payloadColumn}, '$.workflow.id')=${value}
+    OR json_extract(${payloadColumn}, '$.payload.workflowId')=${value}
+    OR json_extract(${payloadColumn}, '$.payload.workflow_id')=${value}
+    OR json_extract(${payloadColumn}, '$.payload.workflow.id')=${value}
+    OR json_extract(${payloadColumn}, '$.raw.workflowId')=${value}
+    OR json_extract(${payloadColumn}, '$.raw.workflow_id')=${value}
+  )`;
 }
 
 function dispatchPayloadReferences(payload = {}, objectId = "") {
@@ -1167,7 +1281,7 @@ function normalizeOptionalAgentId(value) {
   return normalizeAgentId(text);
 }
 
-function canonicalWorkflowAction(action) {
+export function canonicalWorkflowAction(action) {
   const raw = String(action || "workflow.status").trim();
   return WORKFLOW_ACTION_ALIASES[raw] || raw;
 }
@@ -1219,7 +1333,8 @@ function workflowPermissionCaller(input = {}) {
     agentId: callerAgent,
     runtime: callerRuntimeText ? normalizeRuntime(callerRuntimeText) : "",
     sourceSystem: String(input.sourceSystem || input.source_system || "").trim(),
-    toolMode: String(input.toolMode || input.tool_mode || input.capabilityMode || input.capability_mode || "").trim().toLowerCase()
+    toolMode: "",
+    requestedToolMode: String(input.toolMode || input.tool_mode || input.capabilityMode || input.capability_mode || "").trim().toLowerCase()
   };
 }
 
@@ -1282,6 +1397,7 @@ function addWorkflowDefaultCapabilities(policy, caller = {}, row = null) {
       "cat_claw.audit",
       "incident.write",
       "workflow.event.write",
+      "workflow.verify",
       "workflow.checkpoint",
       "workflow.task.launch.prepare"
     ]) {
@@ -1308,6 +1424,89 @@ function isWorkflowTrustedOperator(caller = {}) {
   return ["flashcat", "local_codex", "codex", "system", "tool", "admin"].includes(agent)
     || ["local_codex", "codex", "system"].includes(runtime)
     || ["codex_mtls", "local_codex", "local_codex_mtls", "human_gate_console"].includes(source);
+}
+
+function permissionEvidencePresent(input = {}, names = []) {
+  return names.some((name) => {
+    const camel = name.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+    return input[name] !== undefined && input[name] !== null && input[name] !== ""
+      || input[camel] !== undefined && input[camel] !== null && input[camel] !== "";
+  });
+}
+
+async function workflowPermissionSideEffectUncertain(paths, input = {}) {
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) return 0;
+  const columns = await tableColumns(paths.dbFile, "side_effect_ledger");
+  if (!hasAllColumns(columns, ["workflow_id", "status"])) return 0;
+  const rows = await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM side_effect_ledger
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND status IN ('uncertain','side_effect_uncertain','unknown','failed');`, { json: true });
+  return Number(rows[0]?.count || 0);
+}
+
+async function workflowPermissionPolicyAssessment(paths, rule, input = {}, capabilityAllowed = true) {
+  const requirements = [];
+  const warnings = [];
+  const addRequirement = (type, reason, evidence = []) => {
+    if (requirements.some((item) => item.type === type)) return;
+    requirements.push({ type, reason, evidence });
+  };
+  if (!capabilityAllowed) {
+    return { policyOutcome: "deny", actionable: false, requirements, policyWarnings: warnings };
+  }
+  if (rule.requiresHumanGateEvidence && !permissionEvidencePresent(input, [
+    "human_gate_id",
+    "humanGateId",
+    "human_gate_evidence",
+    "humanGateEvidence",
+    "risk_decision_id",
+    "riskDecisionId",
+    "flashcat_original_words",
+    "flashcatOriginalWords"
+  ])) {
+    addRequirement("human_gate", "human gate evidence or Flashcat original words are required before this action", ["humanGateId", "riskDecisionId", "flashcatOriginalWords"]);
+  }
+  if (rule.requiresCatClawAudit && !permissionEvidencePresent(input, [
+    "cat_claw_audit_id",
+    "catClawAuditId",
+    "cat_claw_audit",
+    "catClawAudit",
+    "secretary_audit_id",
+    "secretaryAuditId"
+  ])) {
+    addRequirement("cat_claw_audit", "Cat Claw secretary audit evidence is required before this action", ["catClawAuditId", "secretaryAuditId"]);
+  }
+  if (rule.requiresFreshnessCheck && !permissionEvidencePresent(input, [
+    "freshness_checked_at",
+    "freshnessCheckedAt",
+    "freshness_evidence",
+    "freshnessEvidence",
+    "data_freshness_at",
+    "dataFreshnessAt"
+  ])) {
+    addRequirement("freshness_check", "freshness evidence is required before trading or data-sensitive action", ["freshnessCheckedAt", "freshnessEvidence", "dataFreshnessAt"]);
+  }
+  const sideEffectUncertainCount = await workflowPermissionSideEffectUncertain(paths, input);
+  if (sideEffectUncertainCount > 0 && ["high", "critical"].includes(String(rule.risk || "").toLowerCase())) {
+    addRequirement("side_effect_uncertain", `${sideEffectUncertainCount} uncertain side-effect record(s) must be resolved before high-risk action`, ["side_effect_ledger"]);
+  }
+  const outcomeOrder = ["side_effect_uncertain", "human_gate", "cat_claw_audit", "freshness_check"];
+  const first = outcomeOrder.find((type) => requirements.some((item) => item.type === type));
+  const policyOutcome = first === "human_gate" ? "requires_human_gate"
+    : first === "cat_claw_audit" ? "requires_cat_claw_audit"
+      : first === "freshness_check" ? "requires_freshness_check"
+        : first === "side_effect_uncertain" ? "side_effect_uncertain"
+          : "allow";
+  return {
+    policyOutcome,
+    actionable: policyOutcome === "allow",
+    requirements,
+    policyWarnings: warnings,
+    sideEffectUncertainCount
+  };
 }
 
 async function workflowPermissionAgentRow(paths, caller = {}) {
@@ -1341,6 +1540,10 @@ async function evaluateWorkflowPermission(paths, input = {}) {
     caller,
     registered: false,
     reason: "allowed",
+    policyOutcome: "allow",
+    requirements: [],
+    policyWarnings: [],
+    actionable: true,
     row: null
   };
   if (rule.readOnly) {
@@ -1349,10 +1552,12 @@ async function evaluateWorkflowPermission(paths, input = {}) {
   }
   if (!caller.agentId) {
     decision.reason = "local_unscoped_default_allow";
+    Object.assign(decision, await workflowPermissionPolicyAssessment(paths, rule, input, true));
     return decision;
   }
   if (isWorkflowTrustedOperator(caller)) {
     decision.reason = "trusted_operator";
+    Object.assign(decision, await workflowPermissionPolicyAssessment(paths, rule, input, true));
     return decision;
   }
   const row = await workflowPermissionAgentRow(paths, caller);
@@ -1370,29 +1575,35 @@ async function evaluateWorkflowPermission(paths, input = {}) {
   if (policy.forbiddenActions.has(rule.action)) {
     decision.allowed = false;
     decision.reason = "action_forbidden_by_policy";
+    Object.assign(decision, await workflowPermissionPolicyAssessment(paths, rule, input, false));
     return decision;
   }
   if (!row && !workflowPermissionHasCapability(policy, rule.action, rule.capability) && rule.action !== "message_flow.send") {
     decision.allowed = false;
     decision.reason = "caller_not_registered";
+    Object.assign(decision, await workflowPermissionPolicyAssessment(paths, rule, input, false));
     return decision;
   }
   if (row && String(row.status || "") !== "active") {
     decision.allowed = false;
     decision.reason = `runtime_agent_not_active:${row.status || "unknown"}`;
+    Object.assign(decision, await workflowPermissionPolicyAssessment(paths, rule, input, false));
     return decision;
   }
   if (row && rule.action === "workflow.run.upsert" && Number(row.can_start_workflow ?? 1) === 0) {
     decision.allowed = false;
     decision.reason = "runtime_agent_cannot_start_workflow";
+    Object.assign(decision, await workflowPermissionPolicyAssessment(paths, rule, input, false));
     return decision;
   }
   if (!workflowPermissionHasCapability(policy, rule.action, rule.capability) && rule.action !== "message_flow.send") {
     decision.allowed = false;
     decision.reason = `missing_capability:${rule.capability}`;
+    Object.assign(decision, await workflowPermissionPolicyAssessment(paths, rule, input, false));
     return decision;
   }
   decision.reason = row ? "capability_allowed" : "low_risk_message_flow_default";
+  Object.assign(decision, await workflowPermissionPolicyAssessment(paths, rule, input, true));
   return decision;
 }
 
@@ -1435,6 +1646,27 @@ async function authorizeWorkflowAction(rootDir, input = {}) {
       }
     }).catch(() => {});
     throw new Error(`workflow permission denied: action=${decision.action} caller=${decision.caller.agentId || "<local>"} requiredCapability=${decision.requiredCapability} reason=${decision.reason}`);
+  }
+  if (WORKFLOW_POLICY_HARD_GATE_ACTIONS.has(action) && decision.actionable === false) {
+    await appendWorkflowEvent(paths, {
+      eventType: "permission.policy_blocked",
+      status: "denied",
+      workflowId: input.workflowId || input.workflow_id || "",
+      traceId: input.traceId || input.trace_id || "",
+      actor: decision.caller.agentId || "unknown",
+      sourceRuntime: decision.caller.runtime || "",
+      sourceAgent: decision.caller.agentId || "",
+      nextState: decision.policyOutcome || "policy_blocked",
+      payload: {
+        action: decision.action,
+        originalAction: decision.originalAction,
+        risk: decision.risk,
+        requiredCapability: decision.requiredCapability,
+        policyOutcome: decision.policyOutcome,
+        requirements: decision.requirements || []
+      }
+    }).catch(() => {});
+    throw new Error(`workflow policy blocked: action=${decision.action} policyOutcome=${decision.policyOutcome || "unknown"} requirements=${(decision.requirements || []).map((item) => item.type).join(",") || "none"}`);
   }
   return decision;
 }
@@ -1922,6 +2154,28 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS workflow_phases (
+  phase_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  phase_key TEXT NOT NULL,
+  ordinal INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'planned',
+  owner_agent TEXT,
+  owner_agents_json TEXT NOT NULL DEFAULT '[]',
+  depends_on_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+  verifier_agent TEXT,
+  human_gate_required INTEGER NOT NULL DEFAULT 0,
+  plan_node_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(workflow_id) REFERENCES workflow_runs(workflow_id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_phases_workflow_key ON workflow_phases(workflow_id, phase_key);
+CREATE INDEX IF NOT EXISTS idx_workflow_phases_workflow ON workflow_phases(workflow_id, ordinal, phase_key);
 CREATE TABLE IF NOT EXISTS workflow_tasks (
   task_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
@@ -2007,6 +2261,38 @@ CREATE INDEX IF NOT EXISTS idx_workflow_events_workflow ON workflow_events(workf
 CREATE INDEX IF NOT EXISTS idx_workflow_events_trace ON workflow_events(trace_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_workflow_events_type ON workflow_events(event_type, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_idempotency ON workflow_events(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
+CREATE TABLE IF NOT EXISTS workflow_verification_results (
+  verification_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  phase_id TEXT,
+  phase_key TEXT,
+  task_id TEXT,
+  agent_run_id TEXT,
+  dispatch_id TEXT,
+  runtime_run_id TEXT,
+  result_type TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  verifier_agent TEXT,
+  refuter_agent TEXT,
+  source_runtime TEXT,
+  source_agent TEXT,
+  confidence TEXT,
+  risk_band TEXT,
+  summary TEXT,
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  recommendations_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  receipt_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_verification_workflow ON workflow_verification_results(workflow_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_verification_phase ON workflow_verification_results(workflow_id, phase_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_verification_task ON workflow_verification_results(workflow_id, task_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_verification_decision ON workflow_verification_results(workflow_id, decision, created_at DESC);
 CREATE TABLE IF NOT EXISTS workflow_session_packs (
   session_id TEXT PRIMARY KEY,
   version INTEGER NOT NULL DEFAULT 1,
@@ -2037,6 +2323,7 @@ CREATE TABLE IF NOT EXISTS workflow_session_runs (
   pack_version INTEGER NOT NULL,
   workflow_id TEXT,
   task_id TEXT,
+  dispatch_id TEXT,
   worker_id TEXT,
   status TEXT NOT NULL,
   input_json TEXT NOT NULL DEFAULT '{}',
@@ -2051,6 +2338,33 @@ CREATE TABLE IF NOT EXISTS workflow_session_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_session_runs_session ON workflow_session_runs(session_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_session_runs_workflow ON workflow_session_runs(workflow_id, task_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_runs_dispatch ON workflow_session_runs(dispatch_id);
+CREATE TABLE IF NOT EXISTS workflow_agent_runs (
+  agent_run_id TEXT PRIMARY KEY,
+  workflow_id TEXT,
+  phase_id TEXT,
+  phase_key TEXT,
+  task_id TEXT,
+  dispatch_id TEXT,
+  runtime_run_id TEXT,
+  session_run_id TEXT,
+  runtime TEXT NOT NULL DEFAULT '',
+  agent_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  input_hash TEXT,
+  output_hash TEXT,
+  receipt_ref TEXT,
+  error TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_agent_runs_workflow ON workflow_agent_runs(workflow_id, phase_key, task_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_agent_runs_dispatch ON workflow_agent_runs(dispatch_id, runtime_run_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_agent_runs_session ON workflow_agent_runs(session_run_id);
 CREATE TABLE IF NOT EXISTS artifact_index (
   artifact_id TEXT PRIMARY KEY,
   instrument_id TEXT REFERENCES instruments(instrument_id) ON DELETE SET NULL,
@@ -2491,6 +2805,27 @@ CREATE TABLE IF NOT EXISTS control_loop_jobs (
 CREATE INDEX IF NOT EXISTS idx_control_loop_jobs_status ON control_loop_jobs(status, next_run_at, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_control_loop_jobs_workflow ON control_loop_jobs(workflow_id, status, updated_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_control_loop_jobs_active_dedupe ON control_loop_jobs(dedupe_key) WHERE status IN ('queued','running','retry_scheduled');
+CREATE TABLE IF NOT EXISTS workflow_operations (
+  operation_id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'workflow',
+  scope_id TEXT NOT NULL DEFAULT '',
+  workflow_id TEXT,
+  requested_by TEXT NOT NULL DEFAULT '',
+  reason TEXT,
+  risk_tier TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  dry_run INTEGER NOT NULL DEFAULT 0,
+  idempotency_key TEXT,
+  human_gate_id TEXT,
+  input_hash TEXT,
+  preview_result_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
 INSERT INTO schema_meta(key, value, updated_at)
 VALUES ('workflow_schema_version', ${sqlValue(WORKFLOW_SCHEMA_VERSION)}, ${sqlValue(nowIso())})
 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
@@ -2514,6 +2849,68 @@ async function migrateDatabase(dbFile) {
     ["decision_at", "TEXT"],
     ["approver", "TEXT"]
   ]);
+  await ensureColumns(dbFile, "workflow_session_runs", [
+    ["dispatch_id", "TEXT"]
+  ]);
+  await ensureColumns(dbFile, "workflow_verification_results", [
+    ["verification_id", "TEXT"],
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["phase_id", "TEXT"],
+    ["phase_key", "TEXT"],
+    ["task_id", "TEXT"],
+    ["agent_run_id", "TEXT"],
+    ["dispatch_id", "TEXT"],
+    ["runtime_run_id", "TEXT"],
+    ["result_type", "TEXT NOT NULL DEFAULT 'verifier'"],
+    ["decision", "TEXT NOT NULL DEFAULT 'uncertain'"],
+    ["verifier_agent", "TEXT"],
+    ["refuter_agent", "TEXT"],
+    ["source_runtime", "TEXT"],
+    ["source_agent", "TEXT"],
+    ["confidence", "TEXT"],
+    ["risk_band", "TEXT"],
+    ["summary", "TEXT"],
+    ["findings_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["recommendations_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["evidence_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["artifact_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["receipt_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["payload_hash", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await sqlite(dbFile, `
+CREATE INDEX IF NOT EXISTS idx_workflow_verification_workflow ON workflow_verification_results(workflow_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_verification_phase ON workflow_verification_results(workflow_id, phase_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_verification_task ON workflow_verification_results(workflow_id, task_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_verification_decision ON workflow_verification_results(workflow_id, decision, created_at DESC);`, { json: false });
+  await ensureColumns(dbFile, "workflow_operations", [
+    ["operation_id", "TEXT"],
+    ["action", "TEXT NOT NULL DEFAULT ''"],
+    ["scope_type", "TEXT NOT NULL DEFAULT 'workflow'"],
+    ["scope_id", "TEXT NOT NULL DEFAULT ''"],
+    ["workflow_id", "TEXT"],
+    ["requested_by", "TEXT NOT NULL DEFAULT ''"],
+    ["reason", "TEXT"],
+    ["risk_tier", "TEXT NOT NULL DEFAULT ''"],
+    ["status", "TEXT NOT NULL DEFAULT ''"],
+    ["dry_run", "INTEGER NOT NULL DEFAULT 0"],
+    ["idempotency_key", "TEXT"],
+    ["human_gate_id", "TEXT"],
+    ["input_hash", "TEXT"],
+    ["preview_result_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["result_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["error", "TEXT"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"],
+    ["completed_at", "TEXT"]
+  ]);
+  await sqlite(dbFile, `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_operations_operation_id ON workflow_operations(operation_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_operations_status ON workflow_operations(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_operations_scope ON workflow_operations(scope_type, scope_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_operations_workflow ON workflow_operations(workflow_id, updated_at DESC);`, { json: false });
   await ensureColumns(dbFile, "runtime_agents", [
     ["platform", "TEXT NOT NULL DEFAULT ''"],
     ["execution_adapter", "TEXT NOT NULL DEFAULT ''"],
@@ -2711,6 +3108,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_events_workflow ON workflow_events(workf
 CREATE INDEX IF NOT EXISTS idx_workflow_events_trace ON workflow_events(trace_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_workflow_events_type ON workflow_events(event_type, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_idempotency ON workflow_events(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
+CREATE INDEX IF NOT EXISTS idx_session_runs_dispatch ON workflow_session_runs(dispatch_id);
 CREATE TABLE IF NOT EXISTS workflow_schedules (
   schedule_id TEXT PRIMARY KEY,
   name TEXT,
@@ -2813,6 +3211,7 @@ CREATE TABLE IF NOT EXISTS workflow_session_runs (
   pack_version INTEGER NOT NULL,
   workflow_id TEXT,
   task_id TEXT,
+  dispatch_id TEXT,
   worker_id TEXT,
   status TEXT NOT NULL,
   input_json TEXT NOT NULL DEFAULT '{}',
@@ -2827,6 +3226,7 @@ CREATE TABLE IF NOT EXISTS workflow_session_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_session_runs_session ON workflow_session_runs(session_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_session_runs_workflow ON workflow_session_runs(workflow_id, task_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_runs_dispatch ON workflow_session_runs(dispatch_id);
 CREATE TABLE IF NOT EXISTS human_gate_buttons (
   button_id TEXT PRIMARY KEY,
   callback_token TEXT NOT NULL UNIQUE,
@@ -3191,12 +3591,16 @@ UNION ALL SELECT 'evidence', COUNT(*) FROM evidence_items
 UNION ALL SELECT 'memos', COUNT(*) FROM research_memos
 UNION ALL SELECT 'gates', COUNT(*) FROM review_gates
 UNION ALL SELECT 'workflows', COUNT(*) FROM workflow_runs
+UNION ALL SELECT 'workflow_phases', COUNT(*) FROM workflow_phases
 UNION ALL SELECT 'workflow_tasks', COUNT(*) FROM workflow_tasks
 UNION ALL SELECT 'workflow_task_dependencies', COUNT(*) FROM workflow_task_dependencies
 UNION ALL SELECT 'workflow_checkpoints', COUNT(*) FROM workflow_checkpoints
 UNION ALL SELECT 'workflow_events', COUNT(*) FROM workflow_events
+UNION ALL SELECT 'workflow_verification_results', COUNT(*) FROM workflow_verification_results
 UNION ALL SELECT 'workflow_session_packs', COUNT(*) FROM workflow_session_packs
 UNION ALL SELECT 'workflow_session_runs', COUNT(*) FROM workflow_session_runs
+UNION ALL SELECT 'workflow_agent_runs', COUNT(*) FROM workflow_agent_runs
+UNION ALL SELECT 'workflow_operations', COUNT(*) FROM workflow_operations
 UNION ALL SELECT 'protocol_objects', COUNT(*) FROM protocol_objects
 UNION ALL SELECT 'trade_intents', COUNT(*) FROM executable_trade_intents
 UNION ALL SELECT 'trading_core_receipts', COUNT(*) FROM trading_core_receipts
@@ -3425,6 +3829,358 @@ function draftGate(name, ok, message, severity = "error") {
   return { name, status: ok ? "pass" : severity, message };
 }
 
+function taskDraftParticipantRole(agentId, governance = {}) {
+  if (agentId === governance.chairAgent) return "chair";
+  if (agentId === governance.secretaryAgent) return "secretary_auditor";
+  if (agentId === governance.consumerAgent) return "consumer";
+  return "worker";
+}
+
+function taskDraftPhaseDependencies(phases = []) {
+  const phaseIds = new Set(phases.map((phase) => phase.id).filter(Boolean));
+  const dependencies = new Map();
+  for (const phase of phases) {
+    const dependsOn = [];
+    if (phase.id === "responsibility_self_check" || phase.id === "consumer_requirements") {
+      dependsOn.push("scope");
+    } else if (phase.id === "cross_discussion") {
+      dependsOn.push("responsibility_self_check", "consumer_requirements");
+      if (!phaseIds.has("responsibility_self_check") && !phaseIds.has("consumer_requirements")) dependsOn.push("scope");
+    } else if (phase.id === "plan_synthesis") {
+      dependsOn.push("cross_discussion");
+      if (!phaseIds.has("cross_discussion")) dependsOn.push("responsibility_self_check");
+    } else if (phase.id === "secretary_audit") {
+      dependsOn.push("plan_synthesis");
+    } else if (phase.id === "human_gate_package") {
+      dependsOn.push("secretary_audit");
+    }
+    dependencies.set(phase.id, [...new Set(dependsOn.filter((id) => phaseIds.has(id)))]);
+  }
+  return dependencies;
+}
+
+function workflowPlanNodeType(phaseId) {
+  if (phaseId === "secretary_audit") return "secretary_audit";
+  if (phaseId === "human_gate_package") return "human_gate";
+  if (phaseId === "plan_synthesis") return "reducer";
+  return "worker";
+}
+
+function planSpecV2ContractOk(plan = {}) {
+  const nodeFields = [
+    "nodeId", "phaseId", "nodeType", "ownerAgent", "runtime", "agentId", "dependsOn",
+    "inputRefs", "prompt", "allowedCapabilities", "expectedArtifacts", "receiptRequired",
+    "humanGateRequired", "timeoutSeconds", "retryPolicy", "maxAttempts",
+    "acceptanceCriteria", "policyGate", "sideEffectPolicy", "verifier",
+    "failureRoute", "idempotencyKey"
+  ];
+  const evidenceRefs = ["artifactRefs", "receiptRefs", "messageFlowRefs", "outboxRefs", "sideEffectRefs", "incidentRefs", "readinessRefs", "checkpointRefs"];
+  const resumeFields = ["checkpointBeforeHumanGate", "checkpointBeforeSideEffect", "checkpointAfterRuntimeReceipt", "reuseCompletedNodes", "invalidateOn", "resumeFrom", "sideEffectUncertainHandling"];
+  const required = Boolean(
+    plan?.schemaVersion === "workflow_plan_spec.v2"
+    && plan.meta?.planId
+    && plan.meta?.workflowId
+    && plan.meta?.traceId
+    && plan.meta?.idempotencyKey
+    && plan.acceptance?.workflowSuccess
+    && plan.verification?.mode
+    && plan.verification?.verifierAgent
+    && plan.verification?.rubric
+    && plan.humanGatePolicy?.language
+    && plan.permissionPolicy?.defaultOutcome
+    && plan.artifacts
+    && plan.audit
+  );
+  return required
+    && plan.nodes.every((node) => nodeFields.every((field) => Object.prototype.hasOwnProperty.call(node, field)))
+    && evidenceRefs.every((field) => Array.isArray(plan.evidencePolicy?.[field]))
+    && resumeFields.every((field) => Object.prototype.hasOwnProperty.call(plan.resumePolicy || {}, field))
+    && Array.isArray(plan.failureRoutes)
+    && plan.failureRoutes.every((route) => route.routeId && route.match && route.action && route.ownerAgent);
+}
+
+function buildWorkflowPlanSpecV2(spec = {}, input = {}) {
+  const governance = spec.governance || {};
+  const phases = Array.isArray(spec.phases) ? spec.phases : [];
+  const participantRows = Array.isArray(spec.participants) ? spec.participants : [];
+  const participantById = new Map(participantRows.map((participant) => [participant.agentId, participant]));
+  const phaseDependencies = taskDraftPhaseDependencies(phases);
+  const planSeed = [spec.workflowId, spec.traceId, spec.idempotencyKey, spec.objective].join("\n");
+  const sourceSystem = String(input.sourceSystem || input.source_system || "workflow.task.draft").trim();
+  const timezone = String(input.timezone || input.time_zone || "Asia/Shanghai").trim();
+  const acceptanceCriteria = toList(input.acceptanceCriteria || input.acceptance_criteria || input.acceptance)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  const stopConditions = toList(input.stopCondition || input.stop_condition || input.stop)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  const humanGatePolicy = {
+    ...(governance.humanGatePolicy || {
+      language: "zh-CN",
+      optionsMinimum: 3,
+      requiredControls: ["pause_workflow", "terminate_workflow"]
+    }),
+    required: Boolean(governance.humanGateRequired),
+    submitterAgent: governance.secretaryAgent || "cat_claw",
+    reviewerAgent: governance.chairAgent || "main",
+    requiresOriginalWords: Boolean(governance.humanGateRequired),
+    buttonStylePolicy: {
+      approveOptions: "success",
+      pauseWorkflow: "primary",
+      terminateWorkflow: "danger",
+      rejectOrReturn: "danger"
+    },
+    deliveryPolicy: "button_first_token_bound_review_form",
+    resumeTarget: governance.chairAgent || "main",
+    rollbackBoundary: "checkpoint_before_human_gate"
+  };
+  const phaseGraph = phases.map((phase, index) => {
+    const ownerAgents = uniqueAgentIds([phase.ownerAgent, ...(Array.isArray(phase.ownerAgents) ? phase.ownerAgents : [])]);
+    return {
+      phaseId: phase.id || `phase_${index + 1}`,
+      ordinal: index + 1,
+      status: "planned",
+      ownerAgents,
+      dependsOn: phaseDependencies.get(phase.id) || [],
+      objective: phase.objective || "",
+      acceptanceCriteria: [
+        phase.objective || "Phase objective is completed.",
+        "Required receipt and evidence references are returned before the next phase advances."
+      ].filter(Boolean)
+    };
+  });
+  const phaseNodeIds = new Map();
+  const failureRoutes = [
+    {
+      routeId: "missing_receipt",
+      match: { status: "needs_evidence" },
+      action: "return_to_evidence_collection",
+      ownerAgent: governance.chairAgent || "main",
+      humanGateRequired: false,
+      incidentRequired: false
+    },
+    {
+      routeId: "human_gate_rejected_or_incomplete",
+      match: { status: "human_gate_rejected" },
+      action: "return_to_evidence_collection",
+      ownerAgent: governance.chairAgent || "main",
+      humanGateRequired: false,
+      incidentRequired: false
+    },
+    {
+      routeId: "human_gate_paused",
+      match: { status: "human_gate_paused" },
+      action: "pause_workflow",
+      ownerAgent: governance.secretaryAgent || "cat_claw",
+      humanGateRequired: true,
+      incidentRequired: false
+    },
+    {
+      routeId: "human_gate_terminated",
+      match: { status: "human_gate_terminated" },
+      action: "terminate_workflow",
+      ownerAgent: governance.secretaryAgent || "cat_claw",
+      humanGateRequired: true,
+      incidentRequired: false
+    },
+    {
+      routeId: "side_effect_uncertain",
+      match: { status: "side_effect_uncertain" },
+      action: "mark_side_effect_uncertain",
+      ownerAgent: governance.chairAgent || "main",
+      humanGateRequired: true,
+      incidentRequired: true
+    }
+  ];
+  const nodes = [];
+  for (const phase of phaseGraph) {
+    const nodeIds = [];
+    for (const ownerAgent of phase.ownerAgents) {
+      const participant = participantById.get(ownerAgent) || {};
+      const nodeId = `node.${cleanFileSegment(phase.phaseId)}.${cleanFileSegment(ownerAgent)}`;
+      nodeIds.push(nodeId);
+      nodes.push({
+        nodeId,
+        phaseId: phase.phaseId,
+        nodeType: workflowPlanNodeType(phase.phaseId),
+        ownerAgent,
+        runtime: participant.runtime || "",
+        agentId: ownerAgent,
+        taskType: phase.phaseId === "human_gate_package" ? "human_gate_package" : "workflow_phase",
+        status: "planned",
+        priority: spec.priority || "normal",
+        dependsOn: [],
+        inputRefs: [],
+        prompt: [
+          `Workflow: ${spec.workflowId}`,
+          `Phase: ${phase.phaseId}`,
+          `Objective: ${phase.objective || spec.objective || ""}`,
+          "Return evidence, artifact refs, open risks, and readiness for the next phase."
+        ].join("\n"),
+        allowedCapabilities: [],
+        expectedArtifacts: [`${phase.phaseId} evidence and receipt for ${spec.workflowId}`],
+        acceptanceCriteria: phase.acceptanceCriteria,
+        receiptRequired: true,
+        humanGateRequired: phase.phaseId === "human_gate_package",
+        timeoutSeconds: 3600,
+        maxAttempts: 1,
+        retryPolicy: {
+          maxAttempts: 1,
+          backoff: "manual_after_receipt_review"
+        },
+        policyGate: {
+          outcome: phase.phaseId === "human_gate_package" ? "requires_human_gate" : "requires_cat_claw_audit",
+          riskTier: "unknown"
+        },
+        toolPolicy: {
+          requiredCapabilities: [],
+          allowedTools: [],
+          restrictedTools: []
+        },
+        sideEffectPolicy: {
+          allowed: false,
+          requiresLedger: true,
+          idempotencyKeyRequired: true
+        },
+        verifier: {
+          agentId: phase.phaseId === "secretary_audit" ? governance.secretaryAgent || "cat_claw" : governance.chairAgent || "main",
+          mode: "reviewer_agent"
+        },
+        failureRoute: phase.phaseId === "human_gate_package" ? "human_gate_rejected_or_incomplete" : "missing_receipt",
+        idempotencyKey: `workflow_plan_node:${spec.workflowId}:${phase.phaseId}:${ownerAgent}`,
+        protected: ["main", "cat_claw", "cat_heart"].includes(ownerAgent)
+      });
+    }
+    phaseNodeIds.set(phase.phaseId, nodeIds);
+  }
+  for (const node of nodes) {
+    const phase = phaseGraph.find((item) => item.phaseId === node.phaseId);
+    node.dependsOn = [...new Set((phase?.dependsOn || []).flatMap((phaseId) => phaseNodeIds.get(phaseId) || []))];
+  }
+  return {
+    schemaVersion: "workflow_plan_spec.v2",
+    meta: {
+      planId: `plan.${textHash(planSeed).slice(0, 16)}`,
+      planRevision: 1,
+      workflowId: spec.workflowId,
+      traceId: spec.traceId,
+      idempotencyKey: spec.idempotencyKey,
+      createdAt: spec.createdAt,
+      updatedAt: spec.createdAt,
+      timezone,
+      sourceSystem,
+      sourceChannel: input.sourceChannel || input.source_channel || sourceSystem,
+      sourceMessageId: input.sourceMessageId || input.source_message_id || "",
+      registrySnapshotRef: "runtime_agents@draft_time"
+    },
+    objective: {
+      subject: spec.subject || "",
+      goal: spec.objective || "",
+      taskType: spec.taskType || "",
+      priority: spec.priority || "normal",
+      acceptanceCriteria,
+      stopConditions
+    },
+    participants: participantRows.map((participant) => ({
+      agentId: participant.agentId,
+      role: taskDraftParticipantRole(participant.agentId, governance),
+      runtime: participant.runtime || "",
+      platform: participant.platform || "",
+      endpointRef: participant.endpointRef || "",
+      registered: Boolean(participant.registered),
+      canReceiveDispatch: Boolean(participant.canReceiveDispatch),
+      capabilities: []
+    })),
+    phaseGraph,
+    nodes,
+    acceptance: {
+      workflowSuccess: acceptanceCriteria.length ? acceptanceCriteria : [
+        "All planned nodes return receipt and evidence references.",
+        "Cat Brain verifies semantic readiness before Cat Claw submits any Human Gate package."
+      ],
+      phaseSuccessDefaults: [
+        "All phase nodes are terminal successful or explicitly waived by the reviewer.",
+        "Required evidence is linked before dependent phases advance."
+      ],
+      requiredReceipts: nodes.filter((node) => node.receiptRequired).map((node) => node.nodeId),
+      requiredArtifacts: nodes.flatMap((node) => node.expectedArtifacts || []),
+      requiredHumanGates: nodes.filter((node) => node.humanGateRequired).map((node) => node.nodeId),
+      blockedIf: ["missing_required_receipt", "missing_required_artifact", "human_gate_pending_or_rejected"],
+      completeOnlyIf: ["required_receipts_present", "required_artifacts_present", "reviewer_verification_passed"]
+    },
+    verification: {
+      mode: governance.humanGateRequired ? "human_gate" : "reviewer_agent",
+      verifierAgent: governance.chairAgent || "main",
+      refuterAgent: "",
+      rubric: [
+        "Task decomposition matches stated objective and agent responsibilities.",
+        "Evidence and receipts are sufficient for each completed node.",
+        "Human Gate packages preserve A/B/C options, Chinese body, pause, terminate, and rollback boundaries."
+      ],
+      minimumEvidence: ["runtime_receipt", "artifact_ref", "cat_claw_audit_before_human_gate"],
+      failureHandling: "route_by_failureRoutes",
+      required: true,
+      verifierAgents: [governance.chairAgent || "main", governance.secretaryAgent || "cat_claw"],
+      receiptRequired: true,
+      evidenceRequired: true,
+      catClawAuditBeforeHumanGate: Boolean(governance.humanGateRequired)
+    },
+    humanGatePolicy,
+    permissionPolicy: {
+      defaultOutcome: "allow",
+      gates: [],
+      finalApprover: "flashcat",
+      catBrainReviewRequired: true,
+      catClawSubmitterRequired: Boolean(governance.humanGateRequired)
+    },
+    evidencePolicy: {
+      artifactRefs: [],
+      receiptRefs: [],
+      messageFlowRefs: [],
+      outboxRefs: [],
+      sideEffectRefs: [],
+      incidentRefs: [],
+      readinessRefs: [],
+      checkpointRefs: [],
+      artifactRefsRequired: true,
+      receiptRefsRequired: true,
+      rawLogsInPlan: false,
+      evidencePackBeforeHumanGate: Boolean(governance.humanGateRequired)
+    },
+    resumePolicy: {
+      stableWorkflowId: true,
+      stableTraceId: true,
+      checkpointBeforeHumanGate: true,
+      idempotencyKeyRequired: true,
+      checkpointBeforeSideEffect: true,
+      checkpointAfterRuntimeReceipt: true,
+      reuseCompletedNodes: true,
+      invalidateOn: ["participant_change", "acceptance_change", "permission_policy_change"],
+      resumeFrom: "latest_checkpoint_or_terminal_receipt",
+      sideEffectUncertainHandling: "pause_and_request_human_review",
+      ...(spec.resumePolicy || {})
+    },
+    failureRoutes,
+    artifacts: {
+      planArtifactRef: "",
+      sourceRefs: [],
+      generatedRefs: []
+    },
+    audit: {
+      generatedBy: "workflow.task.draft",
+      status: "draft",
+      reviewerAgent: governance.chairAgent || "main",
+      secretaryAuditAgent: governance.secretaryAgent || "cat_claw",
+      qualityGates: []
+    },
+    compatibility: {
+      taskLaunchPackageVersion: "workflow_task_launch_package.v1",
+      materializesTo: ["workflow_runs", "workflow_tasks", "workflow_task_dependencies"],
+      phaseSource: "workflow_tasks.phase"
+    }
+  };
+}
+
 export async function workflowTaskDraft(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
   const createdAt = nowIso();
@@ -3572,7 +4328,12 @@ export async function workflowTaskDraft(rootDir, input = {}) {
       ? draftGate("cat_claw_audit_before_human_gate", phases.some((phase) => phase.id === "secretary_audit"), "Cat Claw audit phase is placed before Human Gate submission.")
       : { name: "cat_claw_audit_before_human_gate", status: "not_applicable", message: "Human Gate is not required for this draft." }
   ];
-  const warnings = gates.filter((gate) => ["error", "warning"].includes(gate.status)).map((gate) => gate.message);
+  const resumePolicy = {
+    stableWorkflowId: true,
+    stableTraceId: true,
+    checkpointBeforeHumanGate: true,
+    idempotencyKeyRequired: true
+  };
   const spec = {
     workflowId,
     traceId,
@@ -3600,15 +4361,27 @@ export async function workflowTaskDraft(rootDir, input = {}) {
 	    participants: participantRecords,
 	    phases,
 	    humanGateDraft,
-	    qualityGates: gates,
-    resumePolicy: {
-      stableWorkflowId: true,
-      stableTraceId: true,
-      checkpointBeforeHumanGate: true,
-      idempotencyKeyRequired: true
-    },
+	    qualityGates: [],
+    resumePolicy,
     appendix: stockAppendix
   };
+  const planSpecV2 = buildWorkflowPlanSpecV2(spec, input);
+  const planMeta = planSpecV2.meta || {};
+  const planGates = [
+    draftGate("plan_spec_v2_required_ids", Boolean(planSpecV2.schemaVersion && planMeta.planId && planMeta.workflowId && planMeta.traceId && planMeta.idempotencyKey), "Workflow Plan Spec v2 must include stable plan/workflow/trace/idempotency ids."),
+    draftGate("plan_spec_v2_contract_shape", planSpecV2ContractOk(planSpecV2), "Workflow Plan Spec v2 must satisfy the documented node, evidence, resume, artifacts, and audit field contract."),
+    draftGate("node_acceptance_required", planSpecV2.nodes.every((node) => Array.isArray(node.acceptanceCriteria) && node.acceptanceCriteria.length > 0), "Every Plan Spec v2 node must include acceptance criteria."),
+    requiresHumanGate
+      ? draftGate("human_gate_original_words_required", planSpecV2.humanGatePolicy?.requiresOriginalWords === true, "Human Gate policy must require Flashcat original words before completion.")
+      : { name: "human_gate_original_words_required", status: "not_applicable", message: "Human Gate is not required for this draft." },
+    requiresHumanGate
+      ? draftGate("human_gate_chinese_body_required", planSpecV2.humanGatePolicy?.language === "zh-CN", "Human Gate policy must require Chinese report content.")
+      : { name: "human_gate_chinese_body_required", status: "not_applicable", message: "Human Gate is not required for this draft." },
+    draftGate("failure_routes_required", Array.isArray(planSpecV2.failureRoutes) && planSpecV2.failureRoutes.length >= 3, "Plan Spec v2 must declare fallback routes for missing receipts, Human Gate failure, and uncertain side effects.")
+  ];
+  spec.planSpecV2 = planSpecV2;
+  spec.qualityGates = [...gates, ...planGates];
+  const warnings = spec.qualityGates.filter((gate) => ["error", "warning"].includes(gate.status)).map((gate) => gate.message);
   return {
     operation: "workflow.task.draft",
     dryRun: true,
@@ -3828,6 +4601,7 @@ function buildTaskLaunchPackage(draft = {}, input = {}, artifactRefs = {}) {
     governance: spec.governance,
     participants: spec.participants || [],
     phases: spec.phases || [],
+    planSpecV2: spec.planSpecV2 || null,
     auditMatrix: taskLaunchAuditMatrix(spec, input),
     qualityGates: spec.qualityGates || [],
     humanGateDraft: spec.humanGateDraft || null,
@@ -3848,6 +4622,106 @@ function buildTaskLaunchPackage(draft = {}, input = {}, artifactRefs = {}) {
     artifactRefs,
     appendix: spec.appendix || null
   };
+}
+
+function workflowPhaseRecordId(workflowId, phaseKey) {
+  return `phase.${cleanFileSegment(workflowId || "workflow")}.${cleanFileSegment(phaseKey || "unphased")}`;
+}
+
+async function workflowTaskPhaseInfo(paths, workflowId, taskId, fallbackPhase = "") {
+  const phaseKey = String(fallbackPhase || "").trim();
+  if (!workflowId || !taskId) return { phaseKey, phaseId: phaseKey ? workflowPhaseRecordId(workflowId, phaseKey) : "" };
+  const rows = await sqlite(paths.dbFile, `
+SELECT phase FROM workflow_tasks
+WHERE workflow_id=${sqlValue(workflowId)} AND task_id=${sqlValue(taskId)}
+LIMIT 1;`, { json: true });
+  const key = rows[0]?.phase || phaseKey;
+  return { phaseKey: key || "", phaseId: key ? workflowPhaseRecordId(workflowId, key) : "" };
+}
+
+async function upsertWorkflowAgentRun(paths, run = {}) {
+  const now = run.updatedAt || nowIso();
+  const agentRunId = run.agentRunId || run.agent_run_id || "";
+  if (!agentRunId) return null;
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_agent_runs(agent_run_id, workflow_id, phase_id, phase_key, task_id, dispatch_id, runtime_run_id, session_run_id, runtime, agent_id, status, attempt, input_hash, output_hash, receipt_ref, error, payload_json, started_at, completed_at, created_at, updated_at)
+VALUES (${sqlValue(agentRunId)}, ${sqlValue(run.workflowId || "")}, ${sqlValue(run.phaseId || "")}, ${sqlValue(run.phaseKey || "")}, ${sqlValue(run.taskId || "")}, ${sqlValue(run.dispatchId || "")}, ${sqlValue(run.runtimeRunId || "")}, ${sqlValue(run.sessionRunId || "")}, ${sqlValue(run.runtime || "")}, ${sqlValue(run.agentId || "")}, ${sqlValue(run.status || "unknown")}, ${Number(run.attempt || 0)}, ${sqlValue(run.inputHash || "")}, ${sqlValue(run.outputHash || "")}, ${sqlValue(run.receiptRef || "")}, ${sqlValue(String(run.error || "").slice(0, 2000))}, ${sqlValue(JSON.stringify(run.payload || {}))}, ${sqlValue(run.startedAt || "")}, ${sqlValue(run.completedAt || "")}, ${sqlValue(run.createdAt || now)}, ${sqlValue(now)})
+ON CONFLICT(agent_run_id) DO UPDATE SET
+  workflow_id=COALESCE(NULLIF(excluded.workflow_id, ''), workflow_agent_runs.workflow_id),
+  phase_id=COALESCE(NULLIF(excluded.phase_id, ''), workflow_agent_runs.phase_id),
+  phase_key=COALESCE(NULLIF(excluded.phase_key, ''), workflow_agent_runs.phase_key),
+  task_id=COALESCE(NULLIF(excluded.task_id, ''), workflow_agent_runs.task_id),
+  dispatch_id=COALESCE(NULLIF(excluded.dispatch_id, ''), workflow_agent_runs.dispatch_id),
+  runtime_run_id=COALESCE(NULLIF(excluded.runtime_run_id, ''), workflow_agent_runs.runtime_run_id),
+  session_run_id=COALESCE(NULLIF(excluded.session_run_id, ''), workflow_agent_runs.session_run_id),
+  runtime=COALESCE(NULLIF(excluded.runtime, ''), workflow_agent_runs.runtime),
+  agent_id=COALESCE(NULLIF(excluded.agent_id, ''), workflow_agent_runs.agent_id),
+  status=excluded.status,
+  attempt=excluded.attempt,
+  input_hash=COALESCE(NULLIF(excluded.input_hash, ''), workflow_agent_runs.input_hash),
+  output_hash=COALESCE(NULLIF(excluded.output_hash, ''), workflow_agent_runs.output_hash),
+  receipt_ref=COALESCE(NULLIF(excluded.receipt_ref, ''), workflow_agent_runs.receipt_ref),
+  error=COALESCE(NULLIF(excluded.error, ''), workflow_agent_runs.error),
+  payload_json=excluded.payload_json,
+  started_at=COALESCE(NULLIF(excluded.started_at, ''), workflow_agent_runs.started_at),
+  completed_at=COALESCE(NULLIF(excluded.completed_at, ''), workflow_agent_runs.completed_at),
+  updated_at=excluded.updated_at;`);
+  return agentRunId;
+}
+
+async function syncWorkflowPhasesFromPlanSpec(paths, pkg = {}, timestamp = nowIso()) {
+  const workflowId = pkg.workflowId || pkg.planSpecV2?.meta?.workflowId || "";
+  if (!workflowId) return [];
+  const plan = pkg.planSpecV2 || {};
+  const phaseGraph = Array.isArray(plan.phaseGraph) ? plan.phaseGraph : [];
+  const nodes = Array.isArray(plan.nodes) ? plan.nodes : [];
+  const phases = phaseGraph.length ? phaseGraph : (Array.isArray(pkg.phases) ? pkg.phases.map((phase, index) => ({
+    phaseId: phase.id || `phase_${index + 1}`,
+    ordinal: index + 1,
+    status: "planned",
+    ownerAgents: uniqueAgentIds([phase.ownerAgent, ...(Array.isArray(phase.ownerAgents) ? phase.ownerAgents : [])]),
+    dependsOn: [],
+    objective: phase.objective || "",
+    acceptanceCriteria: [phase.objective || ""].filter(Boolean)
+  })) : []);
+  const synced = [];
+  for (const phase of phases) {
+    const phaseKey = phase.phaseId || phase.phaseKey || phase.id || "";
+    if (!phaseKey) continue;
+    const phaseNodes = nodes.filter((node) => node.phaseId === phaseKey);
+    const ownerAgents = uniqueAgentIds([
+      ...(Array.isArray(phase.ownerAgents) ? phase.ownerAgents : []),
+      phase.ownerAgent,
+      ...phaseNodes.map((node) => node.ownerAgent)
+    ]);
+    const verifierAgent = phase.verifierAgent || phaseNodes.find((node) => node.verifier?.agentId)?.verifier?.agentId || plan.verification?.verifierAgent || "";
+    const humanGateRequired = phase.humanGateRequired === true || phaseNodes.some((node) => node.humanGateRequired === true);
+    const phaseId = workflowPhaseRecordId(workflowId, phaseKey);
+    const payload = {
+      source: "planSpecV2",
+      planId: plan.meta?.planId || "",
+      objective: phase.objective || "",
+      phase,
+      nodeCount: phaseNodes.length
+    };
+    await sqlite(paths.dbFile, `
+INSERT INTO workflow_phases(phase_id, workflow_id, phase_key, ordinal, status, owner_agent, owner_agents_json, depends_on_json, acceptance_criteria_json, verifier_agent, human_gate_required, plan_node_refs_json, payload_json, created_at, started_at, completed_at, updated_at)
+VALUES (${sqlValue(phaseId)}, ${sqlValue(workflowId)}, ${sqlValue(phaseKey)}, ${Number(phase.ordinal || 0)}, ${sqlValue(phase.status || "planned")}, ${sqlValue(ownerAgents[0] || "")}, ${sqlValue(JSON.stringify(ownerAgents))}, ${sqlValue(JSON.stringify(phase.dependsOn || []))}, ${sqlValue(JSON.stringify(phase.acceptanceCriteria || []))}, ${sqlValue(verifierAgent)}, ${humanGateRequired ? 1 : 0}, ${sqlValue(JSON.stringify(phaseNodes.map((node) => node.nodeId)))}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(timestamp)}, NULL, NULL, ${sqlValue(timestamp)})
+ON CONFLICT(phase_id) DO UPDATE SET
+  ordinal=excluded.ordinal,
+  status=CASE WHEN workflow_phases.status IN ('done','failed','cancelled') THEN workflow_phases.status ELSE excluded.status END,
+  owner_agent=excluded.owner_agent,
+  owner_agents_json=excluded.owner_agents_json,
+  depends_on_json=excluded.depends_on_json,
+  acceptance_criteria_json=excluded.acceptance_criteria_json,
+  verifier_agent=excluded.verifier_agent,
+  human_gate_required=excluded.human_gate_required,
+  plan_node_refs_json=excluded.plan_node_refs_json,
+  payload_json=excluded.payload_json,
+  updated_at=excluded.updated_at;`);
+    synced.push({ phaseId, phaseKey, status: phase.status || "planned", ownerAgents, nodeCount: phaseNodes.length });
+  }
+  return synced;
 }
 
 export async function workflowTaskLaunchPrepare(rootDir, input = {}) {
@@ -4104,11 +4978,13 @@ export async function workflowTaskLaunchApprove(rootDir, input = {}) {
     });
     materializedTasks.push({ taskId: created.taskId, status: "created", ownerAgent: created.ownerAgent, runtime: created.runtime });
   }
+  const materializedPhases = await syncWorkflowPhasesFromPlanSpec(paths, pkg, approvedAt);
   const nextPackage = {
     ...pkg,
     status: "launched",
     approvedAt,
     approvedBy,
+    materializedPhases,
     flashcatOriginalWords: feedbackText,
     materializedTasks
   };
@@ -4137,7 +5013,7 @@ WHERE resume_pointer=${sqlValue(draftId)} AND gate_type='task_launch_cat_brain_r
     sourceAgent: approvedBy,
     idempotencyKey: `task_launch_approve:${draftId}`,
     artifactRef: jsonRelPath,
-    payload: { draftId, materializedTasks, flashcatOriginalWords: feedbackText },
+    payload: { draftId, materializedPhases, materializedTasks, flashcatOriginalWords: feedbackText },
     createdAt: approvedAt
   });
   return {
@@ -4146,6 +5022,7 @@ WHERE resume_pointer=${sqlValue(draftId)} AND gate_type='task_launch_cat_brain_r
     draftId,
     status: "launched",
     workflowId: pkg.workflowId,
+    materializedPhases,
     materializedTasks,
     artifactRef: jsonRelPath,
     dbFile: paths.dbFile
@@ -4465,7 +5342,7 @@ SELECT (
   SELECT COUNT(*) FROM protocol_objects
   WHERE object_type='human_gate_record'
     AND status='pending'
-    AND (payload_json LIKE ${sqlValue(`%${workflowId}%`)} OR parent_object_id=${sqlValue(workflowId)})
+    AND ${workflowPayloadSqlWhere(workflowId)}
 ) AS count;`, { json: true });
   return Number(rows[0]?.count || 0);
 }
@@ -4819,6 +5696,339 @@ export async function workflowSupervisorPreview(rootDir, input = {}) {
   };
 }
 
+function countByStatus(rows = []) {
+  return Object.fromEntries(rows.map((row) => [row.status || "unknown", Number(row.count || 0)]));
+}
+
+function statusCountTotal(counts = {}, statuses = []) {
+  return statuses.reduce((total, status) => total + Number(counts[status] || 0), 0);
+}
+
+function hasAllColumns(columns, names = []) {
+  return names.every((name) => columns.has(name));
+}
+
+function interventionTarget(input = {}) {
+  return {
+    phaseId: String(input.phaseId || input.phase_id || "").trim(),
+    phaseKey: String(input.phaseKey || input.phase_key || input.phase || "").trim(),
+    agentRunId: String(input.agentRunId || input.agent_run_id || "").trim(),
+    dispatchId: String(input.dispatchId || input.dispatch_id || "").trim(),
+    runtimeRunId: String(input.runtimeRunId || input.runtime_run_id || "").trim(),
+    runtime: String(input.runtime || "").trim(),
+    agentId: String(input.agentId || input.agent_id || "").trim()
+  };
+}
+
+function workflowInterventionKind(action) {
+  if (action === "workflow.pause" || action.includes(".pause.")) return "pause_workflow";
+  if (action === "workflow.resume" || action.includes(".resume.")) return "resume_workflow";
+  if (action === "workflow.stop" || action === "workflow.terminate" || action.includes(".stop.") || action.includes(".terminate.")) return "stop_workflow";
+  if (action.includes(".rerun.agent.")) return "rerun_agent";
+  if (action.includes(".rerun.phase.")) return "rerun_phase";
+  return "unknown";
+}
+
+function workflowInterventionPreviewAction(kind) {
+  if (kind === "pause_workflow") return "workflow.pause.preview";
+  if (kind === "resume_workflow") return "workflow.resume.preview";
+  if (kind === "stop_workflow") return "workflow.stop.preview";
+  if (kind === "rerun_agent") return "workflow.rerun.agent.preview";
+  if (kind === "rerun_phase") return "workflow.rerun.phase.preview";
+  return "";
+}
+
+function workflowInterventionNextState(kind, workflowStatus) {
+  if (kind === "pause_workflow") return "paused";
+  if (kind === "resume_workflow") return "active";
+  if (kind === "stop_workflow") return "stopped";
+  return workflowStatus;
+}
+
+function interventionRiskTier(kind, context = {}) {
+  if (kind === "stop_workflow") return context.sideEffectUncertainCount ? "P0-critical" : "P1-high";
+  if (kind === "rerun_agent" || kind === "rerun_phase") return "P1-high";
+  return "P2-medium";
+}
+
+function evaluateInterventionEligibility(kind, workflow, context = {}, input = {}) {
+  const status = String(workflow.status || "").trim();
+  const terminal = ["completed", "stopped", "cancelled"].includes(status);
+  const violations = [];
+  const warnings = [];
+  if (terminal) violations.push({ code: "workflow_terminal", detail: `workflow status is ${status}` });
+  if (kind === "pause_workflow" && status === "paused") violations.push({ code: "already_paused", detail: "workflow is already paused" });
+  if (kind === "pause_workflow" && !["active", "waiting_human", "blocked"].includes(status)) {
+    violations.push({ code: "pause_invalid_status", detail: `pause preview expects active/waiting_human/blocked, got ${status || "unknown"}` });
+  }
+  if (kind === "resume_workflow") {
+    if (!["paused", "blocked"].includes(status)) violations.push({ code: "resume_invalid_status", detail: `resume preview expects paused/blocked, got ${status || "unknown"}` });
+    if (context.pendingHumanGates > 0 && !boolOption(input.allowPendingHumanGate ?? input.allow_pending_human_gate, false)) {
+      violations.push({ code: "pending_human_gate", detail: "pending Human Gate must be closed before resume" });
+    }
+  }
+  if (kind === "stop_workflow" && !["active", "waiting_human", "blocked", "paused"].includes(status)) {
+    violations.push({ code: "stop_invalid_status", detail: `stop preview expects active/waiting_human/blocked/paused, got ${status || "unknown"}` });
+  }
+  if (kind === "rerun_agent") {
+    const hasTarget = Boolean(context.target.agentRunId || context.target.dispatchId || context.target.runtimeRunId || context.target.agentId);
+    if (!hasTarget) violations.push({ code: "missing_agent_target", detail: "rerun agent preview requires agentRunId, dispatchId, runtimeRunId, or agentId" });
+    if (context.targetAgentRunCount === 0 && context.targetDispatchCount === 0) warnings.push({ code: "target_not_found", detail: "no matching agent run or dispatch evidence was found" });
+  }
+  if (kind === "rerun_phase") {
+    if (!context.target.phaseId && !context.target.phaseKey) violations.push({ code: "missing_phase_target", detail: "rerun phase preview requires phaseId or phaseKey" });
+    if ((context.target.phaseId || context.target.phaseKey) && context.targetPhaseCount === 0) violations.push({ code: "phase_not_found", detail: "no matching workflow phase was found" });
+  }
+  if (context.sideEffectUncertainCount > 0) warnings.push({ code: "side_effect_uncertain", detail: `${context.sideEffectUncertainCount} side-effect records are uncertain` });
+  if (context.activeDispatchCount > 0 && ["pause_workflow", "stop_workflow", "rerun_phase"].includes(kind)) {
+    warnings.push({ code: "active_dispatches", detail: `${context.activeDispatchCount} dispatches are queued or sent` });
+  }
+  return { eligible: violations.length === 0, violations, warnings };
+}
+
+export async function workflowInterventionPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const action = canonicalWorkflowAction(input.action || "workflow.pause.preview");
+  const kind = workflowInterventionKind(action);
+  if (kind === "unknown") throw new Error(`unsupported intervention preview action: ${action}`);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const checkedAt = nowIso();
+  const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
+  if (!workflowRows[0]) throw new Error(`workflow not found: ${workflowId}`);
+  const workflow = workflowRows[0];
+  const target = interventionTarget(input);
+  const [taskColumns, dispatchColumns, phaseColumns, checkpointColumns, sideEffectColumns, agentRunColumns] = await Promise.all([
+    tableColumns(paths.dbFile, "workflow_tasks"),
+    tableColumns(paths.dbFile, "mixed_meeting_dispatches"),
+    tableColumns(paths.dbFile, "workflow_phases"),
+    tableColumns(paths.dbFile, "workflow_checkpoints"),
+    tableColumns(paths.dbFile, "side_effect_ledger"),
+    tableColumns(paths.dbFile, "workflow_agent_runs")
+  ]);
+  const taskCounts = hasAllColumns(taskColumns, ["workflow_id", "status"]) ? countByStatus(await sqlite(paths.dbFile, `
+SELECT status, COUNT(*) AS count
+FROM workflow_tasks
+WHERE workflow_id=${sqlValue(workflowId)}
+GROUP BY status;`, { json: true })) : {};
+  const dispatchCounts = hasAllColumns(dispatchColumns, ["workflow_id", "status"]) ? countByStatus(await sqlite(paths.dbFile, `
+SELECT status, COUNT(*) AS count
+FROM mixed_meeting_dispatches
+WHERE workflow_id=${sqlValue(workflowId)}
+GROUP BY status;`, { json: true })) : {};
+  const phaseCounts = hasAllColumns(phaseColumns, ["workflow_id", "status"]) ? countByStatus(await sqlite(paths.dbFile, `
+SELECT status, COUNT(*) AS count
+FROM workflow_phases
+WHERE workflow_id=${sqlValue(workflowId)}
+GROUP BY status;`, { json: true })) : {};
+  const pendingHumanGates = await pendingHumanGateCount(paths, workflowId);
+  const latestCheckpoint = hasAllColumns(checkpointColumns, ["workflow_id", "checkpoint_id", "status", "phase", "decision", "path", "created_at"]) ? (await sqlite(paths.dbFile, `
+SELECT checkpoint_id, status, phase, decision, path, created_at
+FROM workflow_checkpoints
+WHERE workflow_id=${sqlValue(workflowId)}
+ORDER BY created_at DESC
+LIMIT 1;`, { json: true }))[0] || null : null;
+  const sideEffectUncertainCount = hasAllColumns(sideEffectColumns, ["workflow_id", "status"]) ? Number((await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM side_effect_ledger
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND status IN ('uncertain','side_effect_uncertain','unknown','failed')
+LIMIT 1;`, { json: true }))[0]?.count || 0) : 0;
+  const activeDispatchCount = statusCountTotal(dispatchCounts, ["queued", "sent", "runtime_dispatched", "running", "delivering"]);
+  const phaseWhere = target.phaseId
+    ? `phase_id=${sqlValue(target.phaseId)}`
+    : (target.phaseKey ? `phase_key=${sqlValue(target.phaseKey)}` : "0=1");
+  const targetPhaseRows = hasAllColumns(phaseColumns, ["workflow_id", "phase_id", "phase_key", "status", "ordinal", "owner_agent", "verifier_agent", "human_gate_required", "updated_at"]) ? await sqlite(paths.dbFile, `
+SELECT phase_id, phase_key, status, ordinal, owner_agent, verifier_agent, human_gate_required, updated_at
+FROM workflow_phases
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND ${phaseWhere}
+ORDER BY ordinal, phase_key
+LIMIT 20;`, { json: true }) : [];
+  const agentRunFilters = [];
+  if (target.agentRunId) agentRunFilters.push(`agent_run_id=${sqlValue(target.agentRunId)}`);
+  if (target.dispatchId) agentRunFilters.push(`dispatch_id=${sqlValue(target.dispatchId)}`);
+  if (target.runtimeRunId) agentRunFilters.push(`runtime_run_id=${sqlValue(target.runtimeRunId)}`);
+  if (target.agentId) agentRunFilters.push(`agent_id=${sqlValue(target.agentId)}`);
+  if (target.runtime) agentRunFilters.push(`runtime=${sqlValue(target.runtime)}`);
+  const agentRunWhere = agentRunFilters.length ? agentRunFilters.join(" AND ") : "0=1";
+  const targetAgentRuns = hasAllColumns(agentRunColumns, ["workflow_id", "agent_run_id", "phase_key", "task_id", "dispatch_id", "runtime_run_id", "runtime", "agent_id", "status", "receipt_ref", "updated_at"]) ? await sqlite(paths.dbFile, `
+SELECT agent_run_id, phase_key, task_id, dispatch_id, runtime_run_id, runtime, agent_id, status, receipt_ref, updated_at
+FROM workflow_agent_runs
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND ${agentRunWhere}
+ORDER BY updated_at DESC
+LIMIT 20;`, { json: true }) : [];
+  const dispatchFilters = [];
+  if (target.dispatchId) dispatchFilters.push(`dispatch_id=${sqlValue(target.dispatchId)}`);
+  if (target.agentId) dispatchFilters.push(`agent_id=${sqlValue(target.agentId)}`);
+  if (target.runtime) dispatchFilters.push(`runtime=${sqlValue(target.runtime)}`);
+  const dispatchWhere = dispatchFilters.length ? dispatchFilters.join(" AND ") : "0=1";
+  const targetDispatches = hasAllColumns(dispatchColumns, ["workflow_id", "dispatch_id", "runtime", "agent_id", "status", "attempt", "max_attempts", "updated_at", "last_error"]) ? await sqlite(paths.dbFile, `
+SELECT dispatch_id, '' AS task_id, runtime, agent_id, status, attempt, max_attempts, updated_at, last_error
+FROM mixed_meeting_dispatches
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND ${dispatchWhere}
+ORDER BY updated_at DESC
+LIMIT 20;`, { json: true }) : [];
+  const context = {
+    target,
+    taskCounts,
+    dispatchCounts,
+    phaseCounts,
+    pendingHumanGates,
+    latestCheckpoint,
+    sideEffectUncertainCount,
+    activeDispatchCount,
+    targetPhaseCount: targetPhaseRows.length,
+    targetAgentRunCount: targetAgentRuns.length,
+    targetDispatchCount: targetDispatches.length
+  };
+  const eligibility = evaluateInterventionEligibility(kind, workflow, context, input);
+  const riskTier = interventionRiskTier(kind, context);
+  return {
+    workflowId,
+    action,
+    kind,
+    preview: true,
+    readOnly: true,
+    eligible: eligibility.eligible,
+    riskTier,
+    humanGateRequired: true,
+    catClawAuditRequired: true,
+    checkedAt,
+    workflow: {
+      workflowId: workflow.workflow_id,
+      status: workflow.status,
+      currentPhase: workflow.current_phase || "",
+      currentDecision: workflow.current_decision || "",
+      updatedAt: workflow.updated_at
+    },
+    target,
+    wouldUpdateWorkflow: ["pause_workflow", "resume_workflow", "stop_workflow"].includes(kind) ? {
+      status: workflowInterventionNextState(kind, workflow.status),
+      currentDecision: `${kind}_requested`,
+      updatedAt: checkedAt
+    } : null,
+    wouldCreateHumanGateRequest: true,
+    wouldRequireEvidence: [
+      "latest_checkpoint",
+      "workflow_operations_record",
+      "cat_claw_audit",
+      "operator_reason",
+      "rollback_or_resume_boundary"
+    ],
+    wouldAffect: {
+      activeDispatches: activeDispatchCount,
+      pendingHumanGates,
+      sideEffectUncertain: sideEffectUncertainCount,
+      targetPhases: targetPhaseRows.length,
+      targetAgentRuns: targetAgentRuns.length,
+      targetDispatches: targetDispatches.length
+    },
+    counts: { tasks: taskCounts, dispatches: dispatchCounts, phases: phaseCounts },
+    latestCheckpoint,
+    targetPhases: targetPhaseRows,
+    targetAgentRuns,
+    targetDispatches,
+    violations: eligibility.violations,
+    warnings: eligibility.warnings,
+    limitations: [
+      "Preview is read-only and does not update workflow state.",
+      "No dispatch, runtime drain, Telegram delivery, Human Gate submission, or task reset is executed.",
+      "Real pause/resume/stop/rerun controls remain disabled until transition policy and Human Gate execution paths are implemented."
+    ],
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowInterventionExecute(rootDir, input = {}, permissionDecision = null) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const action = canonicalWorkflowAction(input.action || "");
+  const kind = workflowInterventionKind(action);
+  if (!["pause_workflow", "resume_workflow", "stop_workflow"].includes(kind)) {
+    throw new Error(`unsupported intervention execution action: ${action}`);
+  }
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const reason = String(input.operatorReason || input.operator_reason || input.reason || input.summary || "").trim();
+  if (!reason) throw new Error("operatorReason is required for workflow intervention execution");
+  const previewAction = workflowInterventionPreviewAction(kind);
+  const preview = await workflowInterventionPreview(rootDir, { ...input, action: previewAction });
+  if (!preview.eligible) {
+    const codes = (preview.violations || []).map((item) => item.code).join(",") || "unknown";
+    throw new Error(`workflow intervention not eligible: action=${action} violations=${codes}`);
+  }
+  const rollbackBoundary = String(input.rollbackBoundary || input.rollback_boundary || input.resumeBoundary || input.resume_boundary || input.stopCondition || input.stop_condition || preview.latestCheckpoint?.path || "").trim();
+  if (!rollbackBoundary) {
+    throw new Error("rollbackBoundary or latest checkpoint is required for workflow intervention execution");
+  }
+  const now = nowIso();
+  const previousStatus = preview.workflow.status || "";
+  const nextStatus = workflowInterventionNextState(kind, previousStatus);
+  const currentDecision = `${kind}_executed`;
+  await sqlite(paths.dbFile, `
+UPDATE workflow_runs
+SET status=${sqlValue(nextStatus)},
+    current_decision=${sqlValue(currentDecision)},
+    updated_at=${sqlValue(now)}
+WHERE workflow_id=${sqlValue(workflowId)};`);
+  await appendWorkflowEvent(paths, {
+    eventType: "workflow.intervention.executed",
+    status: nextStatus,
+    workflowId,
+    traceId: input.traceId || input.trace_id || "",
+    humanGateId: input.humanGateId || input.human_gate_id || "",
+    actor: input.actor || input.createdBy || input.created_by || permissionDecision?.caller?.agentId || "unknown",
+    sourceRuntime: input.sourceRuntime || input.source_runtime || permissionDecision?.caller?.runtime || "workflow",
+    sourceAgent: input.sourceAgent || input.source_agent || permissionDecision?.caller?.agentId || "",
+    previousState: previousStatus,
+    nextState: nextStatus,
+    idempotencyKey: input.idempotencyKey || input.idempotency_key || "",
+    artifactRef: preview.latestCheckpoint?.path || "",
+    payload: {
+      action,
+      kind,
+      currentDecision,
+      reason,
+      rollbackBoundary,
+      riskTier: preview.riskTier,
+      catClawAuditId: input.catClawAuditId || input.cat_claw_audit_id || "",
+      permissionPolicyOutcome: permissionDecision?.policyOutcome || "",
+      warnings: preview.warnings || [],
+      wouldAffect: preview.wouldAffect || {}
+    },
+    createdAt: now
+  });
+  return {
+    workflowId,
+    action,
+    kind,
+    status: "executed",
+    previousStatus,
+    nextStatus,
+    currentDecision,
+    executedAt: now,
+    humanGateId: String(input.humanGateId || input.human_gate_id || "").trim(),
+    catClawAuditId: String(input.catClawAuditId || input.cat_claw_audit_id || "").trim(),
+    rollbackBoundary,
+    riskTier: preview.riskTier,
+    affected: {
+      workflowRuns: 1,
+      dispatches: 0,
+      runtimeRuns: 0,
+      outbox: 0,
+      humanGateRequests: 0,
+      sideEffects: 0
+    },
+    limitations: [
+      "Only workflow_runs status/current_decision/updated_at and workflow_events were written.",
+      "No task reset, dispatch retry, runtime drain, Telegram delivery, Human Gate submission, or side-effect retry was executed."
+    ],
+    dbFile: paths.dbFile
+  };
+}
+
 function renderWorkflowCheckpointMarkdown(record) {
   const taskLine = (task) => `- ${task.task_id}: ${task.status} | ${task.owner_agent || ""}/${task.runtime || ""}/${task.agent_id || ""} | ${task.summary || ""}`.trim();
   const artifactLine = (artifact) => `- ${artifact.kind || "artifact"}: ${artifact.path || artifact.actual_artifact_ref || ""} ${artifact.summary ? `| ${artifact.summary}` : ""}`.trim();
@@ -5085,6 +6295,322 @@ function workflowEventDedupeMismatch(existing, record) {
   return "";
 }
 
+const WORKFLOW_VERIFICATION_RESULT_TYPES = new Set(["verifier", "refuter", "reducer", "secretary_audit", "evaluator"]);
+const WORKFLOW_VERIFICATION_DECISIONS = new Set(["pass", "fail", "uncertain", "blocked", "needs_evidence", "needs_human_gate", "met", "not_met", "disputed", "side_effect_uncertain"]);
+
+function normalizeVerificationResultType(value) {
+  const text = String(value || "verifier").trim().toLowerCase().replace(/[-\s]+/g, "_");
+  return WORKFLOW_VERIFICATION_RESULT_TYPES.has(text) ? text : "verifier";
+}
+
+function normalizeVerificationDecision(value) {
+  const text = String(value || "uncertain").trim().toLowerCase().replace(/[-\s]+/g, "_");
+  return WORKFLOW_VERIFICATION_DECISIONS.has(text) ? text : "uncertain";
+}
+
+function workflowVerificationRecordFromInput(input = {}, now = nowIso()) {
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const resultType = normalizeVerificationResultType(input.resultType || input.result_type || input.type || input.role);
+  const decision = normalizeVerificationDecision(input.decision || input.status || input.result || input.outcome);
+  const permissionDecision = input.__permissionDecision || {};
+  const caller = permissionDecision.caller || workflowPermissionCaller(input);
+  const trustedCaller = isWorkflowTrustedOperator(caller);
+  const callerAgent = String(caller.agentId || "").trim();
+  const declaredSourceAgent = String(input.sourceAgent || input.source_agent || input.agentId || input.agent_id || "").trim();
+  const effectiveSourceAgent = callerAgent && (!trustedCaller || !declaredSourceAgent) ? callerAgent : declaredSourceAgent;
+  const declaredVerifierAgent = String(input.verifierAgent || input.verifier_agent || (resultType === "verifier" ? input.agentId || input.agent_id || input.sourceAgent || input.source_agent || "" : "")).trim();
+  const declaredRefuterAgent = String(input.refuterAgent || input.refuter_agent || (resultType === "refuter" ? input.agentId || input.agent_id || input.sourceAgent || input.source_agent || "" : "")).trim();
+  const payload = redactSensitiveForPersistence(parseJsonValue(input.payload, {
+    raw: input.raw || {},
+    criteria: input.criteria || input.acceptanceCriteria || input.acceptance_criteria || [],
+    notes: input.notes || ""
+  }));
+  const createdAt = String(input.createdAt || input.created_at || now).trim();
+  return {
+    verificationId: String(input.verificationId || input.verification_id || safeId(`verification.${resultType}`)).trim(),
+    workflowId,
+    phaseId: String(input.phaseId || input.phase_id || "").trim(),
+    phaseKey: String(input.phaseKey || input.phase_key || input.phase || "").trim(),
+    taskId: String(input.taskId || input.task_id || "").trim(),
+    agentRunId: String(input.agentRunId || input.agent_run_id || "").trim(),
+    dispatchId: String(input.dispatchId || input.dispatch_id || "").trim(),
+    runtimeRunId: String(input.runtimeRunId || input.runtime_run_id || "").trim(),
+    resultType,
+    decision,
+    verifierAgent: resultType === "verifier" && callerAgent && !trustedCaller ? effectiveSourceAgent : declaredVerifierAgent,
+    refuterAgent: resultType === "refuter" && callerAgent && !trustedCaller ? effectiveSourceAgent : declaredRefuterAgent,
+    sourceRuntime: String(input.sourceRuntime || input.source_runtime || input.runtime || "").trim(),
+    sourceAgent: effectiveSourceAgent,
+    confidence: String(input.confidence || "").trim(),
+    riskBand: String(input.riskBand || input.risk_band || "").trim(),
+    summary: redactSensitiveTextForPersistence(input.summary || input.reviewSummary || input.review_summary || input.text || "").trim(),
+    findings: redactSensitiveForPersistence(toList(input.findings || input.finding)),
+    recommendations: redactSensitiveForPersistence(toList(input.recommendations || input.recommendation || input.nextActions || input.next_actions)),
+    evidenceRefs: redactSensitiveForPersistence(toList(input.evidenceRefs || input.evidence_refs || input.evidencePaths || input.evidence_paths)),
+    artifactRefs: redactSensitiveForPersistence(toList(input.artifactRefs || input.artifact_refs || input.artifacts)),
+    receiptRefs: redactSensitiveForPersistence(toList(input.receiptRefs || input.receipt_refs || input.receipts)),
+    payload,
+    payloadHash: jsonHash(payload),
+    createdBy: callerAgent || String(input.createdBy || input.created_by || input.actor || input.from || input.sourceAgent || input.source_agent || "").trim() || "unknown",
+    createdAt
+  };
+}
+
+export async function workflowVerificationRecord(rootDir, input = {}, permissionDecision = null) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const record = workflowVerificationRecordFromInput({ ...input, __permissionDecision: permissionDecision });
+  const exists = await sqlite(paths.dbFile, `SELECT verification_id FROM workflow_verification_results WHERE verification_id=${sqlValue(record.verificationId)} LIMIT 1;`, { json: true });
+  if (exists[0]) throw new Error(`workflow verification result already exists: ${record.verificationId}`);
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_verification_results(verification_id, workflow_id, phase_id, phase_key, task_id, agent_run_id, dispatch_id, runtime_run_id, result_type, decision, verifier_agent, refuter_agent, source_runtime, source_agent, confidence, risk_band, summary, findings_json, recommendations_json, evidence_refs_json, artifact_refs_json, receipt_refs_json, payload_hash, payload_json, created_by, created_at)
+VALUES (${sqlValue(record.verificationId)}, ${sqlValue(record.workflowId)}, ${sqlValue(record.phaseId)}, ${sqlValue(record.phaseKey)}, ${sqlValue(record.taskId)}, ${sqlValue(record.agentRunId)}, ${sqlValue(record.dispatchId)}, ${sqlValue(record.runtimeRunId)}, ${sqlValue(record.resultType)}, ${sqlValue(record.decision)}, ${sqlValue(record.verifierAgent)}, ${sqlValue(record.refuterAgent)}, ${sqlValue(record.sourceRuntime)}, ${sqlValue(record.sourceAgent)}, ${sqlValue(record.confidence)}, ${sqlValue(record.riskBand)}, ${sqlValue(record.summary)}, ${sqlValue(JSON.stringify(record.findings))}, ${sqlValue(JSON.stringify(record.recommendations))}, ${sqlValue(JSON.stringify(record.evidenceRefs))}, ${sqlValue(JSON.stringify(record.artifactRefs))}, ${sqlValue(JSON.stringify(record.receiptRefs))}, ${sqlValue(record.payloadHash)}, ${sqlValue(JSON.stringify(record.payload))}, ${sqlValue(record.createdBy)}, ${sqlValue(record.createdAt)});`);
+  return {
+    verificationId: record.verificationId,
+    workflowId: record.workflowId,
+    resultType: record.resultType,
+    decision: record.decision,
+    phaseKey: record.phaseKey,
+    taskId: record.taskId,
+    agentRunId: record.agentRunId,
+    payloadHash: record.payloadHash,
+    createdAt: record.createdAt,
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowVerificationList(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const filters = [];
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (workflowId) filters.push(`workflow_id=${sqlValue(workflowId)}`);
+  const phaseKey = String(input.phaseKey || input.phase_key || "").trim();
+  if (phaseKey) filters.push(`phase_key=${sqlValue(phaseKey)}`);
+  const taskId = String(input.taskId || input.task_id || "").trim();
+  if (taskId) filters.push(`task_id=${sqlValue(taskId)}`);
+  const resultType = String(input.resultType || input.result_type || "").trim();
+  if (resultType) filters.push(`result_type=${sqlValue(resultType)}`);
+  const decision = String(input.decision || "").trim();
+  if (decision) filters.push(`decision=${sqlValue(decision)}`);
+  const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const requestedLimit = Number(input.limit || 100);
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(500, Math.trunc(requestedLimit))) : 100;
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_verification_results
+${where}
+ORDER BY created_at DESC
+LIMIT ${limit};`, { json: true });
+  return { count: rows.length, results: rows, dbFile: paths.dbFile };
+}
+
+function workflowEvaluatorScopedWhere(workflowId, phaseKey = "", phaseColumn = "phase_key") {
+  const filters = [`workflow_id=${sqlValue(workflowId)}`];
+  if (phaseKey) filters.push(`${phaseColumn}=${sqlValue(phaseKey)}`);
+  return filters.join(" AND ");
+}
+
+function workflowEvaluatorDecision(snapshot) {
+  const taskCounts = snapshot.taskCounts || {};
+  const dispatchCounts = snapshot.dispatchCounts || {};
+  const runtimeCounts = snapshot.runtimeCounts || {};
+  const verificationCounts = snapshot.verificationCounts || {};
+  const failedVerification = Number(verificationCounts.fail || 0) + Number(verificationCounts.not_met || 0) + Number(verificationCounts.disputed || 0);
+  const evidenceNeeds = Number(verificationCounts.needs_evidence || 0) + Number(verificationCounts.uncertain || 0);
+  const passedVerification = Number(verificationCounts.pass || 0) + Number(verificationCounts.met || 0);
+  if (Number(snapshot.sideEffectUncertainCount || 0) > 0) return "side_effect_uncertain";
+  if (Number(snapshot.pendingHumanGates || 0) > 0 || Number(verificationCounts.needs_human_gate || 0) > 0) return "needs_human_gate";
+  if (Number(snapshot.activeIncidentCount || 0) > 0 || Number(taskCounts.blocked || 0) > 0 || Number(verificationCounts.blocked || 0) > 0) return "blocked";
+  if (Number(taskCounts.failed || 0) > 0 || Number(dispatchCounts.failed || 0) > 0 || Number(runtimeCounts.failed || 0) > 0 || failedVerification > 0) return "not_met";
+  if (Number(taskCounts.pending || 0) > 0 || Number(taskCounts.in_progress || 0) > 0 || Number(dispatchCounts.queued || 0) > 0 || Number(dispatchCounts.sent || 0) > 0) return "needs_evidence";
+  if (evidenceNeeds > 0) return "needs_evidence";
+  if (Number(snapshot.evidenceCount || 0) <= 0) return "needs_evidence";
+  if (Number(snapshot.taskTotal || 0) > 0 && Number(taskCounts.done || 0) < Number(snapshot.taskTotal || 0)) return "needs_evidence";
+  if (passedVerification > 0 || Number(snapshot.taskTotal || 0) > 0) return "met";
+  return "needs_evidence";
+}
+
+function workflowEvaluatorSummary(decision, snapshot) {
+  const scope = snapshot.phaseKey ? `phase ${snapshot.phaseKey}` : "workflow";
+  const bits = [
+    `${scope} evaluator decision: ${decision}`,
+    `tasks=${snapshot.taskTotal}`,
+    `evidence=${snapshot.evidenceCount}`,
+    `verification=${snapshot.verificationTotal}`,
+    `pendingHumanGates=${snapshot.pendingHumanGates}`,
+    `sideEffectUncertain=${snapshot.sideEffectUncertainCount}`,
+    `activeIncidents=${snapshot.activeIncidentCount}`
+  ];
+  return bits.join("; ");
+}
+
+function workflowEvaluatorFindings(decision, snapshot) {
+  const findings = [];
+  if (snapshot.acceptanceCriteria) findings.push(`acceptance criteria present: ${snapshot.acceptanceCriteria}`);
+  if (snapshot.planSpecPresent) findings.push("Plan Spec v2 payload is present.");
+  if (Number(snapshot.taskTotal || 0) > 0) findings.push(`task counts: ${JSON.stringify(snapshot.taskCounts)}`);
+  if (Number(snapshot.evidenceCount || 0) > 0) findings.push(`evidence count: ${snapshot.evidenceCount}`);
+  if (Number(snapshot.verificationTotal || 0) > 0) findings.push(`verification decisions: ${JSON.stringify(snapshot.verificationCounts)}`);
+  if (Number(snapshot.pendingHumanGates || 0) > 0) findings.push(`pending Human Gate count: ${snapshot.pendingHumanGates}`);
+  if (Number(snapshot.sideEffectUncertainCount || 0) > 0) findings.push(`side-effect uncertain count: ${snapshot.sideEffectUncertainCount}`);
+  if (Number(snapshot.activeIncidentCount || 0) > 0) findings.push(`active incident count: ${snapshot.activeIncidentCount}`);
+  if (!findings.length) findings.push(`evaluator produced ${decision} with no additional evidence.`);
+  return findings;
+}
+
+function workflowEvaluatorRecommendations(decision) {
+  if (decision === "met") return ["Prepare Cat Claw secretary audit before any Human Gate closeout."];
+  if (decision === "needs_human_gate") return ["Keep workflow paused at the Human Gate boundary until Flashcat original words are captured."];
+  if (decision === "side_effect_uncertain") return ["Do not retry side effects automatically; prepare uncertainty evidence for human review."];
+  if (decision === "blocked") return ["Create or update an incident/evidence item before further workflow progress."];
+  if (decision === "not_met") return ["Route the failed acceptance evidence back to the responsible phase for repair."];
+  return ["Collect missing artifacts, receipts, verifier/refuter outputs, or readiness evidence before approval."];
+}
+
+export async function workflowEvaluate(rootDir, input = {}, permissionDecision = null) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const phaseKey = String(input.phaseKey || input.phase_key || input.phase || "").trim();
+  const workflowRows = await sqlite(paths.dbFile, `
+SELECT workflow_id, status, summary, objective, acceptance_criteria, current_phase, current_decision, payload_json, updated_at
+FROM workflow_runs
+WHERE workflow_id=${sqlValue(workflowId)}
+LIMIT 1;`, { json: true });
+  const workflow = workflowRows[0];
+  if (!workflow) throw new Error(`workflow not found: ${workflowId}`);
+  const [
+    taskColumns,
+    dispatchColumns,
+    runtimeColumns,
+    agentRunColumns,
+    artifactColumns,
+    sideEffectColumns,
+    incidentColumns,
+    verificationColumns
+  ] = await Promise.all([
+    tableColumns(paths.dbFile, "workflow_tasks"),
+    tableColumns(paths.dbFile, "mixed_meeting_dispatches"),
+    tableColumns(paths.dbFile, "runtime_runs"),
+    tableColumns(paths.dbFile, "workflow_agent_runs"),
+    tableColumns(paths.dbFile, "artifact_index"),
+    tableColumns(paths.dbFile, "side_effect_ledger"),
+    tableColumns(paths.dbFile, "incident_states"),
+    tableColumns(paths.dbFile, "workflow_verification_results")
+  ]);
+  const taskWhere = workflowEvaluatorScopedWhere(workflowId, phaseKey, "phase");
+  const phaseKeyWhere = workflowEvaluatorScopedWhere(workflowId, phaseKey, "phase_key");
+  const workflowWhere = `workflow_id=${sqlValue(workflowId)}`;
+  const taskScopedWhere = phaseKey && taskColumns.has("phase") ? taskWhere : workflowWhere;
+  const agentRunScopedWhere = phaseKey && agentRunColumns.has("phase_key") ? phaseKeyWhere : workflowWhere;
+  const verificationScopedWhere = phaseKey && verificationColumns.has("phase_key") ? phaseKeyWhere : workflowWhere;
+  const taskRows = hasAllColumns(taskColumns, ["workflow_id", "status"]) ? await sqlite(paths.dbFile, `
+SELECT status, COUNT(*) AS count
+FROM workflow_tasks
+WHERE ${taskScopedWhere}
+GROUP BY status;`, { json: true }) : [];
+  const dispatchRows = hasAllColumns(dispatchColumns, ["workflow_id", "status"]) ? await sqlite(paths.dbFile, `
+SELECT status, COUNT(*) AS count
+FROM mixed_meeting_dispatches
+WHERE ${workflowWhere}
+GROUP BY status;`, { json: true }) : [];
+  const runtimeRows = hasAllColumns(runtimeColumns, ["workflow_id", "status"]) ? await sqlite(paths.dbFile, `
+SELECT status, COUNT(*) AS count
+FROM runtime_runs
+WHERE ${workflowWhere}
+GROUP BY status;`, { json: true }) : [];
+  const agentRunReceiptCount = hasAllColumns(agentRunColumns, ["workflow_id", "receipt_ref"]) ? Number((await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM workflow_agent_runs
+WHERE ${agentRunScopedWhere}
+  AND receipt_ref IS NOT NULL
+  AND receipt_ref != '';`, { json: true }))[0]?.count || 0) : 0;
+  const runtimeReceiptCount = hasAllColumns(runtimeColumns, ["workflow_id", "status"]) ? Number((await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM runtime_runs
+WHERE ${workflowWhere}
+  AND status IN ('acked','completed','success');`, { json: true }))[0]?.count || 0) : 0;
+  const artifactRows = hasAllColumns(artifactColumns, ["workflow_id", "artifact_id", "path", "created_at"]) ? await sqlite(paths.dbFile, `
+SELECT artifact_id, path
+FROM artifact_index
+WHERE ${workflowWhere}
+ORDER BY created_at DESC
+LIMIT 20;`, { json: true }) : [];
+  const verificationRows = hasAllColumns(verificationColumns, ["workflow_id", "decision", "result_type"]) ? await sqlite(paths.dbFile, `
+SELECT verification_id, result_type, decision, payload_hash, created_at
+FROM workflow_verification_results
+WHERE ${verificationScopedWhere}
+  AND result_type != 'evaluator'
+ORDER BY created_at DESC
+LIMIT 50;`, { json: true }) : [];
+  const verificationCounts = {};
+  const verificationTypeCounts = {};
+  for (const row of verificationRows) {
+    verificationCounts[row.decision || "unknown"] = (verificationCounts[row.decision || "unknown"] || 0) + 1;
+    verificationTypeCounts[row.result_type || "unknown"] = (verificationTypeCounts[row.result_type || "unknown"] || 0) + 1;
+  }
+  const sideEffectUncertainCount = hasAllColumns(sideEffectColumns, ["workflow_id", "status"]) ? Number((await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM side_effect_ledger
+WHERE ${workflowWhere}
+  AND status IN ('uncertain','side_effect_uncertain','unknown','failed');`, { json: true }))[0]?.count || 0) : 0;
+  const activeIncidentCount = hasAllColumns(incidentColumns, ["status"]) ? Number((await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM incident_states
+WHERE status IN ('active','mitigating','monitoring')
+  AND ${workflowPayloadSqlWhere(workflowId, { parentColumn: "" })};`, { json: true }))[0]?.count || 0) : 0;
+  const pendingHumanGates = await pendingHumanGateCount(paths, workflowId);
+  const workflowPayload = parseJsonValue(workflow.payload_json, {});
+  const acceptanceCriteria = String(input.acceptanceCriteria || input.acceptance_criteria || workflow.acceptance_criteria || workflowPayload?.spec?.objective?.acceptanceCriteria || workflowPayload?.planSpecV2?.objective?.acceptanceCriteria || "").trim();
+  const snapshot = {
+    evaluatorVersion: "workflow_evaluator_v1",
+    workflowId,
+    phaseKey,
+    workflowStatus: workflow.status || "",
+    workflowSummary: workflow.summary || "",
+    objective: workflow.objective || "",
+    acceptanceCriteria,
+    planSpecPresent: Boolean(workflowPayload.planSpecV2 || workflowPayload.spec?.planSpecV2 || workflowPayload.spec?.phaseGraph),
+    taskCounts: countByStatus(taskRows),
+    taskTotal: taskRows.reduce((total, row) => total + Number(row.count || 0), 0),
+    dispatchCounts: countByStatus(dispatchRows),
+    runtimeCounts: countByStatus(runtimeRows),
+    receiptCount: agentRunReceiptCount + runtimeReceiptCount,
+    artifactCount: artifactRows.length,
+    evidenceCount: artifactRows.length + agentRunReceiptCount + runtimeReceiptCount + verificationRows.length,
+    verificationCounts,
+    verificationTypeCounts,
+    verificationTotal: verificationRows.length,
+    pendingHumanGates,
+    sideEffectUncertainCount,
+    activeIncidentCount,
+    evaluatedAt: nowIso()
+  };
+  const decision = normalizeVerificationDecision(input.decision || workflowEvaluatorDecision(snapshot));
+  return workflowVerificationRecord(rootDir, {
+    ...input,
+    verificationId: input.verificationId || input.verification_id || safeId(`evaluation.${workflowId}${phaseKey ? `.${phaseKey}` : ""}`),
+    workflowId,
+    phaseKey,
+    resultType: "evaluator",
+    decision,
+    sourceAgent: input.sourceAgent || input.source_agent || input.evaluatorAgent || input.evaluator_agent || input.callerAgent || input.caller_agent || "",
+    sourceRuntime: input.sourceRuntime || input.source_runtime || input.callerRuntime || input.caller_runtime || "",
+    confidence: input.confidence || (decision === "met" ? "medium" : "low"),
+    riskBand: input.riskBand || input.risk_band || (["met", "needs_evidence"].includes(decision) ? "medium" : "high"),
+    summary: input.summary || workflowEvaluatorSummary(decision, snapshot),
+    findings: input.findings || workflowEvaluatorFindings(decision, snapshot),
+    recommendations: input.recommendations || workflowEvaluatorRecommendations(decision),
+    artifactRefs: input.artifactRefs || input.artifact_refs || artifactRows.map((row) => row.path || row.artifact_id).filter(Boolean),
+    receiptRefs: input.receiptRefs || input.receipt_refs || verificationRows.map((row) => row.verification_id || row.payload_hash).filter(Boolean).slice(0, 20),
+    payload: {
+      evaluator: "workflow_evaluator_v1",
+      snapshot,
+      latestVerificationResults: verificationRows.slice(0, 10)
+    }
+  }, permissionDecision);
+}
+
 export async function workflowEventAppend(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   return appendWorkflowEvent(paths, input);
@@ -5243,6 +6769,7 @@ function sessionRunFromRow(row) {
     packVersion: Number(row.pack_version || 1),
     workflowId: row.workflow_id || "",
     taskId: row.task_id || "",
+    dispatchId: row.dispatch_id || "",
     workerId: row.worker_id || "",
     status: row.status,
     input: parseJsonValue(row.input_json, {}),
@@ -5422,15 +6949,65 @@ export async function workflowSessionRunStart(rootDir, input = {}) {
     if ((input.status || input.status === "") && existingRun.status !== status) conflicts.push("status");
     if (context.workflowId && existingRun.workflowId !== context.workflowId) conflicts.push("workflowId");
     if (context.taskId && existingRun.taskId !== context.taskId) conflicts.push("taskId");
+    if (context.dispatchId && existingRun.dispatchId && existingRun.dispatchId !== context.dispatchId) conflicts.push("dispatchId");
     if (workerId && existingRun.workerId !== workerId) conflicts.push("workerId");
     if ((input.input !== undefined || input.payload !== undefined) && jsonHash(existingRun.input) !== jsonHash(inputPayload)) conflicts.push("input");
     if (conflicts.length) throw new Error(`workflow session run id conflict: ${runId} fields=${conflicts.join(",")}`);
-    return { ...existingRun, deduped: true, dbFile: paths.dbFile };
+    const resolvedDispatchId = existingRun.dispatchId || context.dispatchId;
+    if (resolvedDispatchId && !existingRun.dispatchId) {
+      await sqlite(paths.dbFile, `
+UPDATE workflow_session_runs
+SET dispatch_id=${sqlValue(resolvedDispatchId)}, updated_at=${sqlValue(now)}
+WHERE run_id=${sqlValue(runId)}
+  AND (dispatch_id IS NULL OR dispatch_id='');`);
+    }
+    const phaseInfo = await workflowTaskPhaseInfo(paths, existingRun.workflowId || context.workflowId, existingRun.taskId || context.taskId);
+    await upsertWorkflowAgentRun(paths, {
+      agentRunId: `session.${runId}`,
+      workflowId: existingRun.workflowId || context.workflowId,
+      phaseId: phaseInfo.phaseId,
+      phaseKey: phaseInfo.phaseKey,
+      taskId: existingRun.taskId || context.taskId,
+      dispatchId: resolvedDispatchId,
+      sessionRunId: runId,
+      runtime: pack.runtimeTarget || "session_pack",
+      agentId: existingRun.workerId || workerId || pack.ownerAgent || "",
+      status: existingRun.status,
+      attempt: 0,
+      inputHash: jsonHash(existingRun.input),
+      outputHash: jsonHash(existingRun.output),
+      receiptRef: existingRun.receiptRef,
+      error: existingRun.error,
+      payload: { source: "workflow_session_runs", sessionId, packVersion: existingRun.packVersion, dedupeBackfill: true },
+      startedAt: existingRun.startedAt,
+      completedAt: existingRun.completedAt,
+      updatedAt: now
+    });
+    return { ...existingRun, dispatchId: resolvedDispatchId, deduped: true, dbFile: paths.dbFile };
   }
   const workerInput = workerInputFromSessionPack(pack, inputPayload, context);
   await sqlite(paths.dbFile, `
-INSERT INTO workflow_session_runs(run_id, session_id, pack_version, workflow_id, task_id, worker_id, status, input_json, worker_input_json, output_json, receipt_ref, error, started_at, completed_at, created_at, updated_at)
-VALUES (${sqlValue(runId)}, ${sqlValue(sessionId)}, ${sqlValue(pack.version)}, ${sqlValue(context.workflowId)}, ${sqlValue(context.taskId)}, ${sqlValue(workerId)}, ${sqlValue(status)}, ${sqlValue(JSON.stringify(inputPayload))}, ${sqlValue(JSON.stringify(workerInput))}, '{}', '', '', ${sqlValue(status === "running" ? now : "")}, '', ${sqlValue(now)}, ${sqlValue(now)});`);
+INSERT INTO workflow_session_runs(run_id, session_id, pack_version, workflow_id, task_id, dispatch_id, worker_id, status, input_json, worker_input_json, output_json, receipt_ref, error, started_at, completed_at, created_at, updated_at)
+VALUES (${sqlValue(runId)}, ${sqlValue(sessionId)}, ${sqlValue(pack.version)}, ${sqlValue(context.workflowId)}, ${sqlValue(context.taskId)}, ${sqlValue(context.dispatchId)}, ${sqlValue(workerId)}, ${sqlValue(status)}, ${sqlValue(JSON.stringify(inputPayload))}, ${sqlValue(JSON.stringify(workerInput))}, '{}', '', '', ${sqlValue(status === "running" ? now : "")}, '', ${sqlValue(now)}, ${sqlValue(now)});`);
+  const phaseInfo = await workflowTaskPhaseInfo(paths, context.workflowId, context.taskId);
+  await upsertWorkflowAgentRun(paths, {
+    agentRunId: `session.${runId}`,
+    workflowId: context.workflowId,
+    phaseId: phaseInfo.phaseId,
+    phaseKey: phaseInfo.phaseKey,
+    taskId: context.taskId,
+    dispatchId: context.dispatchId,
+    sessionRunId: runId,
+    runtime: pack.runtimeTarget || "session_pack",
+    agentId: workerId || pack.ownerAgent || "",
+    status,
+    attempt: 0,
+    inputHash: jsonHash(inputPayload),
+    payload: { source: "workflow_session_runs", sessionId, packVersion: pack.version },
+    startedAt: status === "running" ? now : "",
+    createdAt: now,
+    updatedAt: now
+  });
   return { runId, sessionId, packVersion: pack.version, status, workerInput, dbFile: paths.dbFile };
 }
 
@@ -5468,7 +7045,31 @@ SET status=${sqlValue(status)},
     updated_at=${sqlValue(now)}
 WHERE run_id=${sqlValue(runId)};`);
   const rows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_runs WHERE run_id=${sqlValue(runId)} LIMIT 1;`, { json: true });
-  return { ...sessionRunFromRow(rows[0]), dbFile: paths.dbFile };
+  const next = sessionRunFromRow(rows[0]);
+  const existingAgentRunRows = await sqlite(paths.dbFile, `SELECT dispatch_id, phase_id, phase_key, runtime, agent_id FROM workflow_agent_runs WHERE agent_run_id=${sqlValue(`session.${runId}`)} LIMIT 1;`, { json: true });
+  const existingAgentRun = existingAgentRunRows[0] || {};
+  const phaseInfo = await workflowTaskPhaseInfo(paths, next.workflowId, next.taskId);
+  await upsertWorkflowAgentRun(paths, {
+    agentRunId: `session.${runId}`,
+    workflowId: next.workflowId,
+    phaseId: phaseInfo.phaseId || existingAgentRun.phase_id || "",
+    phaseKey: phaseInfo.phaseKey || existingAgentRun.phase_key || "",
+    taskId: next.taskId,
+    dispatchId: next.dispatchId || existingAgentRun.dispatch_id || "",
+    sessionRunId: runId,
+    runtime: existingAgentRun.runtime || "session_pack",
+    agentId: next.workerId || existingAgentRun.agent_id || "",
+    status: next.status,
+    inputHash: jsonHash(next.input),
+    outputHash: jsonHash(next.output),
+    receiptRef: next.receiptRef,
+    error: next.error,
+    payload: { source: "workflow_session_runs", sessionId: next.sessionId, packVersion: next.packVersion },
+    startedAt: next.startedAt,
+    completedAt: next.completedAt,
+    updatedAt: now
+  });
+  return { ...next, dbFile: paths.dbFile };
 }
 
 export async function instrumentUpsert(rootDir, input) {
@@ -7212,6 +8813,713 @@ function normalizeTelegramBotApiChatId(value = "") {
   return String(value || "").trim().replace(/^telegram:/, "");
 }
 
+async function telegramOutboxDeliveryPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const outboxId = String(input.outboxId || input.outbox_id || "").trim();
+  if (!outboxId) throw new Error("outboxId is required");
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM telegram_outbox
+WHERE outbox_id=${sqlValue(outboxId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0];
+  const base = {
+    schemaVersion: "telegram_outbox_delivery_preview.v1",
+    action: "telegram.outbox.delivery.preview",
+    readOnly: true,
+    writeBoundary: "preview_only",
+    outboxId,
+    dbFile: paths.dbFile
+  };
+  if (!row) {
+    return {
+      ...base,
+      eligible: false,
+      claimEligible: false,
+      wouldSendTelegram: false,
+      wouldInvokeOpenClawCli: false,
+      violations: [{ code: "outbox_not_found", detail: `telegram_outbox row not found: ${outboxId}` }],
+      warnings: [],
+      wouldUpdate: {
+        telegramOutboxStatus: "unchanged",
+        messageFlowDelivery: "unchanged"
+      }
+    };
+  }
+  const payload = parseJsonValue(row.payload_json, {});
+  const account = String(input.account || payload.account || "cat_claw").trim();
+  const explicitTarget = String(input.target || "").trim();
+  const rowTarget = String(row.target_ref || "").trim();
+  const target = explicitTarget || rowTarget;
+  const normalizedTarget = normalizeTelegramBotApiChatId(target);
+  const status = String(row.status || "").trim();
+  const messageType = String(row.message_type || "").trim();
+  const updatedAt = String(row.updated_at || "").trim();
+  const staleDeliveringBefore = new Date(Date.now() - TELEGRAM_OUTBOX_DELIVERY_LEASE_MS).toISOString();
+  const staleDelivering = status === "delivering" && Boolean(updatedAt) && updatedAt <= staleDeliveringBefore;
+  const claimEligible = status === "queued" || status === "failed" || staleDelivering;
+  const claimReason = claimEligible
+    ? (staleDelivering ? "stale_delivering_reclaimable" : `status_${status}`)
+    : `status_${status || "unknown"}`;
+  const text = String(row.text || "");
+  const chunks = telegramChunks(text);
+  const receipts = Array.isArray(payload.delivery?.receipts) ? payload.delivery.receipts : [];
+  const startIndex = Math.min(receipts.length, chunks.length);
+  const replyMarkup = payload.telegramReplyMarkup || payload.reply_markup || null;
+  const inlineKeyboard = Array.isArray(replyMarkup?.inline_keyboard) ? replyMarkup.inline_keyboard : [];
+  const inlineButtonCount = inlineKeyboard.reduce((count, buttonRow) => count + (Array.isArray(buttonRow) ? buttonRow.length : 0), 0);
+  const payloadButtons = Array.isArray(payload.buttons) ? payload.buttons : [];
+  const buttonCount = inlineButtonCount || payloadButtons.length;
+  const targetRequired = TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES.has(messageType);
+  const deliveryOperatorReason = String(
+    input.deliveryOperatorReason ||
+    input.delivery_operator_reason ||
+    input.executionReason ||
+    input.execution_reason ||
+    ""
+  ).trim();
+  const catClawAuditId = firstText(
+    input.catClawAuditId,
+    input.cat_claw_audit_id,
+    input.catClawAudit,
+    input.cat_claw_audit,
+    input.secretaryAuditId,
+    input.secretary_audit_id
+  );
+  const deliveryApprovalId = firstText(
+    input.deliveryApprovalId,
+    input.delivery_approval_id,
+    input.deliveryEvidenceId,
+    input.delivery_evidence_id,
+    input.humanGateEvidence,
+    input.human_gate_evidence,
+    input.evidenceHumanGateId,
+    input.evidence_human_gate_id
+  );
+  const violations = [];
+  const warnings = [];
+  const governanceViolations = [];
+  const governanceWarnings = [];
+  if (!claimEligible) {
+    violations.push({ code: "status_not_claimable", detail: `delivery claim would be skipped for status=${status || "unknown"}` });
+  }
+  if (!normalizedTarget) {
+    violations.push({ code: "target_missing", detail: "telegram_outbox target_ref or explicit target is required before delivery" });
+  }
+  if (!text.trim()) {
+    violations.push({ code: "text_missing", detail: "telegram_outbox text is empty" });
+  }
+  if (status === "failed") {
+    warnings.push({ code: "retry_failed_outbox", detail: "delivery would retry a failed outbox row" });
+  }
+  if (staleDelivering) {
+    warnings.push({ code: "stale_delivering_reclaim", detail: `delivery lease is older than ${TELEGRAM_OUTBOX_DELIVERY_LEASE_MS}ms` });
+  }
+  if (receipts.length > 0) {
+    warnings.push({ code: "partial_receipts_present", detail: `delivery would resume after ${startIndex} recorded receipt(s)` });
+  }
+  if (!deliveryOperatorReason) {
+    governanceViolations.push({ code: "delivery_operator_reason_required", detail: "A future delivery execution must carry an explicit delivery operator reason." });
+  }
+  if (messageType === "human_gate_request" && !catClawAuditId) {
+    governanceViolations.push({ code: "cat_claw_audit_required", detail: "Human Gate request delivery must be backed by Cat Claw/secretary audit evidence." });
+  }
+  if (messageType === "human_gate_request" && buttonCount < 5) {
+    governanceViolations.push({ code: "human_gate_buttons_incomplete", detail: "Human Gate request delivery expects A/B/C approve options plus pause and terminate controls." });
+  }
+  if (messageType === "human_gate_request" && account !== "cat_claw") {
+    governanceWarnings.push({ code: "non_cat_claw_delivery_account", detail: `Human Gate request delivery should normally use cat_claw, got ${account || "<empty>"}.` });
+  }
+  if (targetRequired && !normalizedTarget) {
+    governanceViolations.push({ code: "governed_target_required", detail: "Governed delivery cannot proceed without a bound Telegram target." });
+  }
+  const directBotApiWebAppCandidate = Boolean(inlineKeyboard.length && normalizedTarget);
+  const eligible = violations.length === 0;
+  const governanceReady = eligible && governanceViolations.length === 0;
+  return {
+    ...base,
+    meetingId: row.meeting_id || "",
+    status,
+    messageType,
+    targetKind: row.target_kind || "",
+    targetRef: rowTarget,
+    targetOverride: Boolean(explicitTarget),
+    targetRequired,
+    account,
+    eligible,
+    claimEligible,
+    claimReason,
+    createdAt: row.created_at || "",
+    updatedAt,
+    textLength: text.length,
+    textPreview: redactSensitiveTextForPersistence(text.slice(0, 500)),
+    chunkCount: chunks.length,
+    resumedReceiptCount: receipts.length,
+    pendingChunkCount: Math.max(0, chunks.length - startIndex),
+    buttonSummary: {
+      hasInlineKeyboard: inlineKeyboard.length > 0,
+      rowCount: inlineKeyboard.length,
+      buttonCount,
+      payloadButtonCount: payloadButtons.length
+    },
+    deliveryPath: {
+      directBotApiWebAppCandidate,
+      openclawCliCandidate: Boolean(normalizedTarget),
+      modeOrder: directBotApiWebAppCandidate
+        ? ["direct_bot_api_web_app", "openclaw_message_send"]
+        : ["openclaw_message_send"],
+      presentationOnLastChunk: Boolean(payload.presentation)
+    },
+    executionPolicy: {
+      previewOnly: true,
+      futureAction: "telegram.outbox.delivery",
+      riskTier: "P2-controlled-delivery",
+      governanceReady,
+      requiredBeforeExecution: [
+        "console writes explicitly enabled",
+        "operator reason",
+        "idempotency key",
+        "claimable outbox status",
+        "bound Telegram target",
+        ...(messageType === "human_gate_request" ? ["Cat Claw/secretary audit evidence", "A/B/C approve buttons plus pause/terminate controls"] : [])
+      ],
+      evidencePresence: {
+        deliveryOperatorReason: Boolean(deliveryOperatorReason),
+        catClawAudit: Boolean(catClawAuditId),
+        deliveryApproval: Boolean(deliveryApprovalId)
+      },
+      hardStops: [...violations, ...governanceViolations],
+      warnings: [...warnings, ...governanceWarnings]
+    },
+    receiptPolicy: {
+      deliveryReceiptRequired: true,
+      terminalOutboxStatuses: ["sent", "failed"],
+      sideEffectUncertainStatuses: ["delivering", "web_app_direct_delivery_unavailable"],
+      requiredReceiptFields: ["channel", "account", "target", "deliveredAt or failedAt", "receipts or error"],
+      messageFlowSync: messageType === "message_flow_reply" ? "required_after_terminal_delivery" : "not_required_for_message_type",
+      humanGateDeliveryEvidence: messageType === "human_gate_request" ? "telegram_outbox_payload_delivery_required_before_closeout" : "not_applicable",
+      idempotencyBoundary: "outbox_id + deliveryClaim.claimId + recorded receipt count"
+    },
+    wouldSendTelegram: eligible,
+    wouldInvokeOpenClawCli: eligible,
+    wouldReadBotToken: directBotApiWebAppCandidate ? "only_during_actual_delivery" : "no",
+    wouldUpdate: {
+      telegramOutboxStatus: eligible ? "delivering_then_sent_or_failed" : "unchanged",
+      deliveryClaim: eligible,
+      messageFlowDelivery: eligible ? "sent_or_failed" : "unchanged"
+    },
+    violations,
+    warnings,
+    governanceViolations,
+    governanceWarnings
+  };
+}
+
+async function telegramOutboxRequeuePreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const outboxId = String(input.outboxId || input.outbox_id || "").trim();
+  if (!outboxId) throw new Error("outboxId is required");
+  const explicitRequeueReason = firstText(
+    input.requeueOperatorReason,
+    input.requeue_operator_reason,
+    input.redeliveryOperatorReason,
+    input.redelivery_operator_reason
+  );
+  const deliveryPreviewInput = explicitRequeueReason && !firstText(input.deliveryOperatorReason, input.delivery_operator_reason, input.executionReason, input.execution_reason)
+    ? { ...input, deliveryOperatorReason: explicitRequeueReason }
+    : input;
+  const deliveryPreview = await telegramOutboxDeliveryPreview(rootDir, deliveryPreviewInput);
+  const base = {
+    schemaVersion: "telegram_outbox_requeue_preview.v1",
+    action: "telegram.outbox.requeue.preview",
+    readOnly: true,
+    writeBoundary: "preview_only",
+    outboxId,
+    dbFile: paths.dbFile,
+    deliveryPreview
+  };
+  if (!deliveryPreview.meetingId && deliveryPreview.violations?.some((row) => row.code === "outbox_not_found")) {
+    return {
+      ...base,
+      eligible: false,
+      requeueEligible: false,
+      wouldRequeue: false,
+      wouldResendTelegram: false,
+      recommendedNextAction: "none",
+      requeuePolicy: {
+        strategy: "outbox_not_found",
+        preserveOutboxId: true,
+        preserveHumanGateId: true,
+        preserveButtonIds: true,
+        createNewHumanGateRequest: false
+      },
+      violations: deliveryPreview.violations || [],
+      warnings: deliveryPreview.warnings || [],
+      governanceViolations: [],
+      governanceWarnings: [],
+      wouldUpdate: {
+        telegramOutboxStatus: "unchanged",
+        deliveryClaim: false,
+        messageFlowDelivery: "unchanged"
+      }
+    };
+  }
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM telegram_outbox
+WHERE outbox_id=${sqlValue(outboxId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0];
+  const payload = parseJsonValue(row?.payload_json, {});
+  const delivery = payload.delivery && typeof payload.delivery === "object" ? payload.delivery : {};
+  const deliveryClaim = payload.deliveryClaim && typeof payload.deliveryClaim === "object" ? payload.deliveryClaim : {};
+  const status = String(row?.status || deliveryPreview.status || "").trim();
+  const messageType = String(row?.message_type || deliveryPreview.messageType || "").trim();
+  const updatedAt = String(row?.updated_at || "").trim();
+  const staleDeliveringBefore = new Date(Date.now() - TELEGRAM_OUTBOX_DELIVERY_LEASE_MS).toISOString();
+  const staleDelivering = status === "delivering" && Boolean(updatedAt) && updatedAt <= staleDeliveringBefore;
+  const freshDelivering = status === "delivering" && !staleDelivering;
+  const failed = status === "failed";
+  const queued = status === "queued";
+  const sent = status === "sent";
+  const receipts = Array.isArray(delivery.receipts) ? delivery.receipts : [];
+  const requeueOperatorReason = firstText(
+    input.requeueOperatorReason,
+    input.requeue_operator_reason,
+    input.redeliveryOperatorReason,
+    input.redelivery_operator_reason,
+    input.deliveryOperatorReason,
+    input.delivery_operator_reason,
+    input.executionReason,
+    input.execution_reason
+  );
+  const catClawAuditId = firstText(
+    input.catClawAuditId,
+    input.cat_claw_audit_id,
+    input.catClawAudit,
+    input.cat_claw_audit,
+    input.secretaryAuditId,
+    input.secretary_audit_id
+  );
+  const deliveryApprovalId = firstText(
+    input.deliveryApprovalId,
+    input.delivery_approval_id,
+    input.deliveryEvidenceId,
+    input.delivery_evidence_id,
+    input.humanGateEvidence,
+    input.human_gate_evidence,
+    input.evidenceHumanGateId,
+    input.evidence_human_gate_id
+  );
+  const humanGateId = firstText(
+    input.humanGateId,
+    input.human_gate_id,
+    payload.humanGateId,
+    payload.human_gate_id,
+    payload.humanGate?.id,
+    payload.human_gate?.id
+  );
+  let strategy = "not_requeueable";
+  if (failed) strategy = "retry_failed_delivery";
+  else if (staleDelivering) strategy = "reclaim_stale_delivery_lease";
+  else if (queued) strategy = "already_queued";
+  else if (freshDelivering) strategy = "wait_for_active_delivery_lease";
+  else if (sent) strategy = "terminal_sent_idempotent_replay_only";
+  const requeueEligible = failed || staleDelivering;
+  const violations = [];
+  const warnings = [];
+  const governanceViolations = [];
+  const governanceWarnings = [];
+  if (!requeueEligible) {
+    violations.push({
+      code: sent ? "already_sent" : freshDelivering ? "delivery_lease_active" : queued ? "already_queued" : "status_not_requeueable",
+      detail: sent
+        ? "Outbox is already sent; a future delivery execution should return idempotent replay, not resend."
+        : freshDelivering
+          ? "Outbox is delivering and the delivery lease is not stale yet."
+          : queued
+            ? "Outbox is already queued; no requeue step is needed before governed delivery."
+            : `Outbox status ${status || "unknown"} is not eligible for requeue preview.`
+    });
+  }
+  for (const item of deliveryPreview.violations || []) {
+    if (item.code !== "status_not_claimable") violations.push(item);
+  }
+  if (!requeueOperatorReason && requeueEligible) {
+    governanceViolations.push({ code: "requeue_operator_reason_required", detail: "A future resend/requeue action must carry an explicit requeue or delivery operator reason." });
+  }
+  if (messageType === "human_gate_request" && requeueEligible && !catClawAuditId) {
+    governanceViolations.push({ code: "cat_claw_audit_required", detail: "Human Gate notification redelivery must be backed by Cat Claw/secretary audit evidence." });
+  }
+  if (messageType === "human_gate_request" && requeueEligible && !humanGateId) {
+    governanceWarnings.push({ code: "human_gate_id_not_embedded", detail: "No Human Gate id was found in input or outbox payload; preserve the existing outbox id and button ids before any redelivery." });
+  }
+  if (failed) warnings.push({ code: "failed_outbox_redelivery", detail: "Preview would retry a failed outbox row through the governed delivery path." });
+  if (staleDelivering) warnings.push({ code: "stale_delivery_lease", detail: `Preview would reclaim a delivery lease older than ${TELEGRAM_OUTBOX_DELIVERY_LEASE_MS}ms.` });
+  if (receipts.length > 0) warnings.push({ code: "partial_receipts_present", detail: `Existing delivery receipts (${receipts.length}) must be preserved; later delivery resumes after recorded parts.` });
+  const deliveryGovernanceReady = Boolean(deliveryPreview.executionPolicy?.governanceReady);
+  const governanceReady = requeueEligible && governanceViolations.length === 0 && deliveryGovernanceReady;
+  return {
+    ...base,
+    meetingId: deliveryPreview.meetingId || row?.meeting_id || "",
+    status,
+    messageType,
+    targetKind: deliveryPreview.targetKind || row?.target_kind || "",
+    targetRef: deliveryPreview.targetRef || row?.target_ref || "",
+    account: deliveryPreview.account || "",
+    eligible: requeueEligible && (deliveryPreview.eligible || false),
+    requeueEligible,
+    deliveryExecutionEligible: Boolean(deliveryPreview.eligible),
+    governanceReady,
+    strategy,
+    recommendedNextAction: requeueEligible ? "telegram.outbox.delivery" : "none",
+    wouldRequeue: requeueEligible,
+    wouldResendTelegram: requeueEligible && deliveryPreview.eligible,
+    wouldInvokeOpenClawCli: requeueEligible && deliveryPreview.wouldInvokeOpenClawCli,
+    currentDelivery: {
+      channel: delivery.channel || "",
+      account: delivery.account || payload.account || "",
+      target: delivery.target || row?.target_ref || "",
+      deliveredAt: delivery.deliveredAt || "",
+      failedAt: delivery.failedAt || "",
+      error: redactSensitiveTextForPersistence(String(delivery.error || "").slice(0, 1000)),
+      receiptCount: receipts.length,
+      claimId: deliveryClaim.claimId || "",
+      claimedAt: deliveryClaim.claimedAt || "",
+      claimOwner: deliveryClaim.owner || "",
+      previousStatus: deliveryClaim.previousStatus || ""
+    },
+    requeuePolicy: {
+      previewOnly: true,
+      futureAction: "telegram.outbox.delivery",
+      strategy,
+      preserveOutboxId: true,
+      preserveHumanGateId: true,
+      preserveButtonIds: true,
+      preserveDeliveryReceipts: true,
+      createNewHumanGateRequest: false,
+      createNewTelegramOutbox: false,
+      idempotencyRequired: true,
+      operatorReasonRequired: true,
+      catClawAuditRequired: messageType === "human_gate_request",
+      humanGateId: humanGateId || "",
+      buttonCount: deliveryPreview.buttonSummary?.buttonCount || 0,
+      existingReceiptCount: receipts.length,
+      staleLeaseCutoff: staleDeliveringBefore,
+      sideEffectBoundary: "telegram_delivery_only"
+    },
+    executionPolicy: {
+      previewOnly: true,
+      futureAction: "telegram.outbox.delivery",
+      governanceReady,
+      requiredBeforeExecution: [
+        "console writes explicitly enabled",
+        "idempotency key",
+        "explicit requeue or delivery operator reason",
+        "failed or stale-delivering outbox status",
+        "bound Telegram target",
+        "preserve original outbox id, Human Gate id, button ids, and existing receipts",
+        ...(messageType === "human_gate_request" ? ["Cat Claw/secretary audit evidence"] : [])
+      ],
+      evidencePresence: {
+        requeueOperatorReason: Boolean(requeueOperatorReason),
+        catClawAudit: Boolean(catClawAuditId),
+        deliveryApproval: Boolean(deliveryApprovalId),
+        humanGateId: Boolean(humanGateId)
+      },
+      hardStops: [...violations, ...governanceViolations, ...(deliveryPreview.governanceViolations || [])],
+      warnings: [...warnings, ...governanceWarnings, ...(deliveryPreview.governanceWarnings || [])]
+    },
+    wouldUpdate: {
+      telegramOutboxStatus: requeueEligible ? "delivering_then_sent_or_failed" : "unchanged",
+      deliveryClaim: requeueEligible,
+      messageFlowDelivery: requeueEligible ? deliveryPreview.wouldUpdate?.messageFlowDelivery || "sent_or_failed" : "unchanged",
+      workflowStatus: "unchanged",
+      humanGateRecord: "unchanged",
+      tradingState: "unchanged"
+    },
+    violations,
+    warnings,
+    governanceViolations,
+    governanceWarnings
+  };
+}
+
+function telegramRequeueStrategyChinese(strategy = "") {
+  const map = {
+    retry_failed_delivery: "失败投递重试",
+    reclaim_stale_delivery_lease: "回收过期投递租约后重试",
+    wait_for_active_delivery_lease: "等待当前投递租约结束",
+    terminal_sent_idempotent_replay_only: "已投递完成，仅允许幂等回放",
+    already_queued: "已在排队中，无需重排",
+    not_requeueable: "当前状态不可重排",
+    outbox_not_found: "未找到 outbox"
+  };
+  return map[strategy] || strategy || "未知策略";
+}
+
+function telegramRequeueStatusChinese(status = "") {
+  const map = {
+    failed: "失败",
+    delivering: "投递中",
+    queued: "排队中",
+    sent: "已投递",
+    cancelled: "已取消"
+  };
+  return map[status] || status || "未知";
+}
+
+async function telegramOutboxRequeueExecutionPackagePreview(rootDir, input = {}) {
+  const generatedAt = nowIso();
+  const requeue = await telegramOutboxRequeuePreview(rootDir, input);
+  const outboxId = requeue.outboxId || String(input.outboxId || input.outbox_id || "").trim();
+  const humanGateId = requeue.requeuePolicy?.humanGateId || "";
+  const statusCn = telegramRequeueStatusChinese(requeue.status);
+  const strategyCn = telegramRequeueStrategyChinese(requeue.strategy);
+  const missingEvidence = [];
+  if (!requeue.executionPolicy?.evidencePresence?.requeueOperatorReason) missingEvidence.push("明确的重投递/投递操作理由");
+  if (requeue.requeuePolicy?.catClawAuditRequired && !requeue.executionPolicy?.evidencePresence?.catClawAudit) missingEvidence.push("猫爪/秘书复核证据");
+  if (!requeue.executionPolicy?.evidencePresence?.humanGateId && requeue.messageType === "human_gate_request") missingEvidence.push("原 Human Gate id");
+  if (!requeue.deliveryExecutionEligible) missingEvidence.push("可用的 Telegram target/text/button 投递条件");
+  const preservation = [
+    `原 outbox id：${outboxId || "缺失"}`,
+    `原 Human Gate id：${humanGateId || "未在 payload/input 中发现"}`,
+    `按钮数量：${requeue.requeuePolicy?.buttonCount ?? 0}，不得新建并行 Human Gate 决策对象`,
+    `已有投递 receipt 数量：${requeue.requeuePolicy?.existingReceiptCount ?? 0}，必须原样保留并从已记录分片后续投递`,
+    `目标：${requeue.targetKind || "-"}:${requeue.targetRef || "-"}`,
+    "未来实际执行只能进入 telegram.outbox.delivery，并由该动作二次校验 idempotency key、operator reason、Cat Claw audit 和 target"
+  ];
+  const summaryLines = [
+    `事项：Telegram outbox 重投递执行前确认包。`,
+    `当前 outbox：${outboxId || "缺失"}，状态：${statusCn}（${requeue.status || "unknown"}），策略：${strategyCn}（${requeue.strategy || "unknown"}）。`,
+    `目标：${requeue.targetKind || "-"}:${requeue.targetRef || "-"}，账号：${requeue.account || "-"}，消息类型：${requeue.messageType || "-"}.`,
+    requeue.requeueEligible
+      ? "机器判断：该 outbox 处于 failed 或 stale-delivering，可进入受治理重投递路径的执行前审计。"
+      : "机器判断：该 outbox 当前不应重投递；如果已经 sent，应走幂等回放审计，而不是重新发送。",
+    requeue.governanceReady
+      ? "治理状态：执行前关键证据已满足，仍需人类确认是否允许进入实际 delivery action。"
+      : `治理状态：尚未满足执行条件，缺口：${missingEvidence.length ? missingEvidence.join("、") : "见 hardStops/warnings"}.`,
+    "边界：本包只用于猫爪/闪电猫审计，不会重置 outbox、不 claim lease、不发送 Telegram、不创建 Human Gate、不写 side effect、不触碰交易状态。"
+  ];
+  const options = [
+    {
+      optionId: "A",
+      title: "批准受治理重投递",
+      buttonLabel: "方案 A：批准重投递",
+      buttonStyle: "success",
+      recommendation: requeue.governanceReady ? "recommended_when_operator_confirms" : "blocked_until_missing_evidence_resolved",
+      content: "在补齐/确认 Cat Claw audit、操作理由和 idempotency key 后，只允许通过 telegram.outbox.delivery 执行实际投递；不得新建 Human Gate 或新 outbox。",
+      nextStep: "由受控执行入口调用 telegram.outbox.delivery，并保留同一个 outbox/Human Gate/button/receipt 证据链。",
+      executionBoundary: "telegram_delivery_only"
+    },
+    {
+      optionId: "B",
+      title: "暂缓重投递并补证",
+      buttonLabel: "方案 B：暂缓补证",
+      buttonStyle: "success",
+      recommendation: requeue.governanceReady ? "optional_cautious_path" : "recommended_until_ready",
+      content: "不执行重投递；先补齐猫爪复核、操作理由、目标/按钮/receipt 证据，或等待 fresh delivering lease 自然结束。",
+      nextStep: "保持 outbox 当前状态不变，继续收集证据或等待下一轮队列/人工复核。",
+      executionBoundary: "no_write"
+    },
+    {
+      optionId: "C",
+      title: "不重投递并收口为审计记录",
+      buttonLabel: "方案 C：不重投递",
+      buttonStyle: "success",
+      recommendation: requeue.status === "sent" ? "recommended_for_sent_rows" : "use_when_redelivery_risk_exceeds_value",
+      content: "不重新发送 Telegram；将当前状态作为审计事实处理。已 sent 的 outbox 只能记录幂等回放，不应再次发送。",
+      nextStep: "由猫爪/猫之脑补充 closeout 或 incident 说明，说明为什么不重投递。",
+      executionBoundary: "audit_only"
+    }
+  ];
+  const controls = [
+    {
+      controlId: "pause_workflow",
+      title: "暂停工作流",
+      buttonLabel: "暂停工作流",
+      buttonStyle: "primary",
+      content: "暂停后不执行重投递，等待猫爪或闪电猫补充指令。"
+    },
+    {
+      controlId: "terminate_workflow",
+      title: "终止工作流",
+      buttonLabel: "终止工作流",
+      buttonStyle: "danger",
+      content: "终止表示本段重投递事项不再推进，进入归档/可恢复记录流程；不是删除 workflow。"
+    }
+  ];
+  const packageTextZh = [
+    "# Telegram outbox 重投递执行前确认包",
+    "",
+    ...summaryLines.map((line) => `- ${line}`),
+    "",
+    "## 必须保留的证据链",
+    ...preservation.map((line) => `- ${line}`),
+    "",
+    "## 可选方案",
+    ...options.map((option) => `- ${option.optionId}. ${option.title}：${option.content}`),
+    "",
+    "## 控制项",
+    ...controls.map((control) => `- ${control.title}：${control.content}`)
+  ].join("\n");
+  return {
+    schemaVersion: "telegram_outbox_requeue_execution_package_preview.v1",
+    action: "telegram.outbox.requeue.execution_package.preview",
+    readOnly: true,
+    writeBoundary: "preview_only",
+    generatedAt,
+    outboxId,
+    meetingId: requeue.meetingId || "",
+    humanGateId,
+    status: requeue.status || "",
+    strategy: requeue.strategy || "",
+    strategyZh: strategyCn,
+    requeueEligible: Boolean(requeue.requeueEligible),
+    governanceReady: Boolean(requeue.governanceReady),
+    readyForCatClawReview: Boolean(requeue.outboxId && requeue.messageType),
+    readyForExecutionRequest: Boolean(requeue.governanceReady),
+    futureExecutionAction: "telegram.outbox.delivery",
+    didWrite: false,
+    didSendTelegram: false,
+    didCreateHumanGate: false,
+    didCreateOutbox: false,
+    didTouchTradingState: false,
+    package: {
+      titleZh: "Telegram outbox 重投递执行前确认包",
+      summaryZh: summaryLines,
+      preservationZh: preservation,
+      missingEvidenceZh: missingEvidence,
+      options,
+      controls,
+      packageTextZh
+    },
+    auditBoundary: {
+      preserveOutboxId: true,
+      preserveHumanGateId: true,
+      preserveButtonIds: true,
+      preserveDeliveryReceipts: true,
+      noParallelHumanGate: true,
+      noParallelOutbox: true,
+      futureExecutionBoundary: "telegram_delivery_only"
+    },
+    requeuePreview: requeue,
+    violations: requeue.violations || [],
+    governanceViolations: requeue.governanceViolations || [],
+    warnings: requeue.warnings || [],
+    governanceWarnings: requeue.governanceWarnings || []
+  };
+}
+
+async function telegramOutboxDelivery(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const outboxId = String(input.outboxId || input.outbox_id || "").trim();
+  if (!outboxId) throw new Error("outboxId is required");
+  const idempotencyKey = firstText(input.idempotencyKey, input.idempotency_key);
+  if (!idempotencyKey) throw new Error("idempotencyKey is required for telegram outbox delivery execution");
+  const preview = await telegramOutboxDeliveryPreview(rootDir, input);
+  const hardStops = [
+    ...(Array.isArray(preview.violations) ? preview.violations : []),
+    ...(Array.isArray(preview.governanceViolations) ? preview.governanceViolations : [])
+  ];
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM telegram_outbox
+WHERE outbox_id=${sqlValue(outboxId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0];
+  if (!row) throw new Error(`telegram_outbox row not found: ${outboxId}`);
+  if (preview.status === "sent") {
+    const payload = parseJsonValue(row.payload_json, {});
+    const delivery = payload.delivery || {};
+    return {
+      schemaVersion: "telegram_outbox_delivery_result.v1",
+      action: "telegram.outbox.delivery",
+      writeBoundary: "telegram_delivery_only",
+      outboxId,
+      meetingId: preview.meetingId,
+      messageType: preview.messageType,
+      account: preview.account,
+      targetKind: preview.targetKind,
+      targetRef: preview.targetRef,
+      deliveryStatus: "sent",
+      idempotentReplay: true,
+      didClaimOutbox: false,
+      didSendTelegram: false,
+      didUpdateOutbox: false,
+      didUpdateMessageFlow: false,
+      didTouchTradingState: false,
+      receiptCount: Array.isArray(delivery.receipts) ? delivery.receipts.length : 0,
+      receiptPolicy: preview.receiptPolicy,
+      executionPolicy: {
+        ...preview.executionPolicy,
+        previewOnly: false
+      },
+      result: redactSensitiveForPersistence({ outboxId, status: "sent", delivery }),
+      dbFile: paths.dbFile
+    };
+  }
+  if (!preview.eligible || !preview.executionPolicy?.governanceReady) {
+    throw new Error(`telegram outbox delivery blocked: ${hardStops.map((item) => item.code || item.detail).filter(Boolean).join(",") || "policy_not_ready"}`);
+  }
+  const result = await deliverTelegramOutboxRow(paths, row, {
+    ...input,
+    account: preview.account,
+    target: preview.targetRef
+  });
+  const status = String(result?.status || "").trim() || "unknown";
+  const workflowId = firstText(input.workflowId, input.workflow_id, preview.meetingId);
+  const deliveryReceiptCount = Array.isArray(result?.receipts) ? result.receipts.length : 0;
+  await appendWorkflowEvent(paths, {
+    eventType: "telegram.outbox.delivery.executed",
+    status,
+    workflowId,
+    traceId: input.traceId || input.trace_id || "",
+    actor: firstText(input.actor, input.createdBy, input.created_by, "workflow"),
+    sourceRuntime: "workflow",
+    sourceAgent: firstText(input.sourceAgent, input.source_agent, input.actor, "workflow"),
+    nextState: status,
+    artifactRef: outboxId,
+    payload: redactSensitiveForPersistence({
+      outboxId,
+      idempotencyKey,
+      messageType: preview.messageType,
+      targetKind: preview.targetKind,
+      targetRef: preview.targetRef,
+      account: preview.account,
+      deliveryStatus: status,
+      receiptCount: deliveryReceiptCount,
+      receiptPolicy: preview.receiptPolicy,
+      result
+    })
+  });
+  return {
+    schemaVersion: "telegram_outbox_delivery_result.v1",
+    action: "telegram.outbox.delivery",
+    writeBoundary: "telegram_delivery_only",
+    outboxId,
+    meetingId: preview.meetingId,
+    messageType: preview.messageType,
+    account: preview.account,
+    targetKind: preview.targetKind,
+    targetRef: preview.targetRef,
+    deliveryStatus: status,
+    didClaimOutbox: !result?.skipped,
+    didSendTelegram: status === "sent",
+    didUpdateOutbox: ["sent", "failed"].includes(status),
+    didUpdateMessageFlow: preview.receiptPolicy?.messageFlowSync === "required_after_terminal_delivery" && ["sent", "failed"].includes(status),
+    didTouchTradingState: false,
+    receiptCount: deliveryReceiptCount,
+    receiptPolicy: preview.receiptPolicy,
+    executionPolicy: {
+      ...preview.executionPolicy,
+      previewOnly: false
+    },
+    result: redactSensitiveForPersistence(result),
+    dbFile: paths.dbFile
+  };
+}
+
 function noProxyList() {
   return String(process.env.NO_PROXY || process.env.no_proxy || "")
     .split(",")
@@ -8782,6 +11090,936 @@ ${timeline}
 `;
 }
 
+function deadLetterIncidentInput(input = {}) {
+  return {
+    workflowId: String(input.workflowId || input.workflow_id || "").trim(),
+    kind: String(input.kind || input.deadLetterKind || input.dead_letter_kind || "").trim(),
+    refId: String(input.refId || input.ref_id || input.deadLetterRefId || input.dead_letter_ref_id || "").trim(),
+    incidentId: String(input.incidentId || input.incident_id || "").trim()
+  };
+}
+
+function deterministicDeadLetterIncidentId({ workflowId, kind, refId }) {
+  const digest = textHash(`${workflowId || "-"}:${kind || "-"}:${refId || "-"}`).slice(0, 16);
+  return `incident.dead_letter.${digest}`;
+}
+
+function deadLetterIncidentMode(candidate = {}) {
+  const mode = String(candidate.suggestedMode || "").trim();
+  return INCIDENT_MODES.has(mode) ? mode : "degraded";
+}
+
+function deadLetterIncidentStatus(candidate = {}) {
+  if (candidate.severity === "warning") return "monitoring";
+  const status = String(candidate.suggestedStatus || "").trim();
+  if (INCIDENT_STATUSES.has(status)) return status;
+  return "active";
+}
+
+function deadLetterIncidentSummary(candidate = {}, input = {}) {
+  return String(input.summary || candidate.summary || `${candidate.kind || "dead_letter"} ${candidate.refId || ""}`).trim();
+}
+
+async function workflowIncidentFromDeadLetterPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const deadLetter = deadLetterIncidentInput(input);
+  if (!deadLetter.workflowId) throw new Error("workflowId is required");
+  if (!deadLetter.kind) throw new Error("kind is required");
+  if (!deadLetter.refId) throw new Error("refId is required");
+  const generatedAt = nowIso();
+  const readModel = new WorkflowReadModel({ dbFile: paths.dbFile });
+  const evidence = await readModel.deadLetterEvidence({
+    workflowId: deadLetter.workflowId,
+    kind: deadLetter.kind,
+    refId: deadLetter.refId,
+    messageFlowStuckMinutes: input.messageFlowStuckMinutes || input.message_flow_stuck_minutes
+  });
+  const candidate = evidence.incidentCandidate || null;
+  const incidentId = deadLetter.incidentId || deterministicDeadLetterIncidentId(deadLetter);
+  const violations = [];
+  if (!evidence.found || !candidate) {
+    violations.push({ code: "dead_letter_not_found", detail: "selected row no longer matches the current dead-letter predicate" });
+  }
+  if (candidate && candidate.writeMode !== "read_only_preview") {
+    violations.push({ code: "candidate_write_mode_invalid", detail: `expected read_only_preview, got ${candidate.writeMode || "<empty>"}` });
+  }
+  return {
+    schemaVersion: "workflow_dead_letter_incident_preview.v1",
+    action: "workflow.incident.from_dead_letter.preview",
+    preview: true,
+    readOnly: true,
+    eligible: violations.length === 0,
+    generatedAt,
+    workflowId: deadLetter.workflowId,
+    kind: deadLetter.kind,
+    refId: deadLetter.refId,
+    incidentId,
+    riskTier: "P2-medium",
+    humanGateRequired: true,
+    catClawAuditRequired: true,
+    deadLetterEvidence: evidence,
+    incidentCandidate: candidate,
+    wouldWriteIncident: candidate ? {
+      incidentId,
+      status: deadLetterIncidentStatus(candidate),
+      mode: deadLetterIncidentMode(candidate),
+      affectedPlanes: candidate.affectedPlanes || [],
+      summary: deadLetterIncidentSummary(candidate, input),
+      payloadKeys: ["deadLetter", "incidentCandidate", "evidenceRefs", "humanGateId", "catClawAuditId", "operatorReason"]
+    } : null,
+    wouldCreateHumanGateRequest: false,
+    wouldRetryOrRepair: false,
+    wouldMutate: {
+      incidentStates: violations.length === 0 ? 1 : 0,
+      workflowEvents: violations.length === 0 ? 1 : 0,
+      workflowRuns: 0,
+      dispatches: 0,
+      runtimeRuns: 0,
+      outbox: 0,
+      humanGateButtons: 0,
+      sideEffects: 0
+    },
+    requiredEvidence: [
+      "humanGateId or Flashcat original words",
+      "catClawAuditId or secretaryAuditId",
+      "operatorReason",
+      "current workflow_dead_letter_evidence.v1 match"
+    ],
+    violations,
+    limitations: [
+      "Preview is read-only and does not persist incident state.",
+      "Execution creates or updates only incident state/artifacts and the incident workflow event.",
+      "Execution does not retry jobs, clear leases, resend Telegram, resume Human Gate, mutate side effects, or change workflow status."
+    ],
+    dbFile: paths.dbFile
+  };
+}
+
+async function workflowIncidentFromDeadLetter(rootDir, input = {}, permissionDecision = null) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const preview = await workflowIncidentFromDeadLetterPreview(rootDir, input);
+  if (!preview.eligible) {
+    throw new Error(`dead-letter incident is not eligible: ${preview.violations.map((item) => item.code).join(",") || "unknown"}`);
+  }
+  const reason = String(input.operatorReason || input.operator_reason || input.reason || "").trim();
+  if (!reason) throw new Error("operatorReason is required for dead-letter incident creation");
+  const redactedReason = redactSensitiveTextForPersistence(reason);
+  const candidate = preview.incidentCandidate;
+  const humanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
+  const catClawAuditId = String(input.catClawAuditId || input.cat_claw_audit_id || input.secretaryAuditId || input.secretary_audit_id || "").trim();
+  const record = await incidentState(rootDir, {
+    ...input,
+    workflowRootDir: paths.root,
+    incidentId: preview.incidentId,
+    workflowId: preview.workflowId,
+    status: deadLetterIncidentStatus(candidate),
+    mode: deadLetterIncidentMode(candidate),
+    affectedPlanes: candidate.affectedPlanes || [],
+    summary: deadLetterIncidentSummary(candidate, input),
+    commander: input.commander || input.actor || permissionDecision?.caller?.agentId || "cat_claw",
+    impact: input.impact || `Dead-letter item requires governed incident tracking: ${preview.kind}/${preview.refId}`,
+    currentHypothesis: input.currentHypothesis || input.current_hypothesis || "Dead-letter/stuck attention row remains current at incident creation time.",
+    mitigation: input.mitigation || "No automatic repair performed. Track evidence, ownership, and governed next action.",
+    rollbackOptions: input.rollbackOptions || input.rollback_options || candidate.rollbackBoundary || "",
+    exitCriteria: input.exitCriteria || input.exit_criteria || (candidate.exitCriteria || []).join("\n"),
+    timeline: [
+      `${preview.generatedAt} dead-letter incident linked from ${preview.kind}/${preview.refId}`,
+      `${nowIso()} operator reason recorded: ${redactedReason}`
+    ],
+    payload: redactSensitiveForPersistence({
+      schemaVersion: "workflow_dead_letter_incident_link.v1",
+      deadLetter: {
+        workflowId: preview.workflowId,
+        kind: preview.kind,
+        refId: preview.refId
+      },
+      incidentCandidate: candidate,
+      deadLetterEvidence: preview.deadLetterEvidence,
+      evidenceRefs: candidate.evidenceRefs || [],
+      humanGateId,
+      catClawAuditId,
+      operatorReason: redactedReason,
+      permissionPolicyOutcome: permissionDecision?.policyOutcome || "",
+      createdByAction: "workflow.incident.from_dead_letter"
+    })
+  });
+  return {
+    ...record,
+    schemaVersion: "workflow_dead_letter_incident_link_result.v1",
+    action: "workflow.incident.from_dead_letter",
+    workflowId: preview.workflowId,
+    kind: preview.kind,
+    refId: preview.refId,
+    incidentCandidate: candidate,
+    deadLetterEvidenceStatus: preview.deadLetterEvidence.status,
+    writeBoundary: "incident_state_only",
+    didRetryOrRepair: false
+  };
+}
+
+function closeoutPackageKindForAction(action) {
+  const canonical = canonicalWorkflowAction(action || "");
+  if (canonical === "workflow.incident.closeout.human_gate_package.preview") return "human_gate_package";
+  return "cat_claw_report";
+}
+
+function closeoutPackageKindFromInput(input = {}, action = "") {
+  const raw = String(input.packageKind || input.package_kind || input.kind || "").trim();
+  if (["human_gate_package", "human-gate-package", "hgate", "human_gate"].includes(raw)) return "human_gate_package";
+  if (["cat_claw_report", "cat-claw-report", "cat_claw", "report", "secretary_report"].includes(raw)) return "cat_claw_report";
+  return closeoutPackageKindForAction(action);
+}
+
+function closeoutEvidenceRefs(closeout = {}) {
+  const refs = closeout.refs || {};
+  return [
+    refs.incidentId ? `incident:${refs.incidentId}` : "",
+    refs.deadLetter?.kind && refs.deadLetter?.refId ? `dead-letter:${refs.deadLetter.kind}:${refs.deadLetter.refId}` : "",
+    refs.humanGateId ? `human-gate:${refs.humanGateId}` : "",
+    refs.catClawAuditId ? `cat-claw-audit:${refs.catClawAuditId}` : "",
+    ...(refs.workflowEventIds || []).slice(0, 8).map((id) => `workflow-event:${id}`),
+    ...(refs.checkpointIds || []).slice(0, 5).map((id) => `checkpoint:${id}`)
+  ].filter(Boolean);
+}
+
+function closeoutDraftOptions(closeout = {}) {
+  const failed = Number(closeout.counts?.failed || 0);
+  return [
+    {
+      optionId: "A",
+      optionKey: "A",
+      title: "批准收口并归档",
+      style: "success",
+      decisionStatus: "approved",
+      role: "approve_option",
+      summary: failed
+        ? "仅在补齐失败检查项后可批准；当前预览把缺口列入 evidenceGaps。"
+        : "确认证据链满足收口条件，由猫爪提交最终中文收口并保留 checkpoint/resume 路径。",
+      prompt: "批准本次 incident closeout，允许猫爪以该证据包为依据准备正式收口汇报。",
+      rollback: "如发现证据缺口或投递异常，停止 Human Gate 投递并退回猫之脑补证。"
+    },
+    {
+      optionId: "B",
+      optionKey: "B",
+      title: "退回补证后再提交",
+      style: "success",
+      decisionStatus: "approved",
+      role: "approve_option",
+      summary: "要求猫之脑补齐失败检查项、刷新 receipt/checkpoint 或补充 rollback/side-effect 边界后再提交。",
+      prompt: "批准退回补证路线：猫之脑补齐证据，猫爪复核通过后重新提交 Human Gate。",
+      rollback: "补证失败或 evidenceGaps 仍存在时，保持 incident monitoring，不进入正式 closeout。"
+    },
+    {
+      optionId: "C",
+      optionKey: "C",
+      title: "继续监控不关闭",
+      style: "success",
+      decisionStatus: "approved",
+      role: "approve_option",
+      summary: "保持 incident 处于 monitoring/active，等待下一轮 workflow evidence 和猫爪复核。",
+      prompt: "批准继续监控路线：暂不关闭 incident，下一轮由猫之脑补充运行证据并由猫爪复核。",
+      rollback: "如监控期间出现新 dead-letter 或 side-effect uncertainty，升级为新的 incident 复核。"
+    },
+    {
+      optionId: "pause",
+      title: "暂停工作流",
+      style: "primary",
+      decisionStatus: "paused",
+      role: "pause",
+      summary: "暂停相关 workflow 推进，保留恢复路径和当前证据包。",
+      prompt: "暂停该 workflow；不要继续自动推进，等待闪电猫新的明确指令。",
+      rollback: "恢复前必须重新检查 closeout artifact、receipt、checkpoint 和 pending Human Gate 状态。"
+    },
+    {
+      optionId: "terminate",
+      title: "终止工作流",
+      style: "danger",
+      decisionStatus: "terminated",
+      role: "terminate",
+      summary: "表示本段工作已完成且复核满足要求，进入归档、checkpoint 和可恢复记录流程。",
+      prompt: "终止该 workflow 并进入猫爪/猫之脑收口、归档、checkpoint 和可恢复记录流程。",
+      rollback: "终止不是删除；后续只能按 workflow id、incident id 或 checkpoint 恢复。"
+    }
+  ];
+}
+
+function closeoutReportDraft(closeout = {}, packageKind = "cat_claw_report") {
+  const incident = closeout.selectedIncident || {};
+  const refs = closeout.refs || {};
+  const checklist = closeout.checklist || [];
+  const evidenceGaps = checklist.filter((row) => row.status === "fail").map((row) => ({
+    key: row.key,
+    label: row.label,
+    detail: row.detail,
+    severity: row.severity
+  }));
+  const warnings = checklist.filter((row) => row.status === "warn").map((row) => ({
+    key: row.key,
+    label: row.label,
+    detail: row.detail,
+    severity: row.severity
+  }));
+  const humanGatePackage = packageKind === "human_gate_package";
+  const title = humanGatePackage
+    ? `Human Gate 收口证据包预览：${incident.incidentId || closeout.incidentId || "unknown"}`
+    : `猫爪收口复核报告预览：${incident.incidentId || closeout.incidentId || "unknown"}`;
+  const decision = evidenceGaps.length
+    ? "当前不应提交最终 Human Gate；需要先补齐失败检查项。"
+    : warnings.length
+      ? "可进入猫爪收口复核，但提交前应处理或说明 warning。"
+      : "证据链满足收口预览条件，可由猫爪继续准备正式中文汇报。";
+  return redactSensitiveForPersistence({
+    title,
+    language: "zh-CN",
+    audience: humanGatePackage ? "flashcat_human_gate" : "cat_claw",
+    summaryZh: `workflow ${closeout.workflowId || "-"} 的 incident ${incident.incidentId || "-"} 当前状态为 ${incident.status || "-"} / ${incident.mode || "-"}；closeout 状态为 ${closeout.status || "unknown"}。${decision}`,
+    decision,
+    incident: {
+      incidentId: incident.incidentId || closeout.incidentId || "",
+      status: incident.status || "",
+      mode: incident.mode || "",
+      summary: incident.summary || "",
+      updatedAt: incident.updatedAt || ""
+    },
+    evidenceRefs: closeoutEvidenceRefs(closeout),
+    checklist: checklist.map((row) => ({
+      key: row.key,
+      label: row.label,
+      status: row.status,
+      severity: row.severity,
+      detail: row.detail,
+      refs: row.refs || []
+    })),
+    evidenceGaps,
+    warnings,
+    rollbackBoundary: incident.rollbackOptions || refs.deadLetter?.rollbackBoundary || closeout.deadLetterEvidence?.incidentCandidate?.rollbackBoundary || "",
+    receiptSummary: refs.receiptSummary || {},
+    humanGateOptions: humanGatePackage ? closeoutDraftOptions(closeout) : [],
+    nextActions: humanGatePackage ? [
+      "由猫爪确认三方案、暂停、终止按钮结构和中文正文完整。",
+      "如 evidenceGaps 为空，才可进入正式 Human Gate 投递；本预览不创建请求、不发送 Telegram。",
+      "若闪电猫选择退回或暂停，保留 workflow id、incident id、checkpoint/resume 证据。"
+    ] : [
+      "猫爪复核 checklist、timeline、Human Gate evidence、Cat Claw audit 和 rollback boundary。",
+      "如 evidenceGaps 非空，打回猫之脑补证；如仅有 warning，决定是否说明后提交。",
+      "通过后再准备 Human Gate package；本预览不派发猫爪、不写 artifact。"
+    ]
+  });
+}
+
+async function workflowIncidentCloseoutPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const action = canonicalWorkflowAction(input.action || "workflow.incident.closeout.cat_claw_report.preview");
+  const packageKind = closeoutPackageKindForAction(action);
+  const incidentId = String(input.incidentId || input.incident_id || "").trim();
+  const readModel = new WorkflowReadModel({ dbFile: paths.dbFile });
+  const closeout = await readModel.incidentCloseout(workflowId, {
+    incidentId,
+    limit: input.limit || input.timelineLimit || input.timeline_limit
+  });
+  const failedRequired = (closeout.checklist || []).filter((row) => row.status === "fail" && row.severity !== "warning");
+  const warnings = (closeout.checklist || []).filter((row) => row.status === "warn");
+  const violations = [];
+  if (!closeout.selectedIncident) {
+    violations.push({ code: "incident_not_found", detail: "No incident state is linked to this workflow or incident id." });
+  }
+  for (const row of failedRequired) {
+    violations.push({ code: `missing_${row.key}`, detail: row.detail || row.label || row.key });
+  }
+  const draft = closeoutReportDraft(closeout, packageKind);
+  return {
+    schemaVersion: "workflow_incident_closeout_preview.v1",
+    action,
+    preview: true,
+    readOnly: true,
+    writeMode: "read_only_closeout_package_preview",
+    generatedAt: nowIso(),
+    workflowId,
+    incidentId: closeout.incidentId || incidentId,
+    packageKind,
+    eligible: violations.length === 0,
+    closeoutStatus: closeout.status,
+    closeoutCounts: closeout.counts || {},
+    wouldCreate: {
+      artifacts: 0,
+      workflowEvents: 0,
+      incidentStates: 0,
+      humanGateRequests: 0,
+      humanGateButtons: 0,
+      telegramOutbox: 0,
+      runtimeDispatches: 0,
+      catClawCloseoutReport: packageKind === "cat_claw_report",
+      humanGateCloseoutPackage: packageKind === "human_gate_package"
+    },
+    reportDraft: draft,
+    requiredEvidence: failedRequired.map((row) => ({
+      key: row.key,
+      label: row.label,
+      detail: row.detail,
+      severity: row.severity
+    })),
+    warnings: warnings.map((row) => ({
+      key: row.key,
+      label: row.label,
+      detail: row.detail,
+      severity: row.severity
+    })),
+    violations,
+    limitations: [
+      "Preview is read-only and does not persist reports, Human Gate records, buttons, Telegram outbox, workflow events, or incident state.",
+      "Cat Claw closeout must still be reviewed by cat_claw before any formal Human Gate package is delivered.",
+      "Human Gate delivery remains button-first and requires a separate governed write path with Flashcat original words."
+    ],
+    closeout,
+    dbFile: paths.dbFile
+  };
+}
+
+function renderCloseoutArtifactMarkdown(record = {}) {
+  const draft = record.reportDraft || {};
+  const incident = draft.incident || {};
+  const options = draft.humanGateOptions || [];
+  const gaps = draft.evidenceGaps || [];
+  const warnings = draft.warnings || [];
+  const refs = draft.evidenceRefs || [];
+  return `# ${draft.title || "Incident Closeout Artifact"}
+
+## Summary
+
+${draft.summaryZh || "-"}
+
+## Decision
+
+${draft.decision || "-"}
+
+## Incident
+
+- workflowId: ${record.workflowId || "-"}
+- incidentId: ${incident.incidentId || record.incidentId || "-"}
+- status: ${incident.status || "-"}
+- mode: ${incident.mode || "-"}
+- packageKind: ${record.packageKind || "-"}
+- artifactId: ${record.artifactId || "-"}
+- persistedAt: ${record.persistedAt || "-"}
+- createdBy: ${record.createdBy || "-"}
+
+## Human Gate Options
+
+${options.length ? options.map((item) => `- ${item.optionId || "-"} / ${item.style || "-"} / ${item.title || "-"}: ${item.summary || ""}`).join("\n") : "- none"}
+
+## Evidence Gaps
+
+${gaps.length ? gaps.map((item) => `- ${item.key || "-"} (${item.severity || "-"}): ${item.detail || item.label || ""}`).join("\n") : "- none"}
+
+## Warnings
+
+${warnings.length ? warnings.map((item) => `- ${item.key || "-"}: ${item.detail || item.label || ""}`).join("\n") : "- none"}
+
+## Evidence Refs
+
+${refs.length ? refs.map((item) => `- ${item}`).join("\n") : "- none"}
+
+## Boundaries
+
+- writeBoundary: ${record.writeBoundary || "closeout_artifact_only"}
+- noIncidentStateMutation: true
+- noWorkflowStatusMutation: true
+- noHumanGateMutation: true
+- noTelegramOutboxMutation: true
+- noRuntimeDispatchMutation: true
+`;
+}
+
+async function workflowIncidentCloseoutArtifactPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const action = canonicalWorkflowAction(input.action || "workflow.incident.closeout.artifact.preview");
+  const packageKind = closeoutPackageKindFromInput(input, action);
+  const packageAction = packageKind === "human_gate_package"
+    ? "workflow.incident.closeout.human_gate_package.preview"
+    : "workflow.incident.closeout.cat_claw_report.preview";
+  const base = await workflowIncidentCloseoutPreview(rootDir, { ...input, action: packageAction });
+  const operatorReason = String(input.operatorReason || input.operator_reason || input.reason || "").trim();
+  const hasHumanGateEvidence = permissionEvidencePresent(input, [
+    "human_gate_id",
+    "humanGateId",
+    "human_gate_evidence",
+    "humanGateEvidence",
+    "risk_decision_id",
+    "riskDecisionId",
+    "flashcat_original_words",
+    "flashcatOriginalWords"
+  ]);
+  const hasCatClawAudit = permissionEvidencePresent(input, [
+    "cat_claw_audit_id",
+    "catClawAuditId",
+    "cat_claw_audit",
+    "catClawAudit",
+    "secretary_audit_id",
+    "secretaryAuditId"
+  ]);
+  const writeViolations = [];
+  if (!operatorReason) writeViolations.push({ code: "operator_reason_required", detail: "operatorReason is required before persisting a closeout artifact" });
+  if (!hasHumanGateEvidence) writeViolations.push({ code: "human_gate_evidence_required", detail: "Human Gate evidence or Flashcat original words are required by policy" });
+  if (!hasCatClawAudit) writeViolations.push({ code: "cat_claw_audit_required", detail: "Cat Claw audit or secretary audit evidence is required by policy" });
+  const artifactId = String(input.artifactId || input.artifact_id || safeId("incident.closeout")).trim();
+  return {
+    schemaVersion: "workflow_incident_closeout_artifact_preview.v1",
+    action,
+    preview: true,
+    readOnly: true,
+    writeMode: "read_only_closeout_artifact_preview",
+    generatedAt: nowIso(),
+    workflowId: base.workflowId,
+    incidentId: base.incidentId,
+    artifactId,
+    packageKind,
+    eligible: base.eligible,
+    writeReady: base.eligible && writeViolations.length === 0,
+    closeoutStatus: base.closeoutStatus,
+    wouldCreate: {
+      artifactIndexRows: base.eligible ? 2 : 0,
+      files: base.eligible ? 2 : 0,
+      workflowEvents: base.eligible ? 1 : 0,
+      incidentStates: 0,
+      humanGateRequests: 0,
+      humanGateButtons: 0,
+      telegramOutbox: 0,
+      runtimeDispatches: 0,
+      workflowStatusUpdates: 0
+    },
+    reportDraft: base.reportDraft,
+    requiredEvidence: base.requiredEvidence || [],
+    warnings: base.warnings || [],
+    violations: [...(base.violations || []), ...writeViolations],
+    limitations: [
+      "Preview is read-only and does not persist the closeout artifact.",
+      "Execution writes only JSON/Markdown closeout artifacts, artifact_index rows, and one audit workflow event.",
+      "Execution does not close incidents, create Human Gate requests/buttons, dispatch Cat Claw, enqueue Telegram, retry jobs, or change workflow status."
+    ],
+    closeoutPreview: base,
+    dbFile: paths.dbFile
+  };
+}
+
+async function workflowIncidentCloseoutArtifact(rootDir, input = {}, permissionDecision = null) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const preview = await workflowIncidentCloseoutArtifactPreview(rootDir, input);
+  if (!preview.eligible) {
+    throw new Error(`closeout artifact is not eligible: ${preview.violations.map((item) => item.code).join(",") || "unknown"}`);
+  }
+  if (!preview.writeReady) {
+    throw new Error(`closeout artifact is not write-ready: ${preview.violations.map((item) => item.code).join(",") || "unknown"}`);
+  }
+  const operatorReason = String(input.operatorReason || input.operator_reason || input.reason || "").trim();
+  if (!operatorReason) throw new Error("operatorReason is required for closeout artifact persistence");
+  const createdAt = nowIso();
+  const artifactId = cleanFileSegment(preview.artifactId || safeId("incident.closeout"));
+  const createdBy = input.createdBy || input.created_by || input.actor || permissionDecision?.caller?.agentId || "cat_claw";
+  const record = redactSensitiveForPersistence({
+    schemaVersion: "workflow_incident_closeout_artifact.v1",
+    artifactId,
+    workflowId: preview.workflowId,
+    incidentId: preview.incidentId,
+    packageKind: preview.packageKind,
+    persistedAt: createdAt,
+    createdBy,
+    humanGateId: input.humanGateId || input.human_gate_id || "",
+    catClawAuditId: input.catClawAuditId || input.cat_claw_audit_id || input.secretaryAuditId || input.secretary_audit_id || "",
+    operatorReason: redactSensitiveTextForPersistence(operatorReason),
+    permissionPolicyOutcome: permissionDecision?.policyOutcome || "",
+    writeBoundary: "closeout_artifact_only",
+    reportDraft: preview.reportDraft,
+    closeout: preview.closeoutPreview?.closeout || null,
+    limitations: preview.limitations
+  });
+  const packageDir = path.join(paths.bridgeDir, "incident-closeout");
+  const jsonRelPath = await writeJsonArtifact(paths.root, packageDir, artifactId, record);
+  const markdownRelPath = await writeTextArtifact(paths.root, packageDir, artifactId, "md", renderCloseoutArtifactMarkdown({ ...record, jsonRelPath }));
+  const summary = record.reportDraft?.title || `Incident closeout artifact ${record.incidentId || artifactId}`;
+  await sqlite(paths.dbFile, `
+INSERT INTO artifact_index(artifact_id, instrument_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES (${sqlValue(`${artifactId}.json`)}, NULL, ${sqlValue(record.workflowId)}, ${sqlValue(`incident_closeout_${record.packageKind}_json`)}, ${sqlValue(jsonRelPath)}, ${sqlValue(summary)}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)})
+ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;
+INSERT INTO artifact_index(artifact_id, instrument_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES (${sqlValue(`${artifactId}.md`)}, NULL, ${sqlValue(record.workflowId)}, ${sqlValue(`incident_closeout_${record.packageKind}_markdown`)}, ${sqlValue(markdownRelPath)}, ${sqlValue(summary)}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)})
+ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
+  await appendWorkflowEvent(paths, {
+    eventType: "incident.closeout_artifact.persisted",
+    status: "persisted",
+    workflowId: record.workflowId,
+    incidentId: record.incidentId,
+    actor: createdBy,
+    sourceRuntime: "workflow",
+    sourceAgent: createdBy,
+    artifactRef: markdownRelPath,
+    payload: {
+      artifactId,
+      packageKind: record.packageKind,
+      jsonRelPath,
+      markdownRelPath,
+      writeBoundary: "closeout_artifact_only"
+    },
+    createdAt
+  });
+  return {
+    schemaVersion: "workflow_incident_closeout_artifact_result.v1",
+    action: "workflow.incident.closeout.artifact",
+    workflowId: record.workflowId,
+    incidentId: record.incidentId,
+    artifactId,
+    packageKind: record.packageKind,
+    jsonRelativePath: jsonRelPath,
+    markdownRelativePath: markdownRelPath,
+    writeBoundary: "closeout_artifact_only",
+    didCloseIncident: false,
+    didCreateHumanGate: false,
+    didDispatchRuntime: false,
+    didSendTelegram: false,
+    dbFile: paths.dbFile
+  };
+}
+
+function artifactPathInsideRoot(root, relativePath) {
+  const text = String(relativePath || "").trim();
+  if (!text || /^[a-z]+:\/\//i.test(text)) return "";
+  const resolvedRoot = path.resolve(root);
+  const resolvedPath = path.resolve(resolvedRoot, text);
+  const rel = path.relative(resolvedRoot, resolvedPath);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return "";
+  return resolvedPath;
+}
+
+function closeoutArtifactIdInputs(input = {}) {
+  const raw = firstText(
+    input.closeoutArtifactId,
+    input.closeout_artifact_id,
+    input.artifactId,
+    input.artifact_id,
+    input.closeoutArtifact,
+    input.closeout_artifact
+  );
+  if (!raw) return [];
+  const text = String(raw).trim();
+  const base = text.replace(/\.(json|md|markdown)$/i, "");
+  return Array.from(new Set([
+    text,
+    `${base}.json`,
+    cleanFileSegment(base),
+    `${cleanFileSegment(base)}.json`
+  ].filter(Boolean)));
+}
+
+async function readCloseoutArtifactCandidate(paths, input = {}) {
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  const incidentId = String(input.incidentId || input.incident_id || "").trim();
+  const candidates = closeoutArtifactIdInputs(input);
+  const explicit = candidates.length > 0;
+  const rows = explicit
+    ? await sqlite(paths.dbFile, `
+SELECT artifact_id, workflow_id, kind, path, summary, created_by, created_at
+FROM artifact_index
+WHERE artifact_id IN (${candidates.map((item) => sqlValue(item)).join(",")})
+   OR path IN (${candidates.map((item) => sqlValue(item)).join(",")})
+ORDER BY created_at DESC
+LIMIT 20;`, { json: true })
+    : await sqlite(paths.dbFile, `
+SELECT artifact_id, workflow_id, kind, path, summary, created_by, created_at
+FROM artifact_index
+WHERE kind='incident_closeout_human_gate_package_json'
+  ${workflowId ? `AND workflow_id=${sqlValue(workflowId)}` : ""}
+ORDER BY created_at DESC
+LIMIT 100;`, { json: true });
+  for (const row of rows) {
+    if (row.kind !== "incident_closeout_human_gate_package_json") continue;
+    const filePath = artifactPathInsideRoot(paths.root, row.path);
+    if (!filePath) continue;
+    let record = null;
+    try {
+      record = parseJsonValue(await fs.readFile(filePath, "utf8"), null);
+    } catch {
+      record = null;
+    }
+    if (!record || typeof record !== "object") continue;
+    if (workflowId && String(record.workflowId || "") !== workflowId) continue;
+    if (incidentId && String(record.incidentId || "") !== incidentId) continue;
+    const markdownRows = await sqlite(paths.dbFile, `
+SELECT artifact_id, path
+FROM artifact_index
+WHERE artifact_id=${sqlValue(String(row.artifact_id || "").replace(/\.json$/i, ".md"))}
+LIMIT 1;`, { json: true });
+    return {
+      row,
+      record,
+      jsonPath: row.path,
+      markdownPath: markdownRows[0]?.path || "",
+      filePath
+    };
+  }
+  return null;
+}
+
+function closeoutArtifactButtonInputs(record = {}, artifactRef = "") {
+  const options = record.reportDraft?.humanGateOptions || [];
+  return options.map((option) => ({
+    ...option,
+    key: option.optionKey || option.optionId || option.key,
+    optionKey: option.optionKey || option.optionId || option.key,
+    label: option.label || option.title || option.optionId || "",
+    artifactRef,
+    payload: {
+      ...(option.payload || {}),
+      optionId: option.optionId || "",
+      optionKey: option.optionKey || option.optionId || option.key || "",
+      title: option.title || "",
+      summary: option.summary || "",
+      prompt: option.prompt || "",
+      rollback: option.rollback || "",
+      artifactRef
+    }
+  }));
+}
+
+function closeoutHumanGateWriteEvidence(input = {}) {
+  return {
+    humanGateEvidence: firstText(
+      input.humanGateEvidence,
+      input.human_gate_evidence,
+      input.existingHumanGateId,
+      input.existing_human_gate_id,
+      input.evidenceHumanGateId,
+      input.evidence_human_gate_id,
+      input.humanGateId,
+      input.human_gate_id,
+      input.riskDecisionId,
+      input.risk_decision_id,
+      input.flashcatOriginalWords,
+      input.flashcat_original_words
+    ),
+    catClawAuditId: firstText(
+      input.catClawAuditId,
+      input.cat_claw_audit_id,
+      input.catClawAudit,
+      input.cat_claw_audit,
+      input.secretaryAuditId,
+      input.secretary_audit_id
+    ),
+    operatorReason: String(input.operatorReason || input.operator_reason || input.reason || "").trim()
+  };
+}
+
+function closeoutHumanGateRequestInput(record = {}, artifact = {}, input = {}) {
+  const workflowId = String(record.workflowId || input.workflowId || input.workflow_id || "").trim();
+  const incidentId = String(record.incidentId || input.incidentId || input.incident_id || "").trim();
+  const artifactRef = artifact.markdownPath || artifact.jsonPath || "";
+  const evidence = closeoutHumanGateWriteEvidence(input);
+  return {
+    workflowId,
+    meetingId: workflowId,
+    gateType: "incident_closeout",
+    humanGateStageKey: `incident-closeout:${cleanFileSegment(incidentId || "unknown")}`,
+    title: record.reportDraft?.title || "Human Gate 收口确认",
+    summary: record.reportDraft?.summaryZh || "",
+    text: record.reportDraft?.summaryZh || "",
+    artifactRef,
+    buttons: closeoutArtifactButtonInputs(record, artifactRef),
+    addDefaultControls: true,
+    from: "cat_claw",
+    sourceAgent: "cat_claw",
+    actor: input.actor || input.createdBy || input.created_by || "cat_claw",
+    autoDeliver: false,
+    auto_deliver: false,
+    deliver: false,
+    humanGateId: firstText(input.requestHumanGateId, input.request_human_gate_id, input.newHumanGateId, input.new_human_gate_id),
+    payload: {
+      closeoutArtifactId: artifact.row?.artifact_id || "",
+      closeoutArtifactRef: artifactRef,
+      closeoutIncidentId: incidentId,
+      closeoutPackageKind: record.packageKind || "",
+      humanGateEvidence: evidence.humanGateEvidence,
+      catClawAuditId: evidence.catClawAuditId,
+      operatorReason: redactSensitiveTextForPersistence(evidence.operatorReason),
+      writeBoundary: "human_gate_request_only"
+    }
+  };
+}
+
+async function workflowIncidentCloseoutHumanGateRequestPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  const incidentId = String(input.incidentId || input.incident_id || "").trim();
+  const generatedAt = nowIso();
+  const artifact = await readCloseoutArtifactCandidate(paths, input);
+  const violations = [];
+  const warnings = [];
+  if (!artifact) {
+    violations.push({ code: "closeout_artifact_not_found", detail: "No persisted human_gate_package closeout artifact matches the workflow/incident/artifact selector." });
+  }
+  const record = artifact?.record || {};
+  if (artifact && record.schemaVersion !== "workflow_incident_closeout_artifact.v1") {
+    violations.push({ code: "invalid_closeout_artifact_schema", detail: `Expected workflow_incident_closeout_artifact.v1, got ${record.schemaVersion || "<empty>"}.` });
+  }
+  if (artifact && record.packageKind !== "human_gate_package") {
+    violations.push({ code: "invalid_closeout_package_kind", detail: `Expected human_gate_package, got ${record.packageKind || "<empty>"}.` });
+  }
+  if (workflowId && artifact && String(record.workflowId || "") !== workflowId) {
+    violations.push({ code: "workflow_mismatch", detail: "Closeout artifact workflowId does not match the request." });
+  }
+  if (incidentId && artifact && String(record.incidentId || "") !== incidentId) {
+    violations.push({ code: "incident_mismatch", detail: "Closeout artifact incidentId does not match the request." });
+  }
+  const requestInput = artifact ? closeoutHumanGateRequestInput(record, artifact, input) : {
+    workflowId: record.workflowId || workflowId,
+    meetingId: record.workflowId || workflowId,
+    gateType: "incident_closeout",
+    humanGateStageKey: `incident-closeout:${cleanFileSegment(record.incidentId || incidentId || "unknown")}`,
+    title: record.reportDraft?.title || "Human Gate 收口确认",
+    summary: record.reportDraft?.summaryZh || "",
+    text: record.reportDraft?.summaryZh || "",
+    artifactRef: "",
+    buttons: [],
+    addDefaultControls: true
+  };
+  const buttons = humanGateButtonOptions(requestInput);
+  const audit = combineHumanGateAudits(
+    auditHumanGatePlanOptions(buttons),
+    auditHumanGatePlanDetails(buttons),
+    auditHumanGatePrimaryLanguage(requestInput, buttons)
+  );
+  if (!audit.ok) {
+    violations.push({ code: "human_gate_audit_failed", detail: audit.reason || "Human Gate request draft does not satisfy button-first audit." });
+  }
+  const webApp = await humanGateWebAppConfig(input);
+  if (!webApp.enabled) {
+    warnings.push({ code: "web_app_base_url_missing", detail: "Token-bound Telegram Web App base URL is not configured; formal delivery would need configured Web App or governed token fallback." });
+  }
+  const writeEvidence = closeoutHumanGateWriteEvidence(input);
+  const writeViolations = [];
+  if (!writeEvidence.operatorReason) writeViolations.push({ code: "operator_reason_required", detail: "operatorReason is required before creating the formal Human Gate request." });
+  if (!writeEvidence.humanGateEvidence) writeViolations.push({ code: "human_gate_evidence_required", detail: "Existing Human Gate evidence, risk decision, or Flashcat original words are required by policy." });
+  if (!writeEvidence.catClawAuditId) writeViolations.push({ code: "cat_claw_audit_required", detail: "Cat Claw audit or secretary audit evidence is required by policy." });
+  const planButtons = humanGatePlanOptionButtons(buttons);
+  const controlRoles = new Set(buttons.filter((button) => humanGateButtonIsControl(button)).map((button) => humanGateButtonRole(button)));
+  const eligible = violations.length === 0;
+  return {
+    schemaVersion: "workflow_incident_closeout_human_gate_request_preview.v1",
+    action: "workflow.incident.closeout.human_gate_request.preview",
+    preview: true,
+    readOnly: true,
+    writeMode: "read_only_human_gate_request_preview",
+    generatedAt,
+    workflowId: record.workflowId || workflowId,
+    incidentId: record.incidentId || incidentId,
+    closeoutArtifactId: artifact?.row?.artifact_id || "",
+    packageKind: record.packageKind || "",
+    eligible,
+    requestReady: eligible,
+    writeReady: eligible && writeViolations.length === 0,
+    audit,
+    buttonSummary: {
+      total: buttons.length,
+      planCount: planButtons.length,
+      controlRoles: Array.from(controlRoles).sort(),
+      hasA: planButtons.some((button, index) => humanGatePlanKey(button, index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1)) === "A"),
+      hasB: planButtons.some((button, index) => humanGatePlanKey(button, index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1)) === "B"),
+      hasC: planButtons.some((button, index) => humanGatePlanKey(button, index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1)) === "C"),
+      hasPause: controlRoles.has("pause"),
+      hasTerminate: controlRoles.has("terminate"),
+      hasReject: controlRoles.has("reject")
+    },
+    wouldCreate: {
+      humanGateRecords: eligible ? 1 : 0,
+      humanGateButtons: eligible ? buttons.length : 0,
+      meetingControlEvents: eligible ? 1 : 0,
+      telegramOutbox: eligible ? 1 : 0,
+      workflowEvents: eligible ? 1 : 0,
+      runtimeDispatches: 0,
+      incidentStates: 0,
+      workflowStatusUpdates: 0,
+      telegramDeliveries: 0
+    },
+    requestDraft: redactSensitiveForPersistence({
+      action: "human_gate.request",
+      workflowId: requestInput.workflowId,
+      meetingId: requestInput.meetingId,
+      gateType: requestInput.gateType,
+      humanGateStageKey: requestInput.humanGateStageKey,
+      title: requestInput.title,
+      summary: requestInput.summary,
+      text: requestInput.text,
+      artifactRef: requestInput.artifactRef,
+      buttons
+    }),
+    reportDraft: redactSensitiveForPersistence({
+      ...(record.reportDraft || {}),
+      humanGateOptions: buttons
+    }),
+    artifact: artifact ? {
+      artifactId: artifact.row.artifact_id,
+      jsonPath: artifact.jsonPath,
+      markdownPath: artifact.markdownPath,
+      createdAt: artifact.row.created_at,
+      createdBy: artifact.row.created_by
+    } : null,
+    violations: [...violations, ...writeViolations],
+    writeViolations,
+    warnings,
+    limitations: [
+      "Preview is read-only and does not create Human Gate records, buttons, Telegram outbox, workflow events, or incident state.",
+      "Formal Human Gate request creation must use a separate governed write path and preserve button-first token-bound review.",
+      "Preview does not dispatch Cat Claw, deliver Telegram, close incidents, archive workflows, retry jobs, or mutate side effects."
+    ],
+    dbFile: paths.dbFile
+  };
+}
+
+async function workflowIncidentCloseoutHumanGateRequest(rootDir, input = {}, permissionDecision = null) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const preview = await workflowIncidentCloseoutHumanGateRequestPreview(rootDir, input);
+  if (!preview.eligible) {
+    throw new Error(`closeout Human Gate request is not eligible: ${preview.violations.map((item) => item.code).join(",") || "unknown"}`);
+  }
+  if (!preview.writeReady) {
+    throw new Error(`closeout Human Gate request is not write-ready: ${(preview.writeViolations || preview.violations || []).map((item) => item.code).join(",") || "unknown"}`);
+  }
+  const artifact = await readCloseoutArtifactCandidate(paths, input);
+  if (!artifact) throw new Error("closeout artifact not found");
+  const requestInput = closeoutHumanGateRequestInput(artifact.record, artifact, {
+    ...input,
+    actor: input.actor || permissionDecision?.caller?.agentId || "cat_claw"
+  });
+  const result = await humanGateRequest(rootDir, requestInput);
+  return {
+    schemaVersion: "workflow_incident_closeout_human_gate_request_result.v1",
+    action: "workflow.incident.closeout.human_gate_request",
+    workflowId: result.workflowId,
+    incidentId: artifact.record.incidentId || input.incidentId || input.incident_id || "",
+    closeoutArtifactId: artifact.row.artifact_id,
+    humanGateId: result.humanGateId,
+    gateType: result.gateType,
+    stageKey: result.stageKey,
+    writeBoundary: "human_gate_request_only",
+    reusedStageGate: Boolean(result.reusedStageGate),
+    didEnsureHumanGate: true,
+    didCreateHumanGate: !Boolean(result.reusedStageGate),
+    didCreateHumanGateButtons: Array.isArray(result.buttons),
+    humanGateButtonCount: result.buttons?.length || 0,
+    didEnsureTelegramOutbox: Boolean(result.telegramOutbox?.outboxId),
+    didCreateTelegramOutbox: Boolean(result.telegramOutbox?.outboxId) && !Boolean(result.telegramOutbox?.deduped),
+    telegramOutboxDeduped: Boolean(result.telegramOutbox?.deduped),
+    telegramOutboxId: result.telegramOutbox?.outboxId || "",
+    didSendTelegram: Boolean(result.delivery),
+    didDispatchRuntime: false,
+    didCloseIncident: false,
+    didUpdateWorkflowStatus: false,
+    deliveryRequired: Boolean(result.deliveryRequired),
+    targetKind: result.targetKind,
+    targetRef: result.targetRef,
+    dbFile: result.dbFile
+  };
+}
+
 export async function incidentState(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const incidentId = input.incidentId || input.incident_id || safeId("incident");
@@ -10042,6 +13280,31 @@ async function recordRuntimeRun(paths, row, data) {
   await sqlite(paths.dbFile, `
 INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
 VALUES (${sqlValue(runtimeRunId)}, ${sqlValue(row.dispatch_id)}, ${sqlValue(row.meeting_id)}, ${sqlValue(row.workflow_id || payload.workflowId || "")}, ${sqlValue(row.trace_id || payload.traceId || "")}, ${sqlValue(row.runtime)}, ${sqlValue(row.agent_id)}, ${sqlValue(data.adapter || "")}, ${sqlValue(data.backend || "")}, ${sqlValue(data.acpAgent || "")}, ${sqlValue(data.sessionKey || "")}, ${sqlValue(data.status || "started")}, ${sqlValue(data.failureType || "")}, ${sqlValue(Number(data.attempt ?? row.attempt ?? 0) || 0)}, ${sqlValue(startedAt)}, ${sqlValue(completedAt)}, ${sqlValue(latencyMs)}, ${sqlValue(data.messageId || "")}, ${sqlValue(data.inputHash || textHash(row.prompt || payload.prompt || ""))}, ${sqlValue(data.outputHash || "")}, ${sqlValue(data.error ? String(data.error).slice(0, 2000) : "")}, ${sqlValue(JSON.stringify(data.payload || {}))});`);
+  const workflowId = row.workflow_id || payload.workflowId || "";
+  const taskId = payload.taskId || payload.task_id || payload.payload?.taskId || payload.payload?.task_id || "";
+  const phaseInfo = await workflowTaskPhaseInfo(paths, workflowId, taskId, payload.phase || "");
+  await upsertWorkflowAgentRun(paths, {
+    agentRunId: `runtime.${runtimeRunId}`,
+    workflowId,
+    phaseId: phaseInfo.phaseId,
+    phaseKey: phaseInfo.phaseKey,
+    taskId,
+    dispatchId: row.dispatch_id,
+    runtimeRunId,
+    runtime: row.runtime,
+    agentId: row.agent_id,
+    status: data.status || "started",
+    attempt: Number(data.attempt ?? row.attempt ?? 0) || 0,
+    inputHash: data.inputHash || textHash(row.prompt || payload.prompt || ""),
+    outputHash: data.outputHash || "",
+    receiptRef: data.messageId || "",
+    error: data.error || "",
+    payload: { source: "runtime_runs", adapter: data.adapter || "", backend: data.backend || "", failureType: data.failureType || "" },
+    startedAt,
+    completedAt,
+    createdAt: startedAt,
+    updatedAt: completedAt || startedAt
+  });
   return runtimeRunId;
 }
 
@@ -13933,8 +17196,9 @@ ${pendingGates.length ? pendingGates.map((row) => `- ${row.gate_id} ${row.instru
 }
 
 export async function runWorkflowAction(rootDir, input = {}) {
-  const action = String(input.action || "workflow.status");
-  await authorizeWorkflowAction(rootDir, input);
+  const requestedAction = String(input.action || "workflow.status");
+  const action = canonicalWorkflowAction(requestedAction);
+  const permissionDecision = await authorizeWorkflowAction(rootDir, input);
   switch (action) {
     case "workflow.init":
     case "trading_workflow.init":
@@ -13998,6 +17262,35 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.supervisor.preview":
     case "workflow.preview.supervise":
       return workflowSupervisorPreview(rootDir, input);
+    case "workflow.pause":
+    case "workflow.resume":
+    case "workflow.stop":
+    case "workflow.terminate":
+      return workflowInterventionExecute(rootDir, input, permissionDecision);
+    case "workflow.pause.preview":
+    case "workflow.preview.pause":
+    case "workflow.resume.preview":
+    case "workflow.preview.resume":
+    case "workflow.stop.preview":
+    case "workflow.preview.stop":
+    case "workflow.terminate.preview":
+    case "workflow.preview.terminate":
+    case "workflow.rerun.agent.preview":
+    case "workflow.rerun_agent.preview":
+    case "workflow.preview.rerun_agent":
+    case "workflow.rerun.phase.preview":
+    case "workflow.rerun_phase.preview":
+    case "workflow.preview.rerun_phase":
+      return workflowInterventionPreview(rootDir, input);
+    case "workflow.incident.from_dead_letter.preview":
+      return workflowIncidentFromDeadLetterPreview(rootDir, input);
+    case "workflow.incident.closeout.cat_claw_report.preview":
+    case "workflow.incident.closeout.human_gate_package.preview":
+      return workflowIncidentCloseoutPreview(rootDir, input);
+    case "workflow.incident.closeout.artifact.preview":
+      return workflowIncidentCloseoutArtifactPreview(rootDir, input);
+    case "workflow.incident.closeout.human_gate_request.preview":
+      return workflowIncidentCloseoutHumanGateRequestPreview(rootDir, input);
     case "workflow.control_loop.tick":
     case "workflow.loop.tick":
     case "workflow.reconciler.tick":
@@ -14025,6 +17318,21 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.event.append":
     case "workflow.events.append":
       return workflowEventAppend(rootDir, input);
+    case "workflow.verification.record":
+    case "workflow.verifier_refuter.record":
+    case "workflow.verifier-refuter.record":
+    case "verifier_refuter.record":
+    case "verifier.refuter.record":
+    case "workflow.evaluator.record":
+    case "workflow.evaluation.record":
+      return workflowVerificationRecord(rootDir, input, permissionDecision);
+    case "workflow.verification.list":
+      return workflowVerificationList(rootDir, input);
+    case "workflow.evaluate":
+    case "workflow.evaluator.run":
+    case "workflow.evaluation.run":
+    case "workflow.goal.evaluate":
+      return workflowEvaluate(rootDir, input, permissionDecision);
     case "workflow.event.list":
     case "workflow.events":
     case "workflow.events.list":
@@ -14102,6 +17410,14 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return meetingResume(rootDir, input);
     case "meeting.disperse":
       return meetingDisperse(rootDir, input);
+    case "telegram.outbox.delivery.preview":
+      return telegramOutboxDeliveryPreview(rootDir, input);
+    case "telegram.outbox.requeue.preview":
+      return telegramOutboxRequeuePreview(rootDir, input);
+    case "telegram.outbox.requeue.execution_package.preview":
+      return telegramOutboxRequeueExecutionPackagePreview(rootDir, input);
+    case "telegram.outbox.delivery":
+      return telegramOutboxDelivery(rootDir, input);
     case "telegram.outbox":
       return telegramOutbox(rootDir, input);
     case "message_flow.send":
@@ -14137,6 +17453,12 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "incident.state":
     case "workflow.incident":
       return incidentState(rootDir, input);
+    case "workflow.incident.from_dead_letter":
+      return workflowIncidentFromDeadLetter(rootDir, input, permissionDecision);
+    case "workflow.incident.closeout.artifact":
+      return workflowIncidentCloseoutArtifact(rootDir, input, permissionDecision);
+    case "workflow.incident.closeout.human_gate_request":
+      return workflowIncidentCloseoutHumanGateRequest(rootDir, input, permissionDecision);
     case "instrument.upsert":
     case "tracking.instrument":
       return instrumentUpsert(rootDir, input);
@@ -14155,6 +17477,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "cat_claw.audit":
       return cat_clawAudit(rootDir, input);
     default:
-      throw new Error(`unknown workflow action: ${action}`);
+      throw new Error(`unknown workflow action: ${requestedAction}${requestedAction === action ? "" : ` (canonical: ${action})`}`);
   }
 }
