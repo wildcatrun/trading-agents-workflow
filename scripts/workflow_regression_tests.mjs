@@ -3824,6 +3824,38 @@ VALUES ('protocol-receipts-substring-noise', 'evidence_pack', 'ready', NULL, 're
   assert.equal(JSON.stringify(routePack).includes("secret-token-123"), false);
 }
 
+async function testWorkflowSessionRunsLegacySchemaMigration() {
+  const root = await tempRoot("session-runs-legacy-schema");
+  await fs.mkdir(root, { recursive: true });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+CREATE TABLE workflow_session_runs (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  pack_version INTEGER NOT NULL,
+  workflow_id TEXT,
+  task_id TEXT,
+  worker_id TEXT,
+  status TEXT NOT NULL,
+  input_json TEXT NOT NULL DEFAULT '{}',
+  worker_input_json TEXT NOT NULL DEFAULT '{}',
+  output_json TEXT NOT NULL DEFAULT '{}',
+  receipt_ref TEXT,
+  error TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);`);
+
+  const status = await runAction(root, { action: "workflow.status" });
+  assert.ok(status.counts);
+  const columns = sqliteJson(dbFile, "PRAGMA table_info(workflow_session_runs);").map((row) => row.name);
+  assert.ok(columns.includes("dispatch_id"));
+  const indexes = sqliteJson(dbFile, "PRAGMA index_list(workflow_session_runs);").map((row) => row.name);
+  assert.ok(indexes.includes("idx_session_runs_dispatch"));
+}
+
 async function testWorkflowTaskDraftPurePreview() {
   const root = await tempRoot("task-draft");
   const dbFile = path.join(root, "tracking.db");
@@ -5281,6 +5313,7 @@ try {
     ["automatic workflow events", testAutomaticWorkflowEvents],
     ["workflow permission gate", testWorkflowPermissionGate],
     ["workflow session store", testWorkflowSessionStore],
+    ["workflow session runs legacy schema migration", testWorkflowSessionRunsLegacySchemaMigration],
     ["workflow task draft pure preview", testWorkflowTaskDraftPurePreview],
     ["workflow task draft cli pure preview", testWorkflowTaskDraftCliPurePreview],
     ["workflow task draft no human gate and single task compatibility", testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility],

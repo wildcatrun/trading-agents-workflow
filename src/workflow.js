@@ -2338,7 +2338,6 @@ CREATE TABLE IF NOT EXISTS workflow_session_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_session_runs_session ON workflow_session_runs(session_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_session_runs_workflow ON workflow_session_runs(workflow_id, task_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_session_runs_dispatch ON workflow_session_runs(dispatch_id);
 CREATE TABLE IF NOT EXISTS workflow_agent_runs (
   agent_run_id TEXT PRIMARY KEY,
   workflow_id TEXT,
@@ -2852,6 +2851,8 @@ async function migrateDatabase(dbFile) {
   await ensureColumns(dbFile, "workflow_session_runs", [
     ["dispatch_id", "TEXT"]
   ]);
+  await sqlite(dbFile, `
+CREATE INDEX IF NOT EXISTS idx_session_runs_dispatch ON workflow_session_runs(dispatch_id);`, { json: false });
   await ensureColumns(dbFile, "workflow_verification_results", [
     ["verification_id", "TEXT"],
     ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
