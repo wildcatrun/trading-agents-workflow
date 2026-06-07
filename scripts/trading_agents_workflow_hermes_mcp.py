@@ -267,6 +267,7 @@ MESSAGE_FLOW_SEND_SCHEMA = {
         "workflow_id": {"type": "string"},
         "meeting_id": {"type": "string"},
         "requires_ack": {"type": "boolean"},
+        "ack_timeout_seconds": {"type": "number"},
     },
     "required": ["to", "body"],
     "additionalProperties": True,
@@ -354,6 +355,7 @@ def handle_message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
         "workflowId": args.get("workflow_id") or args.get("workflowId"),
         "meetingId": args.get("meeting_id") or args.get("meetingId"),
         "requiresAck": args.get("requires_ack") if "requires_ack" in args else args.get("requiresAck"),
+        "ackTimeoutSeconds": args.get("ack_timeout_seconds") or args.get("ackTimeoutSeconds"),
         "sourceSystem": "hermers_mcp",
         "createdBy": f"hermers:{profile_id()}",
     }

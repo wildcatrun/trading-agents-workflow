@@ -2505,7 +2505,7 @@ LIMIT 1;`)[0];
   assert.equal(queued.maxAttempts, 3);
   const payload = JSON.parse(queued.payloadJson);
   assert.equal(payload.payload.ackContract.required, true);
-  assert.equal(payload.payload.ackContract.timeoutSeconds, 30);
+  assert.equal(payload.payload.ackContract.timeoutSeconds, 90);
   assert.equal(payload.payload.ackContract.retryDelaySeconds, 30);
 
   const inspectBin = await makeFakeOpenClaw(root, "fake-openclaw-inspect-ack.mjs", "inspect-ack");
@@ -2520,7 +2520,7 @@ LIMIT 1;`)[0];
   const semanticDispatchId = drained.results?.[0]?.semanticContinuation?.dispatchId;
   assert.ok(semanticDispatchId);
   const inspect = JSON.parse(await fs.readFile(path.join(root, "ack-inspect.json"), "utf8"));
-  assert.equal(inspect.timeout, "30");
+  assert.equal(inspect.timeout, "90");
   assert.match(inspect.message, /First-turn ACK contract/);
   assert.match(inspect.message, /ACK_RECEIVED/);
   assert.match(inspect.message, /not the semantic task result/);

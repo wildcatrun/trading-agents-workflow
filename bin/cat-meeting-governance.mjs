@@ -49,7 +49,7 @@ function usage() {
   trading-agents-workflow meeting-resume --meeting ID [--text TEXT] [--from flashcat] [--root DIR]
   trading-agents-workflow meeting-disperse --meeting ID --text TEXT [--target runtime:agent] [--from AGENT] [--root DIR]
   trading-agents-workflow telegram-outbox [--status queued|sent|failed] [--limit N] [--mark OUTBOX_ID] [--deliver] [--account cat_claw] [--target CHAT_ID] [--root DIR]
-  trading-agents-workflow message-flow-send --from AGENT --to runtime:agent --body TEXT [--subject TEXT] [--from-runtime RUNTIME] [--workflow ID] [--meeting ID] [--source-ref PATH] [--requires-ack true|false] [--root DIR]
+  trading-agents-workflow message-flow-send --from AGENT --to runtime:agent --body TEXT [--subject TEXT] [--from-runtime RUNTIME] [--workflow ID] [--meeting ID] [--source-ref PATH] [--requires-ack true|false] [--ack-timeout-seconds N] [--root DIR]
   trading-agents-workflow message-flow [--flow ID] [--dispatch ID] [--status STATUS] [--limit N] [--root DIR]
   trading-agents-workflow trade-proposal --asset TYPE --symbol SYMBOL [--summary TEXT] [--side SIDE] [--quantity N] [--order-type TYPE] [--proposal-id ID] [--payload JSON] [--root DIR]
   trading-agents-workflow risk-decision --proposal ID --human-gate ID --pre-order-risk-audit ID [--status approved|rejected|pending] [--summary TEXT] [--reviewer AGENT] [--risk-decision-id ID] [--risk-limits JSON] [--evidence-ref REF] [--paper-ref REF] [--root DIR]
@@ -619,6 +619,7 @@ function toAction({ command, positional, options }) {
           idempotencyKey: options["idempotency-key"],
           sourceRefs: listOption(options["source-ref"]),
           requiresAck: options["requires-ack"] === "true",
+          ackTimeoutSeconds: options["ack-timeout-seconds"],
           priority: options.priority,
           returnPolicy: options["return-policy"]
         }

@@ -729,6 +729,7 @@ def message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
         ("--trace-id", args.get("trace_id") or args.get("traceId")),
         ("--idempotency-key", args.get("idempotency_key") or args.get("idempotencyKey")),
         ("--requires-ack", str(bool(args.get("requires_ack") or args.get("requiresAck"))).lower() if ("requires_ack" in args or "requiresAck" in args) else None),
+        ("--ack-timeout-seconds", args.get("ack_timeout_seconds") or args.get("ackTimeoutSeconds")),
         ("--priority", args.get("priority")),
         ("--return-policy", args.get("return_policy") or args.get("returnPolicy")),
         ("--root", workflow_root),
