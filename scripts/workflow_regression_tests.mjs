@@ -2544,6 +2544,8 @@ LIMIT 1;`)[0];
   const semanticPayload = JSON.parse(semanticDispatch.payloadJson);
   assert.equal(semanticPayload.payload.semanticContinuation, true);
   assert.equal(semanticPayload.payload.ackContract.required, false);
+  assert.equal(semanticPayload.payload.timeoutSeconds, 300);
+  assert.equal(semanticPayload.payload.semanticTimeoutSeconds, 300);
 
   const successBin = await makeFakeOpenClaw(root, "fake-openclaw-semantic-success.mjs", "inspect-semantic");
   const semanticDrained = await runAction(root, {
@@ -2559,6 +2561,7 @@ LIMIT 1;`)[0];
   assert.equal(semanticInspect.message.includes("First-turn ACK contract"), false);
   assert.equal(semanticInspect.message.includes("ACK_RECEIVED"), false);
   assert.equal(semanticInspect.message.includes("requires ack regression body"), true);
+  assert.equal(semanticInspect.timeout, "300");
   const completedFlow = sqliteJson(dbFile, `
 SELECT status, final_output_present AS finalOutputPresent, delivery_receipt_present AS deliveryReceiptPresent, dispatch_id AS dispatchId
 FROM message_flows

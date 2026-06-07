@@ -64,6 +64,7 @@ const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout",
 const DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS = 30;
 const DEFAULT_RUNTIME_ACK_RETRY_SECONDS = 30;
 const DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS = 3;
+const DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS = 300;
 const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_report"]);
 const TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES = new Set(["human_gate_request", "human_gate_report", "workflow_secretary_report", "message_flow_reply", "meeting_live"]);
 const INTERNAL_HUMAN_GATE_RECORD = Symbol("internal_human_gate_record");
@@ -10068,6 +10069,24 @@ function isSemanticContinuationDispatch(row = {}) {
   return boolOption(payload.semanticContinuation ?? payload.semantic_continuation ?? nested.semanticContinuation ?? nested.semantic_continuation, false);
 }
 
+function semanticContinuationTimeoutSeconds(payload = {}, input = {}, fallbackSeconds = DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS, maxSeconds = 3600) {
+  const nested = objectValue(payload.payload);
+  const raw = Number(
+    nested.semanticTimeoutSeconds ??
+    nested.semantic_timeout_seconds ??
+    payload.semanticTimeoutSeconds ??
+    payload.semantic_timeout_seconds ??
+    nested.timeoutSeconds ??
+    nested.timeout_seconds ??
+    payload.timeoutSeconds ??
+    payload.timeout_seconds ??
+    input.semanticTimeoutSeconds ??
+    input.semantic_timeout_seconds ??
+    fallbackSeconds
+  );
+  return Math.max(60, Math.min(maxSeconds, Number.isFinite(raw) && raw > 0 ? raw : fallbackSeconds));
+}
+
 function messageFlowDispatchStartedStatus(row = {}) {
   return isSemanticContinuationDispatch(row) ? "semantic_dispatched" : "runtime_dispatched";
 }
@@ -10358,9 +10377,12 @@ async function queueMessageFlowSemanticContinuation(paths, row, data = {}, input
   const idempotencyKey = messageFlowSemanticIdempotencyKey(flow.flow_id, row.dispatch_id);
   const semanticDispatchId = `dispatch.semantic.${textHash(idempotencyKey).slice(0, 24)}`;
   const semanticPrompt = messageFlowSemanticPromptFromPayload(nested, row.prompt || payload.prompt || "");
+  const semanticTimeoutSeconds = semanticContinuationTimeoutSeconds(payload, input);
   const semanticPayload = {
     ...nested,
     requiresAck: false,
+    timeoutSeconds: semanticTimeoutSeconds,
+    semanticTimeoutSeconds,
     ackContract: {
       ...(objectValue(nested.ackContract || nested.ack_contract)),
       required: false,
@@ -10390,6 +10412,7 @@ async function queueMessageFlowSemanticContinuation(paths, row, data = {}, input
     priority: row.priority || "normal",
     createdBy: "workflow:message_flow_ack",
     maxAttempts: input.semanticMaxAttempts || input.semantic_max_attempts || nested.semanticMaxAttempts || nested.semantic_max_attempts || 1,
+    timeoutSeconds: semanticTimeoutSeconds,
     returnPolicy: "silent",
     deliveryPolicy: "silent",
     sourceChannel: flow.source_channel || nested.source?.sourceChannel || nested.source?.source_channel || "",
@@ -13084,6 +13107,10 @@ function runtimeAckContract(row = {}, input = {}) {
 }
 
 function runtimeDispatchTimeoutSeconds(row, input = {}, fallbackSeconds = 300, maxSeconds = 1800) {
+  const payload = dispatchPayloadObject(row);
+  if (isSemanticContinuationDispatch(row)) {
+    return semanticContinuationTimeoutSeconds(payload, input, DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS, maxSeconds);
+  }
   const ack = runtimeAckContract(row, input);
   if (ack.required) return Math.max(5, Math.min(maxSeconds, ack.timeoutSeconds));
   return Math.max(30, Math.min(maxSeconds, Number(input.timeoutSeconds || input.timeout_seconds || fallbackSeconds)));
