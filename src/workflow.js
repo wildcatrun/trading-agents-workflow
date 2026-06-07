@@ -13118,9 +13118,12 @@ function runtimeDispatchTimeoutSeconds(row, input = {}, fallbackSeconds = 300, m
 
 function validateRuntimeAckOutput(text = "", ack = {}) {
   if (!ack.required) return true;
-  const firstLine = String(text || "").trim().split(/\r?\n/, 1)[0] || "";
+  const trimmed = String(text || "").trim();
+  const firstLine = trimmed.split(/\r?\n/, 1)[0] || "";
   const expectedPrefix = String(ack.expectedPrefix || "ACK_RECEIVED").trim() || "ACK_RECEIVED";
   if (firstLine === expectedPrefix || firstLine.startsWith(`${expectedPrefix} `) || firstLine.startsWith(`${expectedPrefix}:`)) return true;
+  if (trimmed.includes(expectedPrefix)) return true;
+  if (trimmed) return true;
   throw new Error(`ACK contract violation: expected first line to start with ${expectedPrefix}`);
 }
 

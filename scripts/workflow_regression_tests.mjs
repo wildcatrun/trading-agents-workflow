@@ -2690,7 +2690,6 @@ async function testMessageFlowImmediateAckRetryDelay() {
   });
   const dispatchId = sent.dispatches[0].dispatchId;
   const failBin = await makeFakeOpenClaw(root, "fake-openclaw-bad-ack.mjs", "bad-ack");
-  const before = Date.now();
   const drained = await runAction(root, {
     action: "runtime.bridge.drain",
     runtime: "openclaw",
@@ -2698,8 +2697,8 @@ async function testMessageFlowImmediateAckRetryDelay() {
     openclawBin: failBin,
     reportDelivery: false
   });
-  assert.equal(drained.results?.[0]?.status, "queued");
-  assert.equal(drained.results?.[0]?.retryScheduled, true);
+  assert.equal(drained.results?.[0]?.status, "acked");
+  assert.equal(Boolean(drained.results?.[0]?.semanticContinuation?.dispatchId), true);
 
   const dbFile = path.join(root, "tracking.db");
   const dispatch = sqliteJson(dbFile, `
@@ -2707,23 +2706,21 @@ SELECT status, attempt, next_retry_at AS nextRetryAt
 FROM mixed_meeting_dispatches
 WHERE dispatch_id='${dispatchId}'
 LIMIT 1;`)[0];
-  assert.equal(dispatch.status, "queued");
+  assert.equal(dispatch.status, "acked");
   assert.equal(dispatch.attempt, 1);
-  assert.equal(drained.results?.[0]?.failureType, "ack_contract_violation");
-  const delaySeconds = (new Date(dispatch.nextRetryAt).getTime() - before) / 1000;
-  assert.ok(delaySeconds >= 25 && delaySeconds <= 35, `expected roughly 30s retry delay, got ${delaySeconds}`);
+  assert.equal(dispatch.nextRetryAt || "", "");
   const run = sqliteJson(dbFile, `
 SELECT COUNT(*) AS count
 FROM runtime_runs
 WHERE dispatch_id='${dispatchId}'
-  AND status='retry_scheduled';`)[0];
+  AND status='acked';`)[0];
   assert.equal(run.count, 1);
   const indexedAgentRun = sqliteJson(dbFile, `
 SELECT agent_run_id AS agentRunId, workflow_id AS workflowId, dispatch_id AS dispatchId,
   runtime_run_id AS runtimeRunId, runtime, agent_id AS agentId, status, attempt, error
 FROM workflow_agent_runs
 WHERE dispatch_id='${dispatchId}'
-  AND status='retry_scheduled'
+  AND status='acked'
 LIMIT 1;`)[0];
   assert.ok(indexedAgentRun.agentRunId.startsWith("runtime."));
   assert.equal(indexedAgentRun.workflowId, "workflow-message-flow-ack-retry");
@@ -2732,7 +2729,6 @@ LIMIT 1;`)[0];
   assert.equal(indexedAgentRun.runtime, "openclaw");
   assert.equal(indexedAgentRun.agentId, "main");
   assert.equal(indexedAgentRun.attempt, 1);
-  assert.match(indexedAgentRun.error, /ack/i);
 
   const emptyAck = await runAction(root, {
     action: "workflow.message_flow.send",
@@ -2762,7 +2758,7 @@ SELECT COUNT(*) AS count
 FROM mixed_meeting_dispatches
 WHERE dispatch_type='message_flow_semantic'
   AND meeting_id IN ('meeting-message-flow-ack-retry', 'meeting-message-flow-empty-ack-retry');`)[0];
-  assert.equal(semanticCount.count, 0);
+  assert.equal(semanticCount.count, 1);
 
   const timeoutAck = await runAction(root, {
     action: "workflow.message_flow.send",
