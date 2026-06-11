@@ -150,6 +150,7 @@ function deadLetterIncidentSeverity(kind, status = "") {
   const value = String(status || "").toLowerCase();
   if (kind === "human_gate_feedback") return "warning";
   if (kind === "message_flow_delivery_missing" && value === "runtime_completed") return "warning";
+  if (kind === "max_attempt_dispatch" && ["failed", "dead_letter"].includes(value)) return "warning";
   return "critical";
 }
 
@@ -3339,7 +3340,7 @@ LIMIT 100;`) : [];
       })),
       ...maxAttemptDispatches.map((row) => ({
         kind: "max_attempt_dispatch",
-        severity: "critical",
+        severity: deadLetterIncidentSeverity("max_attempt_dispatch", row.status),
         status: row.status,
         workflowId: row.workflow_id || "",
         refId: row.dispatch_id,

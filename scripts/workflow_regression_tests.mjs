@@ -510,7 +510,10 @@ VALUES
   ('job-related-exact-dispatch', 'runtime_drain', 'runtime_drain:hermes:unrelated', 'normal', 'completed', '${workflowId}', 'hermes', '{"dispatchId":"dispatch-max-attempts"}', '{}', 1, 3, '', '', '', '', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:03.000Z', '2026-05-31T00:00:04.000Z'),
   ('job-related-fuzzy-dedupe', 'runtime_drain', 'runtime_drain:hermes:dispatch-max-attempts-extra', 'normal', 'completed', '${workflowId}', 'hermes', '{}', '{}', 1, 3, '', '', '', '', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:04.000Z', '2026-05-31T00:00:05.000Z');
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
-VALUES ('dispatch-max-attempts', '${workflowId}', '${workflowId}', 'trace-max-attempts', 'idem-max-attempts', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'sent', 'normal', 3, 3, '', 'timeout', 'dispatch token dispatch-secret', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2026-05-31T00:00:03.000Z');
+VALUES
+  ('dispatch-max-attempts', '${workflowId}', '${workflowId}', 'trace-max-attempts', 'idem-max-attempts', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'sent', 'normal', 3, 3, '', 'timeout', 'dispatch token dispatch-secret', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2026-05-31T00:00:03.000Z'),
+  ('dispatch-max-attempts-failed', '${workflowId}', '${workflowId}', 'trace-max-attempts-failed', 'idem-max-attempts-failed', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'failed', 'normal', 3, 3, '', 'timeout', 'terminal failed dispatch token dispatch-secret', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '', '', '', '2026-05-31T00:00:08.000Z'),
+  ('dispatch-max-attempts-dead-letter', '${workflowId}', '${workflowId}', 'trace-max-attempts-dead-letter', 'idem-max-attempts-dead-letter', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'dead_letter', 'normal', 3, 3, '', 'timeout', 'terminal dead-letter dispatch token dispatch-secret', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '', '', '', '2026-05-31T00:00:09.000Z');
 INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
 VALUES ('runtime-dead-letter-evidence', 'dispatch-max-attempts', '${workflowId}', '${workflowId}', 'trace-runtime-evidence', 'hermes', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'timeout', 3, '2026-05-31T00:00:01.000Z', '2026-05-31T00:00:02.000Z', 1000, '', '', '', 'runtime token runtime-secret', '{}');
 INSERT INTO human_gate_buttons(button_id, human_gate_id, callback_token, workflow_id, meeting_id, label, decision_status, button_role, artifact_ref, summary, prompt, payload_json, status, created_by, created_at, updated_at)
@@ -554,6 +557,9 @@ VALUES ('job-other-workflow-failed', 'runtime_drain', 'runtime_drain:other', 'hi
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "control_loop_job" && row.refId === "job-dead-failed")), true);
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "expired_lease" && row.refId === "job-dead-expired-lease")), true);
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "max_attempt_dispatch" && row.refId === "dispatch-max-attempts")), true);
+  assert.equal(operations.deadLetters.find((row) => row.refId === "dispatch-max-attempts")?.severity, "critical");
+  assert.equal(operations.deadLetters.find((row) => row.refId === "dispatch-max-attempts-failed")?.severity, "warning");
+  assert.equal(operations.deadLetters.find((row) => row.refId === "dispatch-max-attempts-dead-letter")?.severity, "warning");
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "human_gate_feedback" && row.refId === "button-stuck-feedback")), true);
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "side_effect_uncertain" && row.refId === "side-effect-uncertain-op")), true);
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "message_flow_delivery_missing" && row.refId === "flow-dead-delivery-completed")), true);
@@ -636,6 +642,14 @@ VALUES ('job-other-workflow-failed', 'runtime_drain', 'runtime_drain:other', 'hi
   assert.equal(notDeadLetterEvidence.incidentCandidate, null);
   const invalidDeadLetterEvidence = await new WorkflowReadModel({ dbFile }).deadLetterEvidence({});
   assert.equal(invalidDeadLetterEvidence.status, "invalid_request");
+  const terminalDispatchEvidence = await new WorkflowReadModel({ dbFile }).deadLetterEvidence({
+    workflowId,
+    kind: "max_attempt_dispatch",
+    refId: "dispatch-max-attempts-failed"
+  });
+  assert.equal(terminalDispatchEvidence.found, true);
+  assert.equal(terminalDispatchEvidence.incidentCandidate.severity, "warning");
+  assert.equal(terminalDispatchEvidence.incidentCandidate.suggestedMode, "monitoring");
   sqliteExec(dbFile, `
 INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
 VALUES ('hg-dead-letter-link', 'human_gate_record', 'approved', NULL, 'regression', 'cat_claw', '', 'artifact://hg-dead-letter-link', '{"workflowId":"${workflowId}","summary":"Human Gate evidence for flow-dead-delivery-completed token=hg-option-secret"}', 'hash-hg-dead-letter-link', '2026-05-31T00:00:06.000Z', '2026-05-31T00:00:07.000Z');
@@ -1570,8 +1584,10 @@ LIMIT 1;`);
     workflowId,
     deadLetterStatus: "failed"
   });
-  assert.equal(failedStatusOperations.deadLetterFilter.totalAfterFilter, 1);
-  assert.equal(failedStatusOperations.deadLetters[0].status, "failed");
+  assert.equal(failedStatusOperations.deadLetterFilter.totalAfterFilter, 2);
+  assert.equal(failedStatusOperations.deadLetters.every((row) => row.status === "failed"), true);
+  assert.equal(Boolean(failedStatusOperations.deadLetters.some((row) => row.kind === "control_loop_job")), true);
+  assert.equal(Boolean(failedStatusOperations.deadLetters.some((row) => row.kind === "max_attempt_dispatch")), true);
   assert.equal(Boolean(failedStatusOperations.deadLetterAvailableStatuses.some((row) => row.status === "failed")), true);
   const genericLimitOperations = await new WorkflowReadModel({ dbFile }).operationsSummary({
     workflowId,
