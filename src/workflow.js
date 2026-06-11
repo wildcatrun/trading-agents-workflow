@@ -133,6 +133,7 @@ const HUMAN_GATE_ZH_TEXT = new Map([
 
 const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.status",
+  "workflow.health",
   "workflow.readiness",
   "workflow.topology",
   "workflow.runtime_agents",
@@ -172,6 +173,9 @@ const WORKFLOW_ACTION_ALIASES = {
   status: "workflow.status",
   "trading_workflow.init": "workflow.init",
   "trading_workflow.status": "workflow.status",
+  "workflow.dashboard": "workflow.health",
+  "workflow.health.dashboard": "workflow.health",
+  "trading_workflow.health": "workflow.health",
   "trading_workflow.readiness": "workflow.readiness",
   "trading_workflow.topology": "workflow.topology",
   "workflow.runtime-agents": "workflow.runtime_agents",
@@ -1146,6 +1150,13 @@ function normalizeRuntime(value) {
   const raw = String(value || "openclaw").trim().toLowerCase();
   const runtime = raw === "hermes" || raw === "hermes_acp" ? "hermers" : raw;
   return RUNTIMES.has(runtime) ? runtime : "other";
+}
+
+function normalizeKnownRuntime(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  const runtime = raw === "hermes" || raw === "hermes_acp" ? "hermers" : raw;
+  return RUNTIMES.has(runtime) ? runtime : "";
 }
 
 function normalizeRegistryToken(value, fallback = "") {
@@ -3601,6 +3612,7 @@ FROM message_flows;`, { json: true });
   if (Number(messageFlowIntegrity.sent_without_receipt || 0) > 0) findings.push({ severity: "critical", key: "message_flow_sent_without_receipt", count: Number(messageFlowIntegrity.sent_without_receipt || 0), plane: "communication" });
   if (!hermersModes.ok && !hermersModes.unavailable) findings.push({ severity: "warning", key: "hermers_profile_modes_unreadable", plane: "runtime", path: hermersModes.path, error: hermersModes.error });
   const activeChecks = Boolean(input.activeChecks || input.active_checks);
+  const persistSnapshot = boolOption(input.persistReadinessSnapshot ?? input.persist_readiness_snapshot, true);
   const active = activeChecks ? await activeReadinessChecks(paths, input, findings) : null;
   const planes = {
     control: active ? { openclawGateway: active.openclawGateway } : {},
@@ -3611,11 +3623,230 @@ FROM message_flows;`, { json: true });
     humanGate: humanGate
   };
   const status = readinessStatus(findings);
-  const snapshotId = safeId("readiness");
-  await sqlite(paths.dbFile, `
+  const snapshotId = persistSnapshot ? safeId("readiness") : "";
+  if (persistSnapshot) {
+    await sqlite(paths.dbFile, `
 INSERT INTO readiness_snapshots(snapshot_id, status, checked_at, planes_json, findings_json, payload_json)
 VALUES (${sqlValue(snapshotId)}, ${sqlValue(status)}, ${sqlValue(checkedAt)}, ${sqlValue(JSON.stringify(planes))}, ${sqlValue(JSON.stringify(findings))}, ${sqlValue(JSON.stringify({ activeChecks }))});`);
+  }
   return { snapshotId, status, checkedAt, activeChecks, planes, findings };
+}
+
+function healthSeverityRank(severity) {
+  if (severity === "critical") return 0;
+  if (severity === "warning") return 1;
+  return 2;
+}
+
+function healthStatus(blockers = []) {
+  if (blockers.some((item) => item.severity === "critical")) return "blocked";
+  if (blockers.some((item) => item.severity === "warning")) return "degraded";
+  return "ready";
+}
+
+function boundedNumber(values, fallback, min, max) {
+  const candidates = Array.isArray(values) ? values : [values];
+  for (const value of candidates) {
+    if (value === undefined || value === null || value === "") continue;
+    const number = Number(value);
+    if (Number.isFinite(number)) return Math.max(min, Math.min(max, number));
+  }
+  return Math.max(min, Math.min(max, fallback));
+}
+
+function healthRecommendationFor(blocker) {
+  const actions = {
+    stale_sent_dispatches: ["workflow.dispatch.reconcile", "runtime.bridge.drain"],
+    stale_queued_dispatches: ["workflow.control_loop.tick", "runtime.bridge.drain"],
+    failed_dispatches: ["workflow.dispatch.reconcile", "workflow.incident.from_dead_letter.preview"],
+    failed_control_loop_jobs: ["workflow.incident.from_dead_letter.preview"],
+    expired_control_loop_leases: ["workflow.control_loop.tick", "workflow.incident.from_dead_letter.preview"],
+    message_flow_delivery_missing: ["message_flow.reconcile", "workflow.incident.from_dead_letter.preview"],
+    stale_human_gate: ["human_gate.inbox", "human_gate.request"],
+    pending_human_gate_without_buttons: ["human_gate.inbox"],
+    telegram_outbox_failed: ["telegram.outbox.requeue.preview", "telegram.outbox.delivery.preview"],
+    registry_dispatch_disabled: ["workflow.runtime_agents"],
+    stale_started_runtime_runs: ["runtime.bridge.drain", "workflow.incident.from_dead_letter.preview"]
+  };
+  const guidance = {
+    stale_sent_dispatches: "Reconcile stale sent dispatches against terminal runtime receipts before retrying.",
+    stale_queued_dispatches: "Run the control loop or targeted runtime drain to claim queued dispatches.",
+    failed_dispatches: "Inspect failed dispatches and create incident evidence before rerun.",
+    failed_control_loop_jobs: "Inspect failed control-loop jobs and decide retry versus incident.",
+    expired_control_loop_leases: "Expired leases indicate a worker died or stalled; reclaim through control-loop tick after checking logs.",
+    message_flow_delivery_missing: "Runtime finished but governed delivery evidence is missing; reconcile message_flow before resending.",
+    stale_human_gate: "Human Gate has been pending too long; refresh inbox/outbox evidence without creating duplicate gates.",
+    pending_human_gate_without_buttons: "Human Gate record lacks active buttons; regenerate through the governed Human Gate path.",
+    telegram_outbox_failed: "Use requeue preview before redelivery so receipts remain auditable.",
+    registry_dispatch_disabled: "Registered runtime agent cannot receive dispatch; fix registry intentionally from local Codex.",
+    stale_started_runtime_runs: "Runtime run stayed started past the lease window; inspect runtime adapter and receipt evidence."
+  };
+  return {
+    key: blocker.key,
+    summary: guidance[blocker.key] || "Inspect the linked evidence and choose a governed recovery action.",
+    actions: actions[blocker.key] || ["workflow.readiness"]
+  };
+}
+
+async function workflowHealthSnapshot(paths, input = {}) {
+  const checkedAt = nowIso();
+  const staleDispatchAfterMs = boundedNumber([input.staleDispatchAfterMs, input.stale_dispatch_after_ms], 30 * 60_000, 5 * 60_000, 24 * 3600_000);
+  const staleDispatchCutoff = new Date(Date.now() - staleDispatchAfterMs).toISOString();
+  const staleHumanGateAfterMs = boundedNumber([input.staleHumanGateAfterMs, input.stale_human_gate_after_ms], 6 * 3600_000, 30 * 60_000, 30 * 86400_000);
+  const staleHumanGateCutoff = new Date(Date.now() - staleHumanGateAfterMs).toISOString();
+  const messageFlowStuckAfterMs = boundedNumber([input.messageFlowStuckAfterMs, input.message_flow_stuck_after_ms], 5 * 60_000, 60_000, 24 * 3600_000);
+  const messageFlowStuckCutoff = new Date(Date.now() - messageFlowStuckAfterMs).toISOString();
+  const readiness = await workflowReadinessSnapshot(paths, {
+    ...input,
+    activeChecks: boolOption(input.activeChecks ?? input.active_checks, false),
+    persistReadinessSnapshot: false
+  });
+  const workflowRows = await sqlite(paths.dbFile, `
+SELECT status, COUNT(*) AS count
+FROM workflow_runs
+GROUP BY status
+ORDER BY status;`, { json: true });
+  const dispatchRows = await sqlite(paths.dbFile, `
+SELECT
+  SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued,
+  SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent,
+  SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN status='sent' AND updated_at < ${sqlValue(staleDispatchCutoff)} THEN 1 ELSE 0 END) AS stale_sent,
+  SUM(CASE WHEN status='queued' AND created_at < ${sqlValue(staleDispatchCutoff)} AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(checkedAt)}) THEN 1 ELSE 0 END) AS stale_queued
+FROM mixed_meeting_dispatches;`, { json: true });
+  const controlLoopRows = await sqlite(paths.dbFile, `
+SELECT
+  SUM(CASE WHEN status IN ('queued','retry_scheduled') THEN 1 ELSE 0 END) AS runnable,
+  SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,
+  SUM(CASE WHEN status IN ('failed','dead_letter') THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN status='running' AND lease_until IS NOT NULL AND lease_until != '' AND lease_until <= ${sqlValue(checkedAt)} THEN 1 ELSE 0 END) AS expired_leases
+FROM control_loop_jobs;`, { json: true });
+  const messageFlowRows = await sqlite(paths.dbFile, `
+SELECT
+  SUM(CASE WHEN delivery_receipt_present=0 AND return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])}) AND target_runtime NOT IN ('local_codex','codex') AND (COALESCE(runtime_completed_at,'') != '' OR COALESCE(runtime_failed_at,'') != '') THEN 1 ELSE 0 END) AS missing_delivery,
+  SUM(CASE WHEN status IN ('runtime_failed','telegram_failed') THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN final_output_present=1 AND delivery_receipt_present=0 AND COALESCE(runtime_completed_at,'') != '' AND runtime_completed_at <= ${sqlValue(messageFlowStuckCutoff)} THEN 1 ELSE 0 END) AS stuck_after_runtime
+FROM message_flows;`, { json: true });
+  const humanGateRows = await sqlite(paths.dbFile, `
+SELECT
+  COUNT(*) AS pending,
+  SUM(CASE WHEN created_at <= ${sqlValue(staleHumanGateCutoff)} THEN 1 ELSE 0 END) AS stale,
+  SUM(CASE WHEN NOT EXISTS (
+    SELECT 1 FROM human_gate_buttons b
+    WHERE b.human_gate_id=protocol_objects.object_id
+      AND b.status='active'
+  ) THEN 1 ELSE 0 END) AS without_buttons
+FROM protocol_objects
+WHERE object_type='human_gate_record' AND status='pending';`, { json: true });
+  const outboxRows = await sqlite(paths.dbFile, `
+SELECT
+  SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued,
+  SUM(CASE WHEN status='delivering' THEN 1 ELSE 0 END) AS delivering,
+  SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
+FROM telegram_outbox;`, { json: true });
+  const registryRows = await sqlite(paths.dbFile, `
+SELECT
+  COUNT(*) AS total,
+  SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active,
+  SUM(CASE WHEN status='active' AND can_receive_dispatch=0 THEN 1 ELSE 0 END) AS dispatch_disabled
+FROM runtime_agents;`, { json: true });
+  const runtimeRows = await sqlite(paths.dbFile, `
+SELECT
+  SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN status='started' AND started_at < ${sqlValue(new Date(Date.now() - boundedNumber([input.staleRuntimeRunAfterMs, input.stale_runtime_run_after_ms], 30 * 60_000, 5 * 60_000, 24 * 3600_000)).toISOString())} THEN 1 ELSE 0 END) AS stale_started
+FROM runtime_runs;`, { json: true });
+
+  const dispatch = dispatchRows[0] || {};
+  const controlLoop = controlLoopRows[0] || {};
+  const messageFlow = messageFlowRows[0] || {};
+  const humanGate = humanGateRows[0] || {};
+  const outbox = outboxRows[0] || {};
+  const registry = registryRows[0] || {};
+  const runtime = runtimeRows[0] || {};
+  const blockers = [];
+  const addBlocker = (severity, key, count, plane, evidence = {}) => {
+    const numeric = Number(count || 0);
+    if (numeric <= 0) return;
+    blockers.push({ severity, key, count: numeric, plane, evidence });
+  };
+  for (const finding of readiness.findings || []) {
+    addBlocker(finding.severity || "warning", finding.key || "readiness_finding", finding.count || 1, finding.plane || "readiness", finding);
+  }
+  addBlocker("critical", "failed_control_loop_jobs", controlLoop.failed, "control_loop");
+  addBlocker("critical", "expired_control_loop_leases", controlLoop.expired_leases, "control_loop");
+  addBlocker("critical", "failed_dispatches", dispatch.failed, "dispatch");
+  addBlocker("critical", "stale_sent_dispatches", dispatch.stale_sent, "dispatch");
+  addBlocker("warning", "stale_queued_dispatches", dispatch.stale_queued, "dispatch");
+  addBlocker("critical", "message_flow_delivery_missing", Number(messageFlow.missing_delivery || 0) + Number(messageFlow.stuck_after_runtime || 0), "message_flow");
+  addBlocker("warning", "pending_human_gate_without_buttons", humanGate.without_buttons, "human_gate");
+  addBlocker("warning", "telegram_outbox_failed", outbox.failed, "communication");
+  addBlocker("warning", "registry_dispatch_disabled", registry.dispatch_disabled, "registry");
+  addBlocker("warning", "stale_started_runtime_runs", runtime.stale_started, "runtime");
+  const uniqueBlockers = [];
+  const seen = new Set();
+  for (const blocker of blockers.sort((a, b) => healthSeverityRank(a.severity) - healthSeverityRank(b.severity) || b.count - a.count || a.key.localeCompare(b.key))) {
+    const dedupe = `${blocker.key}:${blocker.plane}`;
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
+    uniqueBlockers.push(blocker);
+  }
+  const status = healthStatus(uniqueBlockers);
+  const topBlockers = uniqueBlockers.slice(0, boundedNumber([input.limit, input.blockerLimit, input.blocker_limit], 8, 1, 20));
+  const recommendations = topBlockers.map(healthRecommendationFor);
+  return {
+    schemaVersion: "workflow_health.v1",
+    status,
+    checkedAt,
+    readiness: {
+      snapshotId: readiness.snapshotId,
+      status: readiness.status,
+      findings: readiness.findings || []
+    },
+    lanes: {
+      workflows: Object.fromEntries(workflowRows.map((row) => [row.status || "unknown", Number(row.count || 0)])),
+      dispatch: {
+        queued: Number(dispatch.queued || 0),
+        sent: Number(dispatch.sent || 0),
+        failed: Number(dispatch.failed || 0),
+        staleQueued: Number(dispatch.stale_queued || 0),
+        staleSent: Number(dispatch.stale_sent || 0)
+      },
+      controlLoop: {
+        runnable: Number(controlLoop.runnable || 0),
+        running: Number(controlLoop.running || 0),
+        failed: Number(controlLoop.failed || 0),
+        expiredLeases: Number(controlLoop.expired_leases || 0)
+      },
+      runtime: {
+        failedRuns: Number(runtime.failed || 0),
+        staleStartedRuns: Number(runtime.stale_started || 0)
+      },
+      messageFlow: {
+        missingDelivery: Number(messageFlow.missing_delivery || 0),
+        stuckAfterRuntime: Number(messageFlow.stuck_after_runtime || 0),
+        failed: Number(messageFlow.failed || 0)
+      },
+      humanGate: {
+        pending: Number(humanGate.pending || 0),
+        stale: Number(humanGate.stale || 0),
+        withoutButtons: Number(humanGate.without_buttons || 0)
+      },
+      communication: {
+        telegramQueued: Number(outbox.queued || 0),
+        telegramDelivering: Number(outbox.delivering || 0),
+        telegramFailed: Number(outbox.failed || 0)
+      },
+      registry: {
+        total: Number(registry.total || 0),
+        active: Number(registry.active || 0),
+        dispatchDisabled: Number(registry.dispatch_disabled || 0)
+      }
+    },
+    topBlockers,
+    recommendations,
+    nextActions: [...new Set(recommendations.flatMap((item) => item.actions))],
+    dbFile: paths.dbFile
+  };
 }
 
 export async function workflowStatus(rootDir, input = {}) {
@@ -5525,7 +5756,15 @@ export async function workflowAdvance(rootDir, input = {}) {
         payload: { taskId: task.task_id, expectedArtifact: task.expected_artifact || "", workflowAdvance: true }
       });
       await workflowTaskUpdate(rootDir, { workflowRootDir: input.workflowRootDir || input.workflow_root, taskId: task.task_id, status: "in_progress" });
-      dispatched.push({ taskId: task.task_id, dispatchId: dispatch.dispatchId, runtime: task.runtime, agentId: task.agent_id, status: dispatch.status, deduped: dispatch.deduped || false });
+      dispatched.push({
+        taskId: task.task_id,
+        dispatchId: dispatch.dispatchId,
+        runtime: task.runtime,
+        agentId: task.agent_id,
+        priority: task.priority === "steer" ? "steer" : "normal",
+        status: dispatch.status,
+        deduped: dispatch.deduped || false
+      });
     }
     if (dispatched.length) decision = "dispatching";
   }
@@ -5619,6 +5858,7 @@ export async function workflowSupervisor(rootDir, input = {}) {
     autoDispatch: false,
     syncDispatches: true
   });
+  const dispatched = cycles.flatMap((cycle) => cycle.advance?.dispatched || []);
   const checkpoint = writeCheckpoint
     ? await workflowCheckpoint(rootDir, {
       ...input,
@@ -5673,6 +5913,7 @@ export async function workflowSupervisor(rootDir, input = {}) {
     startedAt,
     completedAt: nowIso(),
     cycles,
+    dispatched,
     finalAdvance,
     checkpoint,
     catClawReport,
@@ -16747,6 +16988,12 @@ async function seedControlLoopJobs(paths, input = {}) {
   const deliverOutbox = boolOption(input.deliverOutbox ?? input.deliver_outbox, true);
   const ensureHumanGateRequests = boolOption(input.ensureHumanGateRequests ?? input.ensure_human_gate_requests, true);
   const createHumanGateInbox = boolOption(input.createHumanGateInbox ?? input.create_human_gate_inbox, true);
+  const explicitRuntimeInput = input.runtime !== undefined || input.runtimes !== undefined;
+  const requestedRuntimeValues = explicitRuntimeInput ? toList(input.runtimes ?? input.runtime) : [];
+  const invalidRequestedRuntimes = requestedRuntimeValues.filter((runtime) => !normalizeKnownRuntime(runtime));
+  if (drainQueued && explicitRuntimeInput && invalidRequestedRuntimes.length) {
+    throw new Error(`invalid runtime for control_loop drain: ${[...new Set(invalidRequestedRuntimes)].join(",")}`);
+  }
   const reportRuntime = normalizeRuntime(input.reportRuntime || input.report_runtime || "openclaw");
   const reportAgent = normalizeAgentId(input.reportAgent || input.report_agent || "cat_claw");
   const staleDispatchAfterMs = Math.max(5 * 60_000, Number(input.staleDispatchAfterMs || input.stale_dispatch_after_ms || (timeoutSeconds + 60) * 1000));
@@ -16851,7 +17098,21 @@ WHERE (
   }
 
   if (drainQueued) {
-    const configuredRuntimes = new Set(toList(input.runtimes || input.runtime || "hermers").filter((runtime) => RUNTIMES.has(normalizeRuntime(runtime))).map(normalizeRuntime));
+    const requestedRuntimes = requestedRuntimeValues.map(normalizeKnownRuntime).filter(Boolean);
+    const configuredRuntimes = new Set(requestedRuntimes);
+    if (!configuredRuntimes.size) {
+      const dueRuntimeRows = await sqlite(paths.dbFile, `
+SELECT runtime
+FROM mixed_meeting_dispatches
+WHERE status='queued'
+  AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())})
+GROUP BY runtime
+ORDER BY runtime;`, { json: true });
+      for (const row of dueRuntimeRows) {
+        const runtime = normalizeKnownRuntime(row.runtime);
+        if (runtime) configuredRuntimes.add(runtime);
+      }
+    }
     const runtimes = [...configuredRuntimes];
     const preciseRuntimeExclusion = runtimes.length ? `AND runtime NOT IN (${sqlStringList(runtimes)})` : "";
     for (const runtime of runtimes) {
@@ -17055,10 +17316,25 @@ async function runControlLoopJob(rootDir, paths, job, input = {}) {
       checkpoint: false,
       dryRun: false
     });
+    const enqueuedDrains = [];
+    for (const dispatch of supervised.dispatched || []) {
+      const runtime = normalizeRuntime(dispatch.runtime || "");
+      const dispatchId = String(dispatch.dispatchId || dispatch.dispatch_id || "").trim();
+      if (!dispatchId || !RUNTIMES.has(runtime)) continue;
+      enqueuedDrains.push(await enqueueControlLoopJob(paths, {
+        jobType: "runtime_drain",
+        dedupeKey: `runtime_drain:${runtime}:${dispatchId}`,
+        priority: dispatch.priority || "high",
+        runtime,
+        workflowId,
+        payload: { runtime, dispatchId, limit: 1, timeoutSeconds: payload.timeoutSeconds || payload.timeout_seconds || input.timeoutSeconds || input.timeout_seconds || 45 }
+      }));
+    }
     return {
       workflowId,
       decision: supervised.finalAdvance?.decision || "",
       dispatched: supervised.dispatched?.length || 0,
+      enqueuedDrains,
       catClawReportDispatchId: supervised.catClawReport?.dispatchId || ""
     };
   }
@@ -17066,12 +17342,13 @@ async function runControlLoopJob(rootDir, paths, job, input = {}) {
     return runScheduledDispatchJob(rootDir, paths, job, input);
   }
   if (job.job_type === "runtime_drain") {
+    const limit = boundedNumber([payload.limit, payload.runtimeLimit, payload.runtime_limit, input.runtimeLimit, input.runtime_limit, input.limit], 1, 1, 20);
     return runtimeBridgeDrain(rootDir, {
       ...input,
       workflowRootDir: paths.root,
       runtime: payload.runtime || job.runtime,
       dispatchId: payload.dispatchId || payload.dispatch_id || input.dispatchId || input.dispatch_id || "",
-      limit: 1,
+      limit,
       timeoutSeconds: payload.timeoutSeconds || payload.timeout_seconds || input.timeoutSeconds || input.timeout_seconds || 45,
       dryRun: false
     });
@@ -17285,6 +17562,11 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.status":
     case "trading_workflow.status":
       return workflowStatus(rootDir, input);
+    case "workflow.health":
+    case "workflow.dashboard": {
+      const paths = await ensureWorkflowLayout(rootDir, input);
+      return workflowHealthSnapshot(paths, input);
+    }
     case "workflow.readiness":
     case "trading_workflow.readiness": {
       const paths = await ensureWorkflowLayout(rootDir, input);

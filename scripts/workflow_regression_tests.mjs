@@ -3051,6 +3051,169 @@ LIMIT 1;`)[0];
   assert.equal(Boolean(starvationTick.seededJobs?.some((job) => job.dedupeKey === `runtime_drain:local_codex:${unconfiguredDispatchId}`)), true);
 }
 
+async function testControlLoopAutoDiscoversQueuedDispatchRuntimes() {
+  const root = await tempRoot("control-loop-auto-runtime-discovery");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  const dispatch = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-auto-runtime",
+    workflowId: "workflow-auto-runtime",
+    runtime: "openclaw",
+    agentId: "main",
+    prompt: "generic openclaw dispatch should be discovered without explicit runtimes",
+    dispatchType: "workflow_task",
+    returnPolicy: "silent"
+  });
+  const successBin = await makeFakeOpenClaw(root, "fake-openclaw-auto-runtime-success.mjs", "success");
+  const tick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    runtimeLimit: 1,
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    openclawBin: successBin
+  });
+  assert.equal(Boolean(tick.seededJobs?.some((job) => job.dedupeKey === "runtime_drain:openclaw")), true);
+  assert.equal(tick.jobResults?.[0]?.result?.results?.[0]?.dispatchId, dispatch.dispatchId);
+
+  const localRoot = await tempRoot("control-loop-runtime-limit");
+  await runAction(localRoot, {
+    action: "runtime.agent.upsert",
+    platform: "local_codex",
+    runtime: "local_codex",
+    agentId: "codex",
+    displayName: "Local Codex",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "local_codex_inbox"
+  });
+  await runAction(localRoot, {
+    action: "workflow.message_flow.send",
+    fromAgent: "cat_body",
+    fromRuntime: "hermers",
+    targets: ["local_codex:codex"],
+    body: "first local dispatch for runtimeLimit regression",
+    workflowId: "workflow-runtime-limit",
+    meetingId: "workflow-runtime-limit",
+    returnPolicy: "silent"
+  });
+  await runAction(localRoot, {
+    action: "workflow.message_flow.send",
+    fromAgent: "cat_body",
+    fromRuntime: "hermers",
+    targets: ["local_codex:codex"],
+    body: "second local dispatch for runtimeLimit regression",
+    workflowId: "workflow-runtime-limit",
+    meetingId: "workflow-runtime-limit",
+    returnPolicy: "silent"
+  });
+  const localTick = await runAction(localRoot, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    runtimeLimit: 2,
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false
+  });
+  assert.equal(Boolean(localTick.seededJobs?.some((job) => job.dedupeKey === "runtime_drain:local_codex")), true);
+  assert.equal(localTick.jobResults?.[0]?.result?.results?.length, 2);
+
+  const invalidRoot = await tempRoot("control-loop-invalid-explicit-runtime");
+  await runAction(invalidRoot, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  await runAction(invalidRoot, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-invalid-runtime",
+    workflowId: "workflow-invalid-runtime",
+    runtime: "openclaw",
+    agentId: "main",
+    prompt: "invalid explicit runtime must not expand to auto-discovery",
+    dispatchType: "workflow_task",
+    returnPolicy: "silent"
+  });
+  const invalidTick = await runAction(invalidRoot, {
+    action: "workflow.control_loop.tick",
+    runtimes: "opencalw",
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false
+  });
+  assert.equal(invalidTick.status, "failed");
+  assert.match(invalidTick.error, /invalid runtime for control_loop drain/);
+  assert.equal(sqliteCount(path.join(invalidRoot, "tracking.db"), "control_loop_jobs", "job_type='runtime_drain'"), 0);
+}
+
+async function testControlLoopWorkflowSuperviseEnqueuesTargetedDrain() {
+  const root = await tempRoot("control-loop-supervise-targeted-drain");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "local_codex",
+    runtime: "local_codex",
+    agentId: "codex",
+    displayName: "Local Codex",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "local_codex_inbox"
+  });
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId: "workflow-supervise-targeted-drain",
+    status: "active",
+    summary: "supervisor should enqueue a targeted drain for newly dispatched tasks"
+  });
+  await runAction(root, {
+    action: "workflow.task.create",
+    workflowId: "workflow-supervise-targeted-drain",
+    taskId: "task-supervise-targeted-drain",
+    runtime: "local_codex",
+    agentId: "codex",
+    status: "pending",
+    priority: "steer",
+    prompt: "produce a bounded local codex receipt"
+  });
+  const tick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    drainQueued: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    autoDispatch: true
+  });
+  const dispatchId = tick.jobResults?.[0]?.result?.enqueuedDrains?.[0]?.dedupeKey?.split(":").pop();
+  assert.equal(tick.claimedJobs?.[0]?.jobType, "workflow_supervise");
+  assert.equal(Boolean(dispatchId), true);
+  assert.equal(tick.jobResults?.[0]?.result?.enqueuedDrains?.[0]?.dedupeKey, `runtime_drain:local_codex:${dispatchId}`);
+  assert.equal(tick.jobResults?.[0]?.result?.enqueuedDrains?.[0]?.status, "queued");
+  const dbFile = path.join(root, "tracking.db");
+  const jobs = sqliteJson(dbFile, `SELECT dedupe_key, priority, runtime, payload_json FROM control_loop_jobs WHERE job_type='runtime_drain';`);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].dedupe_key, `runtime_drain:local_codex:${dispatchId}`);
+  assert.equal(jobs[0].priority, "steer");
+  assert.equal(jobs[0].runtime, "local_codex");
+  assert.equal(JSON.parse(jobs[0].payload_json).limit, 1);
+}
+
 async function testControlLoopSeedsStaleDeliveringOutbox() {
   const root = await tempRoot("stale-delivering-outbox");
   const request = await requestHumanGate(root, { workflowId: "workflow-stale-delivering", meetingId: "meeting-stale-delivering" });
@@ -5166,6 +5329,75 @@ async function testHumanGateRejectsMissingTelegramSender() {
   assert.equal(result.status, "telegram_sender_id_required");
 }
 
+async function testWorkflowHealthDashboard() {
+  const root = await tempRoot("workflow-health-dashboard");
+  await runAction(root, { action: "workflow.init" });
+  const dbFile = path.join(root, "tracking.db");
+  assert.equal(sqliteCount(dbFile, "readiness_snapshots"), 0);
+  sqliteExec(dbFile, `
+INSERT INTO workflow_runs(workflow_id, workflow_type, status, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
+VALUES ('wf-health', 'regression', 'active', 'main', 'health regression', 'detect stuck lanes', 'dashboard reports blockers', 'manual stop', 'run', 'observe', '{}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, routing_policy_json, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
+VALUES ('hermers:cat_body', 'hermers', 'cat_body', '猫之体', '', 'active', 'hermers', 'acp', 'none', 'none', 'acp', 'none', 'hermers_acp', 'silent', 0, 1, 0, '{}', 'hermes-profile:catbody', '{}', '{}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES
+  ('dispatch-health-stale', 'wf-health', 'wf-health', 'trace-health-stale', 'idem-health-stale', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'sent', 'normal', 1, 3, '', '', '', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2000-01-01T00:00:00.000Z'),
+  ('dispatch-health-failed', 'wf-health', 'wf-health', 'trace-health-failed', 'idem-health-failed', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'failed', 'high', 3, 3, '', 'timeout', 'failed dispatch', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '', '', '', '2026-05-31T00:00:02.000Z');
+INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at)
+VALUES
+  ('job-health-failed', 'runtime_drain', 'runtime_drain:hermers:dispatch-health-failed', 'high', 'failed', 'wf-health', 'hermers', '{}', '{}', 3, 3, '', '', '', 'failed job', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', ''),
+  ('job-health-expired', 'message_flow_reconcile', 'message_flow_reconcile', 'normal', 'running', 'wf-health', '', '{}', '{}', 1, 20, '', 'worker-health', '2000-01-01T00:00:00.000Z', 'expired lease', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:02.000Z', '');
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hgate-health-no-buttons', 'human_gate_record', 'pending', NULL, 'regression', 'cat_claw', '', 'artifact://hgate-health-no-buttons', '{"workflowId":"wf-health"}', 'hash-hgate-health', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:01.000Z');
+INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, outbox_id, target_runtime, target_agent_id, return_policy, status, runtime_completed_at, runtime_failed_at, final_output_present, delivery_receipt_present, last_error, created_at, updated_at)
+VALUES ('flow-health-missing-delivery', 'trace-flow-health', 'idem-flow-health', 'wf-health', 'wf-health', 'dispatch-health-stale', '', 'hermers', 'cat_body', 'report_to_flashcat', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z');
+`);
+  const health = await runAction(root, {
+    action: "workflow.health",
+    staleDispatchAfterMs: 60_000,
+    messageFlowStuckAfterMs: 60_000,
+    staleHumanGateAfterMs: 60_000
+  });
+  assert.equal(health.schemaVersion, "workflow_health.v1");
+  assert.equal(health.status, "blocked");
+  assert.equal(health.readiness.snapshotId, "");
+  assert.equal(sqliteCount(dbFile, "readiness_snapshots"), 0);
+  assert.equal(health.lanes.dispatch.staleSent, 1);
+  assert.equal(health.lanes.dispatch.failed, 1);
+  assert.equal(health.lanes.controlLoop.failed, 1);
+  assert.equal(health.lanes.controlLoop.expiredLeases, 1);
+  assert.equal(health.lanes.humanGate.withoutButtons, 1);
+  assert.equal(health.lanes.registry.dispatchDisabled, 1);
+  const blockerKeys = health.topBlockers.map((item) => item.key);
+  assert.equal(blockerKeys.includes("stale_sent_dispatches"), true);
+  assert.equal(blockerKeys.includes("failed_control_loop_jobs"), true);
+  assert.equal(blockerKeys.includes("message_flow_delivery_missing"), true);
+  assert.equal(health.nextActions.includes("workflow.dispatch.reconcile"), true);
+  assert.equal(health.nextActions.includes("workflow.incident.from_dead_letter.preview"), true);
+
+  const healthWithBadInput = await runAction(root, {
+    action: "workflow.health",
+    limit: "not-a-number",
+    staleDispatchAfterMs: "not-a-number",
+    messageFlowStuckAfterMs: "not-a-number",
+    staleHumanGateAfterMs: "not-a-number"
+  });
+  assert.equal(healthWithBadInput.schemaVersion, "workflow_health.v1");
+  assert.equal(healthWithBadInput.topBlockers.length > 0, true);
+  assert.equal(sqliteCount(dbFile, "readiness_snapshots"), 0);
+
+  const dashboard = await runAction(root, { action: "workflow.dashboard" });
+  assert.equal(dashboard.schemaVersion, "workflow_health.v1");
+  const permission = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.health",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(permission.allowed, true);
+  assert.equal(permission.readOnly, true);
+}
+
 async function testReadinessGatewayDegraded() {
   const root = await tempRoot("readiness-gateway");
   const degradedBin = await makeFakeOpenClaw(root, "fake-openclaw-health-degraded.mjs", "health-degraded");
@@ -5555,6 +5787,8 @@ try {
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
     ["message_flow immediate ack retry delay", testMessageFlowImmediateAckRetryDelay],
     ["message_flow control-loop runtime drains", testControlLoopDrainsMessageFlowRuntimes],
+    ["control_loop auto runtime discovery", testControlLoopAutoDiscoversQueuedDispatchRuntimes],
+    ["control_loop workflow supervise targeted drain", testControlLoopWorkflowSuperviseEnqueuesTargetedDrain],
     ["control_loop stale delivering outbox", testControlLoopSeedsStaleDeliveringOutbox],
     ["control_loop blocked workflow supervise cooldown", testControlLoopBacksOffBlockedWorkflowSupervise],
     ["trade_intent fail-closed", testTradeIntentFailClosed],
@@ -5574,6 +5808,7 @@ try {
     ["expired human_gate blocked", testExpiredHumanGateBlocked],
     ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],
     ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],
+    ["workflow health dashboard", testWorkflowHealthDashboard],
     ["readiness gateway degraded", testReadinessGatewayDegraded],
     ["hermers profile mode readiness/registry", testHermersProfileModeReadinessAndRegistry],
     ["hermers profile mode does not defer drain admission", testHermersProfileModeDoesNotDeferDrainAdmission],
