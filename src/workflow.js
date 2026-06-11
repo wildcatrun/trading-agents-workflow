@@ -14134,7 +14134,13 @@ async function collectAcpTurnOutput(backend, request, timeoutSeconds, controller
   }
 }
 
+function acpBackendExplicitlyRequested(input = {}) {
+  return input.acpBackend !== undefined
+    || input.acp_backend !== undefined;
+}
+
 async function runHermesAcpDispatch(paths, row, input = {}) {
+  const explicitBackend = acpBackendExplicitlyRequested(input);
   const backendId = String(input.acpBackend || input.acp_backend || process.env.TRADING_AGENTS_ACP_BACKEND || "acpx").trim();
   const registryAcpAgent = String(hermesAcpAgentFromEndpoint(row.endpoint_ref, row.agent_id)).trim();
   const requestedAcpAgent = String(input.acpAgent || input.acp_agent || "").trim();
@@ -14159,6 +14165,20 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     backendSource = resolvedBackend.source;
     backendCleanup = resolvedBackend.cleanup || backendCleanup;
   } catch (error) {
+    const allowFallback = boolOption(input.acpBackendFallback ?? input.acp_backend_fallback ?? process.env.TRADING_AGENTS_ACP_BACKEND_FALLBACK, !explicitBackend);
+    if (allowFallback) {
+      return runHermesDispatch(paths, row, {
+        ...input,
+        adapterName: "cli",
+        adapter_name: "cli",
+        acpBackendFallback: false,
+        acp_backend_fallback: false,
+        acpFallbackFromBackend: backendId,
+        acp_fallback_from_backend: backendId,
+        acpFallbackError: error instanceof Error ? error.message : String(error),
+        acp_fallback_error: error instanceof Error ? error.message : String(error)
+      });
+    }
     const failedAt = nowIso();
     const message = error instanceof Error ? error.message : String(error);
     const failureType = "acp_unavailable";

@@ -6057,6 +6057,101 @@ VALUES ('dispatch-null-agent-key', 'meeting-null-agent-key', 'hermers', 'cat_ear
   assert.match(overrideDrain.results[0].error, /override is not registry-owned/);
 }
 
+async function testHermersAcpBackendFallbackToCli() {
+  const root = await tempRoot("hermers-acp-fallback");
+  const fakeHermes = path.join(root, "fake-hermes.sh");
+  await fs.writeFile(fakeHermes, [
+    "#!/bin/sh",
+    "printf '%s\\n' 'FINAL_OK 2026-05-31T00:00:00.000Z'",
+    "printf '%s\\n' 'Hermes CLI fallback completed.'"
+  ].join("\n"), "utf8");
+  await fs.chmod(fakeHermes, 0o755);
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_body",
+    displayName: "猫之体",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "acp",
+    endpointRef: "hermes-profile:catbody"
+  });
+  const dispatch = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-hermers-acp-fallback",
+    workflowId: "workflow-hermers-acp-fallback",
+    runtime: "hermers",
+    agentId: "cat_body",
+    prompt: "Fallback from missing ACP backend to Hermes CLI.",
+    dispatchType: "message_flow_send"
+  });
+  const drain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    dispatchId: dispatch.dispatchId,
+    acpBackend: "missing_backend_for_regression",
+    acpBackendFallback: true,
+    hermesBin: fakeHermes,
+    timeoutSeconds: 5
+  });
+  assert.equal(drain.results[0].status, "acked");
+  assert.equal(drain.results[0].adapter, "cli");
+  const dbFile = path.join(root, "tracking.db");
+  assert.equal(sqliteJson(dbFile, `SELECT status FROM mixed_meeting_dispatches WHERE dispatch_id='${dispatch.dispatchId}';`)[0].status, "acked");
+  assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}' AND adapter='acp'`), 0);
+  assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}' AND adapter='cli' AND status='acked'`), 1);
+
+  const envDispatch = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-hermers-env-fallback",
+    workflowId: "workflow-hermers-acp-fallback",
+    runtime: "hermers",
+    agentId: "cat_body",
+    prompt: "Environment backend fallback to Hermes CLI.",
+    dispatchType: "message_flow_send"
+  });
+  const previousBackend = process.env.TRADING_AGENTS_ACP_BACKEND;
+  process.env.TRADING_AGENTS_ACP_BACKEND = "missing_env_backend_for_regression";
+  try {
+    const envDrain = await runAction(root, {
+      action: "runtime.bridge.drain",
+      runtime: "hermers",
+      dispatchId: envDispatch.dispatchId,
+      hermesBin: fakeHermes,
+      timeoutSeconds: 5
+    });
+    assert.equal(envDrain.results[0].status, "acked");
+    assert.equal(envDrain.results[0].adapter, "cli");
+  } finally {
+    if (previousBackend === undefined) {
+      delete process.env.TRADING_AGENTS_ACP_BACKEND;
+    } else {
+      process.env.TRADING_AGENTS_ACP_BACKEND = previousBackend;
+    }
+  }
+
+  const explicitDispatch = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-hermers-explicit-no-fallback",
+    workflowId: "workflow-hermers-acp-fallback",
+    runtime: "hermers",
+    agentId: "cat_body",
+    prompt: "Explicit missing backend should fail closed.",
+    dispatchType: "message_flow_send"
+  });
+  const explicitDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "hermers",
+    dispatchId: explicitDispatch.dispatchId,
+    acpBackend: "missing_explicit_backend_for_regression",
+    hermesBin: fakeHermes,
+    timeoutSeconds: 5
+  });
+  assert.equal(explicitDrain.results[0].status, "failed");
+  assert.equal(explicitDrain.results[0].adapter, "acp");
+  assert.equal(explicitDrain.results[0].failureType, "acp_unavailable");
+}
+
 async function testRegistryRoutingRankAndDisperseResolution() {
   const root = await tempRoot("registry-routing-rank");
   await runAction(root, {
@@ -6212,6 +6307,7 @@ try {
     ["hermers profile mode readiness/registry", testHermersProfileModeReadinessAndRegistry],
     ["hermers profile mode does not defer drain admission", testHermersProfileModeDoesNotDeferDrainAdmission],
     ["hermers runtime drain fails closed on registry gaps", testHermersRuntimeDrainFailsClosedOnRegistryGaps],
+    ["hermers acp backend fallback to cli", testHermersAcpBackendFallbackToCli],
     ["registry routing rank and disperse resolution", testRegistryRoutingRankAndDisperseResolution],
     ["hermers profile mode malformed file readiness", testHermersProfileModeMalformedFileReadiness],
     ["cat_claw openclaw-only registry guard", testCatClawOpenClawOnlyRegistryGuard]
