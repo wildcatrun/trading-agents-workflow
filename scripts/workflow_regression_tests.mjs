@@ -6152,6 +6152,71 @@ async function testHermersAcpBackendFallbackToCli() {
   assert.equal(explicitDrain.results[0].failureType, "acp_unavailable");
 }
 
+async function testRuntimeDrainRejectsEmptyPrompt() {
+  const root = await tempRoot("runtime-empty-prompt");
+  const fakeOpenClaw = path.join(root, "fake-openclaw.sh");
+  await fs.writeFile(fakeOpenClaw, [
+    "#!/bin/sh",
+    "case \"$*\" in",
+    "  *'nested task body for runtime bridge'*) printf '%s\\n' '{\"status\":\"ok\",\"summary\":\"FINAL_OK 2026-05-31T00:00:00.000Z\",\"result\":{\"payloads\":[{\"text\":\"FINAL_OK 2026-05-31T00:00:00.000Z nested task accepted\"}]}}' ;;",
+    "  *) exit 12 ;;",
+    "esac"
+  ].join("\n"), "utf8");
+  await fs.chmod(fakeOpenClaw, 0o755);
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "openclaw_native",
+    endpointRef: "openclaw-agent:main"
+  });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
+VALUES ('dispatch-empty-prompt', 'meeting-empty-prompt', 'workflow-empty-prompt', 'trace-empty-prompt', 'idem-empty-prompt', 'openclaw', 'main', 'openclaw:main', 'governance_repair', 'queued', 'normal', 0, 1, '', '{}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:00.000Z');`);
+  const dryRun = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: "dispatch-empty-prompt",
+    dryRun: true
+  });
+  assert.equal(dryRun.dispatches[0].taskValidation.ok, false);
+  assert.equal(dryRun.dispatches[0].taskValidation.failureType, "invalid_dispatch_prompt");
+  const drain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: "dispatch-empty-prompt",
+    openclawBin: "/definitely/not/openclaw"
+  });
+  assert.equal(drain.results[0].status, "failed");
+  assert.equal(drain.results[0].failureType, "invalid_dispatch_prompt");
+  assert.equal(sqliteJson(dbFile, "SELECT status, failure_type FROM mixed_meeting_dispatches WHERE dispatch_id='dispatch-empty-prompt';")[0].status, "failed");
+  assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-empty-prompt' AND adapter='openclaw'"), 0);
+  assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-empty-prompt' AND adapter='runtime_bridge_validation' AND status='failed'"), 1);
+
+  sqliteExec(dbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
+VALUES ('dispatch-nested-prompt', 'meeting-nested-prompt', 'workflow-nested-prompt', 'trace-nested-prompt', 'idem-nested-prompt', 'openclaw', 'main', 'openclaw:main', 'governance_repair', 'queued', 'normal', 0, 1, '', '{"payload":{"body":"nested task body for runtime bridge"}}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:00.000Z');`);
+  const nestedDryRun = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: "dispatch-nested-prompt",
+    dryRun: true
+  });
+  assert.equal(nestedDryRun.dispatches[0].taskValidation.ok, true);
+  const nestedDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: "dispatch-nested-prompt",
+    openclawBin: fakeOpenClaw
+  });
+  assert.equal(nestedDrain.results[0].status, "acked");
+  assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-nested-prompt' AND adapter='openclaw' AND status='acked'"), 1);
+}
+
 async function testRegistryRoutingRankAndDisperseResolution() {
   const root = await tempRoot("registry-routing-rank");
   await runAction(root, {
@@ -6308,6 +6373,7 @@ try {
     ["hermers profile mode does not defer drain admission", testHermersProfileModeDoesNotDeferDrainAdmission],
     ["hermers runtime drain fails closed on registry gaps", testHermersRuntimeDrainFailsClosedOnRegistryGaps],
     ["hermers acp backend fallback to cli", testHermersAcpBackendFallbackToCli],
+    ["runtime drain rejects empty prompt", testRuntimeDrainRejectsEmptyPrompt],
     ["registry routing rank and disperse resolution", testRegistryRoutingRankAndDisperseResolution],
     ["hermers profile mode malformed file readiness", testHermersProfileModeMalformedFileReadiness],
     ["cat_claw openclaw-only registry guard", testCatClawOpenClawOnlyRegistryGuard]

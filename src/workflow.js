@@ -13414,6 +13414,20 @@ function validateRuntimeBridgeRegistryRow(row, runtime) {
   return { ok: true, adapter: snap.workflowIngressAdapter, platform: snap.platform, endpointRef: snap.endpointRef };
 }
 
+function validateRuntimeBridgeTaskPayload(row) {
+  const taskText = runtimeBridgeTaskText(row);
+  if (!taskText) {
+    return { ok: false, failureType: "invalid_dispatch_prompt", error: "queued dispatch has no task prompt for runtime bridge" };
+  }
+  return { ok: true };
+}
+
+function runtimeBridgeTaskText(row) {
+  const payload = parseJsonValue(row.payload_json, {});
+  const nestedPayload = objectValue(payload.payload);
+  return firstText(row.prompt, payload.prompt, nestedPayload.prompt, nestedPayload.message, nestedPayload.body);
+}
+
 async function failRuntimeBridgeRegistryDispatch(paths, row, validation, input = {}) {
   const failedAt = nowIso();
   await updateDispatch(paths, row.dispatch_id, "failed", {
@@ -13430,6 +13444,39 @@ async function failRuntimeBridgeRegistryDispatch(paths, row, validation, input =
     completedAt: failedAt,
     error: validation.error,
     payload: { registryValidation: validation, owner: firstText(input.owner, input.from, "workflow") }
+  });
+  await finishMessageFlowRuntime(paths, row, {
+    runtimeRunId,
+    finalOutputPresent: false,
+    failureType: validation.failureType,
+    lastError: validation.error
+  }, input);
+  return {
+    dispatchId: row.dispatch_id,
+    runtime: row.runtime,
+    agentId: row.agent_id,
+    status: "failed",
+    failureType: validation.failureType,
+    error: validation.error
+  };
+}
+
+async function failRuntimeBridgeInvalidDispatch(paths, row, validation, input = {}) {
+  const failedAt = nowIso();
+  await updateDispatch(paths, row.dispatch_id, "failed", {
+    adapter: "runtime_bridge_validation",
+    failedAt,
+    failureType: validation.failureType,
+    error: validation.error
+  });
+  const runtimeRunId = await recordRuntimeRun(paths, row, {
+    adapter: "runtime_bridge_validation",
+    status: "failed",
+    failureType: validation.failureType,
+    startedAt: failedAt,
+    completedAt: failedAt,
+    error: validation.error,
+    payload: { validation, owner: firstText(input.owner, input.from, "workflow") }
   });
   await finishMessageFlowRuntime(paths, row, {
     runtimeRunId,
@@ -13587,7 +13634,7 @@ function buildRuntimeBridgePrompt(row) {
     ...heartbeatBudget,
     "",
     "Task:",
-    row.prompt || payload.prompt || "",
+    runtimeBridgeTaskText(row),
     "",
     ...(ack.required
       ? [
@@ -14630,13 +14677,21 @@ LIMIT ${limit};`, { json: true });
   if (dryRun) return { runtime, dryRun: true, count: rows.length, profileModes: hermersModes ? profileModesReadinessPayload(hermersModes) : null, dispatches: rows.map((row) => {
     const admission = runtime === "hermers" ? classifyHermersProfileAdmission(row, hermersModes, input) : { allowed: true, action: "allow" };
     const registryValidation = validateRuntimeBridgeRegistryRow(row, runtime);
-    return { dispatchId: row.dispatch_id, meetingId: row.meeting_id, workflowId: row.workflow_id, traceId: row.trace_id, agentId: row.agent_id, attempt: row.attempt, maxAttempts: row.max_attempts, endpointRef: row.endpoint_ref, registryValidation, admission };
+    const taskValidation = validateRuntimeBridgeTaskPayload(row);
+    return { dispatchId: row.dispatch_id, meetingId: row.meeting_id, workflowId: row.workflow_id, traceId: row.trace_id, agentId: row.agent_id, attempt: row.attempt, maxAttempts: row.max_attempts, endpointRef: row.endpoint_ref, registryValidation, taskValidation, admission };
   }) };
   const results = [];
   for (const row of rows) {
     const validation = validateRuntimeBridgeRegistryRow(row, runtime);
     if (!validation.ok) {
       const result = await failRuntimeBridgeRegistryDispatch(paths, row, validation, input);
+      await appendRuntimeBridgeResultEvent(paths, row, result);
+      results.push(result);
+      continue;
+    }
+    const taskValidation = validateRuntimeBridgeTaskPayload(row);
+    if (!taskValidation.ok) {
+      const result = await failRuntimeBridgeInvalidDispatch(paths, row, taskValidation, input);
       await appendRuntimeBridgeResultEvent(paths, row, result);
       results.push(result);
       continue;
