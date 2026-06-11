@@ -512,6 +512,7 @@ VALUES
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
 VALUES
   ('dispatch-max-attempts', '${workflowId}', '${workflowId}', 'trace-max-attempts', 'idem-max-attempts', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'sent', 'normal', 3, 3, '', 'timeout', 'dispatch token dispatch-secret', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2026-05-31T00:00:03.000Z'),
+  ('dispatch-failed-not-max', '${workflowId}', '${workflowId}', 'trace-failed-not-max', 'idem-failed-not-max', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'failed', 'normal', 1, 3, '', 'permission_unavailable', 'failed dispatch before max token dispatch-secret', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '', '', '', '2026-05-31T00:00:07.000Z'),
   ('dispatch-max-attempts-failed', '${workflowId}', '${workflowId}', 'trace-max-attempts-failed', 'idem-max-attempts-failed', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'failed', 'normal', 3, 3, '', 'timeout', 'terminal failed dispatch token dispatch-secret', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '', '', '', '2026-05-31T00:00:08.000Z'),
   ('dispatch-max-attempts-dead-letter', '${workflowId}', '${workflowId}', 'trace-max-attempts-dead-letter', 'idem-max-attempts-dead-letter', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_task', 'dead_letter', 'normal', 3, 3, '', 'timeout', 'terminal dead-letter dispatch token dispatch-secret', 'prompt', '{}', 'main', '2026-05-31T00:00:00.000Z', '', '', '', '2026-05-31T00:00:09.000Z');
 INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
@@ -556,6 +557,8 @@ VALUES ('job-other-workflow-failed', 'runtime_drain', 'runtime_drain:other', 'hi
   assert.equal(Boolean(operations.workflowOperationSummary.some((row) => row.action === "workflow.supervise.preview" && row.dryRun && row.count === 1)), true);
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "control_loop_job" && row.refId === "job-dead-failed")), true);
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "expired_lease" && row.refId === "job-dead-expired-lease")), true);
+  assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "failed_dispatch" && row.refId === "dispatch-failed-not-max")), true);
+  assert.equal(operations.deadLetters.find((row) => row.refId === "dispatch-failed-not-max")?.severity, "warning");
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "max_attempt_dispatch" && row.refId === "dispatch-max-attempts")), true);
   assert.equal(operations.deadLetters.find((row) => row.refId === "dispatch-max-attempts")?.severity, "critical");
   assert.equal(operations.deadLetters.find((row) => row.refId === "dispatch-max-attempts-failed")?.severity, "warning");
@@ -642,6 +645,20 @@ VALUES ('job-other-workflow-failed', 'runtime_drain', 'runtime_drain:other', 'hi
   assert.equal(notDeadLetterEvidence.incidentCandidate, null);
   const invalidDeadLetterEvidence = await new WorkflowReadModel({ dbFile }).deadLetterEvidence({});
   assert.equal(invalidDeadLetterEvidence.status, "invalid_request");
+  const failedDispatchEvidence = await new WorkflowReadModel({ dbFile }).deadLetterEvidence({
+    workflowId,
+    kind: "failed_dispatch",
+    refId: "dispatch-failed-not-max"
+  });
+  assert.equal(failedDispatchEvidence.found, true);
+  assert.equal(failedDispatchEvidence.incidentCandidate.severity, "warning");
+  assert.equal(failedDispatchEvidence.incidentCandidate.suggestedMode, "monitoring");
+  const failedDispatchWrongKindEvidence = await new WorkflowReadModel({ dbFile }).deadLetterEvidence({
+    workflowId,
+    kind: "failed_dispatch",
+    refId: "dispatch-max-attempts-failed"
+  });
+  assert.equal(failedDispatchWrongKindEvidence.found, false);
   const terminalDispatchEvidence = await new WorkflowReadModel({ dbFile }).deadLetterEvidence({
     workflowId,
     kind: "max_attempt_dispatch",
@@ -1584,9 +1601,10 @@ LIMIT 1;`);
     workflowId,
     deadLetterStatus: "failed"
   });
-  assert.equal(failedStatusOperations.deadLetterFilter.totalAfterFilter, 2);
+  assert.equal(failedStatusOperations.deadLetterFilter.totalAfterFilter, 3);
   assert.equal(failedStatusOperations.deadLetters.every((row) => row.status === "failed"), true);
   assert.equal(Boolean(failedStatusOperations.deadLetters.some((row) => row.kind === "control_loop_job")), true);
+  assert.equal(Boolean(failedStatusOperations.deadLetters.some((row) => row.kind === "failed_dispatch")), true);
   assert.equal(Boolean(failedStatusOperations.deadLetters.some((row) => row.kind === "max_attempt_dispatch")), true);
   assert.equal(Boolean(failedStatusOperations.deadLetterAvailableStatuses.some((row) => row.status === "failed")), true);
   const genericLimitOperations = await new WorkflowReadModel({ dbFile }).operationsSummary({

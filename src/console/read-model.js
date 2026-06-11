@@ -150,6 +150,7 @@ function deadLetterIncidentSeverity(kind, status = "") {
   const value = String(status || "").toLowerCase();
   if (kind === "human_gate_feedback") return "warning";
   if (kind === "message_flow_delivery_missing" && value === "runtime_completed") return "warning";
+  if (kind === "failed_dispatch") return "warning";
   if (kind === "max_attempt_dispatch" && ["failed", "dead_letter"].includes(value)) return "warning";
   return "critical";
 }
@@ -158,6 +159,7 @@ function deadLetterIncidentPlanes(kind) {
   const planes = {
     control_loop_job: ["workflow_queue", "control_loop"],
     expired_lease: ["workflow_queue", "control_loop"],
+    failed_dispatch: ["workflow_dispatch", "runtime"],
     max_attempt_dispatch: ["workflow_dispatch", "runtime"],
     message_flow_delivery_missing: ["message_flow", "delivery"],
     human_gate_feedback: ["human_gate", "operator_feedback"],
@@ -226,6 +228,11 @@ function deadLetterIncidentActions(kind) {
       "Confirm whether the worker lease is stale or the worker is still running.",
       "Check related runtime and control-loop logs before clearing or retrying the job.",
       "Record the lease decision in the workflow evidence trail."
+    ],
+    failed_dispatch: [
+      "Inspect dispatch failure details and related runtime receipts.",
+      "Decide whether the failed dispatch is superseded, should stay archived, or needs a governed rerun.",
+      "Do not retry until ownership, idempotency, and rollback boundaries are clear."
     ],
     max_attempt_dispatch: [
       "Inspect dispatch attempts and runtime receipts for the target agent.",
@@ -2129,14 +2136,14 @@ LIMIT ${limit};`) : Promise.resolve([])
     : "status IN ('failed','dead_letter') OR (max_attempts > 0 AND attempt >= max_attempts AND status NOT IN ('completed','cancelled','succeeded'))"}
 	  )
 	LIMIT 1;`);
-    } else if (kind === "max_attempt_dispatch" && hasDispatchTable) {
+    } else if ((kind === "max_attempt_dispatch" || kind === "failed_dispatch") && hasDispatchTable) {
       rowsForKind.dispatches = await sqlite(this.paths.dbFile, `
 SELECT *
 FROM mixed_meeting_dispatches
 WHERE dispatch_id=${sqlValue(refId)}${workflowClause}
-  AND max_attempts > 0
-  AND attempt >= max_attempts
-  AND status NOT IN ('acked','completed','runtime_completed','cancelled','stopped')
+  AND ${kind === "failed_dispatch"
+    ? "status='failed' AND NOT (max_attempts > 0 AND attempt >= max_attempts)"
+    : "max_attempts > 0 AND attempt >= max_attempts AND status NOT IN ('acked','completed','runtime_completed','cancelled','stopped')"}
 LIMIT 1;`);
     } else if (kind === "message_flow_delivery_missing" && hasMessageFlowTable) {
       rowsForKind.messageFlows = await sqlite(this.paths.dbFile, `
@@ -3285,6 +3292,14 @@ WHERE ${workflowFilter}
   AND lease_until <= ${sqlValue(nowIso)}
 ORDER BY lease_until ASC
 LIMIT 100;`) : [];
+    const failedDispatches = hasDispatchTable ? await sqlite(this.paths.dbFile, `
+SELECT dispatch_id, workflow_id, runtime, agent_id, status, attempt, max_attempts, updated_at, failure_type, last_error
+FROM mixed_meeting_dispatches
+WHERE ${workflowFilter}
+  AND status='failed'
+  AND NOT (max_attempts > 0 AND attempt >= max_attempts)
+ORDER BY updated_at ASC
+LIMIT 100;`) : [];
     const maxAttemptDispatches = hasDispatchTable ? await sqlite(this.paths.dbFile, `
 SELECT dispatch_id, workflow_id, runtime, agent_id, status, attempt, max_attempts, updated_at, failure_type, last_error
 FROM mixed_meeting_dispatches
@@ -3337,6 +3352,20 @@ LIMIT 100;`) : [];
         maxAttempts: toInt(row.max_attempts),
         updatedAt: row.updated_at,
         detail: redactText(row.last_error || "")
+      })),
+      ...failedDispatches.map((row) => ({
+        kind: "failed_dispatch",
+        severity: deadLetterIncidentSeverity("failed_dispatch", row.status),
+        status: row.status,
+        workflowId: row.workflow_id || "",
+        refId: row.dispatch_id,
+        title: `${row.runtime || ""}:${row.agent_id || ""} dispatch failed`,
+        runtime: row.runtime || "",
+        agentId: row.agent_id || "",
+        attempt: toInt(row.attempt),
+        maxAttempts: toInt(row.max_attempts),
+        updatedAt: row.updated_at,
+        detail: redactText(row.last_error || row.failure_type || "")
       })),
       ...maxAttemptDispatches.map((row) => ({
         kind: "max_attempt_dispatch",
