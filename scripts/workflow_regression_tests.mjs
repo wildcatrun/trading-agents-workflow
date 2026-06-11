@@ -2666,6 +2666,49 @@ WHERE dispatch_type='message_flow_semantic'
   assert.equal(semanticTick.jobResults?.[0]?.result?.results?.[0]?.dispatchId, loopSemanticDispatchId);
 }
 
+async function testMessageFlowAckTimeoutClamping() {
+  const root = await tempRoot("message-flow-ack-timeout-clamp");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  const dbFile = path.join(root, "tracking.db");
+
+  async function assertMessageFlowAckTimeout(inputTimeout, expectedTimeout) {
+    const suffix = String(inputTimeout).replace(/[^a-zA-Z0-9_-]/g, "-");
+    const sent = await runAction(root, {
+      action: "workflow.message_flow.send",
+      fromAgent: "tester",
+      fromRuntime: "local_codex",
+      targets: ["openclaw:main"],
+      body: `requires ack timeout ${inputTimeout} body`,
+      workflowId: `workflow-message-flow-ack-timeout-${suffix}`,
+      meetingId: `meeting-message-flow-ack-timeout-${suffix}`,
+      requiresAck: true,
+      ackTimeoutSeconds: inputTimeout,
+      returnPolicy: "silent"
+    });
+    const dispatchId = sent.dispatches[0].dispatchId;
+    const queued = sqliteJson(dbFile, `
+SELECT prompt, payload_json AS payloadJson
+FROM mixed_meeting_dispatches
+WHERE dispatch_id='${dispatchId}'
+LIMIT 1;`)[0];
+    const payload = JSON.parse(queued.payloadJson);
+    assert.equal(payload.payload.ackContract.timeoutSeconds, expectedTimeout);
+    assert.match(queued.prompt, new RegExp(`within ${expectedTimeout}s after receiving the complete message`));
+  }
+
+  await assertMessageFlowAckTimeout(300, 300);
+  await assertMessageFlowAckTimeout(900, 300);
+  await assertMessageFlowAckTimeout(1, 5);
+}
+
 async function testMessageFlowImmediateAckRetryDelay() {
   const root = await tempRoot("message-flow-ack-retry");
   await runAction(root, {
@@ -5302,6 +5345,7 @@ try {
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
+    ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
     ["message_flow immediate ack retry delay", testMessageFlowImmediateAckRetryDelay],
     ["message_flow control-loop runtime drains", testControlLoopDrainsMessageFlowRuntimes],
     ["control_loop stale delivering outbox", testControlLoopSeedsStaleDeliveringOutbox],

@@ -9922,11 +9922,17 @@ function messageFlowSendTargets(input = {}) {
   return targets;
 }
 
+function messageFlowAckTimeoutSeconds(input = {}) {
+  const raw = input.ackTimeoutSeconds ?? input.ack_timeout_seconds ?? DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS;
+  return Math.max(5, Math.min(300, Number(raw) || DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS));
+}
+
 function messageFlowSendPrompt(input = {}) {
   const subject = String(input.subject || input.title || "").trim();
   const body = String(input.body || input.text || input.message || input.content || "").trim();
   const sourceRefs = toList(input.sourceRefs || input.source_refs || input.artifacts || input.artifactRefs || input.artifact_refs);
   const requiresAck = boolOption(input.requiresAck ?? input.requires_ack, false);
+  const ackTimeoutSeconds = messageFlowAckTimeoutSeconds(input);
   if (!subject && !body) throw new Error("body/text/message or subject is required for workflow.message_flow.send");
   const lines = [];
   if (subject) lines.push(`Subject: ${subject}`);
@@ -9935,7 +9941,7 @@ function messageFlowSendPrompt(input = {}) {
   if (requiresAck) {
     lines.push([
       "Immediate ACK required:",
-      `- First runtime turn must return ACK_RECEIVED within ${DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS}s after receiving the complete message.`,
+      `- First runtime turn must return ACK_RECEIVED within ${ackTimeoutSeconds}s after receiving the complete message.`,
       "- The ACK only confirms receipt and message integrity; it is not the semantic task result.",
       "- Include an ISO timestamp, dispatch id if visible, message_flow id if visible, and a one-line received scope.",
       `- If no ACK is received, workflow retries on the ${DEFAULT_RUNTIME_ACK_RETRY_SECONDS}s governed control-loop path.`
@@ -15821,11 +15827,12 @@ export async function messageFlowSend(rootDir, input = {}) {
     throw new Error("workflow.message_flow.send with return_policy=reply_to_source_chat requires source_channel, account_id, chat_id, sender_id, source_message_id");
   }
   const rawPayload = parseJsonValue(input.payload, input.payload || {});
+  const ackTimeoutSeconds = messageFlowAckTimeoutSeconds(input);
   const ackContract = requiresAck
     ? {
         required: true,
         firstTurnOnly: true,
-        timeoutSeconds: DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS,
+        timeoutSeconds: ackTimeoutSeconds,
         retryDelaySeconds: DEFAULT_RUNTIME_ACK_RETRY_SECONDS,
         maxAttempts: DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS,
         expectedPrefix: "ACK_RECEIVED"

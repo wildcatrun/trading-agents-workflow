@@ -213,9 +213,31 @@ def run_workflow_action(input_payload: dict[str, Any], root_dir: str | None = No
 
 WORKFLOW_ACTION_SCHEMA = {
     "type": "object",
+    "description": (
+        "Low-level workflow action caller for governance/debug profiles. Prefer the dedicated tools first: "
+        "workflow_message_flow_send for messages, workflow_status for status/readiness/topology, "
+        "workflow_schedule_list for schedule inspection, and workflow_schedule_upsert for schedule changes. "
+        "Use this raw tool only when a needed public workflow action has no dedicated MCP tool. "
+        "Example status call: {\"action\":\"status\"}. Example runtime registry call: "
+        "{\"action\":\"workflow.runtime_agents\",\"sourceSystem\":\"hermers_mcp\"}. "
+        "Do not use this raw tool to bypass Human Gate, runtime ownership, or side-effect controls."
+    ),
     "properties": {
-        "action": {"type": "string", "description": "Workflow action name, e.g. workflow.status or workflow.schedule.upsert."},
-        "payload": {"type": "object", "description": "Action payload fields. If omitted, top-level fields are used."},
+        "action": {
+            "type": "string",
+            "description": (
+                "Required public workflow action name accepted by trading-agents-workflow, for example status, "
+                "workflow.runtime_agents, workflow.readiness, workflow.topology, or another documented action. "
+                "Do not invent action names."
+            ),
+        },
+        "payload": {
+            "type": "object",
+            "description": (
+                "Optional action payload object. If omitted, top-level fields other than root/rootDir/workflowRoot are used. "
+                "Prefer explicit payload for complex calls."
+            ),
+        },
     },
     "required": ["action"],
     "additionalProperties": True,
@@ -224,19 +246,67 @@ WORKFLOW_ACTION_SCHEMA = {
 
 SCHEDULE_UPSERT_SCHEMA = {
     "type": "object",
+    "description": (
+        "Create or update a central workflow schedule. This is an administrative tool for durable recurring/cron workflow "
+        "items, not for one-off agent messages. Use workflow_message_flow_send for normal communication. "
+        "Required fields: schedule_id, agent, prompt. Choose exactly one timing mode: kind=cron with cron, or kind=interval "
+        "with interval_seconds. Example interval schedule: {\"schedule_id\":\"cat_ears.daily-news-check\","
+        "\"name\":\"Cat Ears daily news check\",\"agent\":\"cat_ears\",\"runtime\":\"hermers\",\"prompt\":\"Run the daily news check and write receipt.\","
+        "\"kind\":\"interval\",\"interval_seconds\":86400,\"priority\":\"normal\",\"timeout_seconds\":600}. "
+        "Use registry agent ids with underscores, for example cat_ears or cat_heart."
+    ),
     "properties": {
-        "schedule_id": {"type": "string", "description": "Stable schedule id."},
-        "name": {"type": "string", "description": "Human readable schedule name."},
-        "agent": {"type": "string", "description": "Target agent id, e.g. cat_heart."},
-        "runtime": {"type": "string", "description": "Target runtime. Default hermers."},
-        "prompt": {"type": "string", "description": "Dispatch prompt for the scheduled workflow."},
-        "kind": {"type": "string", "description": "cron or interval."},
-        "cron": {"type": "string", "description": "Cron expression when kind=cron."},
-        "interval_seconds": {"type": "integer", "description": "Interval seconds when kind=interval."},
-        "next_run_at": {"type": "string", "description": "Optional ISO next run time."},
-        "priority": {"type": "string", "description": "Priority such as normal/high/steer/flash."},
-        "timeout_seconds": {"type": "integer", "description": "Dispatch timeout, max 1800."},
-        "payload": {"type": "object", "description": "Optional workflow payload JSON."},
+        "schedule_id": {
+            "type": "string",
+            "description": "Required stable id for this schedule. Use a namespaced id such as cat_ears.daily-news-check.",
+        },
+        "name": {
+            "type": "string",
+            "description": "Human-readable schedule name for review and logs.",
+        },
+        "agent": {
+            "type": "string",
+            "description": "Required target registry agent id, for example cat_ears, cat_heart, cat_body, main, or cat_claw.",
+        },
+        "runtime": {
+            "type": "string",
+            "description": "Target runtime adapter. Default is hermers. Use openclaw only for OpenClaw-native agents.",
+        },
+        "prompt": {
+            "type": "string",
+            "description": (
+                "Required dispatch prompt for each scheduled run. Include task boundary, expected artifact/receipt, "
+                "and stop conditions."
+            ),
+        },
+        "kind": {
+            "type": "string",
+            "description": "Timing mode: cron or interval. If omitted, interval is inferred when interval_seconds is present; otherwise cron.",
+        },
+        "cron": {
+            "type": "string",
+            "description": "Cron expression when kind=cron, for example '0 * * * *'. Include timezone expectations in prompt/payload.",
+        },
+        "interval_seconds": {
+            "type": "integer",
+            "description": "Interval seconds when kind=interval, for example 1800 for 30 minutes or 86400 for daily.",
+        },
+        "next_run_at": {
+            "type": "string",
+            "description": "Optional ISO timestamp for the next run time. Omit unless intentionally scheduling the first run.",
+        },
+        "priority": {
+            "type": "string",
+            "description": "Workflow queue priority such as normal, high, steer, or flash. Do not use flash unless explicitly authorized.",
+        },
+        "timeout_seconds": {
+            "type": "integer",
+            "description": "Dispatch timeout in seconds for a scheduled run. Must be positive and no more than 1800.",
+        },
+        "payload": {
+            "type": "object",
+            "description": "Optional structured workflow payload JSON. Do not put secrets or credentials here.",
+        },
     },
     "required": ["schedule_id", "agent", "prompt"],
     "additionalProperties": True,
@@ -245,12 +315,32 @@ SCHEDULE_UPSERT_SCHEMA = {
 
 SCHEDULE_LIST_SCHEMA = {
     "type": "object",
+    "description": (
+        "List central workflow schedules. Use this before schedule_upsert when checking whether a schedule already exists. "
+        "All fields are optional filters. Examples: {} lists recent schedules; {\"agent\":\"cat_heart\",\"runtime\":\"hermers\","
+        "\"limit\":20} filters by agent/runtime; {\"schedule_id\":\"cat_ears.daily-news-check\"} checks one schedule."
+    ),
     "properties": {
-        "schedule_id": {"type": "string"},
-        "status": {"type": "string"},
-        "runtime": {"type": "string"},
-        "agent": {"type": "string"},
-        "limit": {"type": "integer"},
+        "schedule_id": {
+            "type": "string",
+            "description": "Optional exact schedule id filter.",
+        },
+        "status": {
+            "type": "string",
+            "description": "Optional status filter if known: active, paused, or disabled.",
+        },
+        "runtime": {
+            "type": "string",
+            "description": "Optional runtime filter, for example hermers or openclaw.",
+        },
+        "agent": {
+            "type": "string",
+            "description": "Optional registry agent id filter, for example cat_ears or cat_heart.",
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Optional maximum number of rows to return. Use a small value such as 20 for inspection.",
+        },
     },
     "additionalProperties": True,
 }
@@ -258,16 +348,63 @@ SCHEDULE_LIST_SCHEMA = {
 
 MESSAGE_FLOW_SEND_SCHEMA = {
     "type": "object",
+    "description": (
+        "Send one governed message_flow message. Call this tool directly with the fields below; "
+        "do not wrap arguments in action/payload, and do not call raw trading_agents_workflow for normal messages. "
+        "Minimal example: {\"to\":\"cat_eyes\",\"subject\":\"Need data check\",\"body\":\"Please check daily_qfq accuracy.\","
+        "\"requires_ack\":true,\"ack_timeout_seconds\":300}. "
+        "Use registry agent ids such as local_codex, cat_body, cat_nose, cat_eyes, cat_ears, cat_heart, "
+        "cat_penclaw, main, cat_claw, cat_voice, cat_tail. The sender is filled from the current Hermers profile."
+    ),
     "properties": {
-        "to": {"type": "string", "description": "Target as runtime:agent or agent id."},
-        "body": {"type": "string"},
-        "subject": {"type": "string"},
-        "from_agent": {"type": "string"},
-        "from_runtime": {"type": "string"},
-        "workflow_id": {"type": "string"},
-        "meeting_id": {"type": "string"},
-        "requires_ack": {"type": "boolean"},
-        "ack_timeout_seconds": {"type": "number"},
+        "to": {
+            "type": "string",
+            "description": (
+                "Required target. Prefer a runtime_agents registry id, for example cat_eyes, cat_body, "
+                "cat_heart, cat_penclaw, local_codex, main, or cat_claw. runtime:agent targets are also accepted "
+                "when a specific adapter route is needed. Do not use old OpenClaw route-shell ids for migrated Hermers agents."
+            ),
+        },
+        "body": {
+            "type": "string",
+            "description": (
+                "Required message body. Include the concrete request, evidence paths, expected output, deadline, "
+                "and whether the receiver should write a workflow receipt/artifact. This is the message text sent through message_flow."
+            ),
+        },
+        "subject": {
+            "type": "string",
+            "description": "Short human-readable title for the message_flow item, for example 'daily_qfq audit handoff'.",
+        },
+        "from_agent": {
+            "type": "string",
+            "description": "Optional override for the sender agent id. Usually omit it; the MCP fills this from the current Hermers profile.",
+        },
+        "from_runtime": {
+            "type": "string",
+            "description": "Optional override for sender runtime. Usually omit it; default is hermers.",
+        },
+        "workflow_id": {
+            "type": "string",
+            "description": "Optional existing workflow id to attach this message to. Omit for a standalone message_flow.",
+        },
+        "meeting_id": {
+            "type": "string",
+            "description": "Optional meeting/message-flow grouping id. Omit unless continuing an existing meeting/thread.",
+        },
+        "requires_ack": {
+            "type": "boolean",
+            "description": (
+                "Set true when the sender needs a receiver ACK/receipt; set false for FYI notices or smoke tests. "
+                "ACK routing uses the workflow core ACK contract."
+            ),
+        },
+        "ack_timeout_seconds": {
+            "type": "number",
+            "description": (
+                "Optional ACK timeout in seconds when requires_ack is true. Values are clamped by the workflow core to 5..300 seconds."
+            ),
+        },
     },
     "required": ["to", "body"],
     "additionalProperties": True,
@@ -276,8 +413,16 @@ MESSAGE_FLOW_SEND_SCHEMA = {
 
 STATUS_SCHEMA = {
     "type": "object",
+    "description": (
+        "Read central workflow status. Use this for inspection; runtime_agents may refresh a derived registry snapshot artifact. "
+        "Examples: {} or {\"view\":\"status\"} for a general snapshot; {\"view\":\"readiness\"} for readiness; "
+        "{\"view\":\"runtime_agents\"} for the agent registry; {\"view\":\"topology\"} for route/topology information."
+    ),
     "properties": {
-        "view": {"type": "string", "description": "status, readiness, topology, runtime_agents, or runtime-agents."},
+        "view": {
+            "type": "string",
+            "description": "Optional view: status, readiness, topology, runtime_agents, or runtime-agents. Default is status.",
+        },
     },
     "additionalProperties": True,
 }
@@ -381,7 +526,15 @@ def handle_status(args: dict[str, Any]) -> dict[str, Any]:
 
 BASE_TOOLS: dict[str, dict[str, Any]] = {
     "workflow_message_flow_send": {
-        "description": "Send a governed internal message through trading-agents-workflow message_flow.",
+        "description": (
+            "Send a governed internal message through trading-agents-workflow message_flow. "
+            "Use this for Hermers agent-to-agent handoff/status/evidence messages. "
+            "Call with direct JSON arguments, not an action wrapper. Required fields are to and body; subject is strongly recommended. "
+            "Example: {\"to\":\"cat_eyes\",\"subject\":\"Check daily_qfq\",\"body\":\"Please audit daily_qfq and write findings to workflow receipt.\","
+            "\"requires_ack\":true,\"ack_timeout_seconds\":300}. "
+            "For messages to the local Codex control panel use to=local_codex. "
+            "For migrated Hermers agents use registry ids with underscores: cat_body, cat_nose, cat_eyes, cat_ears, cat_heart, cat_penclaw."
+        ),
         "inputSchema": MESSAGE_FLOW_SEND_SCHEMA,
     },
 }
@@ -389,11 +542,20 @@ BASE_TOOLS: dict[str, dict[str, Any]] = {
 GOVERNANCE_TOOLS: dict[str, dict[str, Any]] = {
     **BASE_TOOLS,
     "workflow_schedule_list": {
-        "description": "List central workflow schedules.",
+        "description": (
+            "List central workflow schedules for inspection before creating or changing schedules. "
+            "Optional filters: schedule_id, status, runtime, agent, limit. "
+            "Example: {\"agent\":\"cat_heart\",\"runtime\":\"hermers\",\"limit\":20}. This tool is read-only."
+        ),
         "inputSchema": SCHEDULE_LIST_SCHEMA,
     },
     "workflow_status": {
-        "description": "Get central trading-agents-workflow status/readiness/topology.",
+        "description": (
+            "Get central trading-agents-workflow status/readiness/topology/runtime registry. "
+            "Inspection tool; runtime_agents may refresh a derived registry snapshot artifact. "
+            "Example calls: {} for general status, {\"view\":\"readiness\"}, "
+            "{\"view\":\"runtime_agents\"}, or {\"view\":\"topology\"}."
+        ),
         "inputSchema": STATUS_SCHEMA,
     },
 }
@@ -401,8 +563,11 @@ GOVERNANCE_TOOLS: dict[str, dict[str, Any]] = {
 ADMIN_TOOLS: dict[str, dict[str, Any]] = {
     "workflow_schedule_upsert": {
         "description": (
-            "Register or update a governed central workflow schedule. This is an administrative mutation surface; "
-            f"it is exposed only when {ALLOW_SCHEDULE_MUTATION_ENV}=1."
+            "Register or update a governed central workflow schedule. Use only for recurring/cron workflow items, "
+            "not for one-off messages. Required fields: schedule_id, agent, prompt. Include either cron or interval_seconds. "
+            "Example: {\"schedule_id\":\"cat_ears.daily-news-check\",\"agent\":\"cat_ears\",\"runtime\":\"hermers\","
+            "\"prompt\":\"Run the daily news check and write receipt.\",\"kind\":\"interval\",\"interval_seconds\":86400}. "
+            f"This administrative mutation surface is exposed only when {ALLOW_SCHEDULE_MUTATION_ENV}=1."
         ),
         "inputSchema": SCHEDULE_UPSERT_SCHEMA,
     },
@@ -411,8 +576,11 @@ ADMIN_TOOLS: dict[str, dict[str, Any]] = {
 RAW_ACTION_TOOL: dict[str, dict[str, Any]] = {
     "trading_agents_workflow": {
         "description": (
-            "Call the central trading-agents-workflow public action interface. This raw action surface is disabled by default; "
-            f"set {ALLOW_RAW_ACTION_ENV}=1 only for controlled debugging or governance sessions."
+            "Call the central trading-agents-workflow public action interface. Prefer dedicated tools first. "
+            "Use this raw action tool only for documented workflow actions that do not have a dedicated MCP tool. "
+            "Example: {\"action\":\"status\"} or {\"action\":\"workflow.runtime_agents\",\"sourceSystem\":\"hermers_mcp\"}. "
+            "Do not use it to bypass Human Gate, runtime ownership, receipts, or side-effect controls. "
+            f"This raw action surface is disabled by default; set {ALLOW_RAW_ACTION_ENV}=1 only for controlled debugging or governance sessions."
         ),
         "inputSchema": WORKFLOW_ACTION_SCHEMA,
     },
