@@ -777,17 +777,6 @@ VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', ''
   assert.equal(incidentRows[0].mode, "degraded");
   assert.equal(JSON.stringify(incidentRows[0]).includes("incident-secret"), false);
   assert.equal(JSON.stringify(incidentRows[0]).includes("workflow_dead_letter_incident_link.v1"), true);
-  const closeoutCountsBefore = {
-    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
-    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
-    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
-    outbox: sqliteCount(dbFile, "telegram_outbox"),
-    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
-    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
-    incidents: sqliteCount(dbFile, "incident_states"),
-    artifacts: sqliteCount(dbFile, "artifact_index"),
-    events: sqliteCount(dbFile, "workflow_events")
-  };
   const incidentCloseout = await new WorkflowReadModel({ dbFile }).incidentCloseout(workflowId);
   assert.equal(incidentCloseout.schemaVersion, "workflow_incident_closeout.v1");
   assert.equal(incidentCloseout.writeMode, "read_only_derived_closeout");
@@ -812,6 +801,49 @@ VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', ''
     incidentId: incidentLinked.incidentId
   });
   assert.equal(routedIncidentCloseout.incidentId, incidentLinked.incidentId);
+  sqliteExec(dbFile, `
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-legacy-closeout', 'active', 'degraded', '["workflow"]', 'Legacy closeout regression', 'main', 'Legacy incident has no workflow/dead-letter payload link.', 'Legacy incident should still be visible by incidentId.', 'Prepare governed closeout package.', 'Rollback boundary recorded.', 'Closeout evidence recorded.', '[]', '{"jsonRelPath":"bridge/incidents/incident-legacy-closeout.json"}', '2026-05-31T00:00:09.000Z', '', '', '2026-05-31T00:00:10.000Z');
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-nested-other-workflow', 'active', 'degraded', '["workflow"]', 'Nested workflow closeout regression', 'main', 'Nested workflow link belongs to another workflow.', 'Should not be readable through legacy fallback.', 'none', 'rollback boundary recorded', 'closeout evidence recorded', '[]', '{"payload":{"workflowId":"wf-console-operations-other"},"jsonRelPath":"bridge/incidents/incident-nested-other-workflow.json"}', '2026-05-31T00:00:11.000Z', '', '', '2026-05-31T00:00:12.000Z');
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-deadletter-other-workflow', 'active', 'degraded', '["workflow"]', 'Dead-letter workflow closeout regression', 'main', 'Dead-letter workflow link belongs to another workflow.', 'Should not be readable through legacy fallback.', 'none', 'rollback boundary recorded', 'closeout evidence recorded', '[]', '{"deadLetter":{"workflowId":"wf-console-operations-other","kind":"failed_dispatch","refId":"dispatch-other"}}', '2026-05-31T00:00:13.000Z', '', '', '2026-05-31T00:00:14.000Z');
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-malformed-legacy', 'active', 'degraded', '["workflow"]', 'Malformed legacy closeout regression', 'main', 'Malformed legacy payload should not break closeout preview.', 'Treat as legacy incident selected by exact incident id.', 'Prepare governed closeout package.', 'Rollback boundary recorded.', 'Closeout evidence recorded.', '[]', '{"jsonRelPath":', '2026-05-31T00:00:15.000Z', '', '', '2026-05-31T00:00:16.000Z');
+`);
+  const legacyIncidentCloseout = await new WorkflowReadModel({ dbFile }).incidentCloseout(workflowId, {
+    incidentId: "incident-legacy-closeout"
+  });
+  assert.equal(legacyIncidentCloseout.incidentId, "incident-legacy-closeout");
+  assert.equal(legacyIncidentCloseout.selectedIncident.status, "active");
+  assert.equal(legacyIncidentCloseout.checklist.find((row) => row.key === "dead_letter_evidence_current")?.status, "pass");
+  assert.equal(legacyIncidentCloseout.checklist.find((row) => row.key === "dead_letter_evidence_current")?.severity, "warning");
+  assert.equal(legacyIncidentCloseout.checklist.find((row) => row.key === "side_effect_boundary")?.status, "pass");
+  assert.equal(legacyIncidentCloseout.checklist.find((row) => row.key === "side_effect_boundary")?.severity, "warning");
+  const nestedOtherWorkflowCloseout = await new WorkflowReadModel({ dbFile }).incidentCloseout(workflowId, {
+    incidentId: "incident-nested-other-workflow"
+  });
+  assert.equal(nestedOtherWorkflowCloseout.status, "not_found");
+  const deadLetterOtherWorkflowCloseout = await new WorkflowReadModel({ dbFile }).incidentCloseout(workflowId, {
+    incidentId: "incident-deadletter-other-workflow"
+  });
+  assert.equal(deadLetterOtherWorkflowCloseout.status, "not_found");
+  const malformedLegacyCloseout = await new WorkflowReadModel({ dbFile }).incidentCloseout(workflowId, {
+    incidentId: "incident-malformed-legacy"
+  });
+  assert.equal(malformedLegacyCloseout.incidentId, "incident-malformed-legacy");
+  assert.equal(malformedLegacyCloseout.checklist.find((row) => row.key === "dead_letter_evidence_current")?.severity, "warning");
+  const closeoutCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  };
   const catClawCloseoutPreview = await runAction(root, {
     action: "workflow.incident.closeout.cat_claw_report.preview",
     workflowId,

@@ -537,9 +537,29 @@ function parseIncidentRow(row = {}) {
 }
 
 function incidentWorkflowWhereSql(workflowExpr, alias = "incident_states") {
+  const column = `${alias}.payload_json`;
   return `(${workflowPayloadWhereSql(workflowExpr, alias, { parent: false })}
-    OR json_extract(${alias}.payload_json, '$.deadLetter.workflowId')=${workflowExpr}
-    OR json_extract(${alias}.payload_json, '$.deadLetter.workflow_id')=${workflowExpr})`;
+    OR (json_valid(${column}) AND (
+      json_extract(${column}, '$.deadLetter.workflowId')=${workflowExpr}
+      OR json_extract(${column}, '$.deadLetter.workflow_id')=${workflowExpr}
+    )))`;
+}
+
+function incidentHasAnyWorkflowLinkSql(alias = "incident_states") {
+  const column = `${alias}.payload_json`;
+  return `(json_valid(${column}) AND (
+    COALESCE(json_extract(${column}, '$.workflowId'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.workflow_id'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.workflow.workflowId'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.workflow.id'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.payload.workflowId'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.payload.workflow_id'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.payload.workflow.id'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.raw.workflowId'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.raw.workflow_id'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.deadLetter.workflowId'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.deadLetter.workflow_id'), '') != ''
+  ))`;
 }
 
 function buttonRoleText(button = {}) {
@@ -2919,10 +2939,12 @@ LIMIT 120;`) : Promise.resolve([])
     if (!String(workflowId || "").trim()) return empty;
     if (!(await tableExists(this.paths.dbFile, "incident_states"))) return empty;
     const incidentId = String(query.incidentId || query.incident_id || "").trim();
+    const workflowLinkedWhere = incidentWorkflowWhereSql(sqlValue(workflowId), "incident_states");
     const incidentWhere = [
-      incidentWorkflowWhereSql(sqlValue(workflowId), "incident_states")
+      incidentId
+        ? `(incident_id=${sqlValue(incidentId)} AND (${workflowLinkedWhere} OR NOT ${incidentHasAnyWorkflowLinkSql("incident_states")}))`
+        : workflowLinkedWhere
     ];
-    if (incidentId) incidentWhere.push(`incident_id=${sqlValue(incidentId)}`);
     const incidentRows = await sqlite(this.paths.dbFile, `
 SELECT incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at
 FROM incident_states
@@ -2942,6 +2964,8 @@ LIMIT 80;`);
     const catClawAuditId = String(selectedPayload.catClawAuditId || selectedPayload.cat_claw_audit_id || selectedPayload.secretaryAuditId || "").trim();
     const operatorReason = String(selectedPayload.operatorReason || selectedPayload.operator_reason || "").trim();
     const hasDeadLetterInput = Boolean(deadLetter.kind && deadLetter.refId);
+    const legacyIncident = !hasDeadLetterInput;
+    const createdByAction = String(selectedPayload.createdByAction || "").trim();
     const [
       workflowTimeline,
       humanGateReadiness,
@@ -3021,10 +3045,13 @@ LIMIT 120;`) : [];
       ),
       closeoutCheck(
         "dead_letter_evidence_current",
-        "Dead-letter evidence is current",
-        Boolean(deadLetterEvidence?.found && deadLetterEvidence?.incidentCandidate),
-        deadLetterEvidence?.found ? `${deadLetter.kind}/${deadLetter.refId} is still a current candidate.` : "Dead-letter row no longer matches a current predicate or is missing.",
-        [deadLetter.refId]
+        legacyIncident ? "Legacy incident has no dead-letter link" : "Dead-letter evidence is current",
+        legacyIncident || Boolean(deadLetterEvidence?.found && deadLetterEvidence?.incidentCandidate),
+        legacyIncident
+          ? "Legacy incident payload has no deadLetter reference; use incident fields, timeline, receipts, and Cat Claw audit for closeout evidence."
+          : deadLetterEvidence?.found ? `${deadLetter.kind}/${deadLetter.refId} is still a current candidate.` : "Dead-letter row no longer matches a current predicate or is missing.",
+        [deadLetter.refId],
+        legacyIncident ? "warning" : "required"
       ),
       closeoutCheck(
         "human_gate_evidence",
@@ -3057,11 +3084,14 @@ LIMIT 120;`) : [];
       closeoutCheck(
         "side_effect_boundary",
         "No automatic repair or side-effect mutation",
-        selectedPayload.createdByAction === "workflow.incident.from_dead_letter",
-        selectedPayload.createdByAction === "workflow.incident.from_dead_letter"
+        createdByAction === "workflow.incident.from_dead_letter" || legacyIncident,
+        createdByAction === "workflow.incident.from_dead_letter"
           ? "Incident was created by the dead-letter linkage path with incident_state_only boundary."
-          : "Incident was not created by the governed dead-letter linkage path.",
-        [selectedPayload.createdByAction]
+          : legacyIncident
+            ? "Legacy incident was not created by the governed dead-letter linkage path; no closeout action should mutate runtime, workflow status, delivery, or side effects."
+            : "Incident was not created by the governed dead-letter linkage path.",
+        [createdByAction],
+        createdByAction === "workflow.incident.from_dead_letter" ? "required" : "warning"
       ),
       closeoutCheck(
         "telegram_delivery_receipt",
