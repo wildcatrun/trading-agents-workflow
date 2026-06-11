@@ -60,7 +60,7 @@ function workflowCliJson(args) {
 }
 
 function isRegistryWriteSetup(input = {}) {
-  return ["runtime.agent", "runtime.agent.upsert", "runtime.participant", "meeting.runtime_participant"].includes(String(input.action || ""));
+  return ["runtime.agent", "runtime.agent.upsert"].includes(String(input.action || ""));
 }
 
 function hasCallerIdentity(input = {}) {
@@ -4533,6 +4533,7 @@ async function testWorkflowPermissionGate() {
     displayName: "猫爪",
     capabilities: {}
   });
+  const dbFile = path.join(root, "tracking.db");
 
   const unknownRegistryWrite = await runAction(root, {
     action: "workflow.permission.check",
@@ -4610,15 +4611,15 @@ async function testWorkflowPermissionGate() {
   });
   assert.equal(meetingParticipantDenied.allowed, false);
   assert.equal(meetingParticipantDenied.action, "meeting.runtime_participant");
-  assert.equal(meetingParticipantDenied.reason, "registry_write_local_codex_only");
+  assert.equal(meetingParticipantDenied.reason, "missing_capability:dispatch.write");
 
-  const meetingParticipantAllowed = await withLocalCodexRegistryWrite(() => runAction(root, {
+  const meetingParticipantAllowed = await runAction(root, {
     action: "workflow.permission.check",
     targetAction: "runtime.participant",
     callerAgent: "local_codex",
     callerRuntime: "local_codex",
     sourceSystem: "local_codex"
-  }));
+  });
   assert.equal(meetingParticipantAllowed.allowed, true);
   assert.equal(meetingParticipantAllowed.action, "meeting.runtime_participant");
 
@@ -4645,7 +4646,8 @@ async function testWorkflowPermissionGate() {
     /workflow permission denied: action=runtime\.agent\.upsert.*reason=registry_write_local_codex_only/
   );
 
-  await withLocalCodexRegistryWrite(() => runAction(root, {
+  const runtimeAgentCountBeforeParticipant = sqliteCount(dbFile, "runtime_agents");
+  await runAction(root, {
     action: "runtime.participant",
     meetingId: "meeting-permission-gate",
     runtime: "hermers",
@@ -4654,7 +4656,23 @@ async function testWorkflowPermissionGate() {
     callerAgent: "local_codex",
     callerRuntime: "local_codex",
     sourceSystem: "local_codex"
-  }));
+  });
+  assert.equal(sqliteCount(dbFile, "runtime_agents"), runtimeAgentCountBeforeParticipant);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "runtime.participant",
+      meetingId: "meeting-permission-gate",
+      runtime: "hermers",
+      agentId: "cat_nose",
+      participantRole: "participant",
+      callerAgent: "local_codex",
+      callerRuntime: "local_codex",
+      sourceSystem: "local_codex"
+    }),
+    /meeting runtime participant requires pre-registered active runtime agent: hermers:cat_nose/
+  );
+  assert.equal(sqliteCount(dbFile, "runtime_agents"), runtimeAgentCountBeforeParticipant);
 
   const allowedMessage = await runAction(root, {
     action: "workflow.permission.check",
@@ -4748,7 +4766,6 @@ async function testWorkflowPermissionGate() {
     /workflow permission denied: action=runtime\.bridge\.drain/
   );
 
-  const dbFile = path.join(root, "tracking.db");
   const deniedEvent = sqliteJson(dbFile, `
 SELECT event_type AS eventType, status, source_agent AS sourceAgent, payload_json AS payloadJson
 FROM workflow_events

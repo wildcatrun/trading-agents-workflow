@@ -327,7 +327,7 @@ const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.session_run.complete": { capability: "session.run", risk: "medium", mutating: true },
   "runtime.agent.upsert": { capability: "registry.write", risk: "high", mutating: true, requiresCatClawAudit: true },
   "route_shell.ingest": { capability: "message_flow.send", risk: "low", mutating: true },
-  "meeting.runtime_participant": { capability: "registry.write", risk: "high", mutating: true },
+  "meeting.runtime_participant": { capability: "dispatch.write", risk: "medium", mutating: true },
   "telegram.live": { capability: "telegram.configure", risk: "high", mutating: true, requiresCatClawAudit: true },
   "meeting.dispatch": { capability: "dispatch.write", risk: "high", mutating: true },
   "meeting.ingest": { capability: "receipt.write", risk: "medium", mutating: true },
@@ -365,8 +365,7 @@ const WORKFLOW_ACTION_PERMISSION_RULES = {
 };
 
 const WORKFLOW_REGISTRY_WRITE_ACTIONS = new Set([
-  "runtime.agent.upsert",
-  "meeting.runtime_participant"
+  "runtime.agent.upsert"
 ]);
 
 const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
@@ -12170,7 +12169,13 @@ export async function runtimeAgentUpsert(rootDir, input) {
 export async function meetingRuntimeParticipant(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
-  const agent = await ensureRuntimeAgent(paths, input);
+  const runtime = normalizeRuntime(input.runtime || input.runtimeKey || input.runtime_key || input.platform);
+  const agentId = normalizeAgentId(input.agentId || input.agent_id);
+  const row = await findActiveRuntimeAgent(paths, runtime, agentId);
+  if (!row) {
+    throw new Error(`meeting runtime participant requires pre-registered active runtime agent: ${runtime}:${agentId}`);
+  }
+  const agent = { agentKey: row.agent_key, runtime: row.runtime, agentId: row.agent_id };
   const createdAt = nowIso();
   const participantRole = String(input.participantRole || input.participant_role || input.role || "participant").trim();
   await sqlite(paths.dbFile, `
