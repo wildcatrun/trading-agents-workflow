@@ -155,6 +155,7 @@ const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.resume.preview",
   "workflow.stop.preview",
   "workflow.incident.from_dead_letter.preview",
+  "workflow.control_loop.job.requeue.preview",
   "workflow.incident.closeout.cat_claw_report.preview",
   "workflow.incident.closeout.human_gate_package.preview",
   "workflow.incident.closeout.artifact.preview",
@@ -211,6 +212,14 @@ const WORKFLOW_ACTION_ALIASES = {
   "workflow.incident.dead_letter": "workflow.incident.from_dead_letter",
   "workflow.incident.dead-letter": "workflow.incident.from_dead_letter",
   "workflow.incident.from_dead-letter": "workflow.incident.from_dead_letter",
+  "workflow.control_loop.job.retry.preview": "workflow.control_loop.job.requeue.preview",
+  "workflow.control_loop.job.retry": "workflow.control_loop.job.requeue",
+  "workflow.control-loop.job.requeue.preview": "workflow.control_loop.job.requeue.preview",
+  "workflow.control-loop.job.requeue": "workflow.control_loop.job.requeue",
+  "workflow.job.requeue.preview": "workflow.control_loop.job.requeue.preview",
+  "workflow.job.requeue": "workflow.control_loop.job.requeue",
+  "control_loop.job.requeue.preview": "workflow.control_loop.job.requeue.preview",
+  "control_loop.job.requeue": "workflow.control_loop.job.requeue",
   "workflow.incident.closeout.report.preview": "workflow.incident.closeout.cat_claw_report.preview",
   "workflow.incident.closeout.cat-claw-report.preview": "workflow.incident.closeout.cat_claw_report.preview",
   "workflow.incident.closeout.hgate.preview": "workflow.incident.closeout.human_gate_package.preview",
@@ -319,6 +328,7 @@ const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.stop": { capability: "workflow.operate", risk: "high", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
   "workflow.supervise": { capability: "workflow.operate", risk: "high", mutating: true },
   "workflow.control_loop.tick": { capability: "workflow.operate", risk: "high", mutating: true },
+  "workflow.control_loop.job.requeue": { capability: "workflow.operate", risk: "medium", mutating: true },
   "workflow.schedule.upsert": { capability: "schedule.write", risk: "high", mutating: true, requiresCatClawAudit: true },
   "workflow.schedule.pause": { capability: "schedule.write", risk: "high", mutating: true },
   "workflow.schedule.resume": { capability: "schedule.write", risk: "high", mutating: true },
@@ -3660,8 +3670,8 @@ function healthRecommendationFor(blocker) {
     stale_sent_dispatches: ["workflow.dispatch.reconcile", "runtime.bridge.drain"],
     stale_queued_dispatches: ["workflow.control_loop.tick", "runtime.bridge.drain"],
     failed_dispatches: ["workflow.dispatch.reconcile", "workflow.incident.from_dead_letter.preview"],
-    failed_control_loop_jobs: ["workflow.incident.from_dead_letter.preview"],
-    expired_control_loop_leases: ["workflow.control_loop.tick", "workflow.incident.from_dead_letter.preview"],
+    failed_control_loop_jobs: ["workflow.control_loop.job.requeue.preview", "workflow.incident.from_dead_letter.preview"],
+    expired_control_loop_leases: ["workflow.control_loop.job.requeue.preview", "workflow.control_loop.tick", "workflow.incident.from_dead_letter.preview"],
     message_flow_delivery_missing: ["message_flow.reconcile", "workflow.incident.from_dead_letter.preview"],
     stale_human_gate: ["human_gate.inbox", "human_gate.request"],
     pending_human_gate_without_buttons: ["human_gate.inbox"],
@@ -17391,6 +17401,223 @@ WHERE job_id=${sqlValue(job.job_id)}
   return { status: retry ? "retry_scheduled" : "failed", error: message, nextRunAt };
 }
 
+function controlLoopJobSummary(row = {}) {
+  return {
+    jobId: row.job_id || "",
+    jobType: row.job_type || "",
+    dedupeKey: row.dedupe_key || "",
+    priority: row.priority || "",
+    status: row.status || "",
+    workflowId: row.workflow_id || "",
+    runtime: row.runtime || "",
+    attempt: Number(row.attempt || 0),
+    maxAttempts: Number(row.max_attempts || 0),
+    nextRunAt: row.next_run_at || "",
+    leaseOwner: row.lease_owner || "",
+    leaseUntil: row.lease_until || "",
+    lastError: redactSensitiveTextForPersistence(row.last_error || ""),
+    completedAt: row.completed_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+async function workflowControlLoopJobRequeuePreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const jobId = firstText(input.jobId, input.job_id, input.refId, input.ref_id);
+  if (!jobId) throw new Error("jobId is required");
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const workflowClause = workflowId ? `AND workflow_id=${sqlValue(workflowId)}` : "";
+  const generatedAt = nowIso();
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM control_loop_jobs
+WHERE job_id=${sqlValue(jobId)}
+  ${workflowClause}
+LIMIT 1;`, { json: true });
+  const row = rows[0] || null;
+  const violations = [];
+  if (!row) {
+    violations.push({ code: "job_not_found", detail: "No matching control_loop_jobs row exists for the requested jobId/workflowId." });
+  }
+  const activeStatuses = [...CONTROL_LOOP_ACTIVE_JOB_STATUSES];
+  let activeConflict = null;
+  if (row?.dedupe_key) {
+    const conflictRows = await sqlite(paths.dbFile, `
+SELECT job_id, status
+FROM control_loop_jobs
+WHERE dedupe_key=${sqlValue(row.dedupe_key)}
+  AND job_id != ${sqlValue(row.job_id)}
+  AND status IN (${sqlStringList(activeStatuses)})
+ORDER BY updated_at DESC
+LIMIT 1;`, { json: true });
+    activeConflict = conflictRows[0] || null;
+    if (activeConflict) {
+      violations.push({ code: "active_dedupe_conflict", detail: `Active job ${activeConflict.job_id} already owns dedupe_key ${row.dedupe_key}.` });
+    }
+  }
+  const status = String(row?.status || "").trim();
+  const expiredLease = status === "running" && String(row?.lease_until || "").trim() && String(row.lease_until) <= generatedAt;
+  const failedTerminal = ["failed", "dead_letter"].includes(status);
+  if (row && !failedTerminal && !expiredLease) {
+    violations.push({ code: "status_not_requeueable", detail: `Only failed/dead_letter jobs or expired running leases can be requeued; current status is ${status || "unknown"}.` });
+  }
+  const resetAttempt = boundedNumber([input.resetAttempt, input.reset_attempt], 0, 0, Math.max(0, Number(row?.max_attempts || 20)));
+  const nextRunAt = firstText(input.nextRunAt, input.next_run_at, generatedAt);
+  const operatorReason = firstText(input.requeueOperatorReason, input.requeue_operator_reason, input.operatorReason, input.operator_reason, input.reason);
+  const eligible = violations.length === 0;
+  return {
+    schemaVersion: "workflow_control_loop_job_requeue_preview.v1",
+    action: "workflow.control_loop.job.requeue.preview",
+    preview: true,
+    readOnly: true,
+    eligible,
+    governanceReady: eligible && Boolean(operatorReason),
+    generatedAt,
+    jobId,
+    workflowId: workflowId || row?.workflow_id || "",
+    currentJob: row ? controlLoopJobSummary(row) : null,
+    activeDedupeConflict: activeConflict ? { jobId: activeConflict.job_id, status: activeConflict.status } : null,
+    requeuePlan: row ? {
+      nextStatus: "queued",
+      resetAttempt,
+      nextRunAt,
+      clearLease: true,
+      clearLastError: true,
+      clearCompletedAt: true,
+      preserveEvidenceInPayloadHistory: true
+    } : null,
+    wouldMutate: row ? {
+      controlLoopJobs: eligible ? 1 : 0,
+      workflowEvents: eligible ? 1 : 0,
+      dispatches: 0,
+      runtimeRuns: 0,
+      messageFlows: 0,
+      outbox: 0,
+      humanGate: 0,
+      sideEffects: 0
+    } : { controlLoopJobs: 0, workflowEvents: 0 },
+    requiredEvidence: ["operatorReason or requeueOperatorReason"],
+    violations,
+    limitations: [
+      "Preview is read-only and does not change queue state.",
+      "Execution only requeues the selected control_loop_jobs row and writes one workflow event.",
+      "Execution does not run the job, dispatch agents, deliver Telegram, resume Human Gate, or mutate trading state."
+    ],
+    dbFile: paths.dbFile
+  };
+}
+
+async function workflowControlLoopJobRequeue(rootDir, input = {}, permissionDecision = null) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const preview = await workflowControlLoopJobRequeuePreview(rootDir, input);
+  if (!preview.eligible) {
+    throw new Error(`control-loop job is not requeueable: ${preview.violations.map((item) => item.code).join(",") || "unknown"}`);
+  }
+  const operatorReason = firstText(input.requeueOperatorReason, input.requeue_operator_reason, input.operatorReason, input.operator_reason, input.reason);
+  if (!operatorReason) throw new Error("operatorReason is required to requeue a control-loop job");
+  const row = (await sqlite(paths.dbFile, `SELECT * FROM control_loop_jobs WHERE job_id=${sqlValue(preview.jobId)} LIMIT 1;`, { json: true }))[0];
+  if (!row) throw new Error(`control-loop job disappeared before requeue: ${preview.jobId}`);
+  const requeuedAt = nowIso();
+  const resetAttempt = preview.requeuePlan.resetAttempt;
+  const nextRunAt = preview.requeuePlan.nextRunAt || requeuedAt;
+  const payload = parseJsonValue(row.payload_json, {});
+  const requeueHistory = Array.isArray(payload.requeueHistory) ? payload.requeueHistory.slice(-9) : [];
+  requeueHistory.push(redactSensitiveForPersistence({
+    requeuedAt,
+    operatorReason,
+    requestedBy: permissionDecision?.caller?.agentId || firstText(input.actor, input.requester, input.callerAgent, input.caller_agent, "unknown"),
+    previous: {
+      status: row.status || "",
+      attempt: Number(row.attempt || 0),
+      nextRunAt: row.next_run_at || "",
+      leaseOwner: row.lease_owner || "",
+      leaseUntil: row.lease_until || "",
+      lastError: row.last_error || "",
+      completedAt: row.completed_at || "",
+      result: parseJsonValue(row.result_json, {})
+    }
+  }));
+  const nextPayload = {
+    ...payload,
+    requeueHistory,
+    requeue: {
+      lastRequeuedAt: requeuedAt,
+      lastRequeuedBy: permissionDecision?.caller?.agentId || firstText(input.actor, input.requester, input.callerAgent, input.caller_agent, "unknown"),
+      resetAttempt,
+      nextRunAt,
+      reason: redactSensitiveTextForPersistence(operatorReason)
+    }
+  };
+  const persistedPayload = redactSensitiveForPersistence(nextPayload);
+  const activeStatuses = sqlStringList([...CONTROL_LOOP_ACTIVE_JOB_STATUSES]);
+  const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE control_loop_jobs
+SET status='queued',
+    attempt=${sqlValue(resetAttempt)},
+    next_run_at=${sqlValue(nextRunAt)},
+    lease_owner='',
+    lease_until='',
+    last_error='',
+    completed_at='',
+    result_json='{}',
+    payload_json=${sqlValue(JSON.stringify(persistedPayload))},
+    updated_at=${sqlValue(requeuedAt)}
+WHERE job_id=${sqlValue(row.job_id)}
+  AND (
+    status IN ('failed','dead_letter')
+    OR (status='running' AND COALESCE(lease_until,'') != '' AND lease_until <= ${sqlValue(preview.generatedAt)})
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM control_loop_jobs other
+    WHERE other.dedupe_key=${sqlValue(row.dedupe_key)}
+      AND other.job_id != ${sqlValue(row.job_id)}
+      AND other.status IN (${activeStatuses})
+  );`);
+  if (changed !== 1) {
+    throw new Error(`control-loop job requeue lost race or became ineligible: ${row.job_id}`);
+  }
+  await appendWorkflowEvent(paths, {
+    eventType: "control_loop.job.requeued",
+    status: "queued",
+    workflowId: row.workflow_id || "",
+    actor: permissionDecision?.caller?.agentId || firstText(input.actor, input.requester, input.callerAgent, input.caller_agent, "workflow"),
+    sourceRuntime: permissionDecision?.caller?.runtime || firstText(input.callerRuntime, input.caller_runtime, "workflow"),
+    previousState: row.status || "",
+    nextState: "queued",
+    eventId: safeId("workflow_event.requeue"),
+    idempotencyKey: "",
+    payload: {
+      jobId: row.job_id,
+      jobType: row.job_type || "",
+      dedupeKey: row.dedupe_key || "",
+      previousAttempt: Number(row.attempt || 0),
+      resetAttempt,
+      nextRunAt,
+      operatorReason: redactSensitiveTextForPersistence(operatorReason)
+    },
+    createdAt: requeuedAt
+  });
+  const latest = (await sqlite(paths.dbFile, `SELECT * FROM control_loop_jobs WHERE job_id=${sqlValue(row.job_id)} LIMIT 1;`, { json: true }))[0];
+  return {
+    schemaVersion: "workflow_control_loop_job_requeue_result.v1",
+    action: "workflow.control_loop.job.requeue",
+    status: "queued",
+    requeued: true,
+    requeuedAt,
+    jobId: row.job_id,
+    workflowId: row.workflow_id || "",
+    previousStatus: row.status || "",
+    currentJob: controlLoopJobSummary(latest || row),
+    writeBoundary: "control_loop_job_only",
+    didRunJob: false,
+    didDispatchAgent: false,
+    didDeliverTelegram: false,
+    didMutateTradingState: false,
+    dbFile: paths.dbFile
+  };
+}
+
 async function runControlLoopJob(rootDir, paths, job, input = {}) {
   const payload = parseJsonValue(job.payload_json, {});
   if (job.job_type === "workflow_supervise") {
@@ -17734,6 +17961,10 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return workflowInterventionPreview(rootDir, input);
     case "workflow.incident.from_dead_letter.preview":
       return workflowIncidentFromDeadLetterPreview(rootDir, input);
+    case "workflow.control_loop.job.requeue.preview":
+      return workflowControlLoopJobRequeuePreview(rootDir, input);
+    case "workflow.control_loop.job.requeue":
+      return workflowControlLoopJobRequeue(rootDir, input, permissionDecision);
     case "workflow.incident.closeout.cat_claw_report.preview":
     case "workflow.incident.closeout.human_gate_package.preview":
       return workflowIncidentCloseoutPreview(rootDir, input);

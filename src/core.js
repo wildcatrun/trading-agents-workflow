@@ -1225,6 +1225,7 @@ export async function runAction(rootDir, input = {}) {
     action.startsWith("runtime.") ||
     action.startsWith("route_shell.") ||
     action.startsWith("route-shell.") ||
+    action.startsWith("control_loop.") ||
     action === "dispatch.reconcile" ||
     action === "stale_dispatch.reconcile" ||
     action.startsWith("side_effect.") ||

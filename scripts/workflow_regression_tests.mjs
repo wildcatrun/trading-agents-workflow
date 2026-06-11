@@ -2010,6 +2010,164 @@ ORDER BY created_at ASC;`);
   assert.equal(partialView.results[0].verificationId, "partial-verification");
 }
 
+async function testControlLoopJobRequeue() {
+  const root = await tempRoot("control-loop-job-requeue");
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId: "wf-job-requeue",
+    status: "active",
+    summary: "Control loop job requeue regression"
+  });
+  const dbFile = path.join(root, "tracking.db");
+  const bridgeDir = path.join(root, "bridge");
+  sqliteExec(dbFile, `
+INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at)
+VALUES
+  ('job-requeue-failed', 'runtime_drain', 'runtime_drain:hermers:job-requeue-failed', 'high', 'failed', 'wf-job-requeue', 'hermers', '{"dispatchId":"dispatch-requeue-failed","token":"payload-secret"}', '{"error":"result token result-secret"}', 3, 5, '2026-05-31T00:00:00.000Z', '', '', 'failed token job-secret', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '2026-05-31T00:00:02.000Z'),
+  ('job-requeue-expired', 'message_flow_reconcile', 'message_flow_reconcile:expired', 'normal', 'running', 'wf-job-requeue', '', '{}', '{}', 2, 5, '2026-05-31T00:00:00.000Z', 'worker-expired', '2000-01-01T00:00:00.000Z', 'lease token lease-secret', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', ''),
+  ('job-requeue-fresh', 'message_flow_reconcile', 'message_flow_reconcile:fresh', 'normal', 'running', 'wf-job-requeue', '', '{}', '{}', 1, 5, '2026-05-31T00:00:00.000Z', 'worker-fresh', '2999-01-01T00:00:00.000Z', 'fresh lease', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', ''),
+  ('job-requeue-conflict-failed', 'runtime_drain', 'runtime_drain:conflict', 'high', 'failed', 'wf-job-requeue', 'hermers', '{}', '{}', 3, 5, '2026-05-31T00:00:00.000Z', '', '', 'conflict failed', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', ''),
+  ('job-requeue-conflict-active', 'runtime_drain', 'runtime_drain:conflict', 'high', 'queued', 'wf-job-requeue', 'hermers', '{}', '{}', 0, 5, '2026-05-31T00:00:00.000Z', '', '', '', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '');
+`);
+
+  const gateway = new WorkflowActionGateway({ root, dbFile, bridgeDir });
+  const gatewayPreview = await gateway.handle({
+    action: "workflow.control_loop.job.requeue.preview",
+    actor: "flashcat",
+    reason: "preview control loop job requeue token=preview-secret",
+    payload: {
+      workflowId: "wf-job-requeue",
+      jobId: "job-requeue-failed",
+      requeueOperatorReason: "operator reason"
+    }
+  });
+  assert.equal(gatewayPreview.ok, true);
+  assert.equal(gatewayPreview.dryRun, true);
+  assert.equal(gatewayPreview.result.schemaVersion, "workflow_control_loop_job_requeue_preview.v1");
+  assert.equal(gatewayPreview.result.eligible, true);
+  assert.equal(JSON.stringify(gatewayPreview).includes("preview-secret"), false);
+  assert.equal(JSON.stringify(gatewayPreview).includes("job-secret"), false);
+
+  const notAllowed = await gateway.handle({
+    action: "workflow.control_loop.job.requeue",
+    actor: "flashcat",
+    reason: "console write should require allowWrites",
+    payload: { workflowId: "wf-job-requeue", jobId: "job-requeue-failed", operatorReason: "manual requeue" }
+  });
+  assert.equal(notAllowed.ok, false);
+  assert.equal(notAllowed.errorCode, "action_not_allowed");
+
+  const noReasonPreview = await runAction(root, {
+    action: "workflow.control_loop.job.requeue.preview",
+    workflowId: "wf-job-requeue",
+    jobId: "job-requeue-failed"
+  });
+  assert.equal(noReasonPreview.eligible, true);
+  assert.equal(noReasonPreview.governanceReady, false);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.control_loop.job.requeue",
+      workflowId: "wf-job-requeue",
+      jobId: "job-requeue-failed"
+    }),
+    /operatorReason is required/
+  );
+
+  await runAction(root, {
+    action: "workflow.event.append",
+    workflowId: "wf-job-requeue",
+    eventType: "test.idempotency_conflict_seed",
+    status: "recorded",
+    idempotencyKey: "user-conflict",
+    payload: { note: "existing event should not block job requeue" }
+  });
+  const requeued = await runAction(root, {
+    action: "workflow.control_loop.job.requeue",
+    workflowId: "wf-job-requeue",
+    jobId: "job-requeue-failed",
+    idempotencyKey: "user-conflict",
+    operatorReason: "retry after transient worker failure token=operator-secret",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex"
+  });
+  assert.equal(requeued.schemaVersion, "workflow_control_loop_job_requeue_result.v1");
+  assert.equal(requeued.status, "queued");
+  assert.equal(requeued.didRunJob, false);
+  assert.equal(requeued.didDispatchAgent, false);
+  const failedRow = sqliteJson(dbFile, `
+SELECT status, attempt, next_run_at AS nextRunAt, lease_owner AS leaseOwner, lease_until AS leaseUntil,
+  last_error AS lastError, completed_at AS completedAt, result_json AS resultJson, payload_json AS payloadJson
+FROM control_loop_jobs
+WHERE job_id='job-requeue-failed'
+LIMIT 1;`)[0];
+  assert.equal(failedRow.status, "queued");
+  assert.equal(failedRow.attempt, 0);
+  assert.equal(failedRow.leaseOwner, "");
+  assert.equal(failedRow.leaseUntil, "");
+  assert.equal(failedRow.lastError, "");
+  assert.equal(failedRow.completedAt, "");
+  assert.equal(failedRow.resultJson, "{}");
+  assert.equal(failedRow.payloadJson.includes("job-secret"), false);
+  assert.equal(failedRow.payloadJson.includes("result-secret"), false);
+  assert.equal(failedRow.payloadJson.includes("operator-secret"), false);
+  assert.equal(failedRow.payloadJson.includes("payload-secret"), false);
+  const failedPayload = JSON.parse(failedRow.payloadJson);
+  assert.equal(Array.isArray(failedPayload.requeueHistory), true);
+  assert.equal(failedPayload.requeueHistory.length, 1);
+  assert.equal(failedPayload.requeueHistory[0].previous.status, "failed");
+  assert.equal(failedPayload.requeue.reason.includes("[redacted]"), true);
+
+  const expiredRequeued = await runAction(root, {
+    action: "workflow.control-loop.job.requeue",
+    workflowId: "wf-job-requeue",
+    jobId: "job-requeue-expired",
+    resetAttempt: 1,
+    operatorReason: "expired lease reclaim"
+  });
+  assert.equal(expiredRequeued.previousStatus, "running");
+  const expiredRow = sqliteJson(dbFile, `
+SELECT status, attempt, lease_owner AS leaseOwner, lease_until AS leaseUntil, last_error AS lastError
+FROM control_loop_jobs
+WHERE job_id='job-requeue-expired'
+LIMIT 1;`)[0];
+  assert.deepEqual(expiredRow, {
+    status: "queued",
+    attempt: 1,
+    leaseOwner: "",
+    leaseUntil: "",
+    lastError: ""
+  });
+
+  const freshPreview = await runAction(root, {
+    action: "control_loop.job.requeue.preview",
+    workflowId: "wf-job-requeue",
+    jobId: "job-requeue-fresh",
+    operatorReason: "fresh lease should not be stolen"
+  });
+  assert.equal(freshPreview.eligible, false);
+  assert.equal(Boolean(freshPreview.violations.some((row) => row.code === "status_not_requeueable")), true);
+
+  const conflictPreview = await runAction(root, {
+    action: "workflow.job.requeue.preview",
+    workflowId: "wf-job-requeue",
+    jobId: "job-requeue-conflict-failed",
+    operatorReason: "conflict should block"
+  });
+  assert.equal(conflictPreview.eligible, false);
+  assert.equal(Boolean(conflictPreview.violations.some((row) => row.code === "active_dedupe_conflict")), true);
+
+  const events = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, workflow_id AS workflowId, payload_json AS payloadJson
+FROM workflow_events
+WHERE event_type='control_loop.job.requeued'
+ORDER BY created_at;`);
+  assert.equal(events.length, 2);
+  assert.equal(events.every((row) => row.status === "queued"), true);
+  assert.equal(events.every((row) => row.workflowId === "wf-job-requeue"), true);
+  assert.equal(JSON.stringify(events).includes("operator-secret"), false);
+}
+
 async function testWorkflowEvaluatorEvidence() {
   const root = await tempRoot("workflow-evaluator");
   const workflowId = "workflow-evaluator-regression";
@@ -6005,6 +6163,7 @@ try {
     ["workflow intervention previews", testWorkflowInterventionPreviews],
     ["workflow intervention execution", testWorkflowInterventionExecution],
     ["workflow verification results", testWorkflowVerificationResults],
+    ["control_loop job requeue", testControlLoopJobRequeue],
     ["workflow evaluator evidence", testWorkflowEvaluatorEvidence],
     ["human_gate pending cleanup/retry", testHumanGatePendingCleanupAndRetryRedaction],
     ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
