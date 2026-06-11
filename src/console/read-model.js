@@ -2960,9 +2960,19 @@ LIMIT 80;`);
 
     const selectedPayload = selectedIncident.payload || {};
     const deadLetter = selectedPayload.deadLetter || {};
-    const humanGateId = String(selectedPayload.humanGateId || selectedPayload.human_gate_id || "").trim();
-    const catClawAuditId = String(selectedPayload.catClawAuditId || selectedPayload.cat_claw_audit_id || selectedPayload.secretaryAuditId || "").trim();
-    const operatorReason = String(selectedPayload.operatorReason || selectedPayload.operator_reason || "").trim();
+    const humanGateEvidenceRefs = uniqueNonEmpty([
+      selectedPayload.humanGateId,
+      selectedPayload.human_gate_id,
+      selectedPayload.humanGateEvidence,
+      selectedPayload.human_gate_evidence,
+      selectedPayload.riskDecisionId,
+      selectedPayload.risk_decision_id,
+      selectedPayload.flashcatOriginalWords,
+      selectedPayload.flashcat_original_words
+    ]);
+    const humanGateId = humanGateEvidenceRefs[0] || "";
+    const catClawAuditId = String(selectedPayload.catClawAuditId || selectedPayload.cat_claw_audit_id || selectedPayload.secretaryAuditId || selectedPayload.secretary_audit_id || selectedPayload.catClawAudit || selectedPayload.cat_claw_audit || "").trim();
+    const operatorReason = String(selectedPayload.operatorReason || selectedPayload.operator_reason || selectedPayload.closeoutEvidence?.operatorReason || selectedPayload.closeoutEvidence?.operator_reason || "").trim();
     const hasDeadLetterInput = Boolean(deadLetter.kind && deadLetter.refId);
     const legacyIncident = !hasDeadLetterInput;
     const createdByAction = String(selectedPayload.createdByAction || "").trim();
@@ -3058,7 +3068,7 @@ LIMIT 120;`) : [];
         "Human Gate evidence linked",
         Boolean(humanGateId || evidenceHumanGateIds.size || humanGateReadiness.summary?.recordCount),
         humanGateId ? `Linked Human Gate evidence: ${humanGateId}.` : `${humanGateReadiness.summary?.recordCount || 0} workflow Human Gate record(s) available.`,
-        [humanGateId, ...evidenceHumanGateIds]
+        [...humanGateEvidenceRefs, ...evidenceHumanGateIds]
       ),
       closeoutCheck(
         "cat_claw_audit",
@@ -3077,8 +3087,8 @@ LIMIT 120;`) : [];
       closeoutCheck(
         "rollback_boundary",
         "Rollback/stop boundary recorded",
-        Boolean(selectedIncident.rollbackOptions || selectedPayload.incidentCandidate?.rollbackBoundary),
-        selectedIncident.rollbackOptions || selectedPayload.incidentCandidate?.rollbackBoundary || "No rollback or stop boundary is recorded.",
+        Boolean(selectedIncident.rollbackOptions || selectedPayload.incidentCandidate?.rollbackBoundary || selectedPayload.rollbackBoundary || selectedPayload.rollback_boundary || selectedPayload.closeoutEvidence?.rollbackBoundary || selectedPayload.closeoutEvidence?.rollback_boundary),
+        selectedIncident.rollbackOptions || selectedPayload.incidentCandidate?.rollbackBoundary || selectedPayload.rollbackBoundary || selectedPayload.rollback_boundary || selectedPayload.closeoutEvidence?.rollbackBoundary || selectedPayload.closeoutEvidence?.rollback_boundary || "No rollback or stop boundary is recorded.",
         []
       ),
       closeoutCheck(
@@ -3128,6 +3138,7 @@ LIMIT 120;`) : [];
         incidentId: selectedIncident.incidentId,
         deadLetter,
         humanGateId,
+        humanGateEvidenceRefs,
         catClawAuditId,
         workflowEventIds: workflowEvents.map((row) => row.event_id),
         checkpointIds: checkpointRows.map((row) => row.checkpointId || row.checkpoint_id).filter(Boolean),

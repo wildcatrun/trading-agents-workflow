@@ -158,6 +158,7 @@ const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.control_loop.job.requeue.preview",
   "workflow.incident.closeout.cat_claw_report.preview",
   "workflow.incident.closeout.human_gate_package.preview",
+  "workflow.incident.closeout.evidence.preview",
   "workflow.incident.closeout.artifact.preview",
   "workflow.incident.closeout.human_gate_request.preview",
   "telegram.outbox.delivery.preview",
@@ -224,6 +225,10 @@ const WORKFLOW_ACTION_ALIASES = {
   "workflow.incident.closeout.cat-claw-report.preview": "workflow.incident.closeout.cat_claw_report.preview",
   "workflow.incident.closeout.hgate.preview": "workflow.incident.closeout.human_gate_package.preview",
   "workflow.incident.closeout.human-gate-package.preview": "workflow.incident.closeout.human_gate_package.preview",
+  "workflow.incident.closeout.annotate.preview": "workflow.incident.closeout.evidence.preview",
+  "workflow.incident.closeout.annotate": "workflow.incident.closeout.evidence",
+  "workflow.incident.closeout.evidence-record.preview": "workflow.incident.closeout.evidence.preview",
+  "workflow.incident.closeout.evidence-record": "workflow.incident.closeout.evidence",
   "workflow.incident.closeout.persist.preview": "workflow.incident.closeout.artifact.preview",
   "workflow.incident.closeout.persist": "workflow.incident.closeout.artifact",
   "workflow.incident.closeout.hgate-request.preview": "workflow.incident.closeout.human_gate_request.preview",
@@ -368,6 +373,7 @@ const WORKFLOW_ACTION_PERMISSION_RULES = {
   "side_effect.record": { capability: "side_effect.record", risk: "high", mutating: true, requiresCatClawAudit: true },
   "incident.state": { capability: "incident.write", risk: "medium", mutating: true },
   "workflow.incident.from_dead_letter": { capability: "incident.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
+  "workflow.incident.closeout.evidence": { capability: "incident.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
   "workflow.incident.closeout.artifact": { capability: "incident.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
   "workflow.incident.closeout.human_gate_request": { capability: "human_gate.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
   "instrument.upsert": { capability: "research.write", risk: "medium", mutating: true },
@@ -405,6 +411,7 @@ const WORKFLOW_POLICY_HARD_GATE_ACTIONS = new Set([
   "workflow.resume",
   "workflow.stop",
   "workflow.incident.from_dead_letter",
+  "workflow.incident.closeout.evidence",
   "workflow.incident.closeout.artifact",
   "workflow.incident.closeout.human_gate_request",
   "telegram.outbox.delivery"
@@ -11953,6 +11960,212 @@ async function workflowIncidentCloseoutPreview(rootDir, input = {}) {
   };
 }
 
+function closeoutEvidenceInput(input = {}) {
+  return {
+    humanGateEvidence: firstText(
+      input.humanGateEvidence,
+      input.human_gate_evidence,
+      input.humanGateId,
+      input.human_gate_id,
+      input.riskDecisionId,
+      input.risk_decision_id,
+      input.flashcatOriginalWords,
+      input.flashcat_original_words
+    ),
+    humanGateId: firstText(input.humanGateId, input.human_gate_id),
+    riskDecisionId: firstText(input.riskDecisionId, input.risk_decision_id),
+    flashcatOriginalWords: firstText(input.flashcatOriginalWords, input.flashcat_original_words),
+    catClawAuditId: firstText(
+      input.catClawAuditId,
+      input.cat_claw_audit_id,
+      input.catClawAudit,
+      input.cat_claw_audit,
+      input.secretaryAuditId,
+      input.secretary_audit_id
+    ),
+    operatorReason: firstText(input.operatorReason, input.operator_reason, input.reason),
+    rollbackBoundary: firstText(input.rollbackBoundary, input.rollback_boundary, input.rollbackOptions, input.rollback_options, input.stopBoundary, input.stop_boundary),
+    evidenceSummary: firstText(input.evidenceSummary, input.evidence_summary, input.summary, input.text)
+  };
+}
+
+function closeoutEvidenceViolations(evidence = {}) {
+  const violations = [];
+  if (!evidence.operatorReason) violations.push({ code: "operator_reason_required", detail: "operatorReason is required before recording closeout evidence." });
+  if (!evidence.rollbackBoundary) violations.push({ code: "rollback_boundary_required", detail: "rollbackBoundary or rollbackOptions is required before recording closeout evidence." });
+  if (!evidence.catClawAuditId) violations.push({ code: "cat_claw_audit_required", detail: "Cat Claw audit or secretary audit evidence is required before recording closeout evidence." });
+  if (!evidence.humanGateEvidence) violations.push({ code: "human_gate_evidence_required", detail: "Human Gate evidence, risk decision, or Flashcat original words are required before recording closeout evidence." });
+  return violations;
+}
+
+async function workflowIncidentCloseoutEvidencePreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const incidentId = String(input.incidentId || input.incident_id || "").trim();
+  if (!incidentId) throw new Error("incidentId is required");
+  const generatedAt = nowIso();
+  const readModel = new WorkflowReadModel({ dbFile: paths.dbFile });
+  const closeoutBefore = await readModel.incidentCloseout(workflowId, {
+    incidentId,
+    limit: input.limit || input.timelineLimit || input.timeline_limit
+  });
+  const evidence = closeoutEvidenceInput(input);
+  const inputViolations = closeoutEvidenceViolations(evidence);
+  const violations = [];
+  if (!closeoutBefore.selectedIncident) {
+    violations.push({ code: "incident_not_found", detail: "No incident state is linked to this workflow or incident id." });
+  }
+  return {
+    schemaVersion: "workflow_incident_closeout_evidence_preview.v1",
+    action: "workflow.incident.closeout.evidence.preview",
+    preview: true,
+    readOnly: true,
+    writeMode: "read_only_closeout_evidence_preview",
+    generatedAt,
+    workflowId,
+    incidentId,
+    eligible: violations.length === 0,
+    writeReady: violations.length === 0 && inputViolations.length === 0,
+    closeoutStatusBefore: closeoutBefore.status,
+    closeoutCountsBefore: closeoutBefore.counts || {},
+    closeoutChecklistBefore: closeoutBefore.checklist || [],
+    wouldUpdate: {
+      incidentStates: violations.length === 0 ? 1 : 0,
+      workflowEvents: violations.length === 0 ? 1 : 0,
+      payloadFields: ["closeoutEvidence", "operatorReason", "catClawAuditId", "humanGateEvidence", "incidentCandidate.rollbackBoundary"],
+      status: false,
+      resolvedAt: false,
+      humanGateRequests: 0,
+      telegramOutbox: 0,
+      runtimeDispatches: 0,
+      artifacts: 0,
+      sideEffects: 0
+    },
+    evidence: redactSensitiveForPersistence({
+      humanGateEvidence: evidence.humanGateEvidence,
+      humanGateId: evidence.humanGateId,
+      riskDecisionId: evidence.riskDecisionId,
+      flashcatOriginalWords: evidence.flashcatOriginalWords,
+      catClawAuditId: evidence.catClawAuditId,
+      operatorReason: evidence.operatorReason,
+      rollbackBoundary: evidence.rollbackBoundary,
+      evidenceSummary: evidence.evidenceSummary
+    }),
+    violations: [...violations, ...inputViolations],
+    limitations: [
+      "Preview is read-only and does not update incident state.",
+      "Execution records evidence only; it does not close incidents, resolve workflow status, create Human Gate requests, enqueue Telegram, dispatch runtimes, or mutate side effects.",
+      "Formal closeout still requires a separate closeout artifact and Human Gate path."
+    ],
+    dbFile: paths.dbFile
+  };
+}
+
+async function workflowIncidentCloseoutEvidence(rootDir, input = {}, permissionDecision = null) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const preview = await workflowIncidentCloseoutEvidencePreview(rootDir, input);
+  if (!preview.eligible) {
+    throw new Error(`closeout evidence is not eligible: ${preview.violations.map((item) => item.code).join(",") || "unknown"}`);
+  }
+  if (!preview.writeReady) {
+    throw new Error(`closeout evidence is not write-ready: ${preview.violations.map((item) => item.code).join(",") || "unknown"}`);
+  }
+  const evidence = closeoutEvidenceInput(input);
+  const createdAt = nowIso();
+  const createdBy = input.createdBy || input.created_by || input.actor || permissionDecision?.caller?.agentId || "cat_claw";
+  const rows = await sqlite(paths.dbFile, `
+SELECT incident_id, payload_json, rollback_options, timeline_json
+FROM incident_states
+WHERE incident_id=${sqlValue(preview.incidentId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0];
+  if (!row) throw new Error("incident not found");
+  const currentPayload = parseJsonValue(row.payload_json, {});
+  const closeoutEvidence = {
+    schemaVersion: "workflow_incident_closeout_evidence.v1",
+    workflowId: preview.workflowId,
+    incidentId: preview.incidentId,
+    recordedAt: createdAt,
+    recordedBy: createdBy,
+    humanGateEvidence: evidence.humanGateEvidence,
+    humanGateId: evidence.humanGateId,
+    riskDecisionId: evidence.riskDecisionId,
+    flashcatOriginalWords: evidence.flashcatOriginalWords,
+    catClawAuditId: evidence.catClawAuditId,
+    operatorReason: evidence.operatorReason,
+    rollbackBoundary: evidence.rollbackBoundary,
+    evidenceSummary: evidence.evidenceSummary,
+    writeBoundary: "incident_closeout_evidence_only"
+  };
+  const existingEvidence = Array.isArray(currentPayload.closeoutEvidenceHistory) ? currentPayload.closeoutEvidenceHistory : [];
+  const payload = redactSensitiveForPersistence({
+    ...currentPayload,
+    workflowId: preview.workflowId,
+    closeoutEvidence,
+    closeoutEvidenceHistory: [...existingEvidence, closeoutEvidence].slice(-20),
+    operatorReason: evidence.operatorReason,
+    catClawAuditId: evidence.catClawAuditId,
+    humanGateEvidence: evidence.humanGateEvidence,
+    humanGateId: evidence.humanGateId || currentPayload.humanGateId || "",
+    riskDecisionId: evidence.riskDecisionId || currentPayload.riskDecisionId || "",
+    flashcatOriginalWords: evidence.flashcatOriginalWords || currentPayload.flashcatOriginalWords || "",
+    incidentCandidate: {
+      ...(currentPayload.incidentCandidate || {}),
+      rollbackBoundary: evidence.rollbackBoundary
+    }
+  });
+  const timeline = toList(parseJsonValue(row.timeline_json, []));
+  const timelineNote = `${createdAt} closeout evidence recorded by ${createdBy}; boundary=incident_closeout_evidence_only`;
+  const rollbackOptions = evidence.rollbackBoundary || row.rollback_options || "";
+  await sqlite(paths.dbFile, `
+UPDATE incident_states
+SET payload_json=${sqlValue(JSON.stringify(payload))},
+    rollback_options=${sqlValue(rollbackOptions)},
+    timeline_json=${sqlValue(JSON.stringify([...timeline, timelineNote]))},
+    updated_at=${sqlValue(createdAt)}
+WHERE incident_id=${sqlValue(preview.incidentId)};`);
+  await appendWorkflowEvent(paths, {
+    eventType: "incident.closeout_evidence.recorded",
+    status: "recorded",
+    workflowId: preview.workflowId,
+    incidentId: preview.incidentId,
+    actor: createdBy,
+    sourceRuntime: "workflow",
+    sourceAgent: createdBy,
+    nextState: "evidence_recorded",
+    payload: {
+      catClawAuditId: evidence.catClawAuditId,
+      humanGateEvidence: evidence.humanGateEvidence,
+      writeBoundary: "incident_closeout_evidence_only"
+    },
+    createdAt
+  });
+  const closeoutAfter = await new WorkflowReadModel({ dbFile: paths.dbFile }).incidentCloseout(preview.workflowId, {
+    incidentId: preview.incidentId,
+    limit: input.limit || input.timelineLimit || input.timeline_limit
+  });
+  return {
+    schemaVersion: "workflow_incident_closeout_evidence_result.v1",
+    action: "workflow.incident.closeout.evidence",
+    workflowId: preview.workflowId,
+    incidentId: preview.incidentId,
+    recordedAt: createdAt,
+    recordedBy: createdBy,
+    writeBoundary: "incident_closeout_evidence_only",
+    closeoutStatusBefore: preview.closeoutStatusBefore,
+    closeoutStatusAfter: closeoutAfter.status,
+    closeoutCountsAfter: closeoutAfter.counts || {},
+    didCloseIncident: false,
+    didUpdateIncidentStatus: false,
+    didCreateHumanGate: false,
+    didSendTelegram: false,
+    didDispatchRuntime: false,
+    didMutateSideEffects: false,
+    dbFile: paths.dbFile
+  };
+}
+
 function renderCloseoutArtifactMarkdown(record = {}) {
   const draft = record.reportDraft || {};
   const incident = draft.incident || {};
@@ -18126,6 +18339,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.incident.closeout.cat_claw_report.preview":
     case "workflow.incident.closeout.human_gate_package.preview":
       return workflowIncidentCloseoutPreview(rootDir, input);
+    case "workflow.incident.closeout.evidence.preview":
+      return workflowIncidentCloseoutEvidencePreview(rootDir, input);
     case "workflow.incident.closeout.artifact.preview":
       return workflowIncidentCloseoutArtifactPreview(rootDir, input);
     case "workflow.incident.closeout.human_gate_request.preview":
@@ -18294,6 +18509,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return incidentState(rootDir, input);
     case "workflow.incident.from_dead_letter":
       return workflowIncidentFromDeadLetter(rootDir, input, permissionDecision);
+    case "workflow.incident.closeout.evidence":
+      return workflowIncidentCloseoutEvidence(rootDir, input, permissionDecision);
     case "workflow.incident.closeout.artifact":
       return workflowIncidentCloseoutArtifact(rootDir, input, permissionDecision);
     case "workflow.incident.closeout.human_gate_request":

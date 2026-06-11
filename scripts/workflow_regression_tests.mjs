@@ -833,6 +833,87 @@ VALUES ('incident-malformed-legacy', 'active', 'degraded', '["workflow"]', 'Malf
   });
   assert.equal(malformedLegacyCloseout.incidentId, "incident-malformed-legacy");
   assert.equal(malformedLegacyCloseout.checklist.find((row) => row.key === "dead_letter_evidence_current")?.severity, "warning");
+  const evidencePreviewMissing = await runAction(root, {
+    action: "workflow.incident.closeout.evidence.preview",
+    workflowId,
+    incidentId: "incident-legacy-closeout",
+    catClawAuditId: "audit-legacy-closeout"
+  });
+  assert.equal(evidencePreviewMissing.schemaVersion, "workflow_incident_closeout_evidence_preview.v1");
+  assert.equal(evidencePreviewMissing.readOnly, true);
+  assert.equal(evidencePreviewMissing.writeReady, false);
+  assert.equal(Boolean(evidencePreviewMissing.violations.some((row) => row.code === "operator_reason_required")), true);
+  const closeoutEvidenceCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  };
+  const closeoutEvidence = await runAction(root, {
+    action: "workflow.incident.closeout.evidence",
+    workflowId,
+    incidentId: "incident-legacy-closeout",
+    humanGateEvidence: "hg-legacy-closeout-evidence",
+    catClawAuditId: "audit-legacy-closeout",
+    operatorReason: "猫爪复核 legacy incident，可进入 closeout 证据包准备。",
+    rollbackBoundary: "补证动作只更新 incident evidence，不关闭 incident、不创建 Human Gate、不发 Telegram。"
+  });
+  assert.equal(closeoutEvidence.schemaVersion, "workflow_incident_closeout_evidence_result.v1");
+  assert.equal(closeoutEvidence.writeBoundary, "incident_closeout_evidence_only");
+  assert.equal(closeoutEvidence.didCloseIncident, false);
+  assert.equal(closeoutEvidence.didCreateHumanGate, false);
+  assert.equal(closeoutEvidence.didSendTelegram, false);
+  assert.equal(closeoutEvidence.didDispatchRuntime, false);
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  }, {
+    ...closeoutEvidenceCountsBefore,
+    events: closeoutEvidenceCountsBefore.events + 1
+  });
+  const legacyIncidentCloseoutAfterEvidence = await new WorkflowReadModel({ dbFile }).incidentCloseout(workflowId, {
+    incidentId: "incident-legacy-closeout"
+  });
+  assert.equal(legacyIncidentCloseoutAfterEvidence.status, "needs_closeout");
+  assert.equal(legacyIncidentCloseoutAfterEvidence.checklist.find((row) => row.key === "human_gate_evidence")?.status, "pass");
+  assert.equal(legacyIncidentCloseoutAfterEvidence.checklist.find((row) => row.key === "cat_claw_audit")?.status, "pass");
+  assert.equal(legacyIncidentCloseoutAfterEvidence.checklist.find((row) => row.key === "operator_reason")?.status, "pass");
+  assert.equal(legacyIncidentCloseoutAfterEvidence.checklist.find((row) => row.key === "rollback_boundary")?.status, "pass");
+  const closeoutEvidenceIncidentRows = sqliteJson(dbFile, "SELECT status, resolved_at AS resolvedAt, rollback_options AS rollbackOptions, timeline_json AS timelineJson, payload_json AS payloadJson FROM incident_states WHERE incident_id='incident-legacy-closeout';");
+  assert.equal(closeoutEvidenceIncidentRows[0].status, "active");
+  assert.equal(closeoutEvidenceIncidentRows[0].resolvedAt, "");
+  assert.match(closeoutEvidenceIncidentRows[0].rollbackOptions, /不关闭 incident/);
+  const closeoutEvidenceTimeline = JSON.parse(closeoutEvidenceIncidentRows[0].timelineJson);
+  assert.equal(closeoutEvidenceTimeline.some((item) => String(item).includes("boundary=incident_closeout_evidence_only")), true);
+  const closeoutEvidencePayload = JSON.parse(closeoutEvidenceIncidentRows[0].payloadJson);
+  assert.equal(closeoutEvidencePayload.workflowId, workflowId);
+  assert.equal(closeoutEvidencePayload.closeoutEvidence.workflowId, workflowId);
+  assert.equal(closeoutEvidencePayload.closeoutEvidence.incidentId, "incident-legacy-closeout");
+  assert.equal(closeoutEvidencePayload.closeoutEvidence.writeBoundary, "incident_closeout_evidence_only");
+  assert.equal(closeoutEvidencePayload.closeoutEvidence.catClawAuditId, "audit-legacy-closeout");
+  const closeoutEvidenceEventRows = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, workflow_id AS workflowId, incident_id AS incidentId, payload_json AS payloadJson
+FROM workflow_events
+WHERE incident_id='incident-legacy-closeout'
+ORDER BY created_at DESC
+LIMIT 1;`);
+  assert.equal(closeoutEvidenceEventRows[0].eventType, "incident.closeout_evidence.recorded");
+  assert.equal(closeoutEvidenceEventRows[0].status, "recorded");
+  assert.equal(closeoutEvidenceEventRows[0].workflowId, workflowId);
+  assert.equal(closeoutEvidenceEventRows[0].incidentId, "incident-legacy-closeout");
+  assert.equal(JSON.parse(closeoutEvidenceEventRows[0].payloadJson).writeBoundary, "incident_closeout_evidence_only");
   const closeoutCountsBefore = {
     workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
     dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
