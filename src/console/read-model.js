@@ -542,6 +542,8 @@ function incidentWorkflowWhereSql(workflowExpr, alias = "incident_states") {
     OR (json_valid(${column}) AND (
       json_extract(${column}, '$.deadLetter.workflowId')=${workflowExpr}
       OR json_extract(${column}, '$.deadLetter.workflow_id')=${workflowExpr}
+      OR json_extract(${column}, '$.closeoutEvidence.workflowId')=${workflowExpr}
+      OR json_extract(${column}, '$.closeoutEvidence.workflow_id')=${workflowExpr}
     )))`;
 }
 
@@ -559,6 +561,8 @@ function incidentHasAnyWorkflowLinkSql(alias = "incident_states") {
     OR COALESCE(json_extract(${column}, '$.raw.workflow_id'), '') != ''
     OR COALESCE(json_extract(${column}, '$.deadLetter.workflowId'), '') != ''
     OR COALESCE(json_extract(${column}, '$.deadLetter.workflow_id'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.closeoutEvidence.workflowId'), '') != ''
+    OR COALESCE(json_extract(${column}, '$.closeoutEvidence.workflow_id'), '') != ''
   ))`;
 }
 

@@ -14,6 +14,7 @@ const DEFAULT_ALLOWED_ACTIONS = new Set([
   "workflow.control_loop.job.requeue.preview",
   "workflow.incident.closeout.cat_claw_report.preview",
   "workflow.incident.closeout.human_gate_package.preview",
+  "workflow.incident.closeout.worklist.preview",
   "workflow.incident.closeout.evidence.preview",
   "workflow.incident.closeout.artifact.preview",
   "workflow.incident.closeout.human_gate_request.preview",

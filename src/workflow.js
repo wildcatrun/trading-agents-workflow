@@ -158,6 +158,7 @@ const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.control_loop.job.requeue.preview",
   "workflow.incident.closeout.cat_claw_report.preview",
   "workflow.incident.closeout.human_gate_package.preview",
+  "workflow.incident.closeout.worklist.preview",
   "workflow.incident.closeout.evidence.preview",
   "workflow.incident.closeout.artifact.preview",
   "workflow.incident.closeout.human_gate_request.preview",
@@ -225,6 +226,9 @@ const WORKFLOW_ACTION_ALIASES = {
   "workflow.incident.closeout.cat-claw-report.preview": "workflow.incident.closeout.cat_claw_report.preview",
   "workflow.incident.closeout.hgate.preview": "workflow.incident.closeout.human_gate_package.preview",
   "workflow.incident.closeout.human-gate-package.preview": "workflow.incident.closeout.human_gate_package.preview",
+  "workflow.incident.closeout.list.preview": "workflow.incident.closeout.worklist.preview",
+  "workflow.incident.closeout.batch.preview": "workflow.incident.closeout.worklist.preview",
+  "workflow.incident.closeout.inventory.preview": "workflow.incident.closeout.worklist.preview",
   "workflow.incident.closeout.annotate.preview": "workflow.incident.closeout.evidence.preview",
   "workflow.incident.closeout.annotate": "workflow.incident.closeout.evidence",
   "workflow.incident.closeout.evidence-record.preview": "workflow.incident.closeout.evidence.preview",
@@ -3715,8 +3719,8 @@ function healthRecommendationFor(blocker) {
     telegram_outbox_failed: ["telegram.outbox.requeue.preview", "telegram.outbox.delivery.preview"],
     registry_dispatch_disabled: ["workflow.runtime_agents"],
     stale_started_runtime_runs: ["runtime.bridge.drain", "workflow.incident.from_dead_letter.preview"],
-    open_incidents: ["workflow.incident.closeout.evidence.preview", "workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"],
-    stale_open_incidents: ["workflow.incident.closeout.evidence.preview", "workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"]
+    open_incidents: ["workflow.incident.closeout.worklist.preview", "workflow.incident.closeout.evidence.preview", "workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"],
+    stale_open_incidents: ["workflow.incident.closeout.worklist.preview", "workflow.incident.closeout.evidence.preview", "workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"]
   };
   const guidance = {
     stale_sent_dispatches: "Reconcile stale sent dispatches against terminal runtime receipts before retrying.",
@@ -11960,6 +11964,127 @@ async function workflowIncidentCloseoutPreview(rootDir, input = {}) {
   };
 }
 
+function closeoutWorklistRecommendation(closeout = {}) {
+  const failed = (closeout.checklist || []).filter((row) => row.status === "fail" && row.severity !== "warning");
+  const missing = failed.map((row) => row.key).filter(Boolean);
+  if (!closeout.selectedIncident) return "inspect_incident_linkage";
+  if (missing.some((key) => ["human_gate_evidence", "cat_claw_audit", "operator_reason", "rollback_boundary"].includes(key))) {
+    return "workflow.incident.closeout.evidence.preview";
+  }
+  if (missing.length) return "workflow.incident.closeout.cat_claw_report.preview";
+  if (closeout.status === "needs_closeout") return "workflow.incident.closeout.cat_claw_report.preview";
+  return "workflow.incident.closeout.human_gate_package.preview";
+}
+
+function incidentPayloadWorkflowRef(payload = {}) {
+  return firstText(
+    payload.workflowId,
+    payload.workflow_id,
+    payload.workflow?.workflowId,
+    payload.workflow?.id,
+    payload.payload?.workflowId,
+    payload.payload?.workflow_id,
+    payload.payload?.workflow?.id,
+    payload.raw?.workflowId,
+    payload.raw?.workflow_id,
+    payload.deadLetter?.workflowId,
+    payload.deadLetter?.workflow_id,
+    payload.closeoutEvidence?.workflowId,
+    payload.closeoutEvidence?.workflow_id
+  );
+}
+
+async function workflowIncidentCloseoutWorklistPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required for closeout worklist preview");
+  const limit = Math.max(1, Math.min(200, Number(input.limit || input.incidentLimit || input.incident_limit || 80)));
+  const staleAfterMs = Math.max(60_000, Math.min(90 * 86400000, Number(input.staleIncidentAfterMs || input.stale_incident_after_ms || 24 * 3600000)));
+  const staleCutoff = new Date(Date.now() - staleAfterMs).toISOString();
+  const rows = await sqlite(paths.dbFile, `
+SELECT incident_id, status, mode, summary, commander, declared_at, updated_at, payload_json
+FROM incident_states
+WHERE status IN ('active','mitigating','monitoring')
+ORDER BY updated_at ASC, declared_at ASC
+LIMIT ${limit};`, { json: true });
+  const readModel = new WorkflowReadModel({ dbFile: paths.dbFile });
+  const items = [];
+  let rejectedByScope = 0;
+  for (const row of rows) {
+    const closeout = await readModel.incidentCloseout(workflowId, {
+      incidentId: row.incident_id,
+      limit: input.timelineLimit || input.timeline_limit || 80
+    });
+    if (!closeout.selectedIncident) {
+      rejectedByScope += 1;
+      continue;
+    }
+    const failed = (closeout.checklist || []).filter((item) => item.status === "fail" && item.severity !== "warning");
+    const warnings = (closeout.checklist || []).filter((item) => item.status === "warn" || item.severity === "warning");
+    const payload = parseJsonValue(row.payload_json, {});
+    items.push(redactSensitiveForPersistence({
+      incidentId: row.incident_id,
+      workflowId,
+      status: row.status || "",
+      mode: row.mode || "",
+      summary: row.summary || "",
+      commander: row.commander || "",
+      declaredAt: row.declared_at || "",
+      updatedAt: row.updated_at || "",
+      stale: !row.updated_at || String(row.updated_at) < staleCutoff,
+      payloadWorkflowId: incidentPayloadWorkflowRef(payload),
+      closeoutStatus: closeout.status || "not_found",
+      selected: Boolean(closeout.selectedIncident),
+      missingRequired: failed.map((item) => ({
+        key: item.key,
+        label: item.label,
+        detail: item.detail,
+        severity: item.severity
+      })),
+      warningKeys: warnings.map((item) => item.key).filter(Boolean),
+      recommendation: closeoutWorklistRecommendation(closeout)
+    }));
+  }
+  const byRecommendation = {};
+  const byCloseoutStatus = {};
+  for (const item of items) {
+    byRecommendation[item.recommendation] = (byRecommendation[item.recommendation] || 0) + 1;
+    byCloseoutStatus[item.closeoutStatus] = (byCloseoutStatus[item.closeoutStatus] || 0) + 1;
+  }
+  return {
+    schemaVersion: "workflow_incident_closeout_worklist_preview.v1",
+    action: "workflow.incident.closeout.worklist.preview",
+    preview: true,
+    readOnly: true,
+    writeMode: "read_only_closeout_worklist_preview",
+    generatedAt: nowIso(),
+    workflowId,
+    limit,
+    staleIncidentAfterMs: staleAfterMs,
+    counts: {
+      openIncidentsScanned: rows.length,
+      selected: items.filter((item) => item.selected).length,
+      rejectedByScope,
+      stale: items.filter((item) => item.stale).length,
+      byRecommendation,
+      byCloseoutStatus
+    },
+    nextActions: [
+      "workflow.incident.closeout.evidence.preview",
+      "workflow.incident.closeout.evidence",
+      "workflow.incident.closeout.cat_claw_report.preview",
+      "workflow.incident.closeout.human_gate_package.preview"
+    ],
+    items,
+    limitations: [
+      "Preview is read-only and does not update incidents, create artifacts, create Human Gate requests, enqueue Telegram, dispatch runtimes, or mutate side effects.",
+      "Legacy incidents without explicit workflow links are evaluated against the supplied workflowId; explicit other-workflow links remain rejected by incidentCloseout.",
+      "Use evidence preview/write for missing evidence before preparing Cat Claw closeout or Human Gate packages."
+    ],
+    dbFile: paths.dbFile
+  };
+}
+
 function closeoutEvidenceInput(input = {}) {
   return {
     humanGateEvidence: firstText(
@@ -18339,6 +18464,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.incident.closeout.cat_claw_report.preview":
     case "workflow.incident.closeout.human_gate_package.preview":
       return workflowIncidentCloseoutPreview(rootDir, input);
+    case "workflow.incident.closeout.worklist.preview":
+      return workflowIncidentCloseoutWorklistPreview(rootDir, input);
     case "workflow.incident.closeout.evidence.preview":
       return workflowIncidentCloseoutEvidencePreview(rootDir, input);
     case "workflow.incident.closeout.artifact.preview":

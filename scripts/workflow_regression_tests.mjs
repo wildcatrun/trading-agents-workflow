@@ -809,6 +809,8 @@ VALUES ('incident-nested-other-workflow', 'active', 'degraded', '["workflow"]', 
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
 VALUES ('incident-deadletter-other-workflow', 'active', 'degraded', '["workflow"]', 'Dead-letter workflow closeout regression', 'main', 'Dead-letter workflow link belongs to another workflow.', 'Should not be readable through legacy fallback.', 'none', 'rollback boundary recorded', 'closeout evidence recorded', '[]', '{"deadLetter":{"workflowId":"wf-console-operations-other","kind":"failed_dispatch","refId":"dispatch-other"}}', '2026-05-31T00:00:13.000Z', '', '', '2026-05-31T00:00:14.000Z');
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-closeout-evidence-other-workflow', 'active', 'degraded', '["workflow"]', 'Closeout evidence workflow regression', 'main', 'Closeout evidence workflow link belongs to another workflow.', 'Should not be readable through legacy fallback.', 'none', 'rollback boundary recorded', 'closeout evidence recorded', '[]', '{"closeoutEvidence":{"workflowId":"wf-console-operations-other","incidentId":"incident-closeout-evidence-other-workflow"}}', '2026-05-31T00:00:15.000Z', '', '', '2026-05-31T00:00:16.000Z');
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
 VALUES ('incident-malformed-legacy', 'active', 'degraded', '["workflow"]', 'Malformed legacy closeout regression', 'main', 'Malformed legacy payload should not break closeout preview.', 'Treat as legacy incident selected by exact incident id.', 'Prepare governed closeout package.', 'Rollback boundary recorded.', 'Closeout evidence recorded.', '[]', '{"jsonRelPath":', '2026-05-31T00:00:15.000Z', '', '', '2026-05-31T00:00:16.000Z');
 `);
   const legacyIncidentCloseout = await new WorkflowReadModel({ dbFile }).incidentCloseout(workflowId, {
@@ -828,11 +830,32 @@ VALUES ('incident-malformed-legacy', 'active', 'degraded', '["workflow"]', 'Malf
     incidentId: "incident-deadletter-other-workflow"
   });
   assert.equal(deadLetterOtherWorkflowCloseout.status, "not_found");
+  const closeoutEvidenceOtherWorkflowCloseout = await new WorkflowReadModel({ dbFile }).incidentCloseout(workflowId, {
+    incidentId: "incident-closeout-evidence-other-workflow"
+  });
+  assert.equal(closeoutEvidenceOtherWorkflowCloseout.status, "not_found");
   const malformedLegacyCloseout = await new WorkflowReadModel({ dbFile }).incidentCloseout(workflowId, {
     incidentId: "incident-malformed-legacy"
   });
   assert.equal(malformedLegacyCloseout.incidentId, "incident-malformed-legacy");
   assert.equal(malformedLegacyCloseout.checklist.find((row) => row.key === "dead_letter_evidence_current")?.severity, "warning");
+  const closeoutWorklistPreview = await runAction(root, {
+    action: "workflow.incident.closeout.worklist.preview",
+    workflowId,
+    limit: 10
+  });
+  assert.equal(closeoutWorklistPreview.schemaVersion, "workflow_incident_closeout_worklist_preview.v1");
+  assert.equal(closeoutWorklistPreview.readOnly, true);
+  assert.equal(closeoutWorklistPreview.writeMode, "read_only_closeout_worklist_preview");
+  assert.equal(closeoutWorklistPreview.counts.openIncidentsScanned >= 3, true);
+  assert.equal(closeoutWorklistPreview.counts.rejectedByScope >= 2, true);
+  assert.equal(closeoutWorklistPreview.items.some((item) => item.incidentId === "incident-nested-other-workflow"), false);
+  assert.equal(closeoutWorklistPreview.items.some((item) => item.incidentId === "incident-deadletter-other-workflow"), false);
+  assert.equal(closeoutWorklistPreview.items.some((item) => item.incidentId === "incident-closeout-evidence-other-workflow"), false);
+  const legacyWorklistItem = closeoutWorklistPreview.items.find((item) => item.incidentId === "incident-legacy-closeout");
+  assert.equal(legacyWorklistItem?.closeoutStatus, "needs_evidence");
+  assert.equal(legacyWorklistItem?.recommendation, "workflow.incident.closeout.evidence.preview");
+  assert.equal(Boolean(legacyWorklistItem?.missingRequired.some((row) => row.key === "operator_reason")), true);
   const evidencePreviewMissing = await runAction(root, {
     action: "workflow.incident.closeout.evidence.preview",
     workflowId,
@@ -5875,8 +5898,13 @@ VALUES
   assert.equal(health.lanes.incidents.cancelled, 1);
   assert.equal(health.topBlockers.some((item) => item.key === "open_incidents" && item.severity === "warning"), true);
   assert.equal(health.topBlockers.some((item) => item.key === "stale_open_incidents" && item.severity === "warning"), true);
+  assert.equal(health.nextActions.includes("workflow.incident.closeout.worklist.preview"), true);
   assert.equal(health.nextActions.includes("workflow.incident.closeout.evidence.preview"), true);
   assert.equal(health.nextActions.includes("workflow.incident.closeout.cat_claw_report.preview"), true);
+  assert.equal(
+    health.nextActions.indexOf("workflow.incident.closeout.worklist.preview") < health.nextActions.indexOf("workflow.incident.closeout.evidence.preview"),
+    true
+  );
   assert.equal(
     health.nextActions.indexOf("workflow.incident.closeout.evidence.preview") < health.nextActions.indexOf("workflow.incident.closeout.cat_claw_report.preview"),
     true
