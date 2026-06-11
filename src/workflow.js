@@ -10649,6 +10649,72 @@ async function acknowledgeMessageFlowRuntime(paths, row, data = {}) {
   };
 }
 
+async function messageTextForRuntimeReceipt(paths, messageId = "") {
+  const id = String(messageId || "").trim();
+  if (!id) return "";
+  const rows = await sqlite(paths.dbFile, `
+SELECT text
+FROM mixed_meeting_messages
+WHERE message_id=${sqlValue(id)}
+LIMIT 1;`, { json: true });
+  return String(rows[0]?.text || "").trim();
+}
+
+async function syncMessageFlowFromTerminalDispatchReceipt(paths, row, receipt = {}, input = {}) {
+  const flow = await messageFlowForDispatch(paths, row);
+  if (!flow) return null;
+  const status = String(receipt.status || "").trim();
+  const runtimeRunId = String(receipt.runtimeRunId || receipt.runtime_run_id || "").trim();
+  const messageId = String(receipt.messageId || receipt.message_id || "").trim();
+  const text = await messageTextForRuntimeReceipt(paths, messageId);
+  const outputHash = text ? textHash(text) : "";
+  if (status === "acked") {
+    const ack = runtimeAckContract(row, input);
+    if (ack.required) {
+      const result = await acknowledgeMessageFlowRuntime(paths, row, {
+        runtimeRunId,
+        messageId,
+        text,
+        outputHash,
+        receivedAt: receipt.completedAt || receipt.completed_at || nowIso()
+      });
+      await appendMessageFlowEvent(paths, flow.flow_id, result?.status || "runtime_acknowledged", "stale_dispatch_terminal_receipt_synced", {
+        dispatchId: row.dispatch_id,
+        runtimeRunId,
+        messageId,
+        terminalStatus: status,
+        ackRequired: true
+      });
+      return result;
+    }
+    return finishMessageFlowRuntime(paths, row, {
+      runtimeRunId,
+      messageId,
+      text,
+      outputHash,
+      finalOutputPresent: messageFlowOutputIsFinal(text),
+      failureType: "runtime_output_missing",
+      lastError: text ? "" : "terminal acked runtime receipt did not reference recoverable message text"
+    }, input);
+  }
+  if (status === "failed") {
+    return finishMessageFlowRuntime(paths, row, {
+      runtimeRunId,
+      messageId,
+      finalOutputPresent: false,
+      failureType: receipt.failureType || receipt.failure_type || "runtime_failed",
+      lastError: receipt.error || receipt.lastError || receipt.last_error || "terminal runtime receipt failed"
+    }, input);
+  }
+  await appendMessageFlowEvent(paths, flow.flow_id, flow.status || "", "stale_dispatch_terminal_receipt_sync_skipped", {
+    dispatchId: row.dispatch_id,
+    runtimeRunId,
+    messageId,
+    terminalStatus: status || "unknown"
+  });
+  return { status: "skipped", reason: "unsupported_terminal_status", flowId: flow.flow_id };
+}
+
 async function queueMessageFlowSemanticContinuation(paths, row, data = {}, input = {}) {
   const ack = runtimeAckContract(row, input);
   if (!ack.required || !ack.semanticContinuation) return null;
@@ -14554,6 +14620,7 @@ export async function staleDispatchReconcile(rootDir, input = {}) {
   const limit = Math.max(1, Math.min(100, Number(input.limit || input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20)));
   const rows = await sqlite(paths.dbFile, `
 SELECT d.*,
+  (SELECT rr.runtime_run_id FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_runtime_run_id,
   (SELECT rr.status FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_status,
   (SELECT rr.completed_at FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_completed_at,
   (SELECT rr.attempt FROM runtime_runs rr WHERE rr.dispatch_id=d.dispatch_id AND rr.status IN ('acked','failed','retry_scheduled') AND rr.completed_at IS NOT NULL AND rr.completed_at != '' AND rr.completed_at >= COALESCE(NULLIF(d.sent_at,''), d.updated_at, d.created_at) ORDER BY rr.completed_at DESC, rr.started_at DESC LIMIT 1) AS terminal_attempt,
@@ -14575,7 +14642,13 @@ LIMIT ${limit};`, { json: true });
         messageId: row.terminal_message_id || "",
         reconciledFrom: row.status
       });
-      results.push({ dispatchId: row.dispatch_id, status: "acked", reason: "terminal_runtime_receipt" });
+      const messageFlowSync = await syncMessageFlowFromTerminalDispatchReceipt(paths, { ...row, status: "acked" }, {
+        status: "acked",
+        runtimeRunId: row.terminal_runtime_run_id || "",
+        messageId: row.terminal_message_id || "",
+        completedAt: row.terminal_completed_at || ""
+      }, input);
+      results.push({ dispatchId: row.dispatch_id, status: "acked", reason: "terminal_runtime_receipt", messageFlowSync });
       continue;
     }
     if (terminalStatus === "failed" || terminalStatus === "retry_scheduled") {
@@ -14590,7 +14663,15 @@ LIMIT ${limit};`, { json: true });
         attempt,
         nextRetryAt: shouldRetry ? nextRetryAt(attempt, ack.required ? ack.retryDelaySeconds : 0) : ""
       });
-      results.push({ dispatchId: row.dispatch_id, status: shouldRetry ? "queued" : "failed", reason: "terminal_runtime_receipt" });
+      const messageFlowSync = shouldRetry ? null : await syncMessageFlowFromTerminalDispatchReceipt(paths, { ...row, status: "failed" }, {
+        status: "failed",
+        runtimeRunId: row.terminal_runtime_run_id || "",
+        messageId: row.terminal_message_id || "",
+        completedAt: row.terminal_completed_at || "",
+        failureType: row.terminal_failure_type || "runtime_stale",
+        error: row.terminal_error || "stale sent dispatch reconciled from terminal runtime receipt"
+      }, input);
+      results.push({ dispatchId: row.dispatch_id, status: shouldRetry ? "queued" : "failed", reason: "terminal_runtime_receipt", messageFlowSync });
       continue;
     }
     const maxAttempts = Number(row.max_attempts || 1);

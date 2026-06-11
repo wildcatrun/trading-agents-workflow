@@ -5509,6 +5509,122 @@ VALUES
   assert.equal(permission.readOnly, true);
 }
 
+async function testStaleDispatchReconcileSyncsMessageFlows() {
+  const root = await tempRoot("stale-dispatch-flow-sync");
+  await runAction(root, { action: "workflow.init" });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES
+  ('dispatch-reconcile-acked', 'wf-reconcile-flow', 'wf-reconcile-flow', 'trace-reconcile-acked', 'idem-reconcile-acked', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'sent', 'normal', 1, 3, '', '', '', 'final output prompt', '{"payload":{"messageFlowId":"flow-reconcile-acked"}}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2000-01-01T00:00:00.000Z'),
+  ('dispatch-reconcile-ack-contract', 'wf-reconcile-flow', 'wf-reconcile-flow', 'trace-reconcile-ack-contract', 'idem-reconcile-ack-contract', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'sent', 'normal', 1, 3, '', '', '', 'ack prompt', '{"payload":{"messageFlowId":"flow-reconcile-ack-contract","ackContract":{"required":true,"semanticContinuation":true}}}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2000-01-01T00:00:01.000Z'),
+  ('dispatch-reconcile-failed', 'wf-reconcile-flow', 'wf-reconcile-flow', 'trace-reconcile-failed', 'idem-reconcile-failed', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'sent', 'normal', 1, 1, '', '', '', 'failed prompt', '{"payload":{"messageFlowId":"flow-reconcile-failed"}}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2000-01-01T00:00:02.000Z'),
+  ('dispatch-reconcile-missing-output', 'wf-reconcile-flow', 'wf-reconcile-flow', 'trace-reconcile-missing-output', 'idem-reconcile-missing-output', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'sent', 'normal', 1, 3, '', '', '', 'missing output prompt', '{"payload":{"messageFlowId":"flow-reconcile-missing-output"}}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '', '2000-01-01T00:00:03.000Z');
+INSERT INTO mixed_meeting_messages(message_id, meeting_id, runtime, agent_id, agent_key, message_type, phase, text, payload_json, telegram_live_status, created_at)
+VALUES
+  ('msg-reconcile-acked', 'wf-reconcile-flow', 'hermers', 'cat_body', 'hermers:cat_body', 'agent_message', '', 'final reconciled output', '{}', 'pending', '2026-05-31T00:00:02.000Z'),
+  ('msg-reconcile-ack-contract', 'wf-reconcile-flow', 'hermers', 'cat_body', 'hermers:cat_body', 'agent_message', '', 'ACK_RECEIVED\\nTimestamp: 2026-05-31T00:00:02.000Z', '{}', 'pending', '2026-05-31T00:00:02.000Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES
+  ('runtime-reconcile-acked', 'dispatch-reconcile-acked', 'wf-reconcile-flow', 'wf-reconcile-flow', 'trace-reconcile-acked', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 1, '2026-05-31T00:00:01.000Z', '2026-05-31T00:00:02.000Z', 1000, 'msg-reconcile-acked', '', '', '', '{}'),
+  ('runtime-reconcile-ack-contract', 'dispatch-reconcile-ack-contract', 'wf-reconcile-flow', 'wf-reconcile-flow', 'trace-reconcile-ack-contract', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 1, '2026-05-31T00:00:01.000Z', '2026-05-31T00:00:02.000Z', 1000, 'msg-reconcile-ack-contract', '', '', '', '{}'),
+  ('runtime-reconcile-failed', 'dispatch-reconcile-failed', 'wf-reconcile-flow', 'wf-reconcile-flow', 'trace-reconcile-failed', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 1, '2026-05-31T00:00:01.000Z', '2026-05-31T00:00:02.000Z', 1000, '', '', '', 'timeout while executing', '{}'),
+  ('runtime-reconcile-missing-output', 'dispatch-reconcile-missing-output', 'wf-reconcile-flow', 'wf-reconcile-flow', 'trace-reconcile-missing-output', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 1, '2026-05-31T00:00:01.000Z', '2026-05-31T00:00:02.000Z', 1000, '', '', '', '', '{}');
+INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, outbox_id, target_runtime, target_agent_id, return_policy, status, runtime_completed_at, runtime_failed_at, final_output_present, delivery_receipt_present, last_error, created_at, updated_at)
+VALUES
+  ('flow-reconcile-acked', 'trace-flow-reconcile-acked', 'idem-flow-reconcile-acked', 'wf-reconcile-flow', 'wf-reconcile-flow', 'dispatch-reconcile-acked', '', 'hermers', 'cat_body', 'report_to_flashcat', 'runtime_dispatched', '', '', 0, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:00.000Z'),
+  ('flow-reconcile-ack-contract', 'trace-flow-reconcile-ack-contract', 'idem-flow-reconcile-ack-contract', 'wf-reconcile-flow', 'wf-reconcile-flow', 'dispatch-reconcile-ack-contract', '', 'hermers', 'cat_body', 'silent', 'runtime_dispatched', '', '', 0, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z'),
+  ('flow-reconcile-failed', 'trace-flow-reconcile-failed', 'idem-flow-reconcile-failed', 'wf-reconcile-flow', 'wf-reconcile-flow', 'dispatch-reconcile-failed', '', 'hermers', 'cat_body', 'silent', 'runtime_dispatched', '', '', 0, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:02.000Z'),
+  ('flow-reconcile-missing-output', 'trace-flow-reconcile-missing-output', 'idem-flow-reconcile-missing-output', 'wf-reconcile-flow', 'wf-reconcile-flow', 'dispatch-reconcile-missing-output', '', 'hermers', 'cat_body', 'silent', 'runtime_dispatched', '', '', 0, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:03.000Z');
+`);
+
+  const reconciled = await runAction(root, {
+    action: "workflow.dispatch.reconcile",
+    staleDispatchAfterMs: 60_000,
+    deliverMessageFlowOutbox: false,
+    limit: 10
+  });
+  assert.equal(reconciled.count, 4);
+  const dispatches = sqliteJson(dbFile, `
+SELECT dispatch_id AS dispatchId, status, failure_type AS failureType
+FROM mixed_meeting_dispatches
+WHERE dispatch_id LIKE 'dispatch-reconcile-%'
+ORDER BY dispatch_id;`);
+  assert.deepEqual(dispatches, [
+    { dispatchId: "dispatch-reconcile-ack-contract", status: "acked", failureType: null },
+    { dispatchId: "dispatch-reconcile-acked", status: "acked", failureType: null },
+    { dispatchId: "dispatch-reconcile-failed", status: "failed", failureType: "runtime_timeout" },
+    { dispatchId: "dispatch-reconcile-missing-output", status: "acked", failureType: null }
+  ]);
+  const flows = sqliteJson(dbFile, `
+SELECT flow_id AS flowId, status, runtime_run_id AS runtimeRunId, COALESCE(outbox_id, '') AS outboxId,
+  COALESCE(message_id, '') AS messageId, final_output_present AS finalOutputPresent,
+  failure_type AS failureType, last_error AS lastError
+FROM message_flows
+WHERE flow_id LIKE 'flow-reconcile-%'
+ORDER BY flow_id;`);
+  assert.deepEqual(flows, [
+    {
+      flowId: "flow-reconcile-ack-contract",
+      status: "runtime_acknowledged",
+      runtimeRunId: "runtime-reconcile-ack-contract",
+      outboxId: "",
+      messageId: "msg-reconcile-ack-contract",
+      finalOutputPresent: 0,
+      failureType: null,
+      lastError: ""
+    },
+    {
+      flowId: "flow-reconcile-acked",
+      status: "outbound_queued",
+      runtimeRunId: "runtime-reconcile-acked",
+      outboxId: "flow-flow-reconcile-acked",
+      messageId: "msg-reconcile-acked",
+      finalOutputPresent: 1,
+      failureType: null,
+      lastError: ""
+    },
+    {
+      flowId: "flow-reconcile-failed",
+      status: "runtime_failed",
+      runtimeRunId: "runtime-reconcile-failed",
+      outboxId: "",
+      messageId: "",
+      finalOutputPresent: 0,
+      failureType: "runtime_timeout",
+      lastError: "timeout while executing"
+    },
+    {
+      flowId: "flow-reconcile-missing-output",
+      status: "runtime_failed",
+      runtimeRunId: "runtime-reconcile-missing-output",
+      outboxId: "",
+      messageId: "",
+      finalOutputPresent: 0,
+      failureType: "runtime_output_missing",
+      lastError: "terminal acked runtime receipt did not reference recoverable message text"
+    }
+  ]);
+  const syncedEvents = sqliteJson(dbFile, `
+SELECT COUNT(*) AS count
+FROM message_flow_events
+WHERE event_type='stale_dispatch_terminal_receipt_synced';`)[0];
+  assert.equal(syncedEvents.count, 1);
+  const queuedOutbox = sqliteJson(dbFile, `
+SELECT outbox_id AS outboxId, message_type AS messageType, status, target_kind AS targetKind, target_ref AS targetRef, text
+FROM telegram_outbox
+WHERE outbox_id='flow-flow-reconcile-acked'
+LIMIT 1;`)[0];
+  assert.deepEqual(queuedOutbox, {
+    outboxId: "flow-flow-reconcile-acked",
+    messageType: "message_flow_reply",
+    status: "queued",
+    targetKind: "private",
+    targetRef: "8390724843",
+    text: "final reconciled output"
+  });
+}
+
 async function testReadinessGatewayDegraded() {
   const root = await tempRoot("readiness-gateway");
   const degradedBin = await makeFakeOpenClaw(root, "fake-openclaw-health-degraded.mjs", "health-degraded");
@@ -5920,6 +6036,7 @@ try {
     ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],
     ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],
     ["workflow health dashboard", testWorkflowHealthDashboard],
+    ["stale dispatch reconciles message_flows", testStaleDispatchReconcileSyncsMessageFlows],
     ["readiness gateway degraded", testReadinessGatewayDegraded],
     ["hermers profile mode readiness/registry", testHermersProfileModeReadinessAndRegistry],
     ["hermers profile mode does not defer drain admission", testHermersProfileModeDoesNotDeferDrainAdmission],
