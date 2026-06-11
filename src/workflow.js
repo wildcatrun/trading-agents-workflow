@@ -3583,20 +3583,31 @@ SELECT
 FROM tracking_states;`, { json: true });
   const recentRuntimeRows = await sqlite(paths.dbFile, `
 SELECT
-  SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
-  SUM(CASE WHEN status='retry_scheduled' THEN 1 ELSE 0 END) AS retry_scheduled,
+  SUM(CASE WHEN rr.status='failed' THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN rr.status='retry_scheduled' THEN 1 ELSE 0 END) AS retry_scheduled,
   COUNT(*) AS total
-FROM runtime_runs
+FROM runtime_runs rr
 WHERE started_at >= ${sqlValue(new Date(Date.now() - 6 * 3600000).toISOString())};`, { json: true });
   const staleStartedRuntimeAfterMs = Math.max(5 * 60_000, Math.min(24 * 3600_000, Number(input.staleRuntimeRunAfterMs || input.stale_runtime_run_after_ms || 30 * 60_000)));
   const staleStartedRuntimeCutoff = new Date(Date.now() - staleStartedRuntimeAfterMs).toISOString();
   const staleStartedRuntimeRows = await sqlite(paths.dbFile, `
 SELECT COUNT(*) AS count
-FROM runtime_runs
-WHERE status='started'
-  AND started_at IS NOT NULL
-  AND started_at != ''
-  AND started_at < ${sqlValue(staleStartedRuntimeCutoff)};`, { json: true });
+FROM runtime_runs rr
+WHERE rr.status='started'
+  AND rr.started_at IS NOT NULL
+  AND rr.started_at != ''
+  AND rr.started_at < ${sqlValue(staleStartedRuntimeCutoff)}
+  AND NOT EXISTS (
+    SELECT 1
+    FROM runtime_runs terminal
+    WHERE terminal.dispatch_id=rr.dispatch_id
+      AND terminal.runtime_run_id != rr.runtime_run_id
+      AND terminal.attempt=rr.attempt
+      AND terminal.status IN ('acked','failed','retry_scheduled')
+      AND terminal.completed_at IS NOT NULL
+      AND terminal.completed_at != ''
+      AND terminal.completed_at >= rr.started_at
+  );`, { json: true });
   const messageFlowIntegrityRows = await sqlite(paths.dbFile, `
 SELECT
   SUM(CASE WHEN final_output_present=0 AND status='telegram_sent' THEN 1 ELSE 0 END) AS failed_output_marked_sent,
@@ -3763,9 +3774,24 @@ SELECT
 FROM runtime_agents;`, { json: true });
   const runtimeRows = await sqlite(paths.dbFile, `
 SELECT
-  SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
-  SUM(CASE WHEN status='started' AND started_at < ${sqlValue(new Date(Date.now() - boundedNumber([input.staleRuntimeRunAfterMs, input.stale_runtime_run_after_ms], 30 * 60_000, 5 * 60_000, 24 * 3600_000)).toISOString())} THEN 1 ELSE 0 END) AS stale_started
-FROM runtime_runs;`, { json: true });
+  SUM(CASE WHEN rr.status='failed' THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN rr.status='started'
+    AND rr.started_at IS NOT NULL
+    AND rr.started_at != ''
+    AND rr.started_at < ${sqlValue(new Date(Date.now() - boundedNumber([input.staleRuntimeRunAfterMs, input.stale_runtime_run_after_ms], 30 * 60_000, 5 * 60_000, 24 * 3600_000)).toISOString())}
+    AND NOT EXISTS (
+      SELECT 1
+      FROM runtime_runs terminal
+      WHERE terminal.dispatch_id=rr.dispatch_id
+        AND terminal.runtime_run_id != rr.runtime_run_id
+        AND terminal.attempt=rr.attempt
+        AND terminal.status IN ('acked','failed','retry_scheduled')
+        AND terminal.completed_at IS NOT NULL
+        AND terminal.completed_at != ''
+        AND terminal.completed_at >= rr.started_at
+    )
+    THEN 1 ELSE 0 END) AS stale_started
+FROM runtime_runs rr;`, { json: true });
 
   const dispatch = dispatchRows[0] || {};
   const controlLoop = controlLoopRows[0] || {};

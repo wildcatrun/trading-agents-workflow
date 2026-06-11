@@ -5609,6 +5609,13 @@ VALUES
   ('flow-health-silent-completed', 'trace-flow-silent', 'idem-flow-silent', 'wf-health', 'wf-health', '', '', 'hermers', 'cat_body', 'silent', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z'),
   ('flow-health-local-codex-receipt', 'trace-flow-local', 'idem-flow-local', 'wf-health', 'wf-health', '', '', 'local_codex', 'codex', 'report_to_flashcat', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z'),
   ('flow-health-local-codex-failed', 'trace-flow-local-failed', 'idem-flow-local-failed', 'wf-health', 'wf-health', '', 'outbox-local-failed', 'local_codex', 'codex', 'report_to_flashcat', 'runtime_failed', '', '2000-01-01T00:00:00.000Z', 0, 0, 'local codex inbox failure should not require telegram reconcile', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES
+  ('runtime-health-orphan-started', 'dispatch-health-orphan', 'wf-health', 'wf-health', 'trace-runtime-orphan', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'started', '', 1, '2000-01-01T00:00:00.000Z', '', NULL, '', '', '', '', '{}'),
+  ('runtime-health-paired-started', 'dispatch-health-failed', 'wf-health', 'wf-health', 'trace-runtime-paired', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'started', '', 1, '2000-01-01T00:00:00.000Z', '', NULL, '', '', '', '', '{}'),
+  ('runtime-health-paired-terminal', 'dispatch-health-failed', 'wf-health', 'wf-health', 'trace-runtime-paired', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 1, '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:01.000Z', 1000, '', '', '', 'terminal failure', '{}'),
+  ('runtime-health-mismatch-started', 'dispatch-health-mismatch', 'wf-health', 'wf-health', 'trace-runtime-mismatch', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'started', '', 1, '2000-01-01T00:00:00.000Z', '', NULL, '', '', '', '', '{}'),
+  ('runtime-health-mismatch-terminal', 'dispatch-health-mismatch', 'wf-health', 'wf-health', 'trace-runtime-mismatch', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 2, '2000-01-01T00:00:02.000Z', '2000-01-01T00:00:03.000Z', 1000, '', '', '', '', '{}');
 `);
   const health = await runAction(root, {
     action: "workflow.health",
@@ -5624,6 +5631,9 @@ VALUES
   assert.equal(health.lanes.dispatch.failed, 1);
   assert.equal(health.lanes.controlLoop.failed, 1);
   assert.equal(health.lanes.controlLoop.expiredLeases, 1);
+  assert.equal(health.lanes.runtime.failedRuns, 1);
+  assert.equal(health.lanes.runtime.staleStartedRuns, 2);
+  assert.equal(health.readiness.findings.find((finding) => finding.key === "stale_started_runtime_runs")?.count, 2);
   assert.equal(health.lanes.messageFlow.missingDelivery, 1);
   assert.equal(health.lanes.messageFlow.stuckAfterRuntime, 1);
   assert.equal(health.lanes.humanGate.withoutButtons, 1);
