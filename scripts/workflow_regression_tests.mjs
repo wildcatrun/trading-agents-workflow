@@ -856,6 +856,113 @@ VALUES ('incident-malformed-legacy', 'active', 'degraded', '["workflow"]', 'Malf
   assert.equal(legacyWorklistItem?.closeoutStatus, "needs_evidence");
   assert.equal(legacyWorklistItem?.recommendation, "workflow.incident.closeout.evidence.preview");
   assert.equal(Boolean(legacyWorklistItem?.missingRequired.some((row) => row.key === "operator_reason")), true);
+  assert.equal(closeoutWorklistPreview.nextActions[0], "workflow.incident.closeout.worklist.artifact.preview");
+  const closeoutWorklistArtifactPreviewCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  };
+  const closeoutWorklistArtifactMissingReason = await runAction(root, {
+    action: "workflow.incident.closeout.worklist.artifact.preview",
+    workflowId,
+    artifactId: "artifact-closeout-worklist-regression"
+  });
+  assert.equal(closeoutWorklistArtifactMissingReason.schemaVersion, "workflow_incident_closeout_worklist_artifact_preview.v1");
+  assert.equal(closeoutWorklistArtifactMissingReason.readOnly, true);
+  assert.equal(closeoutWorklistArtifactMissingReason.writeReady, false);
+  assert.equal(Boolean(closeoutWorklistArtifactMissingReason.violations.some((row) => row.code === "operator_reason_required")), true);
+  assert.equal(closeoutWorklistArtifactMissingReason.wouldCreate.humanGateRequests, 0);
+  assert.equal(closeoutWorklistArtifactMissingReason.wouldCreate.telegramOutbox, 0);
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  }, closeoutWorklistArtifactPreviewCountsBefore);
+  const closeoutWorklistArtifactReadyPreview = await runAction(root, {
+    action: "workflow.incident.closeout.worklist.artifact.preview",
+    workflowId,
+    artifactId: "artifact-closeout-worklist-regression",
+    operatorReason: "把 open incident worklist 固化为猫爪审计入口。 token=worklist-preview-secret"
+  });
+  assert.equal(closeoutWorklistArtifactReadyPreview.writeReady, true);
+  assert.equal(closeoutWorklistArtifactReadyPreview.worklistCounts.selected, closeoutWorklistPreview.counts.selected);
+  assert.equal(JSON.stringify(closeoutWorklistArtifactReadyPreview).includes("worklist-preview-secret"), false);
+  const closeoutWorklistArtifactCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  };
+  const closeoutWorklistArtifact = await runAction(root, {
+    action: "workflow.incident.closeout.worklist.artifact",
+    workflowId,
+    artifactId: "artifact-closeout-worklist-regression",
+    operatorReason: "把 open incident worklist 固化为猫爪审计入口。 token=worklist-artifact-secret"
+  });
+  assert.equal(closeoutWorklistArtifact.schemaVersion, "workflow_incident_closeout_worklist_artifact_result.v1");
+  assert.equal(closeoutWorklistArtifact.writeBoundary, "closeout_worklist_artifact_only");
+  assert.equal(closeoutWorklistArtifact.didCloseIncident, false);
+  assert.equal(closeoutWorklistArtifact.didRecordCloseoutEvidence, false);
+  assert.equal(closeoutWorklistArtifact.didCreateHumanGate, false);
+  assert.equal(closeoutWorklistArtifact.didSendTelegram, false);
+  assert.equal(closeoutWorklistArtifact.didDispatchRuntime, false);
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  }, {
+    ...closeoutWorklistArtifactCountsBefore,
+    artifacts: closeoutWorklistArtifactCountsBefore.artifacts + 2,
+    events: closeoutWorklistArtifactCountsBefore.events + 1
+  });
+  const closeoutWorklistArtifactRows = sqliteJson(dbFile, `
+SELECT artifact_id AS artifactId, kind, path, summary
+FROM artifact_index
+WHERE artifact_id IN ('artifact-closeout-worklist-regression.json','artifact-closeout-worklist-regression.md')
+ORDER BY artifact_id;`);
+  assert.equal(closeoutWorklistArtifactRows.length, 2);
+  assert.equal(Boolean(closeoutWorklistArtifactRows.some((row) => row.kind === "incident_closeout_worklist_json")), true);
+  assert.equal(Boolean(closeoutWorklistArtifactRows.some((row) => row.kind === "incident_closeout_worklist_markdown")), true);
+  const closeoutWorklistMarkdown = await fs.readFile(path.join(root, closeoutWorklistArtifact.markdownRelativePath), "utf8");
+  assert.match(closeoutWorklistMarkdown, /Incident Closeout Worklist/);
+  assert.equal(closeoutWorklistMarkdown.includes("worklist-artifact-secret"), false);
+  const closeoutWorklistRecord = JSON.parse(await fs.readFile(path.join(root, closeoutWorklistArtifact.jsonRelativePath), "utf8"));
+  assert.equal(closeoutWorklistRecord.writeBoundary, "closeout_worklist_artifact_only");
+  assert.equal(closeoutWorklistRecord.worklist.counts.selected, closeoutWorklistPreview.counts.selected);
+  assert.equal(JSON.stringify(closeoutWorklistRecord).includes("worklist-artifact-secret"), false);
+  const closeoutWorklistArtifactEventRows = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, workflow_id AS workflowId, payload_json AS payloadJson
+FROM workflow_events
+WHERE event_type='incident.closeout_worklist_artifact.persisted'
+ORDER BY created_at DESC
+LIMIT 1;`);
+  assert.equal(closeoutWorklistArtifactEventRows[0].eventType, "incident.closeout_worklist_artifact.persisted");
+  assert.equal(closeoutWorklistArtifactEventRows[0].status, "persisted");
+  assert.equal(closeoutWorklistArtifactEventRows[0].workflowId, workflowId);
+  assert.equal(JSON.parse(closeoutWorklistArtifactEventRows[0].payloadJson).writeBoundary, "closeout_worklist_artifact_only");
   const evidencePreviewMissing = await runAction(root, {
     action: "workflow.incident.closeout.evidence.preview",
     workflowId,
@@ -1201,6 +1308,32 @@ ORDER BY artifact_id;`);
   assert.equal(gatewayCloseoutArtifactPreview.ok, true);
   assert.equal(gatewayCloseoutArtifactPreview.dryRun, true);
   assert.equal(gatewayCloseoutArtifactPreview.result.wouldCreate.humanGateRequests, 0);
+  const gatewayCloseoutWorklistArtifactPreview = await gateway.handle({
+    action: "workflow.incident.closeout.worklist.artifact.preview",
+    actor: "flashcat",
+    reason: "console closeout worklist artifact preview",
+    payload: {
+      workflowId,
+      artifactId: "artifact-console-closeout-worklist-preview",
+      operatorReason: "console preview should remain read-only"
+    }
+  });
+  assert.equal(gatewayCloseoutWorklistArtifactPreview.ok, true);
+  assert.equal(gatewayCloseoutWorklistArtifactPreview.dryRun, true);
+  assert.equal(gatewayCloseoutWorklistArtifactPreview.result.wouldCreate.humanGateRequests, 0);
+  assert.equal(gatewayCloseoutWorklistArtifactPreview.result.wouldCreate.telegramOutbox, 0);
+  const gatewayCloseoutWorklistArtifactRejected = await gateway.handle({
+    action: "workflow.incident.closeout.worklist.artifact",
+    actor: "flashcat",
+    reason: "console closeout worklist artifact write disabled",
+    payload: {
+      workflowId,
+      artifactId: "artifact-console-closeout-worklist-rejected",
+      operatorReason: "should not persist"
+    }
+  });
+  assert.equal(gatewayCloseoutWorklistArtifactRejected.ok, false);
+  assert.equal(gatewayCloseoutWorklistArtifactRejected.errorCode, "action_not_allowed");
   const gatewayHumanGateRequestPreview = await gateway.handle({
     action: "workflow.incident.closeout.human_gate_request.preview",
     actor: "flashcat",
@@ -1262,6 +1395,46 @@ ORDER BY artifact_id;`);
   assert.equal(gatewayIncidentRejected.ok, false);
   assert.equal(gatewayIncidentRejected.errorCode, "action_not_allowed");
   const writeGateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { allowWrites: true });
+  const closeoutWorklistGatewayWriteCountsBefore = {
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  };
+  const gatewayCloseoutWorklistArtifactWrite = await writeGateway.handle({
+    action: "workflow.incident.closeout.worklist.artifact",
+    actor: "flashcat",
+    reason: "console governed closeout worklist artifact token=worklist-gateway-secret",
+    payload: {
+      workflowId,
+      artifactId: "artifact-console-closeout-worklist",
+      operatorReason: "console governed closeout worklist artifact token=worklist-gateway-secret"
+    }
+  });
+  assert.equal(gatewayCloseoutWorklistArtifactWrite.ok, true);
+  assert.equal(gatewayCloseoutWorklistArtifactWrite.result.schemaVersion, "workflow_incident_closeout_worklist_artifact_result.v1");
+  assert.equal(gatewayCloseoutWorklistArtifactWrite.result.writeBoundary, "closeout_worklist_artifact_only");
+  assert.deepEqual({
+    workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    runtimeRuns: sqliteCount(dbFile, "runtime_runs"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGateButtons: sqliteCount(dbFile, "human_gate_buttons"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger"),
+    incidents: sqliteCount(dbFile, "incident_states"),
+    artifacts: sqliteCount(dbFile, "artifact_index"),
+    events: sqliteCount(dbFile, "workflow_events")
+  }, {
+    ...closeoutWorklistGatewayWriteCountsBefore,
+    artifacts: closeoutWorklistGatewayWriteCountsBefore.artifacts + 2,
+    events: closeoutWorklistGatewayWriteCountsBefore.events + 1
+  });
+  assert.equal(JSON.stringify(gatewayCloseoutWorklistArtifactWrite).includes("worklist-gateway-secret"), false);
   const closeoutHumanGateWriteCountsBefore = {
     workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
     dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),

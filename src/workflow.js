@@ -159,6 +159,7 @@ const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.incident.closeout.cat_claw_report.preview",
   "workflow.incident.closeout.human_gate_package.preview",
   "workflow.incident.closeout.worklist.preview",
+  "workflow.incident.closeout.worklist.artifact.preview",
   "workflow.incident.closeout.evidence.preview",
   "workflow.incident.closeout.artifact.preview",
   "workflow.incident.closeout.human_gate_request.preview",
@@ -229,6 +230,10 @@ const WORKFLOW_ACTION_ALIASES = {
   "workflow.incident.closeout.list.preview": "workflow.incident.closeout.worklist.preview",
   "workflow.incident.closeout.batch.preview": "workflow.incident.closeout.worklist.preview",
   "workflow.incident.closeout.inventory.preview": "workflow.incident.closeout.worklist.preview",
+  "workflow.incident.closeout.worklist.persist.preview": "workflow.incident.closeout.worklist.artifact.preview",
+  "workflow.incident.closeout.worklist.persist": "workflow.incident.closeout.worklist.artifact",
+  "workflow.incident.closeout.worklist-artifact.preview": "workflow.incident.closeout.worklist.artifact.preview",
+  "workflow.incident.closeout.worklist-artifact": "workflow.incident.closeout.worklist.artifact",
   "workflow.incident.closeout.annotate.preview": "workflow.incident.closeout.evidence.preview",
   "workflow.incident.closeout.annotate": "workflow.incident.closeout.evidence",
   "workflow.incident.closeout.evidence-record.preview": "workflow.incident.closeout.evidence.preview",
@@ -377,6 +382,7 @@ const WORKFLOW_ACTION_PERMISSION_RULES = {
   "side_effect.record": { capability: "side_effect.record", risk: "high", mutating: true, requiresCatClawAudit: true },
   "incident.state": { capability: "incident.write", risk: "medium", mutating: true },
   "workflow.incident.from_dead_letter": { capability: "incident.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
+  "workflow.incident.closeout.worklist.artifact": { capability: "incident.write", risk: "medium", mutating: true },
   "workflow.incident.closeout.evidence": { capability: "incident.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
   "workflow.incident.closeout.artifact": { capability: "incident.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
   "workflow.incident.closeout.human_gate_request": { capability: "human_gate.write", risk: "medium", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
@@ -12070,6 +12076,7 @@ LIMIT ${limit};`, { json: true });
       byCloseoutStatus
     },
     nextActions: [
+      "workflow.incident.closeout.worklist.artifact.preview",
       "workflow.incident.closeout.evidence.preview",
       "workflow.incident.closeout.evidence",
       "workflow.incident.closeout.cat_claw_report.preview",
@@ -12081,6 +12088,154 @@ LIMIT ${limit};`, { json: true });
       "Legacy incidents without explicit workflow links are evaluated against the supplied workflowId; explicit other-workflow links remain rejected by incidentCloseout.",
       "Use evidence preview/write for missing evidence before preparing Cat Claw closeout or Human Gate packages."
     ],
+    dbFile: paths.dbFile
+  };
+}
+
+function renderCloseoutWorklistMarkdown(record = {}) {
+  const worklist = record.worklist || {};
+  const counts = worklist.counts || {};
+  const items = worklist.items || [];
+  return `# Incident Closeout Worklist
+
+## Summary
+
+- workflowId: ${record.workflowId || worklist.workflowId || "-"}
+- artifactId: ${record.artifactId || "-"}
+- generatedAt: ${record.persistedAt || worklist.generatedAt || "-"}
+- openIncidentsScanned: ${counts.openIncidentsScanned ?? 0}
+- selected: ${counts.selected ?? 0}
+- rejectedByScope: ${counts.rejectedByScope ?? 0}
+- stale: ${counts.stale ?? 0}
+
+## Next Actions
+
+${(worklist.nextActions || []).map((item) => `- ${item}`).join("\n") || "- none"}
+
+## Items
+
+${items.length ? items.map((item, index) => {
+  const missing = (item.missingRequired || []).map((row) => row.key).filter(Boolean).join(", ") || "none";
+  return `${index + 1}. ${item.incidentId} status=${item.closeoutStatus} recommendation=${item.recommendation} missing=${missing}`;
+}).join("\n") : "- none"}
+
+## Boundary
+
+- writeBoundary: closeout_worklist_artifact_only
+- noIncidentStateMutation: true
+- noHumanGateMutation: true
+- noTelegramOutboxMutation: true
+- noRuntimeDispatchMutation: true
+- noSideEffectMutation: true
+`;
+}
+
+async function workflowIncidentCloseoutWorklistArtifactPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const worklist = await workflowIncidentCloseoutWorklistPreview(rootDir, input);
+  const operatorReason = String(input.operatorReason || input.operator_reason || input.reason || "").trim();
+  const writeViolations = [];
+  if (!operatorReason) writeViolations.push({ code: "operator_reason_required", detail: "operatorReason is required before persisting a closeout worklist artifact." });
+  const artifactId = String(input.artifactId || input.artifact_id || safeId("incident.closeout.worklist")).trim();
+  return {
+    schemaVersion: "workflow_incident_closeout_worklist_artifact_preview.v1",
+    action: "workflow.incident.closeout.worklist.artifact.preview",
+    preview: true,
+    readOnly: true,
+    writeMode: "read_only_closeout_worklist_artifact_preview",
+    generatedAt: nowIso(),
+    workflowId: worklist.workflowId,
+    artifactId,
+    eligible: true,
+    writeReady: writeViolations.length === 0,
+    worklistCounts: worklist.counts || {},
+    wouldCreate: {
+      artifactIndexRows: 2,
+      files: 2,
+      workflowEvents: 1,
+      incidentStates: 0,
+      humanGateRequests: 0,
+      humanGateButtons: 0,
+      telegramOutbox: 0,
+      runtimeDispatches: 0,
+      sideEffects: 0,
+      workflowStatusUpdates: 0
+    },
+    violations: writeViolations,
+    limitations: [
+      "Preview is read-only and does not persist the closeout worklist artifact.",
+      "Execution writes only JSON/Markdown worklist artifacts, artifact_index rows, and one audit workflow event.",
+      "Execution does not close incidents, record closeout evidence, create Human Gate requests/buttons, dispatch Cat Claw, enqueue Telegram, retry jobs, or change workflow status."
+    ],
+    worklist,
+    dbFile: paths.dbFile
+  };
+}
+
+async function workflowIncidentCloseoutWorklistArtifact(rootDir, input = {}, permissionDecision = null) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const preview = await workflowIncidentCloseoutWorklistArtifactPreview(rootDir, input);
+  if (!preview.writeReady) {
+    throw new Error(`closeout worklist artifact is not write-ready: ${preview.violations.map((item) => item.code).join(",") || "unknown"}`);
+  }
+  const operatorReason = String(input.operatorReason || input.operator_reason || input.reason || "").trim();
+  if (!operatorReason) throw new Error("operatorReason is required for closeout worklist artifact persistence");
+  const createdAt = nowIso();
+  const artifactId = cleanFileSegment(preview.artifactId || safeId("incident.closeout.worklist"));
+  const createdBy = input.createdBy || input.created_by || input.actor || permissionDecision?.caller?.agentId || "local_codex";
+  const record = redactSensitiveForPersistence({
+    schemaVersion: "workflow_incident_closeout_worklist_artifact.v1",
+    artifactId,
+    workflowId: preview.workflowId,
+    persistedAt: createdAt,
+    createdBy,
+    operatorReason: redactSensitiveTextForPersistence(operatorReason),
+    permissionPolicyOutcome: permissionDecision?.policyOutcome || "",
+    writeBoundary: "closeout_worklist_artifact_only",
+    worklist: preview.worklist,
+    limitations: preview.limitations
+  });
+  const packageDir = path.join(paths.bridgeDir, "incident-closeout-worklists");
+  const jsonRelPath = await writeJsonArtifact(paths.root, packageDir, artifactId, record);
+  const markdownRelPath = await writeTextArtifact(paths.root, packageDir, artifactId, "md", renderCloseoutWorklistMarkdown({ ...record, jsonRelPath }));
+  const summary = `Incident closeout worklist ${record.workflowId || artifactId}`;
+  await sqlite(paths.dbFile, `
+INSERT INTO artifact_index(artifact_id, instrument_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES (${sqlValue(`${artifactId}.json`)}, NULL, ${sqlValue(record.workflowId)}, 'incident_closeout_worklist_json', ${sqlValue(jsonRelPath)}, ${sqlValue(summary)}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)})
+ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;
+INSERT INTO artifact_index(artifact_id, instrument_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES (${sqlValue(`${artifactId}.md`)}, NULL, ${sqlValue(record.workflowId)}, 'incident_closeout_worklist_markdown', ${sqlValue(markdownRelPath)}, ${sqlValue(summary)}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)})
+ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
+  await appendWorkflowEvent(paths, {
+    eventType: "incident.closeout_worklist_artifact.persisted",
+    status: "persisted",
+    workflowId: record.workflowId,
+    actor: createdBy,
+    sourceRuntime: "workflow",
+    sourceAgent: createdBy,
+    artifactRef: markdownRelPath,
+    payload: {
+      artifactId,
+      jsonRelPath,
+      markdownRelPath,
+      writeBoundary: "closeout_worklist_artifact_only",
+      counts: record.worklist?.counts || {}
+    },
+    createdAt
+  });
+  return {
+    schemaVersion: "workflow_incident_closeout_worklist_artifact_result.v1",
+    action: "workflow.incident.closeout.worklist.artifact",
+    workflowId: record.workflowId,
+    artifactId,
+    jsonRelativePath: jsonRelPath,
+    markdownRelativePath: markdownRelPath,
+    writeBoundary: "closeout_worklist_artifact_only",
+    didCloseIncident: false,
+    didRecordCloseoutEvidence: false,
+    didCreateHumanGate: false,
+    didDispatchRuntime: false,
+    didSendTelegram: false,
     dbFile: paths.dbFile
   };
 }
@@ -18466,6 +18621,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return workflowIncidentCloseoutPreview(rootDir, input);
     case "workflow.incident.closeout.worklist.preview":
       return workflowIncidentCloseoutWorklistPreview(rootDir, input);
+    case "workflow.incident.closeout.worklist.artifact.preview":
+      return workflowIncidentCloseoutWorklistArtifactPreview(rootDir, input);
     case "workflow.incident.closeout.evidence.preview":
       return workflowIncidentCloseoutEvidencePreview(rootDir, input);
     case "workflow.incident.closeout.artifact.preview":
@@ -18636,6 +18793,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return incidentState(rootDir, input);
     case "workflow.incident.from_dead_letter":
       return workflowIncidentFromDeadLetter(rootDir, input, permissionDecision);
+    case "workflow.incident.closeout.worklist.artifact":
+      return workflowIncidentCloseoutWorklistArtifact(rootDir, input, permissionDecision);
     case "workflow.incident.closeout.evidence":
       return workflowIncidentCloseoutEvidence(rootDir, input, permissionDecision);
     case "workflow.incident.closeout.artifact":
