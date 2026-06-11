@@ -5736,6 +5736,35 @@ VALUES ('dispatch-terminal-failed-only', 'wf-terminal-failed-dispatch', 'wf-term
   assert.equal(health.nextActions.includes("workflow.incident.from_dead_letter.preview"), true);
 }
 
+async function testWorkflowHealthOpenIncidentsAreVisible() {
+  const root = await tempRoot("workflow-health-open-incidents");
+  await runAction(root, { action: "workflow.init" });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT INTO workflow_runs(workflow_id, workflow_type, status, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
+VALUES ('wf-open-incident-health', 'regression', 'active', 'main', 'open incident health regression', 'surface incident backlog in health', 'open incidents are visible', 'manual stop', 'run', 'observe', '{}', '2026-06-12T00:00:00.000Z', '2026-06-12T00:00:01.000Z');
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES
+  ('incident-health-open', 'active', 'degraded', '["workflow"]', 'open incident health regression', 'main', 'open incident should be visible', 'incident is still open', 'prepare closeout package', 'rollback boundary recorded', 'closeout evidence recorded', '[]', '{"workflowId":"wf-open-incident-health"}', '2026-06-10T00:00:00.000Z', '', '', '2026-06-10T00:00:01.000Z'),
+  ('incident-health-resolved', 'resolved', 'normal', '["workflow"]', 'resolved incident health regression', 'main', 'resolved incident should not block', 'incident is resolved', 'none', 'rollback boundary recorded', 'resolved evidence recorded', '[]', '{"workflowId":"wf-open-incident-health"}', '2026-06-10T00:00:00.000Z', '', '2026-06-10T00:00:02.000Z', '2026-06-10T00:00:02.000Z'),
+  ('incident-health-cancelled', 'cancelled', 'normal', '["workflow"]', 'cancelled incident health regression', 'main', 'cancelled incident should not block', 'incident is cancelled', 'none', 'rollback boundary recorded', 'cancelled evidence recorded', '[]', '{"workflowId":"wf-open-incident-health"}', '2026-06-10T00:00:00.000Z', '', '', '2026-06-10T00:00:03.000Z');
+`);
+
+  const health = await runAction(root, {
+    action: "workflow.health",
+    staleIncidentAfterMs: 60 * 60_000
+  });
+  assert.equal(health.schemaVersion, "workflow_health.v1");
+  assert.equal(health.status, "degraded");
+  assert.equal(health.lanes.incidents.open, 1);
+  assert.equal(health.lanes.incidents.staleOpen, 1);
+  assert.equal(health.lanes.incidents.resolved, 1);
+  assert.equal(health.lanes.incidents.cancelled, 1);
+  assert.equal(health.topBlockers.some((item) => item.key === "open_incidents" && item.severity === "warning"), true);
+  assert.equal(health.topBlockers.some((item) => item.key === "stale_open_incidents" && item.severity === "warning"), true);
+  assert.equal(health.nextActions.includes("workflow.incident.closeout.cat_claw_report.preview"), true);
+}
+
 async function testWorkflowReadinessRecoveredRuntimeFailures() {
   const root = await tempRoot("workflow-readiness-recovered-runtime-failures");
   await runAction(root, { action: "workflow.init" });
@@ -6457,6 +6486,7 @@ try {
     ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],
     ["workflow health dashboard", testWorkflowHealthDashboard],
     ["workflow health terminal failed dispatch degraded", testWorkflowHealthTerminalFailedDispatchIsDegraded],
+    ["workflow health open incidents visible", testWorkflowHealthOpenIncidentsAreVisible],
     ["workflow readiness recovered runtime failures", testWorkflowReadinessRecoveredRuntimeFailures],
     ["stale dispatch reconciles message_flows", testStaleDispatchReconcileSyncsMessageFlows],
     ["readiness gateway degraded", testReadinessGatewayDegraded],

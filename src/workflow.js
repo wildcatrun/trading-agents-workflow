@@ -3707,7 +3707,9 @@ function healthRecommendationFor(blocker) {
     pending_human_gate_without_buttons: ["human_gate.inbox"],
     telegram_outbox_failed: ["telegram.outbox.requeue.preview", "telegram.outbox.delivery.preview"],
     registry_dispatch_disabled: ["workflow.runtime_agents"],
-    stale_started_runtime_runs: ["runtime.bridge.drain", "workflow.incident.from_dead_letter.preview"]
+    stale_started_runtime_runs: ["runtime.bridge.drain", "workflow.incident.from_dead_letter.preview"],
+    open_incidents: ["workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"],
+    stale_open_incidents: ["workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"]
   };
   const guidance = {
     stale_sent_dispatches: "Reconcile stale sent dispatches against terminal runtime receipts before retrying.",
@@ -3720,7 +3722,9 @@ function healthRecommendationFor(blocker) {
     pending_human_gate_without_buttons: "Human Gate record lacks active buttons; regenerate through the governed Human Gate path.",
     telegram_outbox_failed: "Use requeue preview before redelivery so receipts remain auditable.",
     registry_dispatch_disabled: "Registered runtime agent cannot receive dispatch; fix registry intentionally from local Codex.",
-    stale_started_runtime_runs: "Runtime run stayed started past the lease window; inspect runtime adapter and receipt evidence."
+    stale_started_runtime_runs: "Runtime run stayed started past the lease window; inspect runtime adapter and receipt evidence.",
+    open_incidents: "Incident states are still open; prepare closeout evidence instead of treating runtime liveness as normal.",
+    stale_open_incidents: "Incident states are open past the update window; prepare Cat Claw closeout or Human Gate package evidence."
   };
   return {
     key: blocker.key,
@@ -3735,6 +3739,8 @@ async function workflowHealthSnapshot(paths, input = {}) {
   const staleDispatchCutoff = new Date(Date.now() - staleDispatchAfterMs).toISOString();
   const staleHumanGateAfterMs = boundedNumber([input.staleHumanGateAfterMs, input.stale_human_gate_after_ms], 6 * 3600_000, 30 * 60_000, 30 * 86400_000);
   const staleHumanGateCutoff = new Date(Date.now() - staleHumanGateAfterMs).toISOString();
+  const staleIncidentAfterMs = boundedNumber([input.staleIncidentAfterMs, input.stale_incident_after_ms], 24 * 3600_000, 60 * 60_000, 90 * 86400_000);
+  const staleIncidentCutoff = new Date(Date.now() - staleIncidentAfterMs).toISOString();
   const messageFlowStuckAfterMs = boundedNumber([input.messageFlowStuckAfterMs, input.message_flow_stuck_after_ms], 5 * 60_000, 60_000, 24 * 3600_000);
   const messageFlowStuckCutoff = new Date(Date.now() - messageFlowStuckAfterMs).toISOString();
   const readiness = await workflowReadinessSnapshot(paths, {
@@ -3818,6 +3824,13 @@ SELECT
     )
     THEN 1 ELSE 0 END) AS stale_started
 FROM runtime_runs rr;`, { json: true });
+  const incidentRows = await sqlite(paths.dbFile, `
+SELECT
+  SUM(CASE WHEN status IN ('active','mitigating','monitoring') THEN 1 ELSE 0 END) AS open,
+  SUM(CASE WHEN status IN ('active','mitigating','monitoring') AND COALESCE(NULLIF(next_update_at,''), updated_at, declared_at) <= ${sqlValue(staleIncidentCutoff)} THEN 1 ELSE 0 END) AS stale_open,
+  SUM(CASE WHEN status='resolved' THEN 1 ELSE 0 END) AS resolved,
+  SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled
+FROM incident_states;`, { json: true });
 
   const dispatch = dispatchRows[0] || {};
   const controlLoop = controlLoopRows[0] || {};
@@ -3826,6 +3839,7 @@ FROM runtime_runs rr;`, { json: true });
   const outbox = outboxRows[0] || {};
   const registry = registryRows[0] || {};
   const runtime = runtimeRows[0] || {};
+  const incident = incidentRows[0] || {};
   const blockers = [];
   const addBlocker = (severity, key, count, plane, evidence = {}) => {
     const numeric = Number(count || 0);
@@ -3848,6 +3862,14 @@ FROM runtime_runs rr;`, { json: true });
   addBlocker("warning", "telegram_outbox_failed", outbox.failed, "communication");
   addBlocker("warning", "registry_dispatch_disabled", registry.dispatch_disabled, "registry");
   addBlocker("warning", "stale_started_runtime_runs", runtime.stale_started, "runtime");
+  addBlocker("warning", "open_incidents", incident.open, "incident", {
+    staleOpen: Number(incident.stale_open || 0),
+    guidance: "Open incidents require governed closeout evidence; they do not imply runtime queue blockage."
+  });
+  addBlocker("warning", "stale_open_incidents", incident.stale_open, "incident", {
+    staleIncidentAfterMs,
+    guidance: "Incident updates are stale; prepare a closeout package or refresh the incident timeline."
+  });
   const uniqueBlockers = [];
   const seen = new Set();
   for (const blocker of blockers.sort((a, b) => healthSeverityRank(a.severity) - healthSeverityRank(b.severity) || b.count - a.count || a.key.localeCompare(b.key))) {
@@ -3906,6 +3928,12 @@ FROM runtime_runs rr;`, { json: true });
         total: Number(registry.total || 0),
         active: Number(registry.active || 0),
         dispatchDisabled: Number(registry.dispatch_disabled || 0)
+      },
+      incidents: {
+        open: Number(incident.open || 0),
+        staleOpen: Number(incident.stale_open || 0),
+        resolved: Number(incident.resolved || 0),
+        cancelled: Number(incident.cancelled || 0)
       }
     },
     topBlockers,
