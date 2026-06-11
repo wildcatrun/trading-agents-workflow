@@ -364,6 +364,25 @@ const WORKFLOW_ACTION_PERMISSION_RULES = {
   "cat_claw.audit": { capability: "cat_claw.audit", risk: "low", mutating: true }
 };
 
+const WORKFLOW_REGISTRY_WRITE_ACTIONS = new Set([
+  "runtime.agent.upsert",
+  "meeting.runtime_participant"
+]);
+
+const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
+const LOCAL_CODEX_REGISTRY_WRITER_AGENTS = new Set(["local_codex", "codex"]);
+const LOCAL_CODEX_REGISTRY_WRITER_RUNTIMES = new Set(["local_codex", "codex"]);
+const LOCAL_CODEX_REGISTRY_WRITER_SOURCE_SYSTEMS = new Set([
+  "codex",
+  "cli",
+  "codex_cli",
+  "codex_desktop",
+  "codex_mcp",
+  "local_codex",
+  "local_codex_mcp",
+  "local_codex_mtls"
+]);
+
 const WORKFLOW_POLICY_HARD_GATE_ACTIONS = new Set([
   "risk.decision",
   "trade.intent",
@@ -1427,6 +1446,16 @@ function isWorkflowTrustedOperator(caller = {}) {
     || ["codex_mtls", "local_codex", "local_codex_mtls", "human_gate_console"].includes(source);
 }
 
+function isLocalCodexRegistryWriter(caller = {}) {
+  const agent = String(caller.agentId || "").trim();
+  const runtime = String(caller.runtime || "").trim();
+  const source = String(caller.sourceSystem || "").trim().toLowerCase();
+  return boolOption(process.env[LOCAL_CODEX_REGISTRY_WRITE_ENV], false)
+    && LOCAL_CODEX_REGISTRY_WRITER_AGENTS.has(agent)
+    && LOCAL_CODEX_REGISTRY_WRITER_RUNTIMES.has(runtime)
+    && LOCAL_CODEX_REGISTRY_WRITER_SOURCE_SYSTEMS.has(source);
+}
+
 function permissionEvidencePresent(input = {}, names = []) {
   return names.some((name) => {
     const camel = name.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -1549,6 +1578,13 @@ async function evaluateWorkflowPermission(paths, input = {}) {
   };
   if (rule.readOnly) {
     decision.reason = "read_action";
+    return decision;
+  }
+  if (WORKFLOW_REGISTRY_WRITE_ACTIONS.has(rule.action) && !isLocalCodexRegistryWriter(caller)) {
+    decision.allowed = false;
+    decision.reason = "registry_write_local_codex_only";
+    decision.policyOutcome = "deny";
+    decision.actionable = false;
     return decision;
   }
   if (!caller.agentId) {

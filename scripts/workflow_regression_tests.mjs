@@ -9,9 +9,10 @@ import path from "node:path";
 import { workflowChildPayload } from "../src/console/server.js";
 import { WorkflowActionGateway } from "../src/console/action-gateway.js";
 import { WorkflowReadModel } from "../src/console/read-model.js";
-import { runAction } from "../src/core.js";
+import { runAction as runActionRaw } from "../src/core.js";
 
 const createdRoots = [];
+const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
 
 async function tempRoot(name) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), `taw-regression-${name}-`));
@@ -56,6 +57,73 @@ function sha256Text(value) {
 function workflowCliJson(args) {
   const output = execFileSync("node", [path.resolve("bin/cat-meeting-governance.mjs"), ...args], { encoding: "utf8" }).trim();
   return output ? JSON.parse(output) : {};
+}
+
+function isRegistryWriteSetup(input = {}) {
+  return ["runtime.agent", "runtime.agent.upsert", "runtime.participant", "meeting.runtime_participant"].includes(String(input.action || ""));
+}
+
+function hasCallerIdentity(input = {}) {
+  return [
+    "callerAgent",
+    "caller_agent",
+    "principalAgent",
+    "principal_agent",
+    "fromAgent",
+    "from_agent",
+    "sourceAgent",
+    "source_agent",
+    "createdBy",
+    "created_by",
+    "updatedBy",
+    "updated_by",
+    "requester",
+    "actor",
+    "callerRuntime",
+    "caller_runtime",
+    "principalRuntime",
+    "principal_runtime",
+    "fromRuntime",
+    "from_runtime",
+    "sourceRuntime",
+    "source_runtime"
+  ].some((key) => input[key] !== undefined && input[key] !== null && input[key] !== "");
+}
+
+async function runAction(root, input = {}) {
+  if (isRegistryWriteSetup(input) && !hasCallerIdentity(input)) {
+    const previous = process.env[LOCAL_CODEX_REGISTRY_WRITE_ENV];
+    process.env[LOCAL_CODEX_REGISTRY_WRITE_ENV] = "1";
+    try {
+      return await runActionRaw(root, {
+        callerAgent: "local_codex",
+        callerRuntime: "local_codex",
+        sourceSystem: "local_codex",
+        ...input
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env[LOCAL_CODEX_REGISTRY_WRITE_ENV];
+      } else {
+        process.env[LOCAL_CODEX_REGISTRY_WRITE_ENV] = previous;
+      }
+    }
+  }
+  return runActionRaw(root, input);
+}
+
+async function withLocalCodexRegistryWrite(fn) {
+  const previous = process.env[LOCAL_CODEX_REGISTRY_WRITE_ENV];
+  process.env[LOCAL_CODEX_REGISTRY_WRITE_ENV] = "1";
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[LOCAL_CODEX_REGISTRY_WRITE_ENV];
+    } else {
+      process.env[LOCAL_CODEX_REGISTRY_WRITE_ENV] = previous;
+    }
+  }
 }
 
 async function assertRejectsMessage(fn, expected) {
@@ -4465,6 +4533,128 @@ async function testWorkflowPermissionGate() {
     displayName: "猫爪",
     capabilities: {}
   });
+
+  const unknownRegistryWrite = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.agent.upsert"
+  });
+  assert.equal(unknownRegistryWrite.allowed, false);
+  assert.equal(unknownRegistryWrite.reason, "registry_write_local_codex_only");
+  assert.equal(unknownRegistryWrite.policyOutcome, "deny");
+
+  const hermersRegistryWrite = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.agent.upsert",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers",
+    sourceSystem: "hermers_mcp"
+  });
+  assert.equal(hermersRegistryWrite.allowed, false);
+  assert.equal(hermersRegistryWrite.reason, "registry_write_local_codex_only");
+  assert.equal(hermersRegistryWrite.policyOutcome, "deny");
+
+  const localCodexRegistryWriteWithoutEnv = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.agent.upsert",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex"
+  });
+  assert.equal(localCodexRegistryWriteWithoutEnv.allowed, false);
+  assert.equal(localCodexRegistryWriteWithoutEnv.reason, "registry_write_local_codex_only");
+
+  const localCodexRegistryWrite = await withLocalCodexRegistryWrite(() => runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.agent.upsert",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex"
+  }));
+  assert.equal(localCodexRegistryWrite.allowed, true);
+  assert.equal(localCodexRegistryWrite.reason, "trusted_operator");
+
+  const localCodexRegistryWriteMissingRuntime = await withLocalCodexRegistryWrite(() => runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.agent.upsert",
+    callerAgent: "local_codex",
+    sourceSystem: "local_codex"
+  }));
+  assert.equal(localCodexRegistryWriteMissingRuntime.allowed, false);
+  assert.equal(localCodexRegistryWriteMissingRuntime.reason, "registry_write_local_codex_only");
+
+  const localCodexRegistryWriteMissingSource = await withLocalCodexRegistryWrite(() => runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.agent.upsert",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex"
+  }));
+  assert.equal(localCodexRegistryWriteMissingSource.allowed, false);
+  assert.equal(localCodexRegistryWriteMissingSource.reason, "registry_write_local_codex_only");
+
+  const spoofedLocalCodexFromHermers = await withLocalCodexRegistryWrite(() => runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.agent.upsert",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "hermers_mcp"
+  }));
+  assert.equal(spoofedLocalCodexFromHermers.allowed, false);
+  assert.equal(spoofedLocalCodexFromHermers.reason, "registry_write_local_codex_only");
+
+  const meetingParticipantDenied = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.participant",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers",
+    sourceSystem: "hermers_mcp"
+  });
+  assert.equal(meetingParticipantDenied.allowed, false);
+  assert.equal(meetingParticipantDenied.action, "meeting.runtime_participant");
+  assert.equal(meetingParticipantDenied.reason, "registry_write_local_codex_only");
+
+  const meetingParticipantAllowed = await withLocalCodexRegistryWrite(() => runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.participant",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex"
+  }));
+  assert.equal(meetingParticipantAllowed.allowed, true);
+  assert.equal(meetingParticipantAllowed.action, "meeting.runtime_participant");
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "runtime.agent.upsert",
+      platform: "hermers",
+      runtime: "hermers",
+      agentId: "cat_body",
+      callerAgent: "cat_body",
+      callerRuntime: "hermers",
+      sourceSystem: "hermers_mcp"
+    }),
+    /workflow permission denied: action=runtime\.agent\.upsert.*reason=registry_write_local_codex_only/
+  );
+
+  await assertRejectsMessage(
+    () => runActionRaw(root, {
+      action: "runtime.agent.upsert",
+      platform: "hermers",
+      runtime: "hermers",
+      agentId: "cat_body"
+    }),
+    /workflow permission denied: action=runtime\.agent\.upsert.*reason=registry_write_local_codex_only/
+  );
+
+  await withLocalCodexRegistryWrite(() => runAction(root, {
+    action: "runtime.participant",
+    meetingId: "meeting-permission-gate",
+    runtime: "hermers",
+    agentId: "cat_body",
+    participantRole: "participant",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex"
+  }));
 
   const allowedMessage = await runAction(root, {
     action: "workflow.permission.check",

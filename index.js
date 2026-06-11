@@ -1647,6 +1647,9 @@ function registerCli(api) {
       .action(async (options) => {
         console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "runtime.agent.upsert",
+          callerAgent: "local_codex",
+          callerRuntime: "local_codex",
+          sourceSystem: "codex_cli",
           workflowRootDir: options.workflowRoot,
           runtime: options.runtime,
           platform: options.platform,
@@ -1720,6 +1723,9 @@ function registerCli(api) {
       .action(async (options) => {
         console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "meeting.runtime_participant",
+          callerAgent: "local_codex",
+          callerRuntime: "local_codex",
+          sourceSystem: "codex_cli",
           workflowRootDir: options.workflowRoot,
           meetingId: options.meeting,
           runtime: options.runtime,

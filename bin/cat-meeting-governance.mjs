@@ -550,6 +550,9 @@ function toAction({ command, positional, options }) {
         root,
         input: {
           action: "runtime.agent.upsert",
+          callerAgent: "local_codex",
+          callerRuntime: "local_codex",
+          sourceSystem: "codex_cli",
           runtime: options.runtime,
           platform: options.platform,
           agentId: options.agent,
@@ -591,7 +594,7 @@ function toAction({ command, positional, options }) {
         }
       };
     case "meeting-participant":
-      return { root, input: { action: "meeting.runtime_participant", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, participantRole: options.role, chair: options.chair === "true", decider: options.decider === "true", secretary: options.secretary === "true", liveMode: options["live-mode"] } };
+      return { root, input: { action: "meeting.runtime_participant", callerAgent: "local_codex", callerRuntime: "local_codex", sourceSystem: "codex_cli", meetingId: options.meeting, runtime: options.runtime, agentId: options.agent, participantRole: options.role, chair: options.chair === "true", decider: options.decider === "true", secretary: options.secretary === "true", liveMode: options["live-mode"] } };
     case "telegram-live":
       return { root, input: { action: "telegram.live", meetingId: options.meeting, chatId: options.chat, channelId: options.channel, humanGateChannelId: options["human-gate-channel"], mode: options.mode } };
     case "meeting-dispatch":
