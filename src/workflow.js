@@ -3583,7 +3583,19 @@ SELECT
 FROM tracking_states;`, { json: true });
   const recentRuntimeRows = await sqlite(paths.dbFile, `
 SELECT
-  SUM(CASE WHEN rr.status='failed' THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN rr.status='failed'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM runtime_runs recovered
+      WHERE recovered.dispatch_id=rr.dispatch_id
+        AND recovered.runtime_run_id != rr.runtime_run_id
+        AND recovered.status='acked'
+        AND COALESCE(recovered.attempt, 0) >= COALESCE(rr.attempt, 0)
+        AND recovered.completed_at IS NOT NULL
+        AND recovered.completed_at != ''
+        AND recovered.completed_at >= COALESCE(NULLIF(rr.completed_at,''), rr.started_at)
+    )
+    THEN 1 ELSE 0 END) AS failed,
   SUM(CASE WHEN rr.status='retry_scheduled' THEN 1 ELSE 0 END) AS retry_scheduled,
   COUNT(*) AS total
 FROM runtime_runs rr
@@ -3825,7 +3837,10 @@ FROM runtime_runs rr;`, { json: true });
   }
   addBlocker("critical", "failed_control_loop_jobs", controlLoop.failed, "control_loop");
   addBlocker("critical", "expired_control_loop_leases", controlLoop.expired_leases, "control_loop");
-  addBlocker("critical", "failed_dispatches", dispatch.failed, "dispatch");
+  addBlocker("warning", "failed_dispatches", dispatch.failed, "dispatch", {
+    terminal: true,
+    guidance: "Terminal failed dispatches are dead-letter evidence; they require incident/archive handling but do not mean the runtime queue is currently blocked."
+  });
   addBlocker("critical", "stale_sent_dispatches", dispatch.stale_sent, "dispatch");
   addBlocker("warning", "stale_queued_dispatches", dispatch.stale_queued, "dispatch");
   addBlocker("critical", "message_flow_delivery_missing", Number(messageFlow.missing_delivery || 0) + Number(messageFlow.stuck_after_runtime || 0), "message_flow");

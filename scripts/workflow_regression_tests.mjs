@@ -5679,6 +5679,61 @@ VALUES
   assert.equal(permission.readOnly, true);
 }
 
+async function testWorkflowHealthTerminalFailedDispatchIsDegraded() {
+  const root = await tempRoot("workflow-health-terminal-failed-dispatch");
+  await runAction(root, { action: "workflow.init" });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT INTO workflow_runs(workflow_id, workflow_type, status, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
+VALUES ('wf-terminal-failed-dispatch', 'regression', 'active', 'main', 'terminal failed dispatch health regression', 'distinguish dead letter evidence from live blockers', 'terminal failed dispatches degrade health only', 'manual stop', 'run', 'observe', '{}', '2026-06-12T00:00:00.000Z', '2026-06-12T00:00:01.000Z');
+INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, routing_policy_json, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
+VALUES ('hermers:cat_body', 'hermers', 'cat_body', '猫之体', '', 'active', 'hermers', 'acp', 'none', 'none', 'acp', 'none', 'hermers_acp', 'silent', 1, 1, 0, '{}', 'hermes-profile:catbody', '{}', '{}', '2026-06-12T00:00:00.000Z', '2026-06-12T00:00:01.000Z');
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-terminal-failed-only', 'wf-terminal-failed-dispatch', 'wf-terminal-failed-dispatch', 'trace-terminal-failed-only', 'idem-terminal-failed-only', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'failed', 'normal', 3, 3, '', 'timeout', 'terminal failed dispatch', 'prompt', '{}', 'main', '2026-06-12T00:00:00.000Z', '', '', '', '2026-06-12T00:00:02.000Z');
+`);
+
+  const health = await runAction(root, { action: "workflow.health" });
+  assert.equal(health.schemaVersion, "workflow_health.v1");
+  assert.equal(health.status, "degraded");
+  assert.equal(health.lanes.dispatch.failed, 1);
+  const failedDispatchBlocker = health.topBlockers.find((item) => item.key === "failed_dispatches");
+  assert.equal(failedDispatchBlocker?.severity, "warning");
+  assert.equal(failedDispatchBlocker?.evidence?.terminal, true);
+  assert.equal(health.nextActions.includes("workflow.incident.from_dead_letter.preview"), true);
+}
+
+async function testWorkflowReadinessRecoveredRuntimeFailures() {
+  const root = await tempRoot("workflow-readiness-recovered-runtime-failures");
+  await runAction(root, { action: "workflow.init" });
+  const dbFile = path.join(root, "tracking.db");
+  const ts = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
+  const recoveredFailedAt = ts(-5 * 60_000);
+  const recoveredAckedAt = ts(-4 * 60_000);
+  const activeFailedAt = ts(-3 * 60_000);
+  const earlyAckedAt = ts(-2 * 60_000);
+  const earlyFailedAt = ts(-90_000);
+  const lowerAttemptFailedAt = ts(-60_000);
+  const lowerAttemptAckedAt = ts(-30_000);
+  sqliteExec(dbFile, `
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES
+  ('runtime-recovered-failed', 'dispatch-runtime-recovered', '', '', 'trace-runtime-recovered', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'acp_unavailable', 1, '${ts(-6 * 60_000)}', '${recoveredFailedAt}', 1000, '', '', '', 'failed before retry', '{}'),
+  ('runtime-recovered-acked', 'dispatch-runtime-recovered', '', '', 'trace-runtime-recovered', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 2, '${recoveredFailedAt}', '${recoveredAckedAt}', 1000, '', '', '', '', '{}'),
+  ('runtime-active-failed', 'dispatch-runtime-active-failed', '', '', 'trace-runtime-active-failed', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 1, '${ts(-4 * 60_000)}', '${activeFailedAt}', 1000, '', '', '', 'still failed', '{}'),
+  ('runtime-early-acked', 'dispatch-runtime-early-ack', '', '', 'trace-runtime-early-ack', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 1, '${ts(-3 * 60_000)}', '${earlyAckedAt}', 1000, '', '', '', '', '{}'),
+  ('runtime-early-failed', 'dispatch-runtime-early-ack', '', '', 'trace-runtime-early-ack', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 1, '${earlyAckedAt}', '${earlyFailedAt}', 1000, '', '', '', 'ack completed before failure', '{}'),
+  ('runtime-lower-attempt-failed', 'dispatch-runtime-lower-attempt', '', '', 'trace-runtime-lower-attempt', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 2, '${ts(-2 * 60_000)}', '${lowerAttemptFailedAt}', 1000, '', '', '', 'higher attempt failed', '{}'),
+  ('runtime-lower-attempt-acked', 'dispatch-runtime-lower-attempt', '', '', 'trace-runtime-lower-attempt', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 1, '${lowerAttemptFailedAt}', '${lowerAttemptAckedAt}', 1000, '', '', '', '', '{}');
+`);
+
+  const readiness = await runAction(root, {
+    action: "workflow.readiness",
+    persistReadinessSnapshot: false
+  });
+  const recentFailure = readiness.findings.find((finding) => finding.key === "recent_runtime_failures");
+  assert.equal(recentFailure?.count, 3);
+}
+
 async function testStaleDispatchReconcileSyncsMessageFlows() {
   const root = await tempRoot("stale-dispatch-flow-sync");
   await runAction(root, { action: "workflow.init" });
@@ -6367,6 +6422,8 @@ try {
     ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],
     ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],
     ["workflow health dashboard", testWorkflowHealthDashboard],
+    ["workflow health terminal failed dispatch degraded", testWorkflowHealthTerminalFailedDispatchIsDegraded],
+    ["workflow readiness recovered runtime failures", testWorkflowReadinessRecoveredRuntimeFailures],
     ["stale dispatch reconciles message_flows", testStaleDispatchReconcileSyncsMessageFlows],
     ["readiness gateway degraded", testReadinessGatewayDegraded],
     ["hermers profile mode readiness/registry", testHermersProfileModeReadinessAndRegistry],
