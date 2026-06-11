@@ -13,6 +13,7 @@ import { runAction as runActionRaw } from "../src/core.js";
 
 const createdRoots = [];
 const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
+const TEST_SEMANTIC_CONTINUATION_FAILURE_ENV = "TRADING_AGENTS_WORKFLOW_TEST_SEMANTIC_CONTINUATION_FAILURE";
 
 async function tempRoot(name) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), `taw-regression-${name}-`));
@@ -2301,6 +2302,8 @@ async function makeFakeOpenClaw(root, name, mode) {
     ? `#!/usr/bin/env node\nimport fs from "node:fs";\nimport path from "node:path";\nconst argv = process.argv.slice(2);\nconst valueAfter = (flag) => { const index = argv.indexOf(flag); return index >= 0 ? argv[index + 1] || "" : ""; };\nfs.writeFileSync(path.join(process.cwd(), "semantic-inspect.json"), JSON.stringify({ timeout: valueAfter("--timeout"), message: valueAfter("--message") }, null, 2));\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output"}]}}));\n`
     : mode === "bad-ack"
     ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output without ack prefix"}]}}));\n`
+    : mode === "embedded-ack"
+    ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"I saw ACK_RECEIVED in the instructions, but this is not a first-line ACK."}]}}));\n`
     : mode === "empty-ack"
     ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:""}]}}));\n`
     : mode === "slow-timeout"
@@ -2732,6 +2735,58 @@ WHERE dispatch_type='message_flow_semantic'
   });
   assert.equal(semanticTick.claimedJobs?.[0]?.jobType, "runtime_drain");
   assert.equal(semanticTick.jobResults?.[0]?.result?.results?.[0]?.dispatchId, loopSemanticDispatchId);
+
+  const continuationFailureAck = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "requires ack semantic enqueue failure regression body",
+    workflowId: "workflow-message-flow-semantic-enqueue-failure",
+    meetingId: "meeting-message-flow-semantic-enqueue-failure",
+    requiresAck: true,
+    returnPolicy: "silent"
+  });
+  const continuationFailureDispatchId = continuationFailureAck.dispatches[0].dispatchId;
+  const forcedFailureAckBin = await makeFakeOpenClaw(root, "fake-openclaw-forced-semantic-failure-ack.mjs", "inspect-ack");
+  const previousForcedFailure = process.env[TEST_SEMANTIC_CONTINUATION_FAILURE_ENV];
+  process.env[TEST_SEMANTIC_CONTINUATION_FAILURE_ENV] = "1";
+  let continuationFailureDrain;
+  try {
+    continuationFailureDrain = await runAction(root, {
+      action: "runtime.bridge.drain",
+      runtime: "openclaw",
+      dispatchId: continuationFailureDispatchId,
+      openclawBin: forcedFailureAckBin,
+      reportDelivery: false,
+      forceSemanticContinuationFailure: true
+    });
+  } finally {
+    if (previousForcedFailure === undefined) {
+      delete process.env[TEST_SEMANTIC_CONTINUATION_FAILURE_ENV];
+    } else {
+      process.env[TEST_SEMANTIC_CONTINUATION_FAILURE_ENV] = previousForcedFailure;
+    }
+  }
+  assert.equal(continuationFailureDrain.results?.[0]?.status, "acked");
+  assert.equal(continuationFailureDrain.results?.[0]?.semanticContinuation?.status, "failed");
+  const continuationFailureRows = sqliteJson(dbFile, `
+SELECT d.status AS dispatchStatus, mf.status AS flowStatus, mf.final_output_present AS finalOutputPresent
+FROM mixed_meeting_dispatches d
+JOIN message_flows mf ON mf.dispatch_id=d.dispatch_id
+WHERE d.dispatch_id='${continuationFailureDispatchId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(continuationFailureRows, {
+    dispatchStatus: "acked",
+    flowStatus: "runtime_acknowledged",
+    finalOutputPresent: 0
+  });
+  const continuationFailureEvents = sqliteJson(dbFile, `
+SELECT COUNT(*) AS count
+FROM message_flow_events
+WHERE flow_id='${continuationFailureAck.dispatches[0].messageFlowId}'
+  AND event_type='semantic_continuation_failed';`)[0];
+  assert.equal(continuationFailureEvents.count, 1);
 }
 
 async function testMessageFlowAckTimeoutClamping() {
@@ -2808,30 +2863,34 @@ async function testMessageFlowImmediateAckRetryDelay() {
     openclawBin: failBin,
     reportDelivery: false
   });
-  assert.equal(drained.results?.[0]?.status, "acked");
-  assert.equal(Boolean(drained.results?.[0]?.semanticContinuation?.dispatchId), true);
+  assert.equal(drained.results?.[0]?.status, "queued");
+  assert.equal(drained.results?.[0]?.retryScheduled, true);
+  assert.equal(drained.results?.[0]?.failureType, "ack_contract_violation");
+  assert.equal(Boolean(drained.results?.[0]?.semanticContinuation?.dispatchId), false);
 
   const dbFile = path.join(root, "tracking.db");
   const dispatch = sqliteJson(dbFile, `
-SELECT status, attempt, next_retry_at AS nextRetryAt
+SELECT status, attempt, next_retry_at AS nextRetryAt, failure_type AS failureType
 FROM mixed_meeting_dispatches
 WHERE dispatch_id='${dispatchId}'
 LIMIT 1;`)[0];
-  assert.equal(dispatch.status, "acked");
+  assert.equal(dispatch.status, "queued");
   assert.equal(dispatch.attempt, 1);
-  assert.equal(dispatch.nextRetryAt || "", "");
+  assert.equal(dispatch.failureType, "ack_contract_violation");
+  assert.notEqual(dispatch.nextRetryAt || "", "");
   const run = sqliteJson(dbFile, `
 SELECT COUNT(*) AS count
 FROM runtime_runs
 WHERE dispatch_id='${dispatchId}'
-  AND status='acked';`)[0];
+  AND status='retry_scheduled'
+  AND failure_type='ack_contract_violation';`)[0];
   assert.equal(run.count, 1);
   const indexedAgentRun = sqliteJson(dbFile, `
 SELECT agent_run_id AS agentRunId, workflow_id AS workflowId, dispatch_id AS dispatchId,
   runtime_run_id AS runtimeRunId, runtime, agent_id AS agentId, status, attempt, error
 FROM workflow_agent_runs
 WHERE dispatch_id='${dispatchId}'
-  AND status='acked'
+  AND status='retry_scheduled'
 LIMIT 1;`)[0];
   assert.ok(indexedAgentRun.agentRunId.startsWith("runtime."));
   assert.equal(indexedAgentRun.workflowId, "workflow-message-flow-ack-retry");
@@ -2840,6 +2899,43 @@ LIMIT 1;`)[0];
   assert.equal(indexedAgentRun.runtime, "openclaw");
   assert.equal(indexedAgentRun.agentId, "main");
   assert.equal(indexedAgentRun.attempt, 1);
+  assert.match(indexedAgentRun.error, /ACK contract violation/);
+  const badAckSemanticCount = sqliteJson(dbFile, `
+SELECT COUNT(*) AS count
+FROM mixed_meeting_dispatches
+WHERE dispatch_type='message_flow_semantic'
+  AND meeting_id='meeting-message-flow-ack-retry';`)[0];
+  assert.equal(badAckSemanticCount.count, 0);
+
+  const embeddedAck = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "requires ack embedded token retry regression body",
+    workflowId: "workflow-message-flow-embedded-ack-retry",
+    meetingId: "meeting-message-flow-embedded-ack-retry",
+    requiresAck: true,
+    returnPolicy: "silent"
+  });
+  const embeddedAckDispatchId = embeddedAck.dispatches[0].dispatchId;
+  const embeddedAckBin = await makeFakeOpenClaw(root, "fake-openclaw-embedded-ack.mjs", "embedded-ack");
+  const embeddedAckDrained = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: embeddedAckDispatchId,
+    openclawBin: embeddedAckBin,
+    reportDelivery: false
+  });
+  assert.equal(embeddedAckDrained.results?.[0]?.status, "queued");
+  assert.equal(embeddedAckDrained.results?.[0]?.retryScheduled, true);
+  assert.equal(embeddedAckDrained.results?.[0]?.failureType, "ack_contract_violation");
+  const embeddedAckSemanticCount = sqliteJson(dbFile, `
+SELECT COUNT(*) AS count
+FROM mixed_meeting_dispatches
+WHERE dispatch_type='message_flow_semantic'
+  AND meeting_id='meeting-message-flow-embedded-ack-retry';`)[0];
+  assert.equal(embeddedAckSemanticCount.count, 0);
 
   const emptyAck = await runAction(root, {
     action: "workflow.message_flow.send",
@@ -2868,8 +2964,8 @@ LIMIT 1;`)[0];
 SELECT COUNT(*) AS count
 FROM mixed_meeting_dispatches
 WHERE dispatch_type='message_flow_semantic'
-  AND meeting_id IN ('meeting-message-flow-ack-retry', 'meeting-message-flow-empty-ack-retry');`)[0];
-  assert.equal(semanticCount.count, 1);
+  AND meeting_id IN ('meeting-message-flow-ack-retry', 'meeting-message-flow-embedded-ack-retry', 'meeting-message-flow-empty-ack-retry');`)[0];
+  assert.equal(semanticCount.count, 0);
 
   const timeoutAck = await runAction(root, {
     action: "workflow.message_flow.send",
@@ -5350,7 +5446,11 @@ VALUES
 INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
 VALUES ('hgate-health-no-buttons', 'human_gate_record', 'pending', NULL, 'regression', 'cat_claw', '', 'artifact://hgate-health-no-buttons', '{"workflowId":"wf-health"}', 'hash-hgate-health', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:01.000Z');
 INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, outbox_id, target_runtime, target_agent_id, return_policy, status, runtime_completed_at, runtime_failed_at, final_output_present, delivery_receipt_present, last_error, created_at, updated_at)
-VALUES ('flow-health-missing-delivery', 'trace-flow-health', 'idem-flow-health', 'wf-health', 'wf-health', 'dispatch-health-stale', '', 'hermers', 'cat_body', 'report_to_flashcat', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z');
+VALUES
+  ('flow-health-missing-delivery', 'trace-flow-health', 'idem-flow-health', 'wf-health', 'wf-health', 'dispatch-health-stale', '', 'hermers', 'cat_body', 'report_to_flashcat', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z'),
+  ('flow-health-silent-completed', 'trace-flow-silent', 'idem-flow-silent', 'wf-health', 'wf-health', '', '', 'hermers', 'cat_body', 'silent', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z'),
+  ('flow-health-local-codex-receipt', 'trace-flow-local', 'idem-flow-local', 'wf-health', 'wf-health', '', '', 'local_codex', 'codex', 'report_to_flashcat', 'runtime_completed', '2000-01-01T00:00:00.000Z', '', 1, 0, '', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z'),
+  ('flow-health-local-codex-failed', 'trace-flow-local-failed', 'idem-flow-local-failed', 'wf-health', 'wf-health', '', 'outbox-local-failed', 'local_codex', 'codex', 'report_to_flashcat', 'runtime_failed', '', '2000-01-01T00:00:00.000Z', 0, 0, 'local codex inbox failure should not require telegram reconcile', '2026-05-31T00:00:00.000Z', '2000-01-01T00:00:01.000Z');
 `);
   const health = await runAction(root, {
     action: "workflow.health",
@@ -5366,6 +5466,8 @@ VALUES ('flow-health-missing-delivery', 'trace-flow-health', 'idem-flow-health',
   assert.equal(health.lanes.dispatch.failed, 1);
   assert.equal(health.lanes.controlLoop.failed, 1);
   assert.equal(health.lanes.controlLoop.expiredLeases, 1);
+  assert.equal(health.lanes.messageFlow.missingDelivery, 1);
+  assert.equal(health.lanes.messageFlow.stuckAfterRuntime, 1);
   assert.equal(health.lanes.humanGate.withoutButtons, 1);
   assert.equal(health.lanes.registry.dispatchDisabled, 1);
   const blockerKeys = health.topBlockers.map((item) => item.key);
@@ -5385,6 +5487,15 @@ VALUES ('flow-health-missing-delivery', 'trace-flow-health', 'idem-flow-health',
   assert.equal(healthWithBadInput.schemaVersion, "workflow_health.v1");
   assert.equal(healthWithBadInput.topBlockers.length > 0, true);
   assert.equal(sqliteCount(dbFile, "readiness_snapshots"), 0);
+
+  const reconciled = await runAction(root, {
+    action: "message_flow.reconcile",
+    messageFlowStuckAfterMs: 60_000,
+    limit: 10
+  });
+  assert.equal(reconciled.count, 1);
+  assert.equal(reconciled.incidents.length, 1);
+  assert.equal(reconciled.incidents[0].flowId, "flow-health-missing-delivery");
 
   const dashboard = await runAction(root, { action: "workflow.dashboard" });
   assert.equal(dashboard.schemaVersion, "workflow_health.v1");

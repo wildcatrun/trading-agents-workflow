@@ -65,6 +65,7 @@ const DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS = 90;
 const DEFAULT_RUNTIME_ACK_RETRY_SECONDS = 30;
 const DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS = 3;
 const DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS = 300;
+const TEST_SEMANTIC_CONTINUATION_FAILURE_ENV = "TRADING_AGENTS_WORKFLOW_TEST_SEMANTIC_CONTINUATION_FAILURE";
 const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_report"]);
 const TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES = new Set(["human_gate_request", "human_gate_report", "workflow_secretary_report", "message_flow_reply", "meeting_live"]);
 const INTERNAL_HUMAN_GATE_RECORD = Symbol("internal_human_gate_record");
@@ -3725,7 +3726,7 @@ FROM control_loop_jobs;`, { json: true });
 SELECT
   SUM(CASE WHEN delivery_receipt_present=0 AND return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])}) AND target_runtime NOT IN ('local_codex','codex') AND (COALESCE(runtime_completed_at,'') != '' OR COALESCE(runtime_failed_at,'') != '') THEN 1 ELSE 0 END) AS missing_delivery,
   SUM(CASE WHEN status IN ('runtime_failed','telegram_failed') THEN 1 ELSE 0 END) AS failed,
-  SUM(CASE WHEN final_output_present=1 AND delivery_receipt_present=0 AND COALESCE(runtime_completed_at,'') != '' AND runtime_completed_at <= ${sqlValue(messageFlowStuckCutoff)} THEN 1 ELSE 0 END) AS stuck_after_runtime
+  SUM(CASE WHEN final_output_present=1 AND delivery_receipt_present=0 AND return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])}) AND target_runtime NOT IN ('local_codex','codex') AND COALESCE(runtime_completed_at,'') != '' AND runtime_completed_at <= ${sqlValue(messageFlowStuckCutoff)} THEN 1 ELSE 0 END) AS stuck_after_runtime
 FROM message_flows;`, { json: true });
   const humanGateRows = await sqlite(paths.dbFile, `
 SELECT
@@ -10656,6 +10657,16 @@ async function queueMessageFlowSemanticContinuation(paths, row, data = {}, input
   const payload = dispatchPayloadObject(row);
   const nested = objectValue(payload.payload);
   if (isSemanticContinuationDispatch(row)) return null;
+  if (
+    boolOption(process.env[TEST_SEMANTIC_CONTINUATION_FAILURE_ENV], false)
+    && boolOption(input.forceSemanticContinuationFailure ?? input.force_semantic_continuation_failure, false)
+  ) {
+    await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_failed", {
+      ackDispatchId: row.dispatch_id,
+      reason: "forced_semantic_continuation_failure"
+    });
+    return { status: "failed", reason: "forced_semantic_continuation_failure" };
+  }
   const idempotencyKey = messageFlowSemanticIdempotencyKey(flow.flow_id, row.dispatch_id);
   const semanticDispatchId = `dispatch.semantic.${textHash(idempotencyKey).slice(0, 24)}`;
   const semanticPrompt = messageFlowSemanticPromptFromPayload(nested, row.prompt || payload.prompt || "");
@@ -13410,8 +13421,6 @@ function validateRuntimeAckOutput(text = "", ack = {}) {
   const firstLine = trimmed.split(/\r?\n/, 1)[0] || "";
   const expectedPrefix = String(ack.expectedPrefix || "ACK_RECEIVED").trim() || "ACK_RECEIVED";
   if (firstLine === expectedPrefix || firstLine.startsWith(`${expectedPrefix} `) || firstLine.startsWith(`${expectedPrefix}:`)) return true;
-  if (trimmed.includes(expectedPrefix)) return true;
-  if (trimmed) return true;
   throw new Error(`ACK contract violation: expected first line to start with ${expectedPrefix}`);
 }
 
@@ -13713,7 +13722,6 @@ async function runHermesDispatch(paths, row, input = {}) {
       messageId: ingest.messageId,
       receivedAt: completedAt
     }, input) : null;
-    assertSemanticContinuationQueued(semanticContinuation);
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       event: "runtime_dispatch_acked",
       dispatchId: row.dispatch_id,
@@ -14161,7 +14169,6 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       messageId: ingest.messageId,
       receivedAt: completedAt
     }, input) : null;
-    assertSemanticContinuationQueued(semanticContinuation);
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: completedAt,
       event: "runtime_dispatch_acked",
@@ -14319,7 +14326,6 @@ async function runOpenClawDispatch(paths, row, input = {}) {
       messageId: ingest.messageId,
       receivedAt: completedAt
     }, input) : null;
-    assertSemanticContinuationQueued(semanticContinuation);
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: completedAt,
       event: "runtime_dispatch_acked",
@@ -16285,6 +16291,7 @@ WHERE (
     mf.final_output_present=1
     AND mf.delivery_receipt_present=0
     AND mf.return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])})
+    AND mf.target_runtime NOT IN ('local_codex','codex')
     AND mf.runtime_completed_at IS NOT NULL
     AND mf.runtime_completed_at != ''
     AND mf.runtime_completed_at < ${sqlValue(cutoff)}
@@ -16293,6 +16300,7 @@ WHERE (
   OR (
     mf.final_output_present=0
     AND mf.delivery_receipt_present=0
+    AND mf.target_runtime NOT IN ('local_codex','codex')
     AND mf.status='runtime_failed'
     AND mf.outbox_id IS NOT NULL
     AND mf.outbox_id != ''
