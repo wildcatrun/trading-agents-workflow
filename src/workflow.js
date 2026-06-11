@@ -3715,8 +3715,8 @@ function healthRecommendationFor(blocker) {
     telegram_outbox_failed: ["telegram.outbox.requeue.preview", "telegram.outbox.delivery.preview"],
     registry_dispatch_disabled: ["workflow.runtime_agents"],
     stale_started_runtime_runs: ["runtime.bridge.drain", "workflow.incident.from_dead_letter.preview"],
-    open_incidents: ["workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"],
-    stale_open_incidents: ["workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"]
+    open_incidents: ["workflow.incident.closeout.evidence.preview", "workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"],
+    stale_open_incidents: ["workflow.incident.closeout.evidence.preview", "workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"]
   };
   const guidance = {
     stale_sent_dispatches: "Reconcile stale sent dispatches against terminal runtime receipts before retrying.",

@@ -5875,7 +5875,12 @@ VALUES
   assert.equal(health.lanes.incidents.cancelled, 1);
   assert.equal(health.topBlockers.some((item) => item.key === "open_incidents" && item.severity === "warning"), true);
   assert.equal(health.topBlockers.some((item) => item.key === "stale_open_incidents" && item.severity === "warning"), true);
+  assert.equal(health.nextActions.includes("workflow.incident.closeout.evidence.preview"), true);
   assert.equal(health.nextActions.includes("workflow.incident.closeout.cat_claw_report.preview"), true);
+  assert.equal(
+    health.nextActions.indexOf("workflow.incident.closeout.evidence.preview") < health.nextActions.indexOf("workflow.incident.closeout.cat_claw_report.preview"),
+    true
+  );
 }
 
 async function testWorkflowReadinessRecoveredRuntimeFailures() {
