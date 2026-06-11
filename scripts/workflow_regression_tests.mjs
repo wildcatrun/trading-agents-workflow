@@ -5615,7 +5615,9 @@ VALUES
   ('runtime-health-paired-started', 'dispatch-health-failed', 'wf-health', 'wf-health', 'trace-runtime-paired', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'started', '', 1, '2000-01-01T00:00:00.000Z', '', NULL, '', '', '', '', '{}'),
   ('runtime-health-paired-terminal', 'dispatch-health-failed', 'wf-health', 'wf-health', 'trace-runtime-paired', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 1, '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:01.000Z', 1000, '', '', '', 'terminal failure', '{}'),
   ('runtime-health-mismatch-started', 'dispatch-health-mismatch', 'wf-health', 'wf-health', 'trace-runtime-mismatch', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'started', '', 1, '2000-01-01T00:00:00.000Z', '', NULL, '', '', '', '', '{}'),
-  ('runtime-health-mismatch-terminal', 'dispatch-health-mismatch', 'wf-health', 'wf-health', 'trace-runtime-mismatch', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 2, '2000-01-01T00:00:02.000Z', '2000-01-01T00:00:03.000Z', 1000, '', '', '', '', '{}');
+  ('runtime-health-mismatch-terminal', 'dispatch-health-mismatch', 'wf-health', 'wf-health', 'trace-runtime-mismatch', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 2, '2000-01-01T00:00:02.000Z', '2000-01-01T00:00:03.000Z', 1000, '', '', '', '', '{}'),
+  ('runtime-health-reconcile-started', 'dispatch-health-reconcile', 'wf-health', 'wf-health', 'trace-runtime-reconcile', 'openclaw', 'main', 'openclaw', '', '', '', 'started', '', 1, '2000-01-01T00:00:00.000Z', '', NULL, '', '', '', '', '{}'),
+  ('runtime-health-reconcile-terminal', 'dispatch-health-reconcile', 'wf-health', 'wf-health', 'trace-runtime-reconcile', 'openclaw', 'main', 'stale_dispatch_reconcile', '', '', '', 'failed', 'runtime_stale', 2, '2000-01-01T00:00:00.000Z', '2000-01-01T00:05:00.000Z', 300000, '', '', '', 'stale sent dispatch exceeded 300s without terminal runtime receipt', '{}');
 `);
   const health = await runAction(root, {
     action: "workflow.health",
@@ -5631,7 +5633,7 @@ VALUES
   assert.equal(health.lanes.dispatch.failed, 1);
   assert.equal(health.lanes.controlLoop.failed, 1);
   assert.equal(health.lanes.controlLoop.expiredLeases, 1);
-  assert.equal(health.lanes.runtime.failedRuns, 1);
+  assert.equal(health.lanes.runtime.failedRuns, 2);
   assert.equal(health.lanes.runtime.staleStartedRuns, 2);
   assert.equal(health.readiness.findings.find((finding) => finding.key === "stale_started_runtime_runs")?.count, 2);
   assert.equal(health.lanes.messageFlow.missingDelivery, 1);

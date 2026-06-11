@@ -3602,11 +3602,18 @@ WHERE rr.status='started'
     FROM runtime_runs terminal
     WHERE terminal.dispatch_id=rr.dispatch_id
       AND terminal.runtime_run_id != rr.runtime_run_id
-      AND terminal.attempt=rr.attempt
       AND terminal.status IN ('acked','failed','retry_scheduled')
       AND terminal.completed_at IS NOT NULL
       AND terminal.completed_at != ''
       AND terminal.completed_at >= rr.started_at
+      AND (
+        terminal.attempt=rr.attempt
+        OR (
+          terminal.adapter='stale_dispatch_reconcile'
+          AND terminal.failure_type='runtime_stale'
+          AND terminal.started_at=rr.started_at
+        )
+      )
   );`, { json: true });
   const messageFlowIntegrityRows = await sqlite(paths.dbFile, `
 SELECT
@@ -3784,11 +3791,18 @@ SELECT
       FROM runtime_runs terminal
       WHERE terminal.dispatch_id=rr.dispatch_id
         AND terminal.runtime_run_id != rr.runtime_run_id
-        AND terminal.attempt=rr.attempt
         AND terminal.status IN ('acked','failed','retry_scheduled')
         AND terminal.completed_at IS NOT NULL
         AND terminal.completed_at != ''
         AND terminal.completed_at >= rr.started_at
+        AND (
+          terminal.attempt=rr.attempt
+          OR (
+            terminal.adapter='stale_dispatch_reconcile'
+            AND terminal.failure_type='runtime_stale'
+            AND terminal.started_at=rr.started_at
+          )
+        )
     )
     THEN 1 ELSE 0 END) AS stale_started
 FROM runtime_runs rr;`, { json: true });
