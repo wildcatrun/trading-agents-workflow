@@ -43,6 +43,14 @@ REQUIRED_TRACKING_TABLES = {
 MAX_TIMEOUT_SECONDS = 1800
 ALLOW_RAW_ACTION_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_RAW_ACTION"
 ALLOW_SCHEDULE_MUTATION_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_SCHEDULE_MUTATION"
+PROFILE_AGENT_ID_ALIASES = {
+    "catbody": "cat_body",
+    "catears": "cat_ears",
+    "cateyes": "cat_eyes",
+    "catnose": "cat_nose",
+    "catheart": "cat_heart",
+    "catpenclaw": "cat_penclaw",
+}
 
 
 def now_iso() -> str:
@@ -57,6 +65,26 @@ def profile_id() -> str:
     if hermes_home.parent.name == "profiles":
         return hermes_home.name
     return "unknown"
+
+
+def registry_agent_id(value: str | None = None) -> str:
+    raw = str(value or profile_id() or "").strip()
+    return PROFILE_AGENT_ID_ALIASES.get(raw, raw)
+
+
+def message_flow_target(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return text
+    if ":" not in text:
+        return registry_agent_id(text)
+    runtime, agent = text.split(":", 1)
+    normalized_agent = registry_agent_id(agent)
+    if runtime.strip().lower() in {"", "registry", "agent", "runtime"}:
+        return normalized_agent
+    return f"{runtime}:{normalized_agent}"
 
 
 def capability_mode() -> str:
@@ -354,7 +382,9 @@ MESSAGE_FLOW_SEND_SCHEMA = {
         "Minimal example: {\"to\":\"cat_eyes\",\"subject\":\"Need data check\",\"body\":\"Please check daily_qfq accuracy.\","
         "\"requires_ack\":true,\"ack_timeout_seconds\":300}. "
         "Use registry agent ids such as local_codex, cat_body, cat_nose, cat_eyes, cat_ears, cat_heart, "
-        "cat_penclaw, main, cat_claw, cat_voice, cat_tail. The sender is filled from the current Hermers profile."
+        "cat_penclaw, main, cat_claw, cat_voice, cat_tail. Hermers profile names such as catheart/catears are endpoint ids, "
+        "not registry ids; this MCP maps known profile ids to registry ids before sending. "
+        "The sender is filled from the current Hermers profile as its canonical registry id."
     ),
     "properties": {
         "to": {
@@ -362,7 +392,9 @@ MESSAGE_FLOW_SEND_SCHEMA = {
             "description": (
                 "Required target. Prefer a runtime_agents registry id, for example cat_eyes, cat_body, "
                 "cat_heart, cat_penclaw, local_codex, main, or cat_claw. runtime:agent targets are also accepted "
-                "when a specific adapter route is needed. Do not use old OpenClaw route-shell ids for migrated Hermers agents."
+                "when a specific adapter route is needed. Do not use old OpenClaw route-shell ids for migrated Hermers agents. "
+                "Known Hermers profile aliases such as catheart, catears, cateyes, catnose, catbody, and catpenclaw are "
+                "mapped to their registry ids before dispatch."
             ),
         },
         "body": {
@@ -378,7 +410,10 @@ MESSAGE_FLOW_SEND_SCHEMA = {
         },
         "from_agent": {
             "type": "string",
-            "description": "Optional override for the sender agent id. Usually omit it; the MCP fills this from the current Hermers profile.",
+            "description": (
+                "Optional override for the sender registry agent id. Usually omit it; the MCP fills this from the current "
+                "Hermers profile and maps profile ids such as catears to registry ids such as cat_ears."
+            ),
         },
         "from_runtime": {
             "type": "string",
@@ -439,9 +474,13 @@ def handle_workflow_action(args: dict[str, Any]) -> dict[str, Any]:
     timeout_seconds = clamp_timeout(payload.get("timeoutSeconds") or payload.get("timeout_seconds"))
     if timeout_seconds is not None:
         payload["timeoutSeconds"] = timeout_seconds
+    if payload.get("sourceAgent") or payload.get("source_agent"):
+        canonical_source = registry_agent_id(payload.get("sourceAgent") or payload.get("source_agent"))
+        payload["sourceAgent"] = canonical_source
+        payload.pop("source_agent", None)
     payload.setdefault("sourceRuntime", "hermers")
-    payload.setdefault("sourceAgent", profile_id())
-    payload.setdefault("createdBy", f"hermers:{profile_id()}")
+    payload.setdefault("sourceAgent", registry_agent_id())
+    payload.setdefault("createdBy", f"hermers:{registry_agent_id()}")
     payload.setdefault("sourceSystem", "hermers_mcp")
     payload.setdefault("calledAt", now_iso())
     return run_workflow_action(payload, root_dir=workflow_root(args))
@@ -449,11 +488,12 @@ def handle_workflow_action(args: dict[str, Any]) -> dict[str, Any]:
 
 def handle_schedule_upsert(args: dict[str, Any]) -> dict[str, Any]:
     timeout_seconds = clamp_timeout(args.get("timeout_seconds") or args.get("timeoutSeconds"))
+    target_agent = args.get("agent") or args.get("agentId")
     payload = {
         "action": "workflow.schedule.upsert",
         "scheduleId": args.get("schedule_id") or args.get("scheduleId"),
         "name": args.get("name"),
-        "agentId": args.get("agent") or args.get("agentId"),
+        "agentId": registry_agent_id(target_agent) if target_agent else None,
         "runtime": args.get("runtime") or "hermers",
         "prompt": args.get("prompt"),
         "scheduleKind": args.get("kind") or args.get("schedule_kind") or ("interval" if args.get("interval_seconds") else "cron"),
@@ -462,9 +502,9 @@ def handle_schedule_upsert(args: dict[str, Any]) -> dict[str, Any]:
         "nextRunAt": args.get("next_run_at") or args.get("nextRunAt"),
         "priority": args.get("priority") or "normal",
         "payload": args.get("payload") if isinstance(args.get("payload"), dict) else {},
-        "createdBy": f"hermers:{profile_id()}",
+        "createdBy": f"hermers:{registry_agent_id()}",
         "sourceRuntime": "hermers",
-        "sourceAgent": profile_id(),
+        "sourceAgent": registry_agent_id(),
         "sourceSystem": "hermers_mcp",
     }
     if timeout_seconds is not None:
@@ -481,10 +521,10 @@ def handle_schedule_list(args: dict[str, Any]) -> dict[str, Any]:
         "scheduleId": args.get("schedule_id") or args.get("scheduleId"),
         "status": args.get("status"),
         "runtime": args.get("runtime"),
-        "agentId": args.get("agent") or args.get("agentId"),
+        "agentId": registry_agent_id(args.get("agent") or args.get("agentId")) if (args.get("agent") or args.get("agentId")) else None,
         "limit": args.get("limit") or args.get("runLimit"),
         "sourceSystem": "hermers_mcp",
-        "sourceAgent": profile_id(),
+        "sourceAgent": registry_agent_id(),
     }
     return run_workflow_action({k: v for k, v in payload.items() if v not in (None, "")}, root_dir=workflow_root(args))
 
@@ -492,9 +532,9 @@ def handle_schedule_list(args: dict[str, Any]) -> dict[str, Any]:
 def handle_message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "action": "message_flow.send",
-        "fromAgent": args.get("from_agent") or args.get("fromAgent") or profile_id(),
+        "fromAgent": registry_agent_id(args.get("from_agent") or args.get("fromAgent")),
         "fromRuntime": args.get("from_runtime") or args.get("fromRuntime") or "hermers",
-        "to": args.get("to") or args.get("target"),
+        "to": message_flow_target(args.get("to") or args.get("target")),
         "body": args.get("body"),
         "subject": args.get("subject"),
         "workflowId": args.get("workflow_id") or args.get("workflowId"),
@@ -502,7 +542,7 @@ def handle_message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
         "requiresAck": args.get("requires_ack") if "requires_ack" in args else args.get("requiresAck"),
         "ackTimeoutSeconds": args.get("ack_timeout_seconds") or args.get("ackTimeoutSeconds"),
         "sourceSystem": "hermers_mcp",
-        "createdBy": f"hermers:{profile_id()}",
+        "createdBy": f"hermers:{registry_agent_id()}",
     }
     if not payload.get("to") or not payload.get("body"):
         raise ValueError("to and body are required")
@@ -521,7 +561,7 @@ def handle_status(args: dict[str, Any]) -> dict[str, Any]:
     action = action_by_view.get(view)
     if not action:
         raise ValueError("view must be one of: status, readiness, topology, runtime_agents, runtime-agents")
-    return run_workflow_action({"action": action, "sourceSystem": "hermers_mcp", "sourceAgent": profile_id()}, root_dir=workflow_root(args))
+    return run_workflow_action({"action": action, "sourceSystem": "hermers_mcp", "sourceAgent": registry_agent_id()}, root_dir=workflow_root(args))
 
 
 BASE_TOOLS: dict[str, dict[str, Any]] = {
@@ -533,7 +573,8 @@ BASE_TOOLS: dict[str, dict[str, Any]] = {
             "Example: {\"to\":\"cat_eyes\",\"subject\":\"Check daily_qfq\",\"body\":\"Please audit daily_qfq and write findings to workflow receipt.\","
             "\"requires_ack\":true,\"ack_timeout_seconds\":300}. "
             "For messages to the local Codex control panel use to=local_codex. "
-            "For migrated Hermers agents use registry ids with underscores: cat_body, cat_nose, cat_eyes, cat_ears, cat_heart, cat_penclaw."
+            "For migrated Hermers agents use registry ids with underscores: cat_body, cat_nose, cat_eyes, cat_ears, cat_heart, cat_penclaw. "
+            "Known profile aliases such as catheart/catears are mapped, but registry ids are the canonical form."
         ),
         "inputSchema": MESSAGE_FLOW_SEND_SCHEMA,
     },

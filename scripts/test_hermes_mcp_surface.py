@@ -12,11 +12,21 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+import importlib.util
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "scripts" / "trading_agents_workflow_hermes_mcp.py"
+
+
+def load_server_module():
+    spec = importlib.util.spec_from_file_location("trading_agents_workflow_hermes_mcp", SERVER)
+    if spec is None or spec.loader is None:
+        raise AssertionError("failed to load Hermers MCP server module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def server_env(env: dict[str, str]) -> dict[str, str]:
@@ -78,6 +88,18 @@ def assert_tools(label: str, actual: set[str], expected: set[str]) -> None:
 
 
 def main() -> int:
+    server = load_server_module()
+    if server.registry_agent_id("catheart") != "cat_heart":
+        raise AssertionError("catheart profile alias should map to cat_heart registry id")
+    if server.registry_agent_id("catears") != "cat_ears":
+        raise AssertionError("catears profile alias should map to cat_ears registry id")
+    if server.message_flow_target("hermers:catheart") != "hermers:cat_heart":
+        raise AssertionError("runtime:profile target should map profile alias to registry id")
+    if server.message_flow_target("runtime:catheart") != "cat_heart":
+        raise AssertionError("literal runtime:profile target should be normalized to registry id")
+    if server.message_flow_target("cat_eyes") != "cat_eyes":
+        raise AssertionError("canonical registry target should remain unchanged")
+
     assert_tools(
         "message_only profile",
         list_tools({"HERMES_PROFILE": "catbody"}),
