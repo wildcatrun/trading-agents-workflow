@@ -14538,7 +14538,7 @@ async function pathAccessible(filePath) {
   }
 }
 
-function openClawPackageBaseCandidates(input = {}) {
+async function openClawPackageBaseCandidates(input = {}) {
   const explicit = [
     input.openclawRequireBase,
     input.openclaw_require_base,
@@ -14548,7 +14548,7 @@ function openClawPackageBaseCandidates(input = {}) {
     process.env.TRADING_AGENTS_OPENCLAW_PACKAGE_DIR ? path.join(resolveHome(process.env.TRADING_AGENTS_OPENCLAW_PACKAGE_DIR), "package.json") : "",
     process.env.OPENCLAW_PACKAGE_DIR ? path.join(resolveHome(process.env.OPENCLAW_PACKAGE_DIR), "package.json") : ""
   ];
-  const acpxPeerBases = acpxPackageDirCandidates(input).map((dir) => path.join(dir, "package.json"));
+  const acpxPeerBases = (await acpxPackageDirCandidates(input)).map((dir) => path.join(dir, "package.json"));
   return uniqueResolvedPaths([
     ...explicit,
     ...acpxPeerBases,
@@ -14571,7 +14571,7 @@ async function importAcpRuntimeBackendModule(input = {}) {
     const message = error instanceof Error ? error.message : String(error);
     attempts.push(`node-resolution: ${message}`);
   }
-  for (const base of openClawPackageBaseCandidates(input)) {
+  for (const base of await openClawPackageBaseCandidates(input)) {
     if (!await pathAccessible(base)) continue;
     try {
       const resolved = await importFromRequireBase(base, "openclaw/plugin-sdk/acp-runtime-backend");
@@ -14584,14 +14584,60 @@ async function importAcpRuntimeBackendModule(input = {}) {
   throw new Error(`OpenClaw ACP runtime SDK is unavailable in this process: ${attempts.join("; ")}`);
 }
 
-function acpxPackageDirCandidates(input = {}) {
-  return uniqueResolvedPaths([
+async function acpxPackageDirCandidates(input = {}) {
+  const explicitDirs = uniqueResolvedPaths([
     input.acpxPackageDir,
     input.acpx_package_dir,
     process.env.TRADING_AGENTS_ACPX_PACKAGE_DIR,
-    process.env.OPENCLAW_ACPX_PACKAGE_DIR,
-    path.join(os.homedir(), ".openclaw", "npm", "node_modules", "@openclaw", "acpx")
+    process.env.OPENCLAW_ACPX_PACKAGE_DIR
   ]);
+  const legacyInstallDir = path.join(os.homedir(), ".openclaw", "npm", "node_modules", "@openclaw", "acpx");
+  if (explicitDirs.length > 0) return uniqueResolvedPaths([...explicitDirs, legacyInstallDir]);
+
+  const projectRoots = uniqueResolvedPaths([
+    input.openclawNpmProjectsDir,
+    input.openclaw_npm_projects_dir,
+    process.env.TRADING_AGENTS_OPENCLAW_NPM_PROJECTS_DIR,
+    process.env.OPENCLAW_NPM_PROJECTS_DIR,
+    path.join(os.homedir(), ".openclaw", "npm", "projects")
+  ]);
+  const projectScanLimit = Math.max(1, Math.min(100, Number(firstText(
+    input.acpxProjectScanLimit,
+    input.acpx_project_scan_limit,
+    process.env.TRADING_AGENTS_ACPX_PROJECT_SCAN_LIMIT,
+    25
+  )) || 25));
+  const projectInstallDirs = [];
+  for (const root of projectRoots) {
+    try {
+      const entries = (await fs.readdir(root, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && entry.name.startsWith("openclaw-acpx-"))
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .slice(0, projectScanLimit);
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !entry.name.startsWith("openclaw-acpx-")) continue;
+        const packageDir = path.join(root, entry.name, "node_modules", "@openclaw", "acpx");
+        const validPackageDir = await validAcpxPackageDir(packageDir);
+        if (!validPackageDir) continue;
+        projectInstallDirs.push(validPackageDir);
+      }
+    } catch {
+      // Optional OpenClaw plugin project layout; ignore when absent or unreadable.
+    }
+  }
+  return uniqueResolvedPaths([...projectInstallDirs, legacyInstallDir]);
+}
+
+async function validAcpxPackageDir(packageDir) {
+  try {
+    const stat = await fs.lstat(packageDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
+    if (packageJson?.name !== "@openclaw/acpx") return false;
+    return await fs.realpath(packageDir);
+  } catch {
+    return false;
+  }
 }
 
 async function importAcpxRegisterRuntime(input = {}) {
@@ -14610,7 +14656,7 @@ async function importAcpxRegisterRuntime(input = {}) {
       attempts.push(`${resolved}: ${message}`);
     }
   }
-  for (const dir of acpxPackageDirCandidates(input)) {
+  for (const dir of await acpxPackageDirCandidates(input)) {
     const registerPath = path.join(dir, "dist", "register.runtime.js");
     if (!await pathAccessible(registerPath)) continue;
     try {

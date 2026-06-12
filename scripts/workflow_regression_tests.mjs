@@ -6851,6 +6851,61 @@ async function testHermersAcpBackendFallbackToCli() {
   assert.equal(noFallbackReadiness.planes.runtime.acpBackend.fallbackAvailable, false);
   assert.equal(noFallbackReadiness.findings.some((finding) => finding.key === "acp_backend_unavailable" && finding.severity === "warning"), true);
 
+  const fakeAcpxSdkProject = path.join(root, "openclaw-projects-sdk", "openclaw-acpx-sdk", "node_modules");
+  await fs.mkdir(path.join(fakeAcpxSdkProject, "@openclaw", "acpx"), { recursive: true });
+  await fs.mkdir(path.join(fakeAcpxSdkProject, "openclaw", "plugin-sdk"), { recursive: true });
+  await fs.writeFile(path.join(fakeAcpxSdkProject, "@openclaw", "acpx", "package.json"), JSON.stringify({ name: "@openclaw/acpx", version: "0.0.0-regression" }), "utf8");
+  await fs.writeFile(path.join(fakeAcpxSdkProject, "openclaw", "package.json"), JSON.stringify({ name: "openclaw", type: "module", version: "0.0.0-regression" }), "utf8");
+  await fs.writeFile(path.join(fakeAcpxSdkProject, "openclaw", "plugin-sdk", "acp-runtime-backend.js"), [
+    "export function getAcpRuntimeBackend(id) {",
+    "  return id === 'acpx' ? { runtime: { regression: 'project-layout-sdk' } } : null;",
+    "}"
+  ].join("\n"), "utf8");
+  const projectLayoutSdkReadiness = await runAction(root, {
+    action: "workflow.readiness",
+    activeChecks: true,
+    persistReadinessSnapshot: false,
+    openclawBin: fakeOpenClaw,
+    hermesBin: fakeHermes,
+    hermesCwd: root,
+    stabilityProfileModesPath: modesPath,
+    acpBackend: "acpx",
+    acpBackendFallback: false,
+    openclawNpmProjectsDir: path.join(root, "openclaw-projects-sdk")
+  });
+  assert.equal(projectLayoutSdkReadiness.planes.runtime.acpBackend.ok, true);
+  assert.match(projectLayoutSdkReadiness.planes.runtime.acpBackend.source, /require-base:.*openclaw-acpx-sdk.*@openclaw\/acpx\/package\.json/);
+
+  const fakeAcpxRegisterProject = path.join(root, "openclaw-projects-register", "openclaw-acpx-test", "node_modules");
+  const fakeAcpxProject = path.join(fakeAcpxRegisterProject, "@openclaw", "acpx", "dist");
+  await fs.mkdir(fakeAcpxProject, { recursive: true });
+  await fs.mkdir(path.join(fakeAcpxRegisterProject, "openclaw", "plugin-sdk"), { recursive: true });
+  await fs.writeFile(path.join(fakeAcpxProject, "..", "package.json"), JSON.stringify({ name: "@openclaw/acpx", version: "0.0.0-regression" }), "utf8");
+  await fs.writeFile(path.join(fakeAcpxRegisterProject, "openclaw", "package.json"), JSON.stringify({ name: "openclaw", type: "module", version: "0.0.0-regression" }), "utf8");
+  await fs.writeFile(path.join(fakeAcpxRegisterProject, "openclaw", "plugin-sdk", "acp-runtime-backend.js"), [
+    "export function getAcpRuntimeBackend() {",
+    "  return null;",
+    "}"
+  ].join("\n"), "utf8");
+  await fs.writeFile(path.join(fakeAcpxProject, "register.runtime.js"), [
+    "export const marker = 'project-layout-acpx';"
+  ].join("\n"), "utf8");
+  const projectLayoutReadiness = await runAction(root, {
+    action: "workflow.readiness",
+    activeChecks: true,
+    persistReadinessSnapshot: false,
+    openclawBin: fakeOpenClaw,
+    hermesBin: fakeHermes,
+    hermesCwd: root,
+    stabilityProfileModesPath: modesPath,
+    acpBackend: "acpx",
+    acpBackendFallback: true,
+    openclawNpmProjectsDir: path.join(root, "openclaw-projects-register")
+  });
+  assert.match(projectLayoutReadiness.planes.runtime.acpBackend.error, /openclaw-acpx-test/);
+  assert.match(projectLayoutReadiness.planes.runtime.acpBackend.error, /createAcpxRuntimeService/);
+  assert.doesNotMatch(projectLayoutReadiness.planes.runtime.acpBackend.error, /no @openclaw\/acpx package found/);
+
   const fakeHermesFail = path.join(root, "fake-hermes-fail.sh");
   await fs.writeFile(fakeHermesFail, [
     "#!/bin/sh",

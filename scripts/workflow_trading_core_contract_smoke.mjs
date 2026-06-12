@@ -7,6 +7,16 @@ import path from "node:path";
 
 import { runAction } from "../src/core.js";
 
+const LOCAL_CODEX_CALLER = {
+  callerAgent: "local_codex",
+  callerRuntime: "local_codex",
+  sourceSystem: "local_codex"
+};
+
+async function runWorkflowAction(root, input) {
+  return runAction(root, { ...LOCAL_CODEX_CALLER, ...input });
+}
+
 async function pathExists(target) {
   try {
     await fs.access(target);
@@ -60,7 +70,7 @@ async function createWorkflowIntent(root) {
     }
   ];
 
-  await runAction(root, {
+  await runWorkflowAction(root, {
     action: "trade.proposal",
     proposalId: "proposal-smoke",
     assetType: "crypto",
@@ -69,7 +79,7 @@ async function createWorkflowIntent(root) {
     quantity: "0.2",
     orderType: "limit"
   });
-  await runAction(root, {
+  await runWorkflowAction(root, {
     action: "runtime.agent.upsert",
     runtime: "openclaw",
     platform: "openclaw",
@@ -82,7 +92,7 @@ async function createWorkflowIntent(root) {
     workflowIngressAdapter: "openclaw_native",
     endpointRef: "openclaw-agent:cat_tail"
   });
-  const request = await runAction(root, {
+  const request = await runWorkflowAction(root, {
     action: "human_gate.request",
     workflowId: "workflow-smoke",
     meetingId: "workflow-smoke",
@@ -100,12 +110,12 @@ async function createWorkflowIntent(root) {
   });
   const approved = request.buttons.find((button) => button.decisionStatus === "approved");
   assert.ok(approved?.callbackToken, "approved Human Gate callback token is required for smoke setup");
-  await runAction(root, {
+  await runWorkflowAction(root, {
     action: "human_gate.resume",
     token: approved.callbackToken,
     text: "闪电猫原话：批准 A，用于 workflow 到 trading_core 的本地 paper smoke。"
   });
-  await runAction(root, {
+  await runWorkflowAction(root, {
     action: "risk.decision",
     riskDecisionId: "risk-smoke",
     proposalId: "proposal-smoke",
@@ -116,12 +126,14 @@ async function createWorkflowIntent(root) {
     status: "approved",
     reviewerAgent: "cat_tail",
     dispatchType: "pre_order_risk_audit",
+    catClawAuditId: "audit-smoke",
+    freshnessCheckedAt: "2026-05-31T00:00:00.000Z",
     riskLimits: { maxNotionalUsd: 20000, maxLossUsd: 500 },
     evidenceRefs: ["artifact://workflow-smoke/evidence"],
     paperRef: "artifact://workflow-smoke/cat_tail-risk-paper"
   });
 
-  const intent = await runAction(root, {
+  const intent = await runWorkflowAction(root, {
     action: "trade.intent",
     intentId: "intent-smoke",
     workflowId: "workflow-smoke",
@@ -183,7 +195,7 @@ async function main() {
   assert.equal(bridge.status, "filled");
 
   const receipt = JSON.parse(await fs.readFile(receiptOut, "utf8"));
-  const workflowReceipt = await runAction(root, {
+  const workflowReceipt = await runWorkflowAction(root, {
     ...receipt.payload.workflowReceiptAction,
     humanGateId: intent.humanGateId,
     freshnessCheckedAt: intent.freshnessCheckedAt,
