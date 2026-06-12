@@ -8591,6 +8591,25 @@ ORDER BY created_at ASC;`, { json: true });
 
 async function ensureHumanGateButtonSet(paths, row, payload = {}, body = {}, workflowId = "", meetingId = "") {
   const desiredSpecs = humanGateButtonSpecs(row, payload, body);
+  let buttons = (await sqlite(paths.dbFile, `
+SELECT *
+FROM human_gate_buttons
+WHERE human_gate_id=${sqlValue(row.object_id)} AND status='active'
+ORDER BY created_at ASC;`, { json: true })).map((buttonRow) => humanGateButtonFromRow(buttonRow, paths.root));
+  if (!desiredSpecs.length && buttons.length) {
+    const existingAudit = combineHumanGateAudits(
+      auditHumanGatePlanOptions(buttons),
+      auditHumanGatePlanDetails(buttons),
+      auditHumanGatePrimaryLanguage({ ...payload, ...body, payload, text: body.text || body.summary || payload.text || payload.summary || row.summary || "" }, buttons)
+    );
+    if (existingAudit.ok) return { buttons, refreshed: false, reason: "existing_buttons_retained", audit: existingAudit };
+    const refreshedAt = nowIso();
+    await sqlite(paths.dbFile, `
+UPDATE human_gate_buttons
+SET status='superseded', updated_at=${sqlValue(refreshedAt)}
+WHERE human_gate_id=${sqlValue(row.object_id)} AND status='active';`);
+    return { buttons: [], refreshed: true, reason: existingAudit.reason, audit: existingAudit };
+  }
   const audit = combineHumanGateAudits(
     auditHumanGatePlanOptions(desiredSpecs),
     auditHumanGatePlanDetails(desiredSpecs),
@@ -8604,11 +8623,6 @@ SET status='superseded', updated_at=${sqlValue(refreshedAt)}
 WHERE human_gate_id=${sqlValue(row.object_id)} AND status='active';`);
     return { buttons: [], refreshed: true, reason: audit.reason, audit };
   }
-  let buttons = (await sqlite(paths.dbFile, `
-SELECT *
-FROM human_gate_buttons
-WHERE human_gate_id=${sqlValue(row.object_id)} AND status='active'
-ORDER BY created_at ASC;`, { json: true })).map((buttonRow) => humanGateButtonFromRow(buttonRow, paths.root));
   if (!buttons.length) {
     buttons = await createHumanGateButtons(paths, {
       workflowId,

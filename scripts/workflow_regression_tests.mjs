@@ -273,6 +273,16 @@ async function testHumanGateLanguageAndResume() {
   const request = await requestHumanGate(root);
   assert.equal(request.status, "pending");
   assertCompletePlanButtons(request);
+  const dbFile = path.join(root, "tracking.db");
+  const ensured = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    deliverOutbox: false,
+    createHumanGateInbox: false
+  });
+  assert.equal(ensured.jobResults?.[0]?.jobType, "human_gate_request_ensure");
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${request.humanGateId}' AND status='active'`), 6);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${request.humanGateId}' AND status='superseded'`), 0);
 
   const selected = request.buttons[0];
   const resumed = await runAction(root, {
@@ -290,8 +300,6 @@ async function testHumanGateLanguageAndResume() {
     feedbackText: "second should not win"
   });
   assert.equal(second.status, "superseded");
-
-  const dbFile = path.join(root, "tracking.db");
   const retryJobsBefore = sqliteCount(dbFile, "control_loop_jobs", "job_type='meeting_dispatch_retry'");
   const idempotent = await runAction(root, {
     action: "human_gate.resume",
@@ -2691,6 +2699,28 @@ FROM mixed_meeting_dispatches
 ORDER BY created_at
 LIMIT 1;`)[0];
   assert.deepEqual(dispatch, { status: "queued", agent_id: "main", runtime: "openclaw" });
+}
+
+async function testHumanGateEnsureSupersedesInvalidExistingButtons() {
+  const root = await tempRoot("hgate-ensure-invalid-buttons");
+  const request = await requestHumanGate(root);
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+UPDATE human_gate_buttons
+SET payload_json='{"optionId":"A","title":"Invalid","summary":"Missing required Chinese details"}'
+WHERE human_gate_id='${request.humanGateId}' AND decision_status='approved' AND button_role='approve_option'
+ORDER BY created_at
+LIMIT 1;`);
+
+  const ensured = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    deliverOutbox: false,
+    createHumanGateInbox: false
+  });
+  assert.equal(ensured.jobResults?.[0]?.jobType, "human_gate_request_ensure");
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${request.humanGateId}' AND status='active'`), 0);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${request.humanGateId}' AND status='superseded'`), 6);
 }
 
 async function testHumanGateStageDedupAndSupersede() {
@@ -7209,6 +7239,7 @@ try {
     ["control_loop job requeue", testControlLoopJobRequeue],
     ["workflow evaluator evidence", testWorkflowEvaluatorEvidence],
     ["human_gate pending cleanup/retry", testHumanGatePendingCleanupAndRetryRedaction],
+    ["human_gate ensure invalid buttons superseded", testHumanGateEnsureSupersedesInvalidExistingButtons],
     ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
