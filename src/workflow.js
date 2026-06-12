@@ -15716,7 +15716,22 @@ async function createHumanGateButtons(paths, input = {}) {
     await sqlite(paths.dbFile, `
 INSERT INTO human_gate_buttons(button_id, callback_token, human_gate_id, workflow_id, meeting_id, label, decision_status, button_role, artifact_ref, summary, prompt, payload_json, status, created_by, created_at, updated_at)
 VALUES (${sqlValue(buttonId)}, ${sqlValue(callbackToken)}, ${sqlValue(humanGateId)}, ${sqlValue(workflowId)}, ${sqlValue(meetingId)}, ${sqlValue(option.label)}, ${sqlValue(option.decisionStatus)}, ${sqlValue(option.role)}, ${sqlValue(option.artifactRef)}, ${sqlValue(option.summary)}, ${sqlValue(option.prompt)}, ${sqlValue(JSON.stringify(option.payload || {}))}, 'active', ${sqlValue(createdBy)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
-ON CONFLICT(button_id) DO NOTHING;`);
+ON CONFLICT(button_id) DO UPDATE SET
+  callback_token=excluded.callback_token,
+  workflow_id=excluded.workflow_id,
+  meeting_id=excluded.meeting_id,
+  label=excluded.label,
+  decision_status=excluded.decision_status,
+  button_role=excluded.button_role,
+  artifact_ref=excluded.artifact_ref,
+  summary=excluded.summary,
+  prompt=excluded.prompt,
+  payload_json=excluded.payload_json,
+  status='active',
+  created_by=excluded.created_by,
+  updated_at=excluded.updated_at
+WHERE human_gate_buttons.human_gate_id=excluded.human_gate_id
+  AND human_gate_buttons.status='superseded';`);
     buttons.push({
       buttonId,
       callbackToken,

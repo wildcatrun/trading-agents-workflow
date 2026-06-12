@@ -2721,6 +2721,13 @@ LIMIT 1;`);
   assert.equal(ensured.jobResults?.[0]?.jobType, "human_gate_request_ensure");
   assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${request.humanGateId}' AND status='active'`), 0);
   assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${request.humanGateId}' AND status='superseded'`), 6);
+
+  const recreated = await requestHumanGate(root);
+  assert.equal(recreated.humanGateId, request.humanGateId);
+  assert.equal(recreated.reusedStageGate, true);
+  assertCompletePlanButtons(recreated);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${request.humanGateId}' AND status='active'`), 6);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${request.humanGateId}' AND status='superseded'`), 0);
 }
 
 async function testHumanGateStageDedupAndSupersede() {
