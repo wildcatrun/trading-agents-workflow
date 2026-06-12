@@ -92,9 +92,20 @@ contract:
 The round record and rollout notes are maintained in
 `docs/workflow-console-v0.3-message-flow-observability.md`.
 
-## Phase Hold
+The next GUI evolution plan is maintained in
+`docs/workflow-console-agentic-os-kanban-plan.md`. It adapts Agentic OS control
+plane patterns and a Hermers-oriented Kanban projection into the existing
+console, starting with read-only Command Center, Agent Board, Workflow Kanban,
+and Evidence Desk surfaces.
 
-After v0.2, console feature expansion is intentionally paused.
+## Historical Phase Hold
+
+After v0.2, console feature expansion was intentionally paused. That hold is
+now superseded by `docs/workflow-console-agentic-os-kanban-plan.md` for
+read-only / preview-first GUI evolution. The old safety constraint still
+stands: do not add high-risk real write controls until the cat-system workflow
+has stable evidence around dispatch, receipt, message_flow closure, Human Gate,
+Telegram delivery, readiness, incidents, checkpoints, and evidence discipline.
 
 Do not add real write controls until the existing cat-system workflow has run
 longer and `trading-agents-workflow` has more stable evidence around:
@@ -107,9 +118,11 @@ longer and `trading-agents-workflow` has more stable evidence around:
 - readiness and incident false positives
 - checkpoint and evidence discipline
 
-When work resumes, the next product slice should be Task Card Draft and Cat
-Brain Preheat preview. Do not prioritize merge, terminate, pause, approval,
-Gateway restart, production deploy or live trading controls.
+The previous next-slice note was Task Card Draft and Cat Brain Preheat preview.
+The current next GUI slice is the read-only Command Center, Agent Board,
+Workflow Kanban, and Evidence Desk plan. Do not prioritize merge, terminate,
+approval, Gateway restart, production deploy, live trading, or profile
+lifecycle controls.
 
 ## Preview Actions
 
