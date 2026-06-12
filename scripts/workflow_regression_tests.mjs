@@ -3814,6 +3814,24 @@ function testControlLoopProcessWorkerBudgetCoversOpenClawSemanticDrain() {
     controlLoopWorkerKillAfterMs({ ...devConfig, drainQueued: false }),
     devConfig.jobLeaseMs + 15_000
   );
+  assert.equal(
+    Number.isFinite(controlLoopWorkerKillAfterMs({
+      tickBudgetMs: "invalid",
+      timeoutSeconds: "invalid",
+      jobLeaseMs: "invalid",
+      drainQueued: false
+    })),
+    true
+  );
+  assert.equal(
+    controlLoopWorkerKillAfterMs({
+      tickBudgetMs: "invalid",
+      timeoutSeconds: "invalid",
+      jobLeaseMs: "invalid",
+      drainQueued: false
+    }),
+    135_000
+  );
 }
 
 async function testControlLoopAutoDiscoversQueuedDispatchRuntimes() {

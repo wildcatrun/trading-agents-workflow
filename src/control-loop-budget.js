@@ -1,9 +1,15 @@
 export const DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS = 300;
 
+function finiteNumber(value, fallback, min = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, number);
+}
+
 export function controlLoopWorkerKillAfterMs(config = {}) {
-  const tickBudgetMs = Math.max(5_000, Number(config.tickBudgetMs || config.tick_budget_ms || 60_000));
-  const timeoutSeconds = Math.max(5, Number(config.timeoutSeconds || config.timeout_seconds || 45));
-  const jobLeaseMs = Math.max(10_000, Number(config.jobLeaseMs || config.job_lease_ms || 120_000));
+  const tickBudgetMs = finiteNumber(config.tickBudgetMs ?? config.tick_budget_ms, 60_000, 5_000);
+  const timeoutSeconds = finiteNumber(config.timeoutSeconds ?? config.timeout_seconds, 45, 5);
+  const jobLeaseMs = finiteNumber(config.jobLeaseMs ?? config.job_lease_ms, 120_000, 10_000);
   const openclawMessageFlowDrainMs = config.drainQueued === false
     ? 0
     : (DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS + 45) * 1000;
