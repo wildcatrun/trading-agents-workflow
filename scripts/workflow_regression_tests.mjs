@@ -809,6 +809,8 @@ VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', ''
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
 VALUES ('incident-legacy-closeout', 'active', 'degraded', '["workflow"]', 'Legacy closeout regression', 'main', 'Legacy incident has no workflow/dead-letter payload link.', 'Legacy incident should still be visible by incidentId.', 'Prepare governed closeout package.', 'Rollback boundary recorded.', 'Closeout evidence recorded.', '[]', '{"jsonRelPath":"bridge/incidents/incident-legacy-closeout.json"}', '2026-05-31T00:00:09.000Z', '', '', '2026-05-31T00:00:10.000Z');
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-legacy-ready-with-warning', 'active', 'degraded', '["workflow"]', 'Legacy closeout warning-only regression', 'main', 'Legacy incident has all required closeout evidence but only warning-level gaps.', 'Warnings should not send the worklist back to Cat Claw report preview forever.', 'Prepare Human Gate closeout package.', 'Rollback boundary recorded.', 'Closeout evidence recorded.', '[]', '{"operatorReason":"Required evidence is complete; warning-only gaps remain.","humanGateId":"N/A operational closeout","catClawAuditId":"flow.ready-warning-audit","incidentCandidate":{"rollbackBoundary":"No runtime, delivery, side-effect, or incident status mutation in preview."}}', '2026-05-31T00:00:10.500Z', '', '', '2026-05-31T00:00:10.500Z');
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
 VALUES ('incident-nested-other-workflow', 'active', 'degraded', '["workflow"]', 'Nested workflow closeout regression', 'main', 'Nested workflow link belongs to another workflow.', 'Should not be readable through legacy fallback.', 'none', 'rollback boundary recorded', 'closeout evidence recorded', '[]', '{"payload":{"workflowId":"wf-console-operations-other"},"jsonRelPath":"bridge/incidents/incident-nested-other-workflow.json"}', '2026-05-31T00:00:11.000Z', '', '', '2026-05-31T00:00:12.000Z');
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
 VALUES ('incident-deadletter-other-workflow', 'active', 'degraded', '["workflow"]', 'Dead-letter workflow closeout regression', 'main', 'Dead-letter workflow link belongs to another workflow.', 'Should not be readable through legacy fallback.', 'none', 'rollback boundary recorded', 'closeout evidence recorded', '[]', '{"deadLetter":{"workflowId":"wf-console-operations-other","kind":"failed_dispatch","refId":"dispatch-other"}}', '2026-05-31T00:00:13.000Z', '', '', '2026-05-31T00:00:14.000Z');
@@ -860,6 +862,21 @@ VALUES ('incident-malformed-legacy', 'active', 'degraded', '["workflow"]', 'Malf
   assert.equal(legacyWorklistItem?.closeoutStatus, "needs_evidence");
   assert.equal(legacyWorklistItem?.recommendation, "workflow.incident.closeout.evidence.preview");
   assert.equal(Boolean(legacyWorklistItem?.missingRequired.some((row) => row.key === "operator_reason")), true);
+  const warningOnlyWorklistItem = closeoutWorklistPreview.items.find((item) => item.incidentId === "incident-legacy-ready-with-warning");
+  assert.equal(warningOnlyWorklistItem?.closeoutStatus, "needs_closeout");
+  assert.deepEqual(warningOnlyWorklistItem?.missingRequired || [], []);
+  assert.equal(Boolean(warningOnlyWorklistItem?.warningKeys?.length), true);
+  assert.equal(warningOnlyWorklistItem?.recommendation, "workflow.incident.closeout.human_gate_package.preview");
+  const warningOnlyHumanGatePreview = await runAction(root, {
+    action: "workflow.incident.closeout.human_gate_package.preview",
+    workflowId,
+    incidentId: "incident-legacy-ready-with-warning"
+  });
+  assert.equal(warningOnlyHumanGatePreview.eligible, true);
+  assert.equal(warningOnlyHumanGatePreview.readOnly, true);
+  assert.equal(warningOnlyHumanGatePreview.wouldCreate.humanGateRequests, 0);
+  assert.equal(Boolean(warningOnlyHumanGatePreview.warnings?.length), true);
+  assert.equal(warningOnlyHumanGatePreview.closeoutStatus, "needs_closeout");
   assert.equal(closeoutWorklistPreview.nextActions[0], "workflow.incident.closeout.worklist.artifact.preview");
   const closeoutWorklistArtifactPreviewCountsBefore = {
     workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),

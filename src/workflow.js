@@ -11999,7 +11999,6 @@ function closeoutWorklistRecommendation(closeout = {}) {
     return "workflow.incident.closeout.evidence.preview";
   }
   if (missing.length) return "workflow.incident.closeout.cat_claw_report.preview";
-  if (closeout.status === "needs_closeout") return "workflow.incident.closeout.cat_claw_report.preview";
   return "workflow.incident.closeout.human_gate_package.preview";
 }
 
