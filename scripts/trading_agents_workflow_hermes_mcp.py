@@ -30,6 +30,8 @@ LEGACY_WORKFLOW_ROOT = Path("/home/flashcat/.openclaw/shared/trading-agents-work
 ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT"
 ALLOW_NONDEFAULT_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_NONDEFAULT_ROOT"
 EXPECTED_WORKFLOW_SCHEMA_VERSION = 13
+WORKFLOW_CONTROL_PLANE_DB = "workflow_control_plane.db"
+LEGACY_TRACKING_DB = "tracking.db"
 REQUIRED_TRACKING_TABLES = {
     "control_loop_jobs",
     "message_flows",
@@ -128,7 +130,7 @@ def guard_workflow_root(value: str | Path) -> str:
 
 
 def guard_tracking_db(root_dir: str) -> None:
-    db_file = normalized_root(root_dir) / "tracking.db"
+    db_file = workflow_db_file(root_dir)
     if db_file.exists() and db_file.is_file():
         try:
             conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
@@ -142,22 +144,33 @@ def guard_tracking_db(root_dir: str) -> None:
                 tables = {str(row[0]) for row in table_rows}
                 missing = sorted(REQUIRED_TRACKING_TABLES - tables)
                 if missing:
-                    raise RuntimeError(f"tracking.db missing required tables: {', '.join(missing)}")
+                    raise RuntimeError(f"workflow control-plane database missing required tables: {', '.join(missing)}")
                 row = conn.execute("select value from schema_meta where key='workflow_schema_version'").fetchone()
                 version = int(row[0]) if row and str(row[0]).strip() else 0
                 if version != EXPECTED_WORKFLOW_SCHEMA_VERSION:
                     raise RuntimeError(
-                        f"tracking.db schema version {version} does not match expected {EXPECTED_WORKFLOW_SCHEMA_VERSION}"
+                        f"workflow control-plane database schema version {version} does not match expected {EXPECTED_WORKFLOW_SCHEMA_VERSION}"
                     )
             finally:
                 conn.close()
             return
         except Exception as exc:
-            raise RuntimeError(f"tracking.db at configured workflow root is not ready: {db_file}: {exc}") from exc
+            raise RuntimeError(f"workflow control-plane database at configured workflow root is not ready: {db_file}: {exc}") from exc
     raise FileNotFoundError(
-        f"tracking.db not found at configured workflow root: {db_file}; "
+        f"{WORKFLOW_CONTROL_PLANE_DB} not found at configured workflow root: {db_file}; "
         "fix TRADING_AGENTS_WORKFLOW_ROOT or initialize the workflow state root outside the Hermers MCP runtime"
     )
+
+
+def workflow_db_file(root_dir: str | Path) -> Path:
+    root = normalized_root(root_dir)
+    primary = root / WORKFLOW_CONTROL_PLANE_DB
+    legacy = root / LEGACY_TRACKING_DB
+    if primary.exists():
+        return primary
+    if legacy.exists():
+        return legacy
+    return primary
 
 
 def workflow_root(args: dict[str, Any] | None = None) -> str:

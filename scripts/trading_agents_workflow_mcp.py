@@ -28,6 +28,8 @@ DEFAULT_AUDIT_LOG = "/Users/Flashcat/.trading-agents-workflow-mcp/audit.jsonl"
 LEGACY_WORKFLOW_ROOT = Path("/home/flashcat/.openclaw/shared/trading-agents-workflow")
 ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT"
 MESSAGE_FLOW_DELIVERY_RETURN_POLICIES = ("reply_to_source_chat", "report_to_flashcat")
+WORKFLOW_CONTROL_PLANE_DB = "workflow_control_plane.db"
+LEGACY_TRACKING_DB = "tracking.db"
 
 
 def now_iso() -> str:
@@ -192,8 +194,19 @@ def as_str_list(value: Any) -> list[str]:
 
 def workflow_db_path(source: str) -> str:
     if source == "local":
-        return str(local_state_root() / "tracking.db")
-    return f"{remote_state_root().rstrip('/')}/tracking.db"
+        return str(workflow_db_file(local_state_root()))
+    return f"{remote_state_root().rstrip('/')}/{WORKFLOW_CONTROL_PLANE_DB}"
+
+
+def workflow_db_file(root: str | Path) -> Path:
+    state = Path(root)
+    primary = state / WORKFLOW_CONTROL_PLANE_DB
+    legacy = state / LEGACY_TRACKING_DB
+    if primary.exists():
+        return primary
+    if legacy.exists():
+        return legacy
+    return primary
 
 
 def db_query(source: str, query: str, params: list[Any] | None = None, timeout: int = 30) -> dict[str, Any]:
@@ -315,7 +328,7 @@ def paths_status(args: dict[str, Any]) -> dict[str, Any]:
         code = local_code_path()
         try:
             state = local_state_root()
-            db = state / "tracking.db"
+            db = workflow_db_file(state)
             local_payload: dict[str, Any] = {
                 "codePath": str(code),
                 "stateRoot": str(state),
@@ -350,7 +363,9 @@ def paths_status(args: dict[str, Any]) -> dict[str, Any]:
                 "p = json.loads(sys.stdin.read())",
                 "code = p['codePath']",
                 "state = p['stateRoot']",
-                "db = os.path.join(state, 'tracking.db')",
+                f"primary_db = os.path.join(state, '{WORKFLOW_CONTROL_PLANE_DB}')",
+                f"legacy_db = os.path.join(state, '{LEGACY_TRACKING_DB}')",
+                "db = primary_db if os.path.isfile(primary_db) else legacy_db",
                 "def git(args):",
                 "    try:",
                 "        r = subprocess.run(['git'] + args, cwd=code, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10, check=False)",
@@ -1041,7 +1056,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_runtime_agents": {
-        "description": "Query the runtime_agents registry from local or remote tracking.db.",
+        "description": "Query the runtime_agents registry from the local or remote workflow control-plane database.",
         "inputSchema": {
             "type": "object",
             "properties": {

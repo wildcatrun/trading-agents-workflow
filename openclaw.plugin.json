@@ -221,7 +221,7 @@
   "uiHints": {
     "rootDir": {
       "label": "Workflow root",
-      "help": "Directory containing tracking.db, meetings/, commands/, states/, thesis/, radar/, evidence/, memos/, gates/, protocol/, intents/, receipts/, bridge/, workflows/, artifacts/, templates/, and index/."
+      "help": "Directory containing workflow_control_plane.db, meetings/, commands/, states/, thesis/, radar/, evidence/, memos/, gates/, protocol/, intents/, receipts/, bridge/, workflows/, artifacts/, templates/, and index/. Legacy tracking.db may exist only as a compatibility alias."
     }
   }
 }

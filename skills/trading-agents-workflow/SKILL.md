@@ -21,7 +21,7 @@ The plugin exposes a local Codex `trading-agents-workflow` MCP server with ops-o
 - `workflow_git_status`: local Git status, remote, HEAD, and tracked file count.
 - `workflow_server_snapshot`: read-only development-server file and size snapshot.
 - `workflow_latest_jsonl`: latest lines from local or remote workflow JSONL logs.
-- `workflow_runtime_agents`: runtime agent registry from local or remote `tracking.db`.
+- `workflow_runtime_agents`: runtime agent registry from the local or remote workflow control-plane database (`workflow_control_plane.db`; legacy `tracking.db` is compatibility-only).
 - `workflow_receipts`, `workflow_message_flows`, `workflow_incidents`, and `workflow_reconcile_dry_run`: read receipt and incident surfaces.
 - `workflow_message_flow_send`: the limited mutating MCP surface; it should route governed notices through the core/CLI workflow path.
 
@@ -45,7 +45,7 @@ OpenClaw agent tool exposure follows the same split:
 Before publishing updates:
 
 1. Sync or compare against the development-server source of truth.
-2. Keep `tracking.db`, `*.db-wal`, `*.db-shm`, and `backups/` out of Git.
+2. Keep `workflow_control_plane.db`, legacy `tracking.db`, `*.db-wal`, `*.db-shm`, and `backups/` out of Git.
 3. Export schema changes to `docs/tracking-schema.sql` when database structure changes.
 4. Scan for tokens, OAuth credentials, private keys, account data, and unexpectedly large files.
 5. Commit and push through the configured GitHub SSH remote.

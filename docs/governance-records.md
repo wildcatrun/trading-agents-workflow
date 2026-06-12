@@ -12,7 +12,7 @@ Problems and solutions related to this plugin must be recorded inside the plugin
 
 - `governance-logs/`: incident notes, diagnosis, fixes, and follow-up decisions.
 - `meetings/`, `minutes/`, `events/`, `action_items/`, `decisions/`: meeting governance artifacts.
-- `bridge/dispatches/`, `receipts/`, runtime run records, and `tracking.db`: dispatch, receipt, retry, and bridge state.
+- `bridge/dispatches/`, `receipts/`, runtime run records, and `workflow_control_plane.db`: dispatch, receipt, retry, and bridge state. Legacy `tracking.db` is a compatibility alias only.
 - `docs/`: durable operating policy and architecture notes.
 
 Use `AGENTS.md` only to mirror the behavioral rule that agents should follow. If a workflow issue is only recorded in an agent rule file, the record is incomplete.

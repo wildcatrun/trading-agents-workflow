@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import { createReadStream, createWriteStream } from "node:fs";
 import https from "node:https";
 import net from "node:net";
@@ -18,6 +19,8 @@ const execFileAsync = promisify(execFile);
 
 export const WORKFLOW_SCHEMA_VERSION = 13;
 export const LEGACY_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
+export const WORKFLOW_CONTROL_PLANE_DB = "workflow_control_plane.db";
+export const LEGACY_TRACKING_DB = "tracking.db";
 const ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT";
 
 const ASSET_TYPES = new Set(["stock", "futures", "crypto", "forex", "etf", "index", "commodity", "other"]);
@@ -476,9 +479,12 @@ export function resolveWorkflowRoot(rootDir, input = {}) {
 
 export function workflowPaths(rootDir, input = {}) {
   const root = resolveWorkflowRoot(rootDir, input);
+  const dbFile = resolveWorkflowDbFile(root);
   return {
     root,
-    dbFile: path.join(root, "tracking.db"),
+    dbFile,
+    primaryDbFile: path.join(root, WORKFLOW_CONTROL_PLANE_DB),
+    legacyDbFile: path.join(root, LEGACY_TRACKING_DB),
     researchDir: path.join(root, "research"),
     thesisDir: path.join(root, "thesis"),
     radarDir: path.join(root, "radar"),
@@ -502,6 +508,22 @@ export function workflowPaths(rootDir, input = {}) {
     registryDir: path.join(root, "registry"),
     indexDir: path.join(root, "index")
   };
+}
+
+function fileExistsSync(filePath) {
+  try {
+    return fsSync.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function resolveWorkflowDbFile(root) {
+  const primary = path.join(root, WORKFLOW_CONTROL_PLANE_DB);
+  const legacy = path.join(root, LEGACY_TRACKING_DB);
+  if (fileExistsSync(primary)) return primary;
+  if (fileExistsSync(legacy)) return legacy;
+  return primary;
 }
 
 function normalizeAssetType(value) {
@@ -2074,8 +2096,28 @@ async function ensureWorkflowLayout(rootDir, input = {}) {
     fs.mkdir(paths.indexDir, { recursive: true })
   ]);
   await initDatabase(paths.dbFile);
+  await ensureLegacyDbAlias(paths);
   await ensureWorkflowTemplates(paths);
   return paths;
+}
+
+async function ensureLegacyDbAlias(paths) {
+  if (path.resolve(paths.dbFile) !== path.resolve(paths.primaryDbFile)) return;
+  try {
+    const existing = await fs.lstat(paths.legacyDbFile);
+    if (existing.isSymbolicLink()) {
+      const target = await fs.readlink(paths.legacyDbFile);
+      if (target === WORKFLOW_CONTROL_PLANE_DB || path.resolve(paths.root, target) === path.resolve(paths.primaryDbFile)) return;
+    }
+    return;
+  } catch (error) {
+    if (error?.code !== "ENOENT") return;
+  }
+  try {
+    await fs.symlink(WORKFLOW_CONTROL_PLANE_DB, paths.legacyDbFile);
+  } catch {
+    // Compatibility alias is best-effort; all governed code uses primaryDbFile.
+  }
 }
 
 async function ensureWorkflowTemplates(paths) {
@@ -4258,7 +4300,7 @@ async function resolveDraftParticipant(paths, agentId) {
       workflowIngressAdapter: "",
       endpointRef: "",
       canReceiveDispatch: false,
-      error: "tracking.db not found; registry resolution skipped for pure preview"
+      error: "workflow control-plane database not found; registry resolution skipped for pure preview"
     };
   }
   try {
@@ -8002,7 +8044,7 @@ async function pruneWorkflowBackups(paths) {
     if (error?.code !== "ENOENT") throw error;
   }
   for (const entry of rootEntries) {
-    if (!entry.isFile() || !entry.name.startsWith("tracking.db.bak-")) continue;
+    if (!entry.isFile() || (!entry.name.startsWith(`${WORKFLOW_CONTROL_PLANE_DB}.bak-`) && !entry.name.startsWith(`${LEGACY_TRACKING_DB}.bak-`))) continue;
     const filePath = path.join(paths.root, entry.name);
     await fs.rm(filePath, { force: true });
     removed.push(relativeTo(paths.root, filePath));

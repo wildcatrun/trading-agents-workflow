@@ -65,7 +65,7 @@ Environment variables:
   `/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout`
 - Console bind target when started: `127.0.0.1:8791`
 - Data source:
-  `/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow/tracking.db`
+  `/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow/workflow_control_plane.db`
 - Local access tunnel:
   `127.0.0.1:18791 -> 106.54.53.146:127.0.0.1:8791`
 - Runtime log target:

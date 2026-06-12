@@ -170,7 +170,8 @@ The workflow state root must be configured explicitly. The current development-s
 
 ```text
 /home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow/
-  tracking.db
+  workflow_control_plane.db
+  tracking.db -> workflow_control_plane.db (legacy compatibility alias)
   meetings/
   commands/
   events/

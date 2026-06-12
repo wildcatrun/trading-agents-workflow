@@ -155,12 +155,12 @@ def main() -> int:
             "workflow_status",
             {"view": "status"},
         )
-        if not missing_db.get("isError") or "tracking.db not found" not in str(missing_db.get("content")):
-            raise AssertionError(f"missing tracking.db should fail closed, got {missing_db}")
-        if (Path(tmp) / "tracking.db").exists():
-            raise AssertionError("missing tracking.db guard should not create a database")
+        if not missing_db.get("isError") or "workflow_control_plane.db not found" not in str(missing_db.get("content")):
+            raise AssertionError(f"missing workflow_control_plane.db should fail closed, got {missing_db}")
+        if (Path(tmp) / "workflow_control_plane.db").exists() or (Path(tmp) / "tracking.db").exists():
+            raise AssertionError("missing workflow control-plane database guard should not create a database")
     with tempfile.TemporaryDirectory(prefix="hermes-mcp-empty-db-") as tmp:
-        (Path(tmp) / "tracking.db").touch()
+        (Path(tmp) / "workflow_control_plane.db").touch()
         empty_db = call_tool(
             {
                 "HERMES_PROFILE": "catheart",
@@ -170,10 +170,10 @@ def main() -> int:
             "workflow_status",
             {"view": "status"},
         )
-        if not empty_db.get("isError") or "tracking.db at configured workflow root is not ready" not in str(empty_db.get("content")):
-            raise AssertionError(f"empty tracking.db should fail closed, got {empty_db}")
+        if not empty_db.get("isError") or "workflow control-plane database at configured workflow root is not ready" not in str(empty_db.get("content")):
+            raise AssertionError(f"empty workflow_control_plane.db should fail closed, got {empty_db}")
     with tempfile.TemporaryDirectory(prefix="hermes-mcp-old-db-") as tmp:
-        db_file = Path(tmp) / "tracking.db"
+        db_file = Path(tmp) / "workflow_control_plane.db"
         conn = sqlite3.connect(db_file)
         try:
             conn.execute("create table schema_meta(key text primary key, value text not null, updated_at text not null)")
@@ -190,10 +190,10 @@ def main() -> int:
             "workflow_status",
             {"view": "status"},
         )
-        if not old_db.get("isError") or "tracking.db at configured workflow root is not ready" not in str(old_db.get("content")):
-            raise AssertionError(f"old/incomplete tracking.db should fail closed, got {old_db}")
+        if not old_db.get("isError") or "workflow control-plane database at configured workflow root is not ready" not in str(old_db.get("content")):
+            raise AssertionError(f"old/incomplete workflow_control_plane.db should fail closed, got {old_db}")
     with tempfile.TemporaryDirectory(prefix="hermes-mcp-future-db-") as tmp:
-        db_file = Path(tmp) / "tracking.db"
+        db_file = Path(tmp) / "workflow_control_plane.db"
         conn = sqlite3.connect(db_file)
         try:
             conn.execute("create table schema_meta(key text primary key, value text not null, updated_at text not null)")
@@ -221,7 +221,7 @@ def main() -> int:
             {"view": "status"},
         )
         if not future_db.get("isError") or "does not match expected" not in str(future_db.get("content")):
-            raise AssertionError(f"future schema tracking.db should fail closed, got {future_db}")
+            raise AssertionError(f"future schema workflow_control_plane.db should fail closed, got {future_db}")
     print("Hermers MCP surface smoke passed")
     return 0
 
