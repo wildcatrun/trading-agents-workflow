@@ -2808,6 +2808,8 @@ async function makeFakeOpenClaw(root, name, mode) {
     ? `#!/usr/bin/env node\nimport fs from "node:fs";\nimport path from "node:path";\nconst argv = process.argv.slice(2);\nconst valueAfter = (flag) => { const index = argv.indexOf(flag); return index >= 0 ? argv[index + 1] || "" : ""; };\nfs.writeFileSync(path.join(process.cwd(), "semantic-inspect.json"), JSON.stringify({ timeout: valueAfter("--timeout"), message: valueAfter("--message") }, null, 2));\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output"}]}}));\n`
     : mode === "llm-failed"
     ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"LLM request failed."}]}}));\n`
+    : mode === "llm-failed-leading-valid"
+    ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"LLM request failed.\\nThis is a quoted upstream status, followed by valid semantic task output."}]}}));\n`
     : mode === "bad-ack"
     ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output without ack prefix"}]}}));\n`
     : mode === "embedded-ack"
@@ -3197,6 +3199,37 @@ LIMIT 1;`)[0];
     finalOutputPresent: 0,
     failureType: "incomplete_output",
     lastError: "OpenClaw returned incomplete output: LLM request failed."
+  });
+
+  const leadingFailureText = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "valid semantic output may mention an upstream placeholder on the first line",
+    workflowId: "workflow-message-flow-leading-placeholder-valid",
+    meetingId: "meeting-message-flow-leading-placeholder-valid",
+    returnPolicy: "silent"
+  });
+  const leadingFailureBin = await makeFakeOpenClaw(root, "fake-openclaw-leading-placeholder-valid.mjs", "llm-failed-leading-valid");
+  const leadingFailureDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: leadingFailureText.dispatches[0].dispatchId,
+    openclawBin: leadingFailureBin,
+    reportDelivery: false
+  });
+  assert.equal(leadingFailureDrain.results?.[0]?.status, "acked");
+  const leadingFailureFlow = sqliteJson(dbFile, `
+SELECT status, final_output_present AS finalOutputPresent, failure_type AS failureType, substr(last_error,1,80) AS lastError
+FROM message_flows
+WHERE flow_id='${leadingFailureText.dispatches[0].messageFlowId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(leadingFailureFlow, {
+    status: "runtime_completed",
+    finalOutputPresent: 1,
+    failureType: "",
+    lastError: ""
   });
 
   const listedByAckDispatch = await runAction(root, {
@@ -3668,7 +3701,9 @@ LIMIT 1;`)[0];
     deliverOutbox: false,
     ensureHumanGateRequests: false,
     createHumanGateInbox: false,
-    timeoutSeconds: 30,
+    tickBudgetMs: "invalid",
+    timeoutSeconds: "invalid",
+    jobLeaseMs: "invalid",
     openclawBin: genericSuccessBin
   });
   assert.equal(preciseGenericTick.claimedJobs?.[0]?.jobType, "runtime_drain");
@@ -3679,6 +3714,7 @@ FROM control_loop_jobs
 WHERE dedupe_key='runtime_drain:openclaw:${genericDispatchId}'
 LIMIT 1;`)[0];
   assert.equal(JSON.parse(preciseGenericDrainJob.payloadJson).timeoutSeconds, 300);
+  assert.equal(Number.isFinite(Date.parse(preciseGenericTick.claimedJobs?.[0]?.leaseUntil || "")), true);
   assert.equal(Date.parse(preciseGenericTick.claimedJobs?.[0]?.leaseUntil || "") - preciseGenericTickStartedAt >= 300_000, true);
 
   await runAction(root, {
@@ -3812,7 +3848,7 @@ function testControlLoopProcessWorkerBudgetCoversOpenClawSemanticDrain() {
   assert.equal(controlLoopWorkerKillAfterMs(devConfig) > (devConfig.timeoutSeconds + 15) * 1000, true);
   assert.equal(
     controlLoopWorkerKillAfterMs({ ...devConfig, drainQueued: false }),
-    devConfig.jobLeaseMs + 15_000
+    (DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS + 45) * 1000
   );
   assert.equal(
     Number.isFinite(controlLoopWorkerKillAfterMs({
@@ -3830,7 +3866,7 @@ function testControlLoopProcessWorkerBudgetCoversOpenClawSemanticDrain() {
       jobLeaseMs: "invalid",
       drainQueued: false
     }),
-    135_000
+    (DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS + 45) * 1000
   );
 }
 

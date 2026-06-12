@@ -10537,11 +10537,10 @@ function messageFlowSourceChannel(input = {}, originalPayload = {}) {
 function messageFlowOutputIsFinal(text = "") {
   const value = String(text || "").trim();
   const lower = value.toLowerCase();
-  const firstLine = value.split(/\r?\n/, 1)[0].trim();
-  const requestFailedPlaceholder = /^(llm|model|runtime|agent) request failed(?:[\.:]\s*.*)?$/i;
+  const requestFailedPlaceholder = /^(llm|model|runtime|agent) request failed(?:[\.:][^\r\n]*)?$/i;
   if (!value) return false;
   if (/^heartbeat_(ok|degraded)\b/i.test(value)) return true;
-  if (requestFailedPlaceholder.test(value) || requestFailedPlaceholder.test(firstLine)) return false;
+  if (requestFailedPlaceholder.test(value)) return false;
   if (lower.startsWith("operation interrupted:")) return false;
   if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return false;
   return true;
@@ -17665,11 +17664,11 @@ function controlLoopPriorityRank(priority) {
 }
 
 function controlLoopTickBudgetMs(input = {}) {
-  return Math.max(5_000, Math.min(30 * 60_000, Number(input.tickBudgetMs || input.tick_budget_ms || 60_000)));
+  return boundedNumber([input.tickBudgetMs, input.tick_budget_ms], 60_000, 5_000, 30 * 60_000);
 }
 
 function controlLoopTimeoutSeconds(input = {}) {
-  return Math.max(5, Math.min(900, Number(input.timeoutSeconds || input.timeout_seconds || 45)));
+  return boundedNumber([input.timeoutSeconds, input.timeout_seconds], 45, 5, 900);
 }
 
 function controlLoopRuntimeDrainTimeoutSeconds(dispatchType = "", runtime = "", input = {}) {
@@ -17696,9 +17695,9 @@ function controlLoopWorkflowSuperviseCooldownMs(input = {}, status = "") {
 }
 
 function controlLoopJobLeaseMs(input = {}, job = null) {
-  const requested = Math.max(10_000, Math.min(60 * 60_000, Number(input.jobLeaseMs || input.job_lease_ms || 120_000)));
+  const requested = boundedNumber([input.jobLeaseMs, input.job_lease_ms], 120_000, 10_000, 60 * 60_000);
   const payload = job ? parseJsonValue(job.payload_json || job.payload, {}) : {};
-  const payloadTimeoutSeconds = Number(payload.timeoutSeconds || payload.timeout_seconds || 0);
+  const payloadTimeoutSeconds = boundedNumber([payload.timeoutSeconds, payload.timeout_seconds], 0, 0, 900);
   const timeoutSeconds = Math.max(controlLoopTimeoutSeconds(input), Number.isFinite(payloadTimeoutSeconds) ? payloadTimeoutSeconds : 0);
   const minSafe = Math.max(controlLoopTickBudgetMs(input) + 30_000, (timeoutSeconds + 30) * 1000);
   return Math.max(requested, minSafe);
