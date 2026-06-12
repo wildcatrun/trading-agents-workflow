@@ -16165,6 +16165,9 @@ async function applyHumanGateWorkflowDecision(paths, button, selectedAt, feedbac
   const decisionStatus = normalizeHumanGateDecisionStatus(button.decision_status, "");
   const role = String(button.button_role || "").trim();
   if (decisionStatus === "approved" || decisionStatus === "rejected") {
+    const closeoutResolution = decisionStatus === "approved"
+      ? await applyIncidentCloseoutApproval(paths, button, selectedAt, feedbackContext)
+      : null;
     await sqlite(paths.dbFile, `
 UPDATE workflow_runs
 SET status='active',
@@ -16172,7 +16175,7 @@ SET status='active',
     payload_json=${sqlValue(JSON.stringify(workflowPayload))},
     updated_at=${sqlValue(selectedAt)}
 WHERE workflow_id=${sqlValue(workflowId)} AND status IN ('active','waiting_human','blocked','paused');`);
-    return { workflowId, workflowStatus: "active", currentDecision: `human_gate_${decisionStatus}` };
+    return { workflowId, workflowStatus: "active", currentDecision: `human_gate_${decisionStatus}`, closeoutResolution };
   }
   if (decisionStatus === "paused" || role === "pause") {
     await sqlite(paths.dbFile, `
@@ -16225,6 +16228,175 @@ WHERE workflow_id=${sqlValue(workflowId)} AND status IN ('queued','running','ret
     return { workflowId, workflowStatus: "stopped", currentDecision: "human_gate_archived_complete", archived: true, resumeAllowed: true };
   }
   return { workflowId, workflowStatus: "", currentDecision: "" };
+}
+
+function humanGateButtonPayloadObject(button = {}) {
+  return parseJsonValue(button.payload_json || button.payloadJson || button.payload, {});
+}
+
+function humanGateButtonNestedPayload(buttonPayload = {}) {
+  return parseJsonValue(buttonPayload.payload, buttonPayload.payload || {});
+}
+
+function humanGateCloseoutApprovalOption(buttonPayload = {}) {
+  const nested = humanGateButtonNestedPayload(buttonPayload);
+  return firstText(buttonPayload.optionId, buttonPayload.option_id, buttonPayload.optionKey, buttonPayload.option_key, nested.optionId, nested.option_id, nested.optionKey, nested.option_key);
+}
+
+function humanGateCloseoutArtifactRef(button = {}, buttonPayload = {}) {
+  const nested = humanGateButtonNestedPayload(buttonPayload);
+  return firstText(button.artifact_ref, button.artifactRef, buttonPayload.artifactRef, buttonPayload.artifact_ref, nested.artifactRef, nested.artifact_ref);
+}
+
+async function readHumanGateCloseoutArtifact(paths, artifactRef = "") {
+  const ref = String(artifactRef || "").trim();
+  if (!ref) return null;
+  const candidates = [];
+  candidates.push(ref);
+  if (/\.md$/i.test(ref)) candidates.push(ref.replace(/\.md$/i, ".json"));
+  if (/\.markdown$/i.test(ref)) candidates.push(ref.replace(/\.markdown$/i, ".json"));
+  if (!/\.json$/i.test(ref)) candidates.push(`${ref}.json`);
+  for (const candidate of Array.from(new Set(candidates))) {
+    const filePath = artifactPathInsideRoot(paths.root, candidate);
+    if (!filePath) continue;
+    try {
+      const record = parseJsonValue(await fs.readFile(filePath, "utf8"), null);
+      if (record && typeof record === "object") return { record, ref: candidate, filePath };
+    } catch {
+      continue;
+    }
+  }
+  const artifactIds = Array.from(new Set(candidates.flatMap((candidate) => {
+    const text = String(candidate || "").trim();
+    const base = path.basename(text).replace(/\.(json|md|markdown)$/i, "");
+    return [text, base, `${base}.json`].filter(Boolean);
+  })));
+  if (artifactIds.length) {
+    const rows = await sqlite(paths.dbFile, `
+SELECT artifact_id, path
+FROM artifact_index
+WHERE artifact_id IN (${artifactIds.map(sqlValue).join(",")})
+   OR path IN (${artifactIds.map(sqlValue).join(",")})
+ORDER BY created_at DESC
+LIMIT 10;`, { json: true });
+    for (const row of rows) {
+      const filePath = artifactPathInsideRoot(paths.root, row.path);
+      if (!filePath) continue;
+      try {
+        const record = parseJsonValue(await fs.readFile(filePath, "utf8"), null);
+        if (record && typeof record === "object") return { record, ref: row.path || row.artifact_id, filePath };
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
+function closeoutArtifactIncidentIds(record = {}) {
+  const ids = [];
+  for (const row of Array.isArray(record.closeout?.incidents) ? record.closeout.incidents : []) {
+    const id = String(row?.incidentId || row?.incident_id || "").trim();
+    if (id) ids.push(id);
+  }
+  const selectedId = String(record.closeout?.selectedIncident?.incidentId || record.closeout?.selectedIncident?.incident_id || "").trim();
+  if (selectedId) ids.push(selectedId);
+  const recordId = String(record.incidentId || record.incident_id || "").trim();
+  if (recordId) ids.push(recordId);
+  return Array.from(new Set(ids));
+}
+
+async function applyIncidentCloseoutApproval(paths, button, selectedAt, feedbackContext = {}) {
+  const workflowId = String(button.workflow_id || "").trim();
+  const buttonPayload = humanGateButtonPayloadObject(button);
+  const optionId = humanGateCloseoutApprovalOption(buttonPayload);
+  if (optionId !== "A") return null;
+  const record = await humanGateRecordById(paths, button.human_gate_id);
+  const recordPayload = parseJsonValue(record?.payload_json, {});
+  const body = humanGateBody(recordPayload);
+  const raw = parseJsonValue(body.raw, body.raw || {});
+  const gateType = firstText(body.gateType, body.gate_type, raw.gateType, raw.gate_type);
+  if (gateType !== "incident_closeout") return null;
+  const artifactRef = humanGateCloseoutArtifactRef(button, buttonPayload) || raw.closeoutArtifactRef || raw.closeout_artifact_ref || raw.closeoutArtifactId || "";
+  const artifact = await readHumanGateCloseoutArtifact(paths, artifactRef);
+  if (!artifact?.record) return { applied: false, reason: "closeout_artifact_not_found", artifactRef };
+  if (artifact.record.schemaVersion !== "workflow_incident_closeout_artifact.v1" || artifact.record.packageKind !== "human_gate_package") {
+    return { applied: false, reason: "invalid_closeout_artifact", artifactRef: artifact.ref };
+  }
+  if (workflowId && String(artifact.record.workflowId || "") !== workflowId) {
+    return { applied: false, reason: "workflow_mismatch", artifactRef: artifact.ref, artifactWorkflowId: artifact.record.workflowId || "" };
+  }
+  const incidentIds = closeoutArtifactIncidentIds(artifact.record);
+  if (!incidentIds.length) return { applied: false, reason: "no_incidents_in_closeout_artifact", artifactRef: artifact.ref };
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM incident_states
+WHERE incident_id IN (${incidentIds.map(sqlValue).join(",")})
+  AND status IN ('active','mitigating','monitoring')
+ORDER BY updated_at ASC;`, { json: true });
+  const resolved = [];
+  for (const row of rows) {
+    const payload = parseJsonValue(row.payload_json, {});
+    const timeline = parseJsonValue(row.timeline_json, []);
+    const note = `${selectedAt} resolved by Human Gate incident closeout approval; humanGateId=${button.human_gate_id}; buttonId=${button.button_id}; option=A; artifact=${artifact.ref}`;
+    await incidentState(paths.root, {
+      workflowRootDir: paths.root,
+      workflowId,
+      incidentId: row.incident_id,
+      status: "resolved",
+      mode: "normal",
+      affectedPlanes: parseJsonValue(row.affected_planes_json, []),
+      summary: row.summary || `Incident ${row.incident_id} resolved by Human Gate closeout approval.`,
+      commander: "workflow",
+      impact: row.impact || "",
+      currentHypothesis: row.current_hypothesis || "",
+      mitigation: row.mitigation || "",
+      rollbackOptions: row.rollback_options || "Reopen incident if closeout evidence is later found invalid or the condition recurs.",
+      exitCriteria: row.exit_criteria || "Human Gate closeout approved and runtime readiness is ready.",
+      timeline: [...(Array.isArray(timeline) ? timeline : []), note],
+      declaredAt: row.declared_at || selectedAt,
+      nextUpdateAt: "",
+      payload: {
+        ...payload,
+        closeoutResolution: {
+          schemaVersion: "workflow_incident_closeout_resolution.v1",
+          resolvedAt: nowIso(),
+          selectedAt,
+          workflowId,
+          humanGateId: button.human_gate_id,
+          buttonId: button.button_id,
+          buttonLabel: button.label || "",
+          optionId,
+          artifactRef: artifact.ref,
+          flashcatOriginalWords: String(feedbackContext.flashcatOriginalWords || "").trim(),
+          feedbackReceivedAt: feedbackContext.feedbackReceivedAt || selectedAt
+        }
+      }
+    });
+    resolved.push(row.incident_id);
+  }
+  await appendWorkflowEvent(paths, {
+    eventType: "incident.closeout_approved",
+    status: resolved.length ? "resolved" : "noop",
+    workflowId,
+    humanGateId: button.human_gate_id,
+    actor: "workflow",
+    sourceRuntime: "workflow",
+    sourceAgent: "workflow",
+    artifactRef: artifact.ref,
+    payload: {
+      buttonId: button.button_id,
+      optionId,
+      artifactRef: artifact.ref,
+      incidentCount: incidentIds.length,
+      resolvedIncidentCount: resolved.length,
+      resolvedIncidentIds: resolved,
+      flashcatOriginalWords: String(feedbackContext.flashcatOriginalWords || "").trim(),
+      feedbackReceivedAt: feedbackContext.feedbackReceivedAt || selectedAt
+    },
+    createdAt: selectedAt
+  });
+  return { applied: true, artifactRef: artifact.ref, incidentCount: incidentIds.length, resolvedIncidentCount: resolved.length, resolvedIncidentIds: resolved };
 }
 
 function humanGateFeedbackText(input = {}) {

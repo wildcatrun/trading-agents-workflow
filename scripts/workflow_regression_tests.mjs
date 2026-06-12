@@ -392,6 +392,163 @@ LIMIT 1;`)[0];
   assert.equal(JSON.parse(outboxAfterDriftEnsure.payloadJson).buttons.length, 6);
 }
 
+async function testHumanGateIncidentCloseoutApprovalResolvesIncidents() {
+  const negativeRoot = await tempRoot("hgate-incident-closeout-negative");
+  await runAction(negativeRoot, { action: "workflow.init" });
+  const negativeDbFile = path.join(negativeRoot, "tracking.db");
+  sqliteExec(negativeDbFile, `
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-closeout-negative', 'active', 'degraded', '["workflow"]', 'negative', 'main', 'must stay open', 'not an incident closeout gate', 'none', 'none', 'not covered', '[]', '{"workflowId":"workflow-closeout-negative"}', '2026-06-12T00:00:00.000Z', '', '', '2026-06-12T00:00:01.000Z');
+`);
+  const negativeArtifactRel = "bridge/incident-closeout/incident-closeout-negative.json";
+  await fs.mkdir(path.join(negativeRoot, "bridge/incident-closeout"), { recursive: true });
+  await fs.writeFile(path.join(negativeRoot, negativeArtifactRel), JSON.stringify({
+    schemaVersion: "workflow_incident_closeout_artifact.v1",
+    workflowId: "workflow-closeout-negative",
+    incidentId: "incident-closeout-negative",
+    packageKind: "human_gate_package",
+    closeout: { incidents: [{ incidentId: "incident-closeout-negative" }] }
+  }, null, 2));
+  const negativeRequest = await requestHumanGate(negativeRoot, {
+    workflowId: "workflow-closeout-negative",
+    meetingId: "workflow-closeout-negative",
+    gateType: "workflow_continuation",
+    stageKey: "not-incident-closeout",
+    text: "猫爪正式汇报：普通 workflow continuation 回归测试，不应关闭 incident。",
+    buttons: [{
+      optionId: "A",
+      optionKey: "A",
+      title: "批准普通继续",
+      summary: "这是普通继续方案，即使带 artifact 也不能关闭 incident。",
+      prompt: "继续普通 workflow，不执行 incident closeout。",
+      rollback: "保持 incident active。",
+      artifactRef: negativeArtifactRel,
+      payload: { optionId: "A", optionKey: "A", artifactRef: negativeArtifactRel }
+    }, ...planButtons().slice(1)]
+  });
+  const negativeApproved = negativeRequest.buttons.find((button) => button.payload?.optionId === "A" || button.payload?.payload?.optionId === "A") || negativeRequest.buttons[0];
+  const negativeResumed = await runAction(negativeRoot, {
+    action: "human_gate.resume",
+    token: negativeApproved.callbackToken,
+    text: "闪电猫原话：批准普通继续。"
+  });
+  assert.equal(negativeResumed.workflowDecision.closeoutResolution, null);
+  assert.equal(sqliteJson(negativeDbFile, "SELECT status FROM incident_states WHERE incident_id='incident-closeout-negative';")[0].status, "active");
+
+  const root = await tempRoot("hgate-incident-closeout-approval");
+  await runAction(root, { action: "workflow.init" });
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = "workflow-incident-closeout-approval";
+  sqliteExec(dbFile, `
+INSERT INTO workflow_runs(workflow_id, workflow_type, status, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
+VALUES ('${workflowId}', 'regression', 'waiting_human', 'main', 'incident closeout approval regression', 'Human Gate option A resolves scoped closeout incidents', 'artifact-scoped incidents are resolved only after approval', 'manual stop', 'human_gate', 'submit_human_gate', '{}', '2026-06-12T00:00:00.000Z', '2026-06-12T00:00:01.000Z');
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES
+  ('incident-closeout-a', 'active', 'degraded', '["workflow"]', 'closeout A', 'main', 'covered by closeout artifact', 'ready to close', 'none', 'reopen if recurrence', 'Human Gate approves closeout', '["opened A"]', '{"workflowId":"${workflowId}","closeoutEvidence":{"workflowId":"${workflowId}","incidentId":"incident-closeout-a"}}', '2026-06-12T00:00:00.000Z', '', '', '2026-06-12T00:00:01.000Z'),
+  ('incident-closeout-b', 'monitoring', 'degraded', '["runtime"]', 'closeout B', 'main', 'covered by closeout artifact', 'ready to close', 'none', 'reopen if recurrence', 'Human Gate approves closeout', '["opened B"]', '{"workflowId":"${workflowId}","closeoutEvidence":{"workflowId":"${workflowId}","incidentId":"incident-closeout-b"}}', '2026-06-12T00:00:00.000Z', '', '', '2026-06-12T00:00:02.000Z'),
+  ('incident-closeout-decoy', 'active', 'degraded', '["workflow"]', 'decoy', 'main', 'not in artifact', 'must stay open', 'none', 'none', 'not covered', '[]', '{"workflowId":"${workflowId}"}', '2026-06-12T00:00:00.000Z', '', '', '2026-06-12T00:00:03.000Z');
+`);
+  const artifactRel = "bridge/incident-closeout/incident-closeout-approval-regression.json";
+  await fs.mkdir(path.join(root, "bridge/incident-closeout"), { recursive: true });
+  await fs.writeFile(path.join(root, artifactRel), JSON.stringify({
+    schemaVersion: "workflow_incident_closeout_artifact.v1",
+    artifactId: "incident-closeout-approval-regression",
+    workflowId,
+    incidentId: "incident-closeout-a",
+    packageKind: "human_gate_package",
+    writeBoundary: "closeout_artifact_only",
+    closeout: {
+      counts: { incidents: 2 },
+      selectedIncident: { incidentId: "incident-closeout-a", status: "active" },
+      incidents: [
+        { incidentId: "incident-closeout-a", status: "active", mode: "degraded" },
+        { incidentId: "incident-closeout-b", status: "monitoring", mode: "degraded" }
+      ]
+    },
+    reportDraft: {
+      summaryZh: "猫爪正式汇报：incident closeout 回归测试。请选择 A/B/C。",
+      humanGateOptions: []
+    }
+  }, null, 2));
+  const closeoutButtons = [
+    {
+      optionId: "A",
+      optionKey: "A",
+      title: "批准收口并归档",
+      summary: "确认 artifact 中列出的 incident 已满足收口条件，批准归档。",
+      prompt: "批准方案 A 后，仅关闭 closeout artifact 范围内的 incident。",
+      rollback: "如果证据无效，重新打开 incident 并恢复 active 状态。",
+      artifactRef: artifactRel,
+      payload: { optionId: "A", optionKey: "A", artifactRef: artifactRel }
+    },
+    {
+      optionId: "B",
+      optionKey: "B",
+      title: "退回补证后再提交",
+      summary: "暂不关闭 incident，要求补齐证据后重新提交。",
+      prompt: "保持 incident open，由猫之脑补证。",
+      rollback: "补证失败时继续保持 active。",
+      artifactRef: artifactRel,
+      payload: { optionId: "B", optionKey: "B", artifactRef: artifactRel }
+    },
+    {
+      optionId: "C",
+      optionKey: "C",
+      title: "继续监控不关闭",
+      summary: "保持 incident monitoring，不进行 resolved 写入。",
+      prompt: "继续观察下一轮 readiness 和 runtime 证据。",
+      rollback: "如果出现复发，升级 incident。",
+      artifactRef: artifactRel,
+      payload: { optionId: "C", optionKey: "C", artifactRef: artifactRel }
+    }
+  ];
+  const request = await requestHumanGate(root, {
+    workflowId,
+    meetingId: workflowId,
+    gateType: "incident_closeout",
+    stageKey: "incident-closeout:incident-closeout-a",
+    text: "猫爪正式汇报：incident closeout 回归测试。请选择 A/B/C 方案并填写闪电猫原话。",
+    buttons: closeoutButtons,
+    payload: {
+      closeoutArtifactRef: artifactRel,
+      closeoutPackageKind: "human_gate_package",
+      closeoutIncidentId: "incident-closeout-a"
+    }
+  });
+  const approved = request.buttons.find((button) => button.payload?.optionId === "A" || button.payload?.payload?.optionId === "A") || request.buttons[0];
+  const resumed = await runAction(root, {
+    action: "human_gate.resume",
+    token: approved.callbackToken,
+    text: "闪电猫原话：同意收口。"
+  });
+  assert.equal(resumed.status, "approved");
+  assert.equal(resumed.workflowDecision.closeoutResolution.applied, true);
+  assert.equal(resumed.workflowDecision.closeoutResolution.resolvedIncidentCount, 2);
+
+  const incidents = sqliteJson(dbFile, `
+SELECT incident_id AS incidentId, status, mode, payload_json AS payloadJson
+FROM incident_states
+ORDER BY incident_id;`);
+  assert.deepEqual(incidents.map((row) => [row.incidentId, row.status, row.mode]), [
+    ["incident-closeout-a", "resolved", "normal"],
+    ["incident-closeout-b", "resolved", "normal"],
+    ["incident-closeout-decoy", "active", "degraded"]
+  ]);
+  const resolution = JSON.parse(incidents[0].payloadJson).closeoutResolution;
+  assert.equal(resolution.humanGateId, request.humanGateId);
+  assert.equal(resolution.buttonId, approved.buttonId);
+  assert.equal(resolution.flashcatOriginalWords, "闪电猫原话：同意收口。");
+  assert.equal(sqliteCount(dbFile, "workflow_events", "event_type='incident.closeout_approved'"), 1);
+  const closeoutEvent = sqliteJson(dbFile, `
+SELECT payload_json AS payloadJson
+FROM workflow_events
+WHERE event_type='incident.closeout_approved'
+LIMIT 1;`)[0];
+  const closeoutEventPayload = JSON.parse(closeoutEvent.payloadJson);
+  assert.equal(closeoutEventPayload.flashcatOriginalWords, "闪电猫原话：同意收口。");
+  assert.ok(closeoutEventPayload.feedbackReceivedAt);
+}
+
 async function testHumanGateReadinessChecklist() {
   const root = await tempRoot("hgate-readiness");
   const request = await requestHumanGate(root);
@@ -7311,6 +7468,7 @@ try {
   requireSqliteCli();
   const tests = [
     ["human_gate language/resume", testHumanGateLanguageAndResume],
+    ["human_gate incident closeout approval resolves incidents", testHumanGateIncidentCloseoutApprovalResolvesIncidents],
     ["human_gate readiness checklist", testHumanGateReadinessChecklist],
     ["human_gate readiness legacy schema fallback", testHumanGateReadinessLegacySchemaFallback],
     ["workflow operations console audit", testWorkflowOperationsConsoleAudit],
