@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { LEGACY_ROOT, runAction } from "./src/core.js";
+import { controlLoopWorkerKillAfterMs } from "./src/control-loop-budget.js";
 
 const PLUGIN_ID = "trading-agents-workflow";
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -2640,7 +2641,7 @@ function runControlLoopWorker(api, config, reason) {
     });
     let stderr = "";
     let sigkillTimer = null;
-    const killAfterMs = Math.max(config.tickBudgetMs + 15_000, (config.timeoutSeconds + 15) * 1000);
+    const killAfterMs = controlLoopWorkerKillAfterMs(config);
     const timer = setTimeout(() => {
       console.error(`[trading-agents-workflow] control loop worker timed out after ${killAfterMs}ms; terminating process group`);
       signalControlLoopWorker(child, "SIGTERM");

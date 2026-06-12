@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { WorkflowReadModel } from "./console/read-model.js";
+import { DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS } from "./control-loop-budget.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -64,7 +65,6 @@ const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout",
 const DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS = 90;
 const DEFAULT_RUNTIME_ACK_RETRY_SECONDS = 30;
 const DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS = 3;
-const DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS = 300;
 const TEST_SEMANTIC_CONTINUATION_FAILURE_ENV = "TRADING_AGENTS_WORKFLOW_TEST_SEMANTIC_CONTINUATION_FAILURE";
 const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_report"]);
 const TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES = new Set(["human_gate_request", "human_gate_report", "workflow_secretary_report", "message_flow_reply", "meeting_live"]);

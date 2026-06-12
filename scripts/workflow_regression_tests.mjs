@@ -9,6 +9,10 @@ import path from "node:path";
 import { workflowChildPayload } from "../src/console/server.js";
 import { WorkflowActionGateway } from "../src/console/action-gateway.js";
 import { WorkflowReadModel } from "../src/console/read-model.js";
+import {
+  DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS,
+  controlLoopWorkerKillAfterMs
+} from "../src/control-loop-budget.js";
 import { runAction as runActionRaw } from "../src/core.js";
 
 const createdRoots = [];
@@ -3794,6 +3798,24 @@ LIMIT 1;`)[0];
   assert.equal(Boolean(followupTick.seededJobs?.some((job) => job.dedupeKey === `runtime_drain:local_codex:${unconfiguredDispatchId}`)), true);
 }
 
+function testControlLoopProcessWorkerBudgetCoversOpenClawSemanticDrain() {
+  const devConfig = {
+    tickBudgetMs: 60_000,
+    timeoutSeconds: 30,
+    jobLeaseMs: 90_000,
+    drainQueued: true
+  };
+  assert.equal(
+    controlLoopWorkerKillAfterMs(devConfig) >= (DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS + 45) * 1000,
+    true
+  );
+  assert.equal(controlLoopWorkerKillAfterMs(devConfig) > (devConfig.timeoutSeconds + 15) * 1000, true);
+  assert.equal(
+    controlLoopWorkerKillAfterMs({ ...devConfig, drainQueued: false }),
+    devConfig.jobLeaseMs + 15_000
+  );
+}
+
 async function testControlLoopAutoDiscoversQueuedDispatchRuntimes() {
   const root = await tempRoot("control-loop-auto-runtime-discovery");
   await runAction(root, {
@@ -6975,6 +6997,7 @@ try {
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
     ["message_flow immediate ack retry delay", testMessageFlowImmediateAckRetryDelay],
+    ["control_loop process worker budget covers openclaw semantic drain", testControlLoopProcessWorkerBudgetCoversOpenClawSemanticDrain],
     ["message_flow control-loop runtime drains", testControlLoopDrainsMessageFlowRuntimes],
     ["control_loop auto runtime discovery", testControlLoopAutoDiscoversQueuedDispatchRuntimes],
     ["control_loop workflow supervise targeted drain", testControlLoopWorkflowSuperviseEnqueuesTargetedDrain],
