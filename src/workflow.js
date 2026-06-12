@@ -3513,7 +3513,8 @@ async function activeReadinessChecks(paths, input, findings) {
   const gatewayFinding = gatewayHealthFinding(checks.openclawGateway);
   if (gatewayFinding) findings.push(gatewayFinding);
 
-  const hermesBin = resolveHome(input.hermesBin || input.hermes_bin || process.env.HERMES_BIN || "/home/flashcat/hermes-agent/venv/bin/hermes");
+  const hermesBin = resolveHome(firstText(input.hermesBin, input.hermes_bin, process.env.HERMES_BIN, "/home/flashcat/hermes-agent/venv/bin/hermes"));
+  const hermesCwd = resolveHome(firstText(input.hermesCwd, input.hermes_cwd, process.env.HERMES_CWD, "/home/flashcat/hermes-agent"));
   const hermersRows = await sqlite(paths.dbFile, `
 SELECT runtime, agent_id, endpoint_ref, platform, execution_adapter, workflow_ingress_adapter
 FROM runtime_agents
@@ -3536,7 +3537,7 @@ ORDER BY agent_id;`, { json: true });
       continue;
     }
     const result = await commandProbe(hermesBin, ["-p", profile, "acp", "--check"], {
-      cwd: "/home/flashcat/hermes-agent",
+      cwd: hermesCwd,
       timeoutMs: 20000,
       env: proxyEnv,
       maxText: 1000
@@ -3552,8 +3553,28 @@ ORDER BY agent_id;`, { json: true });
     acpBackendCleanup = resolvedBackend.cleanup || acpBackendCleanup;
     checks.acpBackend = { ok: true, backend: backendId, source: resolvedBackend.source || "", checkedAt: nowIso() };
   } catch (error) {
-    checks.acpBackend = { ok: false, backend: backendId, checkedAt: nowIso(), error: error instanceof Error ? error.message : String(error) };
-    findings.push({ severity: "warning", key: "acp_backend_unavailable", plane: "runtime", backend: backendId, error: checks.acpBackend.error });
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const explicitBackend = acpBackendExplicitlyRequested(input);
+    const allowFallback = boolOption(input.acpBackendFallback ?? input.acp_backend_fallback ?? process.env.TRADING_AGENTS_ACP_BACKEND_FALLBACK, !explicitBackend);
+    const fallbackAvailable = allowFallback && checks.hermersProfiles.some((profile) => profile.ok);
+    checks.acpBackend = {
+      ok: false,
+      backend: backendId,
+      checkedAt: nowIso(),
+      error: errorMessage,
+      fallbackAvailable,
+      fallbackAdapter: fallbackAvailable ? "cli" : "",
+      fallbackProbe: fallbackAvailable ? "hermes_profile_acp_check" : ""
+    };
+    findings.push({
+      severity: fallbackAvailable ? "info" : "warning",
+      key: fallbackAvailable ? "acp_backend_fallback_active" : "acp_backend_unavailable",
+      plane: "runtime",
+      backend: backendId,
+      fallbackAdapter: fallbackAvailable ? "cli" : "",
+      fallbackProbe: fallbackAvailable ? "hermes_profile_acp_check" : "",
+      error: errorMessage
+    });
   } finally {
     try {
       await acpBackendCleanup();

@@ -6773,6 +6773,20 @@ async function testHermersAcpBackendFallbackToCli() {
     "printf '%s\\n' 'Hermes CLI fallback completed.'"
   ].join("\n"), "utf8");
   await fs.chmod(fakeHermes, 0o755);
+  const fakeOpenClaw = path.join(root, "fake-openclaw-health.sh");
+  await fs.writeFile(fakeOpenClaw, [
+    "#!/bin/sh",
+    "printf '%s\\n' 'Gateway event loop: ok max=1ms p99=1ms util=0.001 cpu=0.001'"
+  ].join("\n"), "utf8");
+  await fs.chmod(fakeOpenClaw, 0o755);
+  const modesPath = await writeHermersProfileModes(root, {
+    catbody: {
+      observedMode: "warm",
+      managed: true,
+      protected: false,
+      activeWork: false
+    }
+  });
   await runAction(root, {
     action: "runtime.agent.upsert",
     platform: "hermers",
@@ -6807,6 +6821,57 @@ async function testHermersAcpBackendFallbackToCli() {
   assert.equal(sqliteJson(dbFile, `SELECT status FROM mixed_meeting_dispatches WHERE dispatch_id='${dispatch.dispatchId}';`)[0].status, "acked");
   assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}' AND adapter='acp'`), 0);
   assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}' AND adapter='cli' AND status='acked'`), 1);
+  const fallbackReadiness = await runAction(root, {
+    action: "workflow.readiness",
+    activeChecks: true,
+    persistReadinessSnapshot: false,
+    openclawBin: fakeOpenClaw,
+    hermesBin: fakeHermes,
+    hermesCwd: root,
+    stabilityProfileModesPath: modesPath,
+    acpBackend: "missing_backend_for_regression",
+    acpBackendFallback: true
+  });
+  assert.equal(fallbackReadiness.planes.runtime.acpBackend.fallbackAvailable, true);
+  assert.equal(fallbackReadiness.planes.runtime.acpBackend.fallbackProbe, "hermes_profile_acp_check");
+  assert.equal(fallbackReadiness.findings.some((finding) => finding.key === "acp_backend_unavailable"), false);
+  assert.equal(fallbackReadiness.findings.some((finding) => finding.key === "acp_backend_fallback_active" && finding.severity === "info" && finding.fallbackProbe === "hermes_profile_acp_check"), true);
+
+  const noFallbackReadiness = await runAction(root, {
+    action: "workflow.readiness",
+    activeChecks: true,
+    persistReadinessSnapshot: false,
+    openclawBin: fakeOpenClaw,
+    hermesBin: fakeHermes,
+    hermesCwd: { invalid: "non-string should fall back" },
+    stabilityProfileModesPath: modesPath,
+    acpBackend: "missing_backend_for_regression",
+    acpBackendFallback: false
+  });
+  assert.equal(noFallbackReadiness.planes.runtime.acpBackend.fallbackAvailable, false);
+  assert.equal(noFallbackReadiness.findings.some((finding) => finding.key === "acp_backend_unavailable" && finding.severity === "warning"), true);
+
+  const fakeHermesFail = path.join(root, "fake-hermes-fail.sh");
+  await fs.writeFile(fakeHermesFail, [
+    "#!/bin/sh",
+    "printf '%s\\n' 'Hermes profile check failed' >&2",
+    "exit 17"
+  ].join("\n"), "utf8");
+  await fs.chmod(fakeHermesFail, 0o755);
+  const profileFailureReadiness = await runAction(root, {
+    action: "workflow.readiness",
+    activeChecks: true,
+    persistReadinessSnapshot: false,
+    openclawBin: fakeOpenClaw,
+    hermesBin: fakeHermesFail,
+    hermesCwd: root,
+    stabilityProfileModesPath: modesPath,
+    acpBackend: "missing_backend_for_regression",
+    acpBackendFallback: true
+  });
+  assert.equal(profileFailureReadiness.planes.runtime.acpBackend.fallbackAvailable, false);
+  assert.equal(profileFailureReadiness.findings.some((finding) => finding.key === "hermers_acp_check_failed" && finding.severity === "warning"), true);
+  assert.equal(profileFailureReadiness.findings.some((finding) => finding.key === "acp_backend_unavailable" && finding.severity === "warning"), true);
 
   const envDispatch = await runAction(root, {
     action: "meeting.dispatch",
