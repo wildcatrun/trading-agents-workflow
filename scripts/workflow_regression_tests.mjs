@@ -2802,6 +2802,8 @@ async function makeFakeOpenClaw(root, name, mode) {
     ? `#!/usr/bin/env node\nimport fs from "node:fs";\nimport path from "node:path";\nconst argv = process.argv.slice(2);\nconst valueAfter = (flag) => { const index = argv.indexOf(flag); return index >= 0 ? argv[index + 1] || "" : ""; };\nfs.writeFileSync(path.join(process.cwd(), "ack-inspect.json"), JSON.stringify({ timeout: valueAfter("--timeout"), message: valueAfter("--message") }, null, 2));\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"ACK_RECEIVED\\nTimestamp: 2099-01-01T00:00:00.000Z\\nScope: complete dispatch received"}]}}));\n`
     : mode === "inspect-semantic"
     ? `#!/usr/bin/env node\nimport fs from "node:fs";\nimport path from "node:path";\nconst argv = process.argv.slice(2);\nconst valueAfter = (flag) => { const index = argv.indexOf(flag); return index >= 0 ? argv[index + 1] || "" : ""; };\nfs.writeFileSync(path.join(process.cwd(), "semantic-inspect.json"), JSON.stringify({ timeout: valueAfter("--timeout"), message: valueAfter("--message") }, null, 2));\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output"}]}}));\n`
+    : mode === "llm-failed"
+    ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"LLM request failed."}]}}));\n`
     : mode === "bad-ack"
     ? `#!/usr/bin/env node\nconsole.log(JSON.stringify({status:"ok",runId:"fake-run",result:{payloads:[{text:"runtime bridge final output without ack prefix"}]}}));\n`
     : mode === "embedded-ack"
@@ -3146,6 +3148,51 @@ LIMIT 1;`)[0];
     deliveryReceiptPresent: 0,
     dispatchId: semanticDispatchId
   });
+
+  const llmFailureAck = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "requires ack semantic continuation llm failure body",
+    workflowId: "workflow-message-flow-ack-llm-failure",
+    meetingId: "meeting-message-flow-ack-llm-failure",
+    requiresAck: true,
+    returnPolicy: "silent"
+  });
+  const llmFailureAckDispatchId = llmFailureAck.dispatches[0].dispatchId;
+  const llmFailureAckBin = await makeFakeOpenClaw(root, "fake-openclaw-llm-failure-ack.mjs", "inspect-ack");
+  const llmFailureAckDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: llmFailureAckDispatchId,
+    openclawBin: llmFailureAckBin,
+    reportDelivery: false
+  });
+  const llmFailureSemanticDispatchId = llmFailureAckDrain.results?.[0]?.semanticContinuation?.dispatchId;
+  assert.ok(llmFailureSemanticDispatchId);
+  const llmFailureBin = await makeFakeOpenClaw(root, "fake-openclaw-llm-failed.mjs", "llm-failed");
+  const llmFailureSemanticDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: llmFailureSemanticDispatchId,
+    openclawBin: llmFailureBin,
+    reportDelivery: false
+  });
+  assert.equal(llmFailureSemanticDrain.results?.[0]?.status, "failed");
+  assert.equal(llmFailureSemanticDrain.results?.[0]?.failureType, "incomplete_output");
+  const llmFailureFlow = sqliteJson(dbFile, `
+SELECT status, final_output_present AS finalOutputPresent, failure_type AS failureType, substr(last_error,1,80) AS lastError
+FROM message_flows
+WHERE flow_id='${llmFailureAck.dispatches[0].messageFlowId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(llmFailureFlow, {
+    status: "runtime_failed",
+    finalOutputPresent: 0,
+    failureType: "incomplete_output",
+    lastError: "OpenClaw returned incomplete output: LLM request failed."
+  });
+
   const listedByAckDispatch = await runAction(root, {
     action: "message_flow.list",
     dispatchId,

@@ -10537,8 +10537,11 @@ function messageFlowSourceChannel(input = {}, originalPayload = {}) {
 function messageFlowOutputIsFinal(text = "") {
   const value = String(text || "").trim();
   const lower = value.toLowerCase();
+  const firstLine = value.split(/\r?\n/, 1)[0].trim();
+  const requestFailedPlaceholder = /^(llm|model|runtime|agent) request failed(?:[\.:]\s*.*)?$/i;
   if (!value) return false;
   if (/^heartbeat_(ok|degraded)\b/i.test(value)) return true;
+  if (requestFailedPlaceholder.test(value) || requestFailedPlaceholder.test(firstLine)) return false;
   if (lower.startsWith("operation interrupted:")) return false;
   if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return false;
   return true;
@@ -15007,6 +15010,7 @@ async function runOpenClawDispatch(paths, row, input = {}) {
     const text = payloadTexts.join("\n\n").trim() || String(parsed.summary || "").trim();
     if (!text) throw new Error(`OpenClaw returned empty output: ${String(stderr || "").slice(0, 1000)}`);
     validateRuntimeAckOutput(text, ack);
+    if (!messageFlowOutputIsFinal(text)) throw new Error(`OpenClaw returned incomplete output: ${compactText(text, 500)}`);
     const completedAt = nowIso();
     const outputHash = textHash(text);
     const ingest = await meetingIngest(paths.root, {
