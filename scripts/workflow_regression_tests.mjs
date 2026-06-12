@@ -2653,6 +2653,7 @@ ORDER BY status;`);
     canReceiveDispatch: true,
     executionAdapter: "openclaw"
   });
+  const tickStartedAt = Date.now();
   const tick = await runAction(root, {
     action: "workflow.control_loop.tick",
     jobLimit: 1,
@@ -3521,9 +3522,9 @@ async function testControlLoopDrainsMessageFlowRuntimes() {
   });
   const dispatchId = sent.dispatches[0].dispatchId;
   const successBin = await makeFakeOpenClaw(root, "fake-openclaw-control-loop-success.mjs", "success");
+  const tickStartedAt = Date.now();
   const tick = await runAction(root, {
     action: "workflow.control_loop.tick",
-    runtimes: "hermers",
     jobLimit: 1,
     drainQueued: true,
     autoDispatch: false,
@@ -3534,6 +3535,13 @@ async function testControlLoopDrainsMessageFlowRuntimes() {
   });
   assert.equal(tick.claimedJobs?.[0]?.jobType, "runtime_drain");
   assert.equal(tick.jobResults?.[0]?.result?.results?.[0]?.dispatchId, dispatchId);
+  const preciseDrainJob = sqliteJson(path.join(root, "tracking.db"), `
+SELECT payload_json AS payloadJson
+FROM control_loop_jobs
+WHERE dedupe_key='runtime_drain:openclaw:${dispatchId}'
+LIMIT 1;`)[0];
+  assert.equal(JSON.parse(preciseDrainJob.payloadJson).timeoutSeconds, 300);
+  assert.equal(Date.parse(tick.claimedJobs?.[0]?.leaseUntil || "") - tickStartedAt >= 300_000, true);
   const row = sqliteJson(path.join(root, "tracking.db"), `
 SELECT d.status AS dispatchStatus, mf.status AS flowStatus, mf.final_output_present AS finalOutputPresent
 FROM mixed_meeting_dispatches d
@@ -3545,6 +3553,77 @@ LIMIT 1;`)[0];
     flowStatus: "runtime_completed",
     finalOutputPresent: 1
   });
+
+  const generic = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "message_flow generic control-loop openclaw drain body",
+    workflowId: "workflow-message-flow-openclaw-generic-drain",
+    meetingId: "meeting-message-flow-openclaw-generic-drain",
+    returnPolicy: "silent"
+  });
+  const genericDispatchId = generic.dispatches[0].dispatchId;
+  const normalDispatch = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-message-flow-openclaw-generic-drain",
+    workflowId: "workflow-message-flow-openclaw-generic-drain",
+    runtime: "openclaw",
+    agentId: "main",
+    dispatchType: "workflow_task",
+    prompt: "normal openclaw workflow task should keep short generic drain timeout",
+    priority: "high",
+    maxAttempts: 1
+  });
+  const normalDispatchId = normalDispatch.dispatchId;
+  const genericSuccessBin = await makeFakeOpenClaw(root, "fake-openclaw-control-loop-generic-success.mjs", "success");
+  const genericTick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    openclawBin: genericSuccessBin
+  });
+  assert.equal(genericTick.claimedJobs?.[0]?.jobType, "runtime_drain");
+  assert.equal(genericTick.jobResults?.[0]?.result?.results?.[0]?.dispatchId, normalDispatchId);
+  const genericDrainJob = sqliteJson(path.join(root, "tracking.db"), `
+SELECT payload_json AS payloadJson
+FROM control_loop_jobs
+WHERE dedupe_key='runtime_drain:openclaw'
+LIMIT 1;`)[0];
+  const genericPayload = JSON.parse(genericDrainJob.payloadJson);
+  assert.equal(genericPayload.timeoutSeconds, 45);
+  assert.deepEqual(genericPayload.excludeDispatchTypes, ["message_flow_send", "message_flow_semantic"]);
+  const genericMessageFlowRow = sqliteJson(path.join(root, "tracking.db"), `
+SELECT status
+FROM mixed_meeting_dispatches
+WHERE dispatch_id='${genericDispatchId}'
+LIMIT 1;`)[0];
+  assert.equal(genericMessageFlowRow.status, "queued");
+  const preciseGenericTickStartedAt = Date.now();
+  const preciseGenericTick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    openclawBin: genericSuccessBin
+  });
+  assert.equal(preciseGenericTick.claimedJobs?.[0]?.jobType, "runtime_drain");
+  assert.equal(preciseGenericTick.jobResults?.[0]?.result?.results?.[0]?.dispatchId, genericDispatchId);
+  const preciseGenericDrainJob = sqliteJson(path.join(root, "tracking.db"), `
+SELECT payload_json AS payloadJson
+FROM control_loop_jobs
+WHERE dedupe_key='runtime_drain:openclaw:${genericDispatchId}'
+LIMIT 1;`)[0];
+  assert.equal(JSON.parse(preciseGenericDrainJob.payloadJson).timeoutSeconds, 300);
+  assert.equal(Date.parse(preciseGenericTick.claimedJobs?.[0]?.leaseUntil || "") - preciseGenericTickStartedAt >= 300_000, true);
 
   await runAction(root, {
     action: "runtime.agent.upsert",
@@ -3611,7 +3690,7 @@ LIMIT 1;`)[0];
     canReceiveDispatch: true,
     workflowIngressAdapter: "local_codex_inbox"
   });
-  await runAction(starvationRoot, {
+  const configured = await runAction(starvationRoot, {
     action: "workflow.message_flow.send",
     fromAgent: "tester",
     fromRuntime: "local_codex",
@@ -3621,6 +3700,7 @@ LIMIT 1;`)[0];
     meetingId: "meeting-message-flow-precise-window",
     returnPolicy: "silent"
   });
+  const configuredDispatchId = configured.dispatches[0].dispatchId;
   const unconfigured = await runAction(starvationRoot, {
     action: "workflow.message_flow.send",
     fromAgent: "cat_body",
@@ -3645,7 +3725,21 @@ LIMIT 1;`)[0];
     createHumanGateInbox: false,
     openclawBin: starvationBin
   });
-  assert.equal(Boolean(starvationTick.seededJobs?.some((job) => job.dedupeKey === `runtime_drain:local_codex:${unconfiguredDispatchId}`)), true);
+  assert.equal(Boolean(starvationTick.seededJobs?.some((job) => job.dedupeKey === `runtime_drain:openclaw:${configuredDispatchId}`)), true);
+  assert.equal(starvationTick.jobResults?.[0]?.result?.results?.[0]?.dispatchId, configuredDispatchId);
+  const followupTick = await runAction(starvationRoot, {
+    action: "workflow.control_loop.tick",
+    runtimes: "openclaw",
+    runtimeLimit: 1,
+    jobLimit: 1,
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    openclawBin: starvationBin
+  });
+  assert.equal(Boolean(followupTick.seededJobs?.some((job) => job.dedupeKey === `runtime_drain:local_codex:${unconfiguredDispatchId}`)), true);
 }
 
 async function testControlLoopAutoDiscoversQueuedDispatchRuntimes() {

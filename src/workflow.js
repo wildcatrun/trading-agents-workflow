@@ -15198,6 +15198,8 @@ export async function runtimeBridgeDrain(rootDir, input = {}) {
   const dryRun = Boolean(input.dryRun || input.dry_run);
   const dispatchId = String(input.dispatchId || input.dispatch_id || "").trim();
   const dispatchFilter = dispatchId ? `AND d.dispatch_id=${sqlValue(dispatchId)}` : "";
+  const excludeDispatchTypes = toList(input.excludeDispatchTypes || input.exclude_dispatch_types).map((item) => String(item || "").trim()).filter(Boolean);
+  const excludeDispatchTypeFilter = excludeDispatchTypes.length ? `AND d.dispatch_type NOT IN (${sqlStringList(excludeDispatchTypes)})` : "";
   const hermersModes = runtime === "hermers" ? await loadHermersProfileModes(input) : null;
   const rows = await sqlite(paths.dbFile, `
 SELECT d.*, a.agent_key AS registry_agent_key, a.runtime AS registry_runtime, a.status AS registry_status, a.display_name, a.role, a.endpoint_ref, a.platform, a.execution_adapter, a.im_ingress_owner, a.im_ingress_adapter, a.workflow_ingress_adapter, a.can_receive_dispatch
@@ -15205,6 +15207,7 @@ FROM mixed_meeting_dispatches d
 LEFT JOIN runtime_agents a ON a.agent_key=d.agent_key
 WHERE d.status='queued' AND d.runtime=${sqlValue(runtime)}
   ${dispatchFilter}
+  ${excludeDispatchTypeFilter}
   AND (d.next_retry_at IS NULL OR d.next_retry_at='' OR d.next_retry_at <= ${sqlValue(nowIso())})
 ORDER BY
   CASE d.priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
@@ -17661,6 +17664,17 @@ function controlLoopTimeoutSeconds(input = {}) {
   return Math.max(5, Math.min(900, Number(input.timeoutSeconds || input.timeout_seconds || 45)));
 }
 
+function controlLoopRuntimeDrainTimeoutSeconds(dispatchType = "", runtime = "", input = {}) {
+  const requested = input.timeoutSeconds ?? input.timeout_seconds;
+  if (requested !== undefined && requested !== null && requested !== "") return controlLoopTimeoutSeconds(input);
+  const type = String(dispatchType || "").trim();
+  const normalizedRuntime = normalizeKnownRuntime(runtime);
+  if (normalizedRuntime === "openclaw" && ["message_flow_send", "message_flow_semantic"].includes(type)) {
+    return DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS;
+  }
+  return controlLoopTimeoutSeconds(input);
+}
+
 function controlLoopWorkflowSuperviseCooldownMs(input = {}, status = "") {
   const defaultIdleCooldownMs = 5 * 60_000;
   const idleValue = input.idleWorkflowSuperviseCooldownMs
@@ -17675,9 +17689,12 @@ function controlLoopWorkflowSuperviseCooldownMs(input = {}, status = "") {
   return Math.min(24 * 3600_000, Math.max(0, number));
 }
 
-function controlLoopJobLeaseMs(input = {}) {
+function controlLoopJobLeaseMs(input = {}, job = null) {
   const requested = Math.max(10_000, Math.min(60 * 60_000, Number(input.jobLeaseMs || input.job_lease_ms || 120_000)));
-  const minSafe = Math.max(controlLoopTickBudgetMs(input) + 30_000, (controlLoopTimeoutSeconds(input) + 30) * 1000);
+  const payload = job ? parseJsonValue(job.payload_json || job.payload, {}) : {};
+  const payloadTimeoutSeconds = Number(payload.timeoutSeconds || payload.timeout_seconds || 0);
+  const timeoutSeconds = Math.max(controlLoopTimeoutSeconds(input), Number.isFinite(payloadTimeoutSeconds) ? payloadTimeoutSeconds : 0);
+  const minSafe = Math.max(controlLoopTickBudgetMs(input) + 30_000, (timeoutSeconds + 30) * 1000);
   return Math.max(requested, minSafe);
 }
 
@@ -17864,29 +17881,38 @@ ORDER BY runtime;`, { json: true });
       }
     }
     const runtimes = [...configuredRuntimes];
-    const preciseRuntimeExclusion = runtimes.length ? `AND runtime NOT IN (${sqlStringList(runtimes)})` : "";
+    const preciseExcludedRuntimes = runtimes.filter((runtime) => runtime !== "openclaw");
+    const preciseRuntimeExclusion = preciseExcludedRuntimes.length ? `AND runtime NOT IN (${sqlStringList(preciseExcludedRuntimes)})` : "";
     for (const runtime of runtimes) {
+      const genericDispatchTypeFilter = runtime === "openclaw" ? "AND dispatch_type NOT IN ('message_flow_send','message_flow_semantic')" : "";
       const rows = await sqlite(paths.dbFile, `
 SELECT COUNT(*) AS count
 FROM mixed_meeting_dispatches
 WHERE status='queued' AND runtime=${sqlValue(runtime)}
+  ${genericDispatchTypeFilter}
   AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())});`, { json: true });
       if (Number(rows[0]?.count || 0) <= 0) continue;
       const hasFlash = Number((await sqlite(paths.dbFile, `
 SELECT COUNT(*) AS count
 FROM mixed_meeting_dispatches
 WHERE status='queued' AND runtime=${sqlValue(runtime)} AND priority='flash'
+  ${genericDispatchTypeFilter}
   AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())});`, { json: true }))[0]?.count || 0) > 0;
       seeded.push(await enqueueControlLoopJob(paths, {
         jobType: "runtime_drain",
         dedupeKey: `runtime_drain:${runtime}`,
         priority: hasFlash ? "flash" : "high",
         runtime,
-        payload: { runtime, limit: runtimeLimit, timeoutSeconds }
+        payload: {
+          runtime,
+          limit: runtimeLimit,
+          timeoutSeconds,
+          ...(runtime === "openclaw" ? { excludeDispatchTypes: ["message_flow_send", "message_flow_semantic"] } : {})
+        }
       }));
     }
     const messageFlowDispatchRows = await sqlite(paths.dbFile, `
-SELECT dispatch_id, runtime, priority
+SELECT dispatch_id, runtime, priority, dispatch_type
 FROM mixed_meeting_dispatches
 WHERE status='queued'
   AND dispatch_type IN ('message_flow_send','message_flow_semantic')
@@ -17904,7 +17930,12 @@ LIMIT ${runtimeLimit};`, { json: true });
         dedupeKey: `runtime_drain:${runtime}:${row.dispatch_id}`,
         priority: row.priority || "high",
         runtime,
-        payload: { runtime, dispatchId: row.dispatch_id, limit: 1, timeoutSeconds }
+        payload: {
+          runtime,
+          dispatchId: row.dispatch_id,
+          limit: 1,
+          timeoutSeconds: controlLoopRuntimeDrainTimeoutSeconds(row.dispatch_type, runtime, input)
+        }
       }));
     }
   }
@@ -17975,9 +18006,7 @@ SELECT
 async function claimControlLoopJobs(paths, input = {}) {
   const owner = String(input.claimOwner || input.claim_owner || input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}:${safeId("claim")}`).trim();
   const limit = Math.max(1, Math.min(20, Number(input.jobLimit || input.job_limit || 4)));
-  const leaseMs = controlLoopJobLeaseMs(input);
   const now = nowIso();
-  const leaseUntil = new Date(Date.now() + leaseMs).toISOString();
   const rows = await sqlite(paths.dbFile, `
 SELECT *
 FROM control_loop_jobs
@@ -17992,12 +18021,14 @@ ORDER BY
 LIMIT ${limit};`, { json: true });
   const claimed = [];
   for (const row of rows) {
+    const rowLeaseMs = controlLoopJobLeaseMs(input, row);
+    const rowLeaseUntil = new Date(Date.now() + rowLeaseMs).toISOString();
     const changed = await sqliteChangeCount(paths.dbFile, `
 UPDATE control_loop_jobs
 SET status='running',
     attempt=attempt+1,
     lease_owner=${sqlValue(owner)},
-    lease_until=${sqlValue(leaseUntil)},
+    lease_until=${sqlValue(rowLeaseUntil)},
     updated_at=${sqlValue(now)}
 WHERE job_id=${sqlValue(row.job_id)}
   AND (
@@ -18315,6 +18346,7 @@ async function runControlLoopJob(rootDir, paths, job, input = {}) {
       workflowRootDir: paths.root,
       runtime: payload.runtime || job.runtime,
       dispatchId: payload.dispatchId || payload.dispatch_id || input.dispatchId || input.dispatch_id || "",
+      excludeDispatchTypes: payload.excludeDispatchTypes || payload.exclude_dispatch_types || input.excludeDispatchTypes || input.exclude_dispatch_types,
       limit,
       timeoutSeconds: payload.timeoutSeconds || payload.timeout_seconds || input.timeoutSeconds || input.timeout_seconds || 45,
       dryRun: false
@@ -18423,7 +18455,8 @@ export async function workflowControlLoopTick(rootDir, input = {}) {
           priority: job.priority,
           workflowId: job.workflow_id || "",
           runtime: job.runtime || "",
-          attempt: job.attempt
+          attempt: job.attempt,
+          leaseUntil: job.lease_until || ""
         };
         result.claimedJobs.push(jobSummary);
         await appendControlLoopEvent(paths, tickId, "job_started", jobSummary);
