@@ -6383,7 +6383,14 @@ async function testWorkflowReadinessRecoveredRuntimeFailures() {
   const earlyFailedAt = ts(-90_000);
   const lowerAttemptFailedAt = ts(-60_000);
   const lowerAttemptAckedAt = ts(-30_000);
+  const diagnosticFailedAt = ts(-20_000);
+  const smokeFailedAt = ts(-10_000);
+  const malformedFailedAt = ts(-5_000);
   sqliteExec(dbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES
+  ('dispatch-diagnostic-explicit', 'workflow-local-diagnostic-explicit', 'workflow-local-diagnostic-explicit', 'trace-diagnostic-explicit', 'idem-diagnostic-explicit', 'hermers', 'cat_eyes', 'hermers:cat_eyes', 'message_flow_send', 'failed', 'normal', 1, 1, '', 'runtime_timeout', 'expected diagnostic failure', 'Subject: readiness diagnostic', '{"payload":{"readiness":{"ignore":true},"messageType":"internal_notice","subject":"readiness diagnostic","source":{"senderId":"local_codex","sourceSystem":"workflow.message_flow.send"}}}', 'local_codex:local_codex', '${ts(-30_000)}', '${ts(-25_000)}', '', '', '${smokeFailedAt}'),
+  ('dispatch-smoke-not-explicit', 'workflow-local-smoke-negative', 'workflow-local-smoke-negative', 'trace-smoke-negative', 'idem-smoke-negative', 'hermers', 'cat_eyes', 'hermers:cat_eyes', 'message_flow_send', 'failed', 'normal', 1, 1, '', 'runtime_timeout', 'real failure with smoke text', 'Subject: readiness smoke\\n\\n用于验证真实失败仍然计数', '{"payload":{"messageType":"internal_notice","subject":"readiness smoke","source":{"senderId":"local_codex","sourceSystem":"workflow.message_flow.send"}}}', 'local_codex:local_codex', '${ts(-30_000)}', '${ts(-25_000)}', '', '', '${smokeFailedAt}');
 INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
 VALUES
   ('runtime-recovered-failed', 'dispatch-runtime-recovered', '', '', 'trace-runtime-recovered', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'acp_unavailable', 1, '${ts(-6 * 60_000)}', '${recoveredFailedAt}', 1000, '', '', '', 'failed before retry', '{}'),
@@ -6392,7 +6399,11 @@ VALUES
   ('runtime-early-acked', 'dispatch-runtime-early-ack', '', '', 'trace-runtime-early-ack', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 1, '${ts(-3 * 60_000)}', '${earlyAckedAt}', 1000, '', '', '', '', '{}'),
   ('runtime-early-failed', 'dispatch-runtime-early-ack', '', '', 'trace-runtime-early-ack', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 1, '${earlyAckedAt}', '${earlyFailedAt}', 1000, '', '', '', 'ack completed before failure', '{}'),
   ('runtime-lower-attempt-failed', 'dispatch-runtime-lower-attempt', '', '', 'trace-runtime-lower-attempt', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 2, '${ts(-2 * 60_000)}', '${lowerAttemptFailedAt}', 1000, '', '', '', 'higher attempt failed', '{}'),
-  ('runtime-lower-attempt-acked', 'dispatch-runtime-lower-attempt', '', '', 'trace-runtime-lower-attempt', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 1, '${lowerAttemptFailedAt}', '${lowerAttemptAckedAt}', 1000, '', '', '', '', '{}');
+  ('runtime-lower-attempt-acked', 'dispatch-runtime-lower-attempt', '', '', 'trace-runtime-lower-attempt', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'acked', '', 1, '${lowerAttemptFailedAt}', '${lowerAttemptAckedAt}', 1000, '', '', '', '', '{}'),
+  ('runtime-diagnostic-payload-failed', 'dispatch-diagnostic-payload', '', '', 'trace-diagnostic-payload', 'hermers', 'cat_eyes', 'hermes_acp', '', '', '', 'failed', 'ack_contract_violation', 1, '${ts(-25_000)}', '${diagnosticFailedAt}', 1000, '', '', '', 'expected diagnostic failure', '{"readiness":{"ignore":true,"reason":"expected fail-closed smoke"}}'),
+  ('runtime-diagnostic-explicit-failed', 'dispatch-diagnostic-explicit', 'workflow-local-diagnostic-explicit', 'workflow-local-diagnostic-explicit', 'trace-diagnostic-explicit', 'hermers', 'cat_eyes', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 1, '${ts(-15_000)}', '${smokeFailedAt}', 1000, '', '', '', 'expected explicit diagnostic failure', '{}'),
+  ('runtime-smoke-not-explicit-failed', 'dispatch-smoke-not-explicit', 'workflow-local-smoke-negative', 'workflow-local-smoke-negative', 'trace-smoke-negative', 'hermers', 'cat_eyes', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 1, '${ts(-15_000)}', '${smokeFailedAt}', 1000, '', '', '', 'real failure with smoke text', '{}'),
+  ('runtime-malformed-payload-failed', 'dispatch-malformed-payload', '', '', 'trace-malformed-payload', 'hermers', 'cat_eyes', 'hermes_acp', '', '', '', 'failed', 'runtime_timeout', 1, '${ts(-10_000)}', '${malformedFailedAt}', 1000, '', '', '', 'malformed payload should not break readiness', 'not-json');
 `);
 
   const readiness = await runAction(root, {
@@ -6400,7 +6411,8 @@ VALUES
     persistReadinessSnapshot: false
   });
   const recentFailure = readiness.findings.find((finding) => finding.key === "recent_runtime_failures");
-  assert.equal(recentFailure?.count, 3);
+  assert.equal(recentFailure?.count, 5);
+  assert.equal(readiness.planes.runtime.recentRuntime.diagnostic_ignored, 2);
 }
 
 async function testStaleDispatchReconcileSyncsMessageFlows() {

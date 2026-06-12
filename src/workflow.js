@@ -3620,9 +3620,10 @@ SELECT
   SUM(CASE WHEN updated_at < ${sqlValue(new Date(Date.now() - 3 * 86400000).toISOString())} THEN 1 ELSE 0 END) AS stale
 FROM tracking_states;`, { json: true });
   const recentRuntimeRows = await sqlite(paths.dbFile, `
-SELECT
-  SUM(CASE WHEN rr.status='failed'
-    AND NOT EXISTS (
+WITH recent AS (
+  SELECT
+    rr.*,
+    CASE WHEN EXISTS (
       SELECT 1
       FROM runtime_runs recovered
       WHERE recovered.dispatch_id=rr.dispatch_id
@@ -3632,12 +3633,33 @@ SELECT
         AND recovered.completed_at IS NOT NULL
         AND recovered.completed_at != ''
         AND recovered.completed_at >= COALESCE(NULLIF(rr.completed_at,''), rr.started_at)
-    )
-    THEN 1 ELSE 0 END) AS failed,
-  SUM(CASE WHEN rr.status='retry_scheduled' THEN 1 ELSE 0 END) AS retry_scheduled,
+    ) THEN 1 ELSE 0 END AS recovered_by_dispatch_ack,
+    CASE WHEN (
+      json_extract(CASE WHEN json_valid(rr.payload_json) THEN rr.payload_json ELSE '{}' END, '$.readiness.ignore') = 1
+      OR json_extract(CASE WHEN json_valid(rr.payload_json) THEN rr.payload_json ELSE '{}' END, '$.readinessIgnore') = 1
+      OR json_extract(CASE WHEN json_valid(rr.payload_json) THEN rr.payload_json ELSE '{}' END, '$.diagnostic.expectedFailure') = 1
+      OR EXISTS (
+        SELECT 1
+        FROM mixed_meeting_dispatches d
+        WHERE d.dispatch_id=rr.dispatch_id
+          AND (
+            json_extract(CASE WHEN json_valid(d.payload_json) THEN d.payload_json ELSE '{}' END, '$.readiness.ignore') = 1
+            OR json_extract(CASE WHEN json_valid(d.payload_json) THEN d.payload_json ELSE '{}' END, '$.readinessIgnore') = 1
+            OR json_extract(CASE WHEN json_valid(d.payload_json) THEN d.payload_json ELSE '{}' END, '$.payload.readiness.ignore') = 1
+            OR json_extract(CASE WHEN json_valid(d.payload_json) THEN d.payload_json ELSE '{}' END, '$.payload.diagnostic.expectedFailure') = 1
+          )
+      )
+    ) THEN 1 ELSE 0 END AS diagnostic_ignored
+  FROM runtime_runs rr
+  WHERE rr.started_at >= ${sqlValue(new Date(Date.now() - 6 * 3600000).toISOString())}
+)
+SELECT
+  SUM(CASE WHEN status='failed' AND recovered_by_dispatch_ack=0 AND diagnostic_ignored=0 THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN status='failed' AND recovered_by_dispatch_ack=0 AND diagnostic_ignored=1 THEN 1 ELSE 0 END) AS diagnostic_ignored,
+  SUM(CASE WHEN status='failed' AND recovered_by_dispatch_ack=1 THEN 1 ELSE 0 END) AS recovered_by_dispatch_ack,
+  SUM(CASE WHEN status='retry_scheduled' THEN 1 ELSE 0 END) AS retry_scheduled,
   COUNT(*) AS total
-FROM runtime_runs rr
-WHERE started_at >= ${sqlValue(new Date(Date.now() - 6 * 3600000).toISOString())};`, { json: true });
+FROM recent;`, { json: true });
   const staleStartedRuntimeAfterMs = Math.max(5 * 60_000, Math.min(24 * 3600_000, Number(input.staleRuntimeRunAfterMs || input.stale_runtime_run_after_ms || 30 * 60_000)));
   const staleStartedRuntimeCutoff = new Date(Date.now() - staleStartedRuntimeAfterMs).toISOString();
   const staleStartedRuntimeRows = await sqlite(paths.dbFile, `
