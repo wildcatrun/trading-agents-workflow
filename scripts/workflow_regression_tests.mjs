@@ -6624,6 +6624,7 @@ WHERE flow_id='flow-terminal-failed-only';
   assert.equal(malformedPayloadHealth.lanes.messageFlow.failed, 1);
   assert.equal(malformedPayloadHealth.lanes.messageFlow.archivedFailed, 0);
 
+  const recentRuntimeAt = new Date().toISOString();
   sqliteExec(dbFile, `
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
 VALUES ('incident-terminal-failed-closeout', 'resolved', 'normal', '["dispatch","message_flow","runtime"]', 'terminal failed archive closeout', 'workflow', 'terminal failures are covered by approved closeout', 'covered by resolved closeout evidence', 'archive health blocker only', 'remove archive marker if evidence is invalid', 'Human Gate approved closeout', '[]', '{"workflowId":"wf-terminal-failed-dispatch","closeoutResolution":{"schemaVersion":"workflow_incident_closeout_resolution.v1","humanGateId":"hgate-terminal-failed-closeout","artifactRef":"bridge/incident-closeout/terminal-failed-closeout.json","buttonId":"hgatebtn-terminal-failed-closeout","optionId":"A"}}', '2026-06-12T00:00:00.000Z', '', '2026-06-12T00:00:03.000Z', '2026-06-12T00:00:03.000Z');
@@ -6631,12 +6632,15 @@ UPDATE message_flows
 SET payload_json='{"healthArchive":{"status":"archived","reason":"covered by resolved incident closeout","archivedAt":"2026-06-12T00:00:03.000Z","flowId":"flow-terminal-failed-only","incidentId":"incident-terminal-failed-closeout","humanGateId":"hgate-terminal-failed-closeout","artifactRef":"bridge/incident-closeout/terminal-failed-closeout.json"}}'
 WHERE flow_id='flow-terminal-failed-only';
 UPDATE runtime_runs
-SET payload_json='{"healthArchive":{"status":"archived","reason":"covered by resolved incident closeout","archivedAt":"2026-06-12T00:00:03.000Z","runtimeRunId":"runtime-terminal-failed-only","incidentId":"incident-terminal-failed-closeout","humanGateId":"hgate-terminal-failed-closeout","artifactRef":"bridge/incident-closeout/terminal-failed-closeout.json"}}'
+SET started_at='${recentRuntimeAt}',
+    completed_at='${recentRuntimeAt}',
+    payload_json='{"healthArchive":{"status":"archived","reason":"covered by resolved incident closeout","archivedAt":"2026-06-12T00:00:03.000Z","runtimeRunId":"runtime-terminal-failed-only","incidentId":"incident-terminal-failed-closeout","humanGateId":"hgate-terminal-failed-closeout","artifactRef":"bridge/incident-closeout/terminal-failed-closeout.json"}}'
 WHERE runtime_run_id='runtime-terminal-failed-only';
 `);
   const archivedHealth = await runAction(root, { action: "workflow.health" });
   assert.equal(archivedHealth.schemaVersion, "workflow_health.v1");
   assert.equal(archivedHealth.status, "ready");
+  assert.equal(archivedHealth.readiness.findings.some((item) => item.key === "recent_runtime_failures"), false);
   assert.equal(archivedHealth.lanes.dispatch.failed, 0);
   assert.equal(archivedHealth.lanes.dispatch.archivedFailed, 1);
   assert.equal(archivedHealth.lanes.messageFlow.failed, 0);

@@ -3647,16 +3647,18 @@ WITH recent AS (
             OR json_extract(CASE WHEN json_valid(d.payload_json) THEN d.payload_json ELSE '{}' END, '$.readinessIgnore') = 1
             OR json_extract(CASE WHEN json_valid(d.payload_json) THEN d.payload_json ELSE '{}' END, '$.payload.readiness.ignore') = 1
             OR json_extract(CASE WHEN json_valid(d.payload_json) THEN d.payload_json ELSE '{}' END, '$.payload.diagnostic.expectedFailure') = 1
-          )
+        )
       )
-    ) THEN 1 ELSE 0 END AS diagnostic_ignored
+    ) THEN 1 ELSE 0 END AS diagnostic_ignored,
+    CASE WHEN (${archivedTerminalFailureSql("rr", [{ archiveKey: "runtimeRunId", column: "runtime_run_id" }, { archiveKey: "runId", column: "runtime_run_id" }, { archiveKey: "dispatchId", column: "dispatch_id" }, { archiveKey: "refId", column: "runtime_run_id" }])}) THEN 1 ELSE 0 END AS archived_terminal_failure
   FROM runtime_runs rr
   WHERE rr.started_at >= ${sqlValue(new Date(Date.now() - 6 * 3600000).toISOString())}
 )
 SELECT
-  SUM(CASE WHEN status='failed' AND recovered_by_dispatch_ack=0 AND diagnostic_ignored=0 THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN status='failed' AND recovered_by_dispatch_ack=0 AND diagnostic_ignored=0 AND archived_terminal_failure=0 THEN 1 ELSE 0 END) AS failed,
   SUM(CASE WHEN status='failed' AND recovered_by_dispatch_ack=0 AND diagnostic_ignored=1 THEN 1 ELSE 0 END) AS diagnostic_ignored,
   SUM(CASE WHEN status='failed' AND recovered_by_dispatch_ack=1 THEN 1 ELSE 0 END) AS recovered_by_dispatch_ack,
+  SUM(CASE WHEN status='failed' AND archived_terminal_failure=1 THEN 1 ELSE 0 END) AS archived_failed,
   SUM(CASE WHEN status='retry_scheduled' THEN 1 ELSE 0 END) AS retry_scheduled,
   COUNT(*) AS total
 FROM recent;`, { json: true });
