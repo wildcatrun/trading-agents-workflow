@@ -269,6 +269,39 @@ async function testHumanGateLanguageAndResume() {
     /human_gate_requires_chinese_plan_details/
   );
 
+  const feedbackPendingRoot = await tempRoot("hgate-feedback-pending-replay");
+  const feedbackPendingRequest = await requestHumanGate(feedbackPendingRoot);
+  const feedbackPendingDbFile = path.join(feedbackPendingRoot, "tracking.db");
+  const feedbackPendingButton = feedbackPendingRequest.buttons[0];
+  const pendingSelection = await runAction(feedbackPendingRoot, {
+    action: "human_gate.button_callback",
+    callbackData: `tawhg:${feedbackPendingButton.callbackToken}`
+  });
+  assert.equal(pendingSelection.status, "feedback_pending");
+  const feedbackPendingReplay = await requestHumanGate(feedbackPendingRoot);
+  assert.equal(feedbackPendingReplay.humanGateId, feedbackPendingRequest.humanGateId);
+  assert.equal(feedbackPendingReplay.status, "feedback_pending");
+  assert.equal(feedbackPendingReplay.deliveryRequired, false);
+  assert.equal(sqliteCount(feedbackPendingDbFile, "human_gate_buttons", `human_gate_id='${feedbackPendingRequest.humanGateId}' AND status='active'`), 0);
+  const feedbackPendingOutboxBefore = sqliteJson(feedbackPendingDbFile, `
+SELECT payload_json AS payloadJson
+FROM telegram_outbox
+WHERE outbox_id='${feedbackPendingRequest.telegramOutbox.outboxId}'
+LIMIT 1;`)[0];
+  assert.equal(JSON.parse(feedbackPendingOutboxBefore.payloadJson).buttons.length, 6);
+  await runAction(feedbackPendingRoot, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    deliverOutbox: false,
+    createHumanGateInbox: false
+  });
+  const feedbackPendingOutboxAfter = sqliteJson(feedbackPendingDbFile, `
+SELECT payload_json AS payloadJson
+FROM telegram_outbox
+WHERE outbox_id='${feedbackPendingRequest.telegramOutbox.outboxId}'
+LIMIT 1;`)[0];
+  assert.equal(JSON.parse(feedbackPendingOutboxAfter.payloadJson).buttons.length, 6);
+
   const root = await tempRoot("hgate-resume");
   const request = await requestHumanGate(root);
   assert.equal(request.status, "pending");
@@ -293,6 +326,15 @@ async function testHumanGateLanguageAndResume() {
   assert.equal(resumed.status, "approved");
   assert.equal(resumed.buttonId, selected.buttonId);
   assert.equal(resumed.humanGateId, request.humanGateId);
+  const approvedRecord = sqliteJson(dbFile, `
+SELECT status, payload_json AS payloadJson, hash, path
+FROM protocol_objects
+WHERE object_id='${request.humanGateId}' AND object_type='human_gate_record'
+LIMIT 1;`)[0];
+  assert.equal(approvedRecord.status, "approved");
+  assert.ok(approvedRecord.hash);
+  assert.ok(approvedRecord.path.endsWith(`${request.humanGateId}.json`));
+  assert.equal(JSON.parse(approvedRecord.payloadJson).payload.humanGateFeedback.flashcatOriginalWords, "闪电猫原话：批准 A，继续 debug。");
 
   const second = await runAction(root, {
     action: "human_gate.button_callback",
@@ -309,6 +351,12 @@ async function testHumanGateLanguageAndResume() {
   assert.equal(idempotent.status, "selected");
   assert.equal(sqliteCount(dbFile, "control_loop_jobs", "job_type='meeting_dispatch_retry'"), retryJobsBefore);
 
+  const replay = await requestHumanGate(root);
+  assert.equal(replay.humanGateId, request.humanGateId);
+  assert.equal(replay.status, "approved");
+  assert.equal(replay.alreadySubmitted, true);
+  assert.equal(replay.deliveryRequired, false);
+
   const counts = sqliteJson(path.join(root, "tracking.db"), `
 SELECT status, COUNT(*) AS count
 FROM human_gate_buttons
@@ -318,6 +366,30 @@ ORDER BY status;`);
     { status: "selected", count: 1 },
     { status: "superseded", count: 5 }
   ]);
+
+  const outboxBeforeDriftEnsure = sqliteJson(dbFile, `
+SELECT payload_json AS payloadJson
+FROM telegram_outbox
+WHERE outbox_id='${request.telegramOutbox.outboxId}'
+LIMIT 1;`)[0];
+  assert.equal(JSON.parse(outboxBeforeDriftEnsure.payloadJson).buttons.length, 6);
+  sqliteExec(dbFile, `
+UPDATE protocol_objects
+SET status='pending'
+WHERE object_id='${request.humanGateId}' AND object_type='human_gate_record';`);
+  await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    deliverOutbox: false,
+    createHumanGateInbox: false
+  });
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${request.humanGateId}' AND status='active'`), 0);
+  const outboxAfterDriftEnsure = sqliteJson(dbFile, `
+SELECT payload_json AS payloadJson
+FROM telegram_outbox
+WHERE outbox_id='${request.telegramOutbox.outboxId}'
+LIMIT 1;`)[0];
+  assert.equal(JSON.parse(outboxAfterDriftEnsure.payloadJson).buttons.length, 6);
 }
 
 async function testHumanGateReadinessChecklist() {

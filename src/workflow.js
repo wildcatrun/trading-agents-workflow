@@ -8590,6 +8590,20 @@ ORDER BY created_at ASC;`, { json: true });
 }
 
 async function ensureHumanGateButtonSet(paths, row, payload = {}, body = {}, workflowId = "", meetingId = "") {
+  const lockedRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM human_gate_buttons
+WHERE human_gate_id=${sqlValue(row.object_id)} AND status IN ('feedback_pending','selected')
+ORDER BY updated_at DESC
+LIMIT 1;`, { json: true });
+  if (lockedRows[0]) {
+    return {
+      buttons: [humanGateButtonFromRow(lockedRows[0], paths.root)],
+      refreshed: false,
+      reason: `human_gate_${lockedRows[0].status}`,
+      audit: { ok: true, reason: "" }
+    };
+  }
   const desiredSpecs = humanGateButtonSpecs(row, payload, body);
   let buttons = (await sqlite(paths.dbFile, `
 SELECT *
@@ -8799,6 +8813,16 @@ WHERE outbox_id=${sqlValue(outboxToCancel.outbox_id)};`);
       continue;
     }
     const { buttons } = buttonSet;
+    if (buttonSet.reason === "human_gate_selected" || buttonSet.reason === "human_gate_feedback_pending") {
+      results.push({
+        humanGateId: row.object_id,
+        workflowId,
+        status: buttonSet.reason,
+        outboxId: existing?.outbox_id || "",
+        buttons: buttons.length
+      });
+      continue;
+    }
 
     const presentationInput = { ...input, title: "Human Gate 确认", text: summary };
     const { webApp, presentation, telegramReplyMarkup, text } = await humanGateTelegramArtifacts(presentationInput, buttons);
@@ -15746,6 +15770,12 @@ WHERE outbox_id=${sqlValue(outbox.outbox_id)};`);
 async function createHumanGateButtons(paths, input = {}) {
   const humanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
   if (!humanGateId) return [];
+  const lockedRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM human_gate_buttons
+WHERE human_gate_id=${sqlValue(humanGateId)} AND status IN ('feedback_pending','selected')
+ORDER BY updated_at DESC, created_at ASC;`, { json: true });
+  if (lockedRows.length) return lockedRows.map((buttonRow) => humanGateButtonFromRow(buttonRow, paths.root));
   const workflowId = String(input.workflowId || input.workflow_id || "").trim();
   const meetingId = String(input.meetingId || input.meeting_id || workflowId).trim();
   const createdBy = String(input.createdBy || input.created_by || input.from || "cat_claw").trim();
@@ -15949,6 +15979,7 @@ export async function humanGateRequest(rootDir, input) {
   const requestedHumanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
   const supersedeExisting = boolOption(input.supersedeExisting ?? input.supersede_existing ?? input.supersede ?? input.replaceExisting ?? input.replace_existing, false);
   const stageGateId = requestedHumanGateId || (supersedeExisting ? "" : `hgate.stage.${textHash(`${workflowId}:${gateType}:${stageKey}`).slice(0, 24)}`);
+  const directHumanGateId = stageGateId || requestedHumanGateId;
   const requestPayload = parseJsonValue(input.payload, input.payload || {});
   const buttonSpecs = humanGateButtonSpecs(
     { object_id: stageGateId, path: "" },
@@ -15965,6 +15996,50 @@ export async function humanGateRequest(rootDir, input) {
   }
   let gate = null;
   let supersededGate = null;
+  if (directHumanGateId) {
+    const existingGate = await humanGateRecordById(paths, directHumanGateId);
+    const lockedButtons = await sqlite(paths.dbFile, `
+SELECT *
+FROM human_gate_buttons
+WHERE human_gate_id=${sqlValue(directHumanGateId)} AND status IN ('feedback_pending','selected')
+ORDER BY updated_at DESC, created_at ASC;`, { json: true });
+    if (existingGate && !["pending", "superseded"].includes(existingGate.status)) {
+      const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM human_gate_buttons
+WHERE human_gate_id=${sqlValue(directHumanGateId)}
+ORDER BY created_at ASC;`, { json: true });
+      return {
+        meetingId,
+        workflowId,
+        humanGateId: directHumanGateId,
+        gateType,
+        stageKey,
+        reusedStageGate: true,
+        alreadySubmitted: true,
+        status: existingGate.status,
+        buttons: rows.map((buttonRow) => humanGateButtonFromRow(buttonRow, paths.root)),
+        deliveryRequired: false,
+        dbFile: paths.dbFile
+      };
+    }
+    if (lockedButtons.length) {
+      const selected = lockedButtons.find((row) => row.status === "selected") || lockedButtons[0];
+      return {
+        meetingId,
+        workflowId,
+        humanGateId: directHumanGateId,
+        gateType,
+        stageKey,
+        reusedStageGate: true,
+        alreadySubmitted: selected.status === "selected",
+        status: selected.status === "selected" ? selected.decision_status : "feedback_pending",
+        buttons: lockedButtons.map((buttonRow) => humanGateButtonFromRow(buttonRow, paths.root)),
+        deliveryRequired: false,
+        dbFile: paths.dbFile
+      };
+    }
+  }
   const stageMatch = await pendingHumanGateForStage(paths, { workflowId, gateType, stageKey, excludeHumanGateId: requestedHumanGateId });
   if (stageMatch?.row) {
     if (supersedeExisting) {
@@ -16188,15 +16263,24 @@ async function updateHumanGateRecordFeedback(paths, humanGateId, status, feedbac
   const history = Array.isArray(nestedPayload.humanGateFeedbackHistory) ? nestedPayload.humanGateFeedbackHistory.slice(-19) : [];
   const nextPayload = {
     ...recordPayload,
+    status,
     payload: {
       ...nestedPayload,
+      decisionAt: ["approved", "rejected", "paused", "terminated", "expired"].includes(status) ? updatedAt : nestedPayload.decisionAt || "",
+      decisionStatus: ["approved", "rejected", "paused", "terminated"].includes(status) ? status : nestedPayload.decisionStatus || "",
       humanGateFeedback: feedback,
       humanGateFeedbackHistory: [...history, feedback]
     }
   };
+  const hash = jsonHash(nextPayload);
+  const relPath = await writeJsonArtifact(paths.root, path.join(paths.protocolDir, "human_gate_record"), humanGateId, { ...nextPayload, hash });
   await sqlite(paths.dbFile, `
 UPDATE protocol_objects
-SET status=${sqlValue(status)}, payload_json=${sqlValue(JSON.stringify(nextPayload))}, updated_at=${sqlValue(updatedAt)}
+SET status=${sqlValue(status)},
+    path=${sqlValue(relPath)},
+    payload_json=${sqlValue(JSON.stringify(nextPayload))},
+    hash=${sqlValue(hash)},
+    updated_at=${sqlValue(updatedAt)}
 WHERE object_id=${sqlValue(humanGateId)} AND object_type='human_gate_record';`);
   return nextPayload;
 }
