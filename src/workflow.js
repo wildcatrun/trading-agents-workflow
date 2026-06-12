@@ -18317,13 +18317,24 @@ async function runControlLoopJob(rootDir, paths, job, input = {}) {
       const runtime = normalizeRuntime(dispatch.runtime || "");
       const dispatchId = String(dispatch.dispatchId || dispatch.dispatch_id || "").trim();
       if (!dispatchId || !RUNTIMES.has(runtime)) continue;
+      const dispatchRows = await sqlite(paths.dbFile, `
+SELECT dispatch_type
+FROM mixed_meeting_dispatches
+WHERE dispatch_id=${sqlValue(dispatchId)}
+LIMIT 1;`, { json: true });
+      const dispatchType = dispatch.dispatchType || dispatch.dispatch_type || dispatchRows[0]?.dispatch_type || "";
       enqueuedDrains.push(await enqueueControlLoopJob(paths, {
         jobType: "runtime_drain",
         dedupeKey: `runtime_drain:${runtime}:${dispatchId}`,
         priority: dispatch.priority || "high",
         runtime,
         workflowId,
-        payload: { runtime, dispatchId, limit: 1, timeoutSeconds: payload.timeoutSeconds || payload.timeout_seconds || input.timeoutSeconds || input.timeout_seconds || 45 }
+        payload: {
+          runtime,
+          dispatchId,
+          limit: 1,
+          timeoutSeconds: controlLoopRuntimeDrainTimeoutSeconds(dispatchType, runtime, { ...input, ...payload })
+        }
       }));
     }
     return {

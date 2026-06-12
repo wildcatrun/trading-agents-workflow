@@ -3892,7 +3892,8 @@ async function testControlLoopWorkflowSuperviseEnqueuesTargetedDrain() {
     deliverOutbox: false,
     ensureHumanGateRequests: false,
     createHumanGateInbox: false,
-    autoDispatch: true
+    autoDispatch: true,
+    timeoutSeconds: 30
   });
   const dispatchId = tick.jobResults?.[0]?.result?.enqueuedDrains?.[0]?.dedupeKey?.split(":").pop();
   assert.equal(tick.claimedJobs?.[0]?.jobType, "workflow_supervise");
@@ -3906,6 +3907,53 @@ async function testControlLoopWorkflowSuperviseEnqueuesTargetedDrain() {
   assert.equal(jobs[0].priority, "steer");
   assert.equal(jobs[0].runtime, "local_codex");
   assert.equal(JSON.parse(jobs[0].payload_json).limit, 1);
+  assert.equal(JSON.parse(jobs[0].payload_json).timeoutSeconds, 30);
+
+  const openclawRoot = await tempRoot("control-loop-supervise-openclaw-message-flow-targeted-drain");
+  await runAction(openclawRoot, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  await runAction(openclawRoot, {
+    action: "workflow.run.upsert",
+    workflowId: "workflow-supervise-openclaw-message-flow-targeted-drain",
+    status: "active",
+    summary: "supervisor should keep OpenClaw message_flow targeted drains at semantic timeout"
+  });
+  await runAction(openclawRoot, {
+    action: "workflow.task.create",
+    workflowId: "workflow-supervise-openclaw-message-flow-targeted-drain",
+    taskId: "task-supervise-openclaw-message-flow-targeted-drain",
+    runtime: "openclaw",
+    agentId: "main",
+    taskType: "message_flow_send",
+    status: "pending",
+    priority: "high",
+    prompt: "OpenClaw message_flow targeted drain should use semantic timeout"
+  });
+  const openclawTick = await runAction(openclawRoot, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    drainQueued: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false,
+    autoDispatch: true,
+    timeoutSeconds: 30
+  });
+  const openclawDispatchId = openclawTick.jobResults?.[0]?.result?.enqueuedDrains?.[0]?.dedupeKey?.split(":").pop();
+  assert.equal(openclawTick.claimedJobs?.[0]?.jobType, "workflow_supervise");
+  assert.equal(Boolean(openclawDispatchId), true);
+  const openclawJobs = sqliteJson(path.join(openclawRoot, "tracking.db"), `SELECT dedupe_key, runtime, payload_json FROM control_loop_jobs WHERE job_type='runtime_drain';`);
+  assert.equal(openclawJobs.length, 1);
+  assert.equal(openclawJobs[0].dedupe_key, `runtime_drain:openclaw:${openclawDispatchId}`);
+  assert.equal(openclawJobs[0].runtime, "openclaw");
+  assert.equal(JSON.parse(openclawJobs[0].payload_json).timeoutSeconds, 300);
 }
 
 async function testControlLoopSeedsStaleDeliveringOutbox() {
