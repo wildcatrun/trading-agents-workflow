@@ -3745,6 +3745,37 @@ function healthStatus(blockers = []) {
   return "ready";
 }
 
+function safeJsonExtractSql(column, pathExpression) {
+  return `json_extract(CASE WHEN json_valid(${column}) THEN ${column} ELSE '{}' END, ${pathExpression})`;
+}
+
+function archivedTerminalFailureSql(alias = "", refColumns = []) {
+  const prefix = alias ? `${alias}.` : "";
+  const payloadColumn = `${prefix}payload_json`;
+  const archiveStatus = safeJsonExtractSql(payloadColumn, "'$.healthArchive.status'");
+  const archiveIncidentId = safeJsonExtractSql(payloadColumn, "'$.healthArchive.incidentId'");
+  const archiveHumanGateId = safeJsonExtractSql(payloadColumn, "'$.healthArchive.humanGateId'");
+  const archiveArtifactRef = safeJsonExtractSql(payloadColumn, "'$.healthArchive.artifactRef'");
+  const rowRefChecks = refColumns.map(({ archiveKey, column }) => {
+    const archiveRef = safeJsonExtractSql(payloadColumn, sqlValue(`$.healthArchive.${archiveKey}`));
+    return `COALESCE(${archiveRef}, '')=COALESCE(${prefix}${column}, '')`;
+  });
+  return `COALESCE(${archiveStatus}, '')='archived'
+    AND COALESCE(${archiveIncidentId}, '')!=''
+    AND COALESCE(${archiveHumanGateId}, '')!=''
+    AND COALESCE(${archiveArtifactRef}, '')!=''
+    AND (${rowRefChecks.length ? rowRefChecks.join(" OR ") : "0"})
+    AND EXISTS (
+      SELECT 1
+      FROM incident_states archive_incident
+      WHERE archive_incident.incident_id=${archiveIncidentId}
+        AND archive_incident.status='resolved'
+        AND COALESCE(${safeJsonExtractSql("archive_incident.payload_json", "'$.closeoutResolution.schemaVersion'")}, '')='workflow_incident_closeout_resolution.v1'
+        AND COALESCE(${safeJsonExtractSql("archive_incident.payload_json", "'$.closeoutResolution.humanGateId'")}, '')=COALESCE(${archiveHumanGateId}, '')
+        AND COALESCE(${safeJsonExtractSql("archive_incident.payload_json", "'$.closeoutResolution.artifactRef'")}, '')=COALESCE(${archiveArtifactRef}, '')
+    )`;
+}
+
 function boundedNumber(values, fallback, min, max) {
   const candidates = Array.isArray(values) ? values : [values];
   for (const value of candidates) {
@@ -3815,12 +3846,13 @@ GROUP BY status
 ORDER BY status;`, { json: true });
   const dispatchRows = await sqlite(paths.dbFile, `
 SELECT
-  SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued,
-  SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent,
-  SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
-  SUM(CASE WHEN status='sent' AND updated_at < ${sqlValue(staleDispatchCutoff)} THEN 1 ELSE 0 END) AS stale_sent,
-  SUM(CASE WHEN status='queued' AND created_at < ${sqlValue(staleDispatchCutoff)} AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(checkedAt)}) THEN 1 ELSE 0 END) AS stale_queued
-FROM mixed_meeting_dispatches;`, { json: true });
+  SUM(CASE WHEN md.status='queued' THEN 1 ELSE 0 END) AS queued,
+  SUM(CASE WHEN md.status='sent' THEN 1 ELSE 0 END) AS sent,
+  SUM(CASE WHEN md.status='failed' AND NOT (${archivedTerminalFailureSql("md", [{ archiveKey: "dispatchId", column: "dispatch_id" }, { archiveKey: "refId", column: "dispatch_id" }])}) THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN md.status='failed' AND (${archivedTerminalFailureSql("md", [{ archiveKey: "dispatchId", column: "dispatch_id" }, { archiveKey: "refId", column: "dispatch_id" }])}) THEN 1 ELSE 0 END) AS archived_failed,
+  SUM(CASE WHEN md.status='sent' AND md.updated_at < ${sqlValue(staleDispatchCutoff)} THEN 1 ELSE 0 END) AS stale_sent,
+  SUM(CASE WHEN md.status='queued' AND md.created_at < ${sqlValue(staleDispatchCutoff)} AND (md.next_retry_at IS NULL OR md.next_retry_at='' OR md.next_retry_at <= ${sqlValue(checkedAt)}) THEN 1 ELSE 0 END) AS stale_queued
+FROM mixed_meeting_dispatches md;`, { json: true });
   const controlLoopRows = await sqlite(paths.dbFile, `
 SELECT
   SUM(CASE WHEN status IN ('queued','retry_scheduled') THEN 1 ELSE 0 END) AS runnable,
@@ -3830,10 +3862,11 @@ SELECT
 FROM control_loop_jobs;`, { json: true });
   const messageFlowRows = await sqlite(paths.dbFile, `
 SELECT
-  SUM(CASE WHEN delivery_receipt_present=0 AND return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])}) AND target_runtime NOT IN ('local_codex','codex') AND (COALESCE(runtime_completed_at,'') != '' OR COALESCE(runtime_failed_at,'') != '') THEN 1 ELSE 0 END) AS missing_delivery,
-  SUM(CASE WHEN status IN ('runtime_failed','telegram_failed') THEN 1 ELSE 0 END) AS failed,
-  SUM(CASE WHEN final_output_present=1 AND delivery_receipt_present=0 AND return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])}) AND target_runtime NOT IN ('local_codex','codex') AND COALESCE(runtime_completed_at,'') != '' AND runtime_completed_at <= ${sqlValue(messageFlowStuckCutoff)} THEN 1 ELSE 0 END) AS stuck_after_runtime
-FROM message_flows;`, { json: true });
+  SUM(CASE WHEN mf.delivery_receipt_present=0 AND mf.return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])}) AND mf.target_runtime NOT IN ('local_codex','codex') AND (COALESCE(mf.runtime_completed_at,'') != '' OR COALESCE(mf.runtime_failed_at,'') != '') THEN 1 ELSE 0 END) AS missing_delivery,
+  SUM(CASE WHEN mf.status IN ('runtime_failed','telegram_failed') AND NOT (${archivedTerminalFailureSql("mf", [{ archiveKey: "flowId", column: "flow_id" }, { archiveKey: "messageFlowId", column: "flow_id" }, { archiveKey: "dispatchId", column: "dispatch_id" }, { archiveKey: "refId", column: "flow_id" }])}) THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN mf.status IN ('runtime_failed','telegram_failed') AND (${archivedTerminalFailureSql("mf", [{ archiveKey: "flowId", column: "flow_id" }, { archiveKey: "messageFlowId", column: "flow_id" }, { archiveKey: "dispatchId", column: "dispatch_id" }, { archiveKey: "refId", column: "flow_id" }])}) THEN 1 ELSE 0 END) AS archived_failed,
+  SUM(CASE WHEN mf.final_output_present=1 AND mf.delivery_receipt_present=0 AND mf.return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])}) AND mf.target_runtime NOT IN ('local_codex','codex') AND COALESCE(mf.runtime_completed_at,'') != '' AND mf.runtime_completed_at <= ${sqlValue(messageFlowStuckCutoff)} THEN 1 ELSE 0 END) AS stuck_after_runtime
+FROM message_flows mf;`, { json: true });
   const humanGateRows = await sqlite(paths.dbFile, `
 SELECT
   COUNT(*) AS pending,
@@ -3859,7 +3892,8 @@ SELECT
 FROM runtime_agents;`, { json: true });
   const runtimeRows = await sqlite(paths.dbFile, `
 SELECT
-  SUM(CASE WHEN rr.status='failed' THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN rr.status='failed' AND NOT (${archivedTerminalFailureSql("rr", [{ archiveKey: "runtimeRunId", column: "runtime_run_id" }, { archiveKey: "runId", column: "runtime_run_id" }, { archiveKey: "dispatchId", column: "dispatch_id" }, { archiveKey: "refId", column: "runtime_run_id" }])}) THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN rr.status='failed' AND (${archivedTerminalFailureSql("rr", [{ archiveKey: "runtimeRunId", column: "runtime_run_id" }, { archiveKey: "runId", column: "runtime_run_id" }, { archiveKey: "dispatchId", column: "dispatch_id" }, { archiveKey: "refId", column: "runtime_run_id" }])}) THEN 1 ELSE 0 END) AS archived_failed,
   SUM(CASE WHEN rr.status='started'
     AND rr.started_at IS NOT NULL
     AND rr.started_at != ''
@@ -3956,6 +3990,7 @@ FROM incident_states;`, { json: true });
         queued: Number(dispatch.queued || 0),
         sent: Number(dispatch.sent || 0),
         failed: Number(dispatch.failed || 0),
+        archivedFailed: Number(dispatch.archived_failed || 0),
         staleQueued: Number(dispatch.stale_queued || 0),
         staleSent: Number(dispatch.stale_sent || 0)
       },
@@ -3967,12 +4002,14 @@ FROM incident_states;`, { json: true });
       },
       runtime: {
         failedRuns: Number(runtime.failed || 0),
+        archivedFailedRuns: Number(runtime.archived_failed || 0),
         staleStartedRuns: Number(runtime.stale_started || 0)
       },
       messageFlow: {
         missingDelivery: Number(messageFlow.missing_delivery || 0),
         stuckAfterRuntime: Number(messageFlow.stuck_after_runtime || 0),
-        failed: Number(messageFlow.failed || 0)
+        failed: Number(messageFlow.failed || 0),
+        archivedFailed: Number(messageFlow.archived_failed || 0)
       },
       humanGate: {
         pending: Number(humanGate.pending || 0),

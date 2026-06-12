@@ -6588,6 +6588,10 @@ INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, sta
 VALUES ('hermers:cat_body', 'hermers', 'cat_body', '猫之体', '', 'active', 'hermers', 'acp', 'none', 'none', 'acp', 'none', 'hermers_acp', 'silent', 1, 1, 0, '{}', 'hermes-profile:catbody', '{}', '{}', '2026-06-12T00:00:00.000Z', '2026-06-12T00:00:01.000Z');
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
 VALUES ('dispatch-terminal-failed-only', 'wf-terminal-failed-dispatch', 'wf-terminal-failed-dispatch', 'trace-terminal-failed-only', 'idem-terminal-failed-only', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'failed', 'normal', 3, 3, '', 'timeout', 'terminal failed dispatch', 'prompt', '{}', 'main', '2026-06-12T00:00:00.000Z', '', '', '', '2026-06-12T00:00:02.000Z');
+INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, outbox_id, target_runtime, target_agent_id, return_policy, status, runtime_completed_at, runtime_failed_at, final_output_present, delivery_receipt_present, last_error, payload_json, created_at, updated_at)
+VALUES ('flow-terminal-failed-only', 'trace-terminal-failed-only', 'idem-flow-terminal-failed-only', 'wf-terminal-failed-dispatch', 'wf-terminal-failed-dispatch', 'dispatch-terminal-failed-only', '', 'hermers', 'cat_body', 'silent', 'runtime_failed', '', '2026-06-12T00:00:02.000Z', 0, 0, 'terminal failed flow', '{}', '2026-06-12T00:00:00.000Z', '2026-06-12T00:00:02.000Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES ('runtime-terminal-failed-only', 'dispatch-terminal-failed-only', 'wf-terminal-failed-dispatch', 'wf-terminal-failed-dispatch', 'trace-terminal-failed-only', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'timeout', 3, '2026-06-12T00:00:00.000Z', '2026-06-12T00:00:02.000Z', 2000, '', '', '', 'terminal failed runtime', '{}');
 `);
 
   const health = await runAction(root, { action: "workflow.health" });
@@ -6598,6 +6602,48 @@ VALUES ('dispatch-terminal-failed-only', 'wf-terminal-failed-dispatch', 'wf-term
   assert.equal(failedDispatchBlocker?.severity, "warning");
   assert.equal(failedDispatchBlocker?.evidence?.terminal, true);
   assert.equal(health.nextActions.includes("workflow.incident.from_dead_letter.preview"), true);
+
+  sqliteExec(dbFile, `
+UPDATE mixed_meeting_dispatches
+SET payload_json='{"healthArchive":{"status":"archived","reason":"missing resolved incident closeout evidence","archivedAt":"2026-06-12T00:00:03.000Z","dispatchId":"dispatch-terminal-failed-only","incidentId":"incident-terminal-failed-closeout","humanGateId":"hgate-terminal-failed-closeout","artifactRef":"bridge/incident-closeout/terminal-failed-closeout.json"}}'
+WHERE dispatch_id='dispatch-terminal-failed-only';
+`);
+  const unsupportedArchiveHealth = await runAction(root, { action: "workflow.health" });
+  assert.equal(unsupportedArchiveHealth.status, "degraded");
+  assert.equal(unsupportedArchiveHealth.lanes.dispatch.failed, 1);
+  assert.equal(unsupportedArchiveHealth.lanes.dispatch.archivedFailed, 0);
+  assert.equal(unsupportedArchiveHealth.topBlockers.some((item) => item.key === "failed_dispatches"), true);
+
+  sqliteExec(dbFile, `
+UPDATE message_flows
+SET payload_json='{malformed'
+WHERE flow_id='flow-terminal-failed-only';
+`);
+  const malformedPayloadHealth = await runAction(root, { action: "workflow.health" });
+  assert.equal(malformedPayloadHealth.schemaVersion, "workflow_health.v1");
+  assert.equal(malformedPayloadHealth.lanes.messageFlow.failed, 1);
+  assert.equal(malformedPayloadHealth.lanes.messageFlow.archivedFailed, 0);
+
+  sqliteExec(dbFile, `
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-terminal-failed-closeout', 'resolved', 'normal', '["dispatch","message_flow","runtime"]', 'terminal failed archive closeout', 'workflow', 'terminal failures are covered by approved closeout', 'covered by resolved closeout evidence', 'archive health blocker only', 'remove archive marker if evidence is invalid', 'Human Gate approved closeout', '[]', '{"workflowId":"wf-terminal-failed-dispatch","closeoutResolution":{"schemaVersion":"workflow_incident_closeout_resolution.v1","humanGateId":"hgate-terminal-failed-closeout","artifactRef":"bridge/incident-closeout/terminal-failed-closeout.json","buttonId":"hgatebtn-terminal-failed-closeout","optionId":"A"}}', '2026-06-12T00:00:00.000Z', '', '2026-06-12T00:00:03.000Z', '2026-06-12T00:00:03.000Z');
+UPDATE message_flows
+SET payload_json='{"healthArchive":{"status":"archived","reason":"covered by resolved incident closeout","archivedAt":"2026-06-12T00:00:03.000Z","flowId":"flow-terminal-failed-only","incidentId":"incident-terminal-failed-closeout","humanGateId":"hgate-terminal-failed-closeout","artifactRef":"bridge/incident-closeout/terminal-failed-closeout.json"}}'
+WHERE flow_id='flow-terminal-failed-only';
+UPDATE runtime_runs
+SET payload_json='{"healthArchive":{"status":"archived","reason":"covered by resolved incident closeout","archivedAt":"2026-06-12T00:00:03.000Z","runtimeRunId":"runtime-terminal-failed-only","incidentId":"incident-terminal-failed-closeout","humanGateId":"hgate-terminal-failed-closeout","artifactRef":"bridge/incident-closeout/terminal-failed-closeout.json"}}'
+WHERE runtime_run_id='runtime-terminal-failed-only';
+`);
+  const archivedHealth = await runAction(root, { action: "workflow.health" });
+  assert.equal(archivedHealth.schemaVersion, "workflow_health.v1");
+  assert.equal(archivedHealth.status, "ready");
+  assert.equal(archivedHealth.lanes.dispatch.failed, 0);
+  assert.equal(archivedHealth.lanes.dispatch.archivedFailed, 1);
+  assert.equal(archivedHealth.lanes.messageFlow.failed, 0);
+  assert.equal(archivedHealth.lanes.messageFlow.archivedFailed, 1);
+  assert.equal(archivedHealth.lanes.runtime.failedRuns, 0);
+  assert.equal(archivedHealth.lanes.runtime.archivedFailedRuns, 1);
+  assert.equal(archivedHealth.topBlockers.some((item) => item.key === "failed_dispatches"), false);
 }
 
 async function testWorkflowHealthOpenIncidentsAreVisible() {
