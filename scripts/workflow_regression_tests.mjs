@@ -3531,6 +3531,7 @@ async function testControlLoopDrainsMessageFlowRuntimes() {
     deliverOutbox: false,
     ensureHumanGateRequests: false,
     createHumanGateInbox: false,
+    timeoutSeconds: 30,
     openclawBin: successBin
   });
   assert.equal(tick.claimedJobs?.[0]?.jobType, "runtime_drain");
@@ -3586,6 +3587,7 @@ LIMIT 1;`)[0];
     deliverOutbox: false,
     ensureHumanGateRequests: false,
     createHumanGateInbox: false,
+    timeoutSeconds: 30,
     openclawBin: genericSuccessBin
   });
   assert.equal(genericTick.claimedJobs?.[0]?.jobType, "runtime_drain");
@@ -3596,7 +3598,7 @@ FROM control_loop_jobs
 WHERE dedupe_key='runtime_drain:openclaw'
 LIMIT 1;`)[0];
   const genericPayload = JSON.parse(genericDrainJob.payloadJson);
-  assert.equal(genericPayload.timeoutSeconds, 45);
+  assert.equal(genericPayload.timeoutSeconds, 30);
   assert.deepEqual(genericPayload.excludeDispatchTypes, ["message_flow_send", "message_flow_semantic"]);
   const genericMessageFlowRow = sqliteJson(path.join(root, "tracking.db"), `
 SELECT status
@@ -3613,6 +3615,7 @@ LIMIT 1;`)[0];
     deliverOutbox: false,
     ensureHumanGateRequests: false,
     createHumanGateInbox: false,
+    timeoutSeconds: 30,
     openclawBin: genericSuccessBin
   });
   assert.equal(preciseGenericTick.claimedJobs?.[0]?.jobType, "runtime_drain");

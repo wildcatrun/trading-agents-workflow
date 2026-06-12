@@ -17665,12 +17665,10 @@ function controlLoopTimeoutSeconds(input = {}) {
 }
 
 function controlLoopRuntimeDrainTimeoutSeconds(dispatchType = "", runtime = "", input = {}) {
-  const requested = input.timeoutSeconds ?? input.timeout_seconds;
-  if (requested !== undefined && requested !== null && requested !== "") return controlLoopTimeoutSeconds(input);
   const type = String(dispatchType || "").trim();
   const normalizedRuntime = normalizeKnownRuntime(runtime);
   if (normalizedRuntime === "openclaw" && ["message_flow_send", "message_flow_semantic"].includes(type)) {
-    return DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS;
+    return Math.max(controlLoopTimeoutSeconds(input), DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS);
   }
   return controlLoopTimeoutSeconds(input);
 }
