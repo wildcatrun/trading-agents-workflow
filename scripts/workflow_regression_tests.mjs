@@ -3096,6 +3096,7 @@ LIMIT 1;`)[0];
   assert.ok(semanticDispatchId);
   const inspect = JSON.parse(await fs.readFile(path.join(root, "ack-inspect.json"), "utf8"));
   assert.equal(inspect.timeout, "90");
+  assert.match(inspect.message, new RegExp(`Message Flow ID: ${sent.dispatches[0].messageFlowId}`));
   assert.match(inspect.message, /First-turn ACK contract/);
   assert.match(inspect.message, /ACK_RECEIVED/);
   assert.match(inspect.message, /not the semantic task result/);
@@ -3135,6 +3136,7 @@ LIMIT 1;`)[0];
   assert.equal(semanticInspect.message.includes("Immediate ACK required"), false);
   assert.equal(semanticInspect.message.includes("First-turn ACK contract"), false);
   assert.equal(semanticInspect.message.includes("ACK_RECEIVED"), false);
+  assert.match(semanticInspect.message, new RegExp(`Message Flow ID: ${sent.dispatches[0].messageFlowId}`));
   assert.equal(semanticInspect.message.includes("requires ack regression body"), true);
   assert.equal(semanticInspect.timeout, "300");
   const completedFlow = sqliteJson(dbFile, `

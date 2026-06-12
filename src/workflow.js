@@ -14143,6 +14143,7 @@ function buildRuntimeBridgePrompt(row) {
   const createdBy = row.created_by || payload.chair || "main";
   const invocationTs = nowIso();
   const dispatchType = row.dispatch_type || payload.dispatchType || "discussion_turn";
+  const messageFlowId = messageFlowIdFromDispatchPayload(row);
   const humanGateContext = isHumanGateDispatchContext(row, payload, dispatchType);
   const humanGateRequirement = humanGateContext
     ? "- This dispatch explicitly involves Human Gate. Preserve button-first confirmation boundaries and do not bypass Flashcat confirmation."
@@ -14166,6 +14167,7 @@ function buildRuntimeBridgePrompt(row) {
     `Invocation timestamp: ${invocationTs}`,
     `Meeting ID: ${row.meeting_id}`,
     `Dispatch ID: ${row.dispatch_id}`,
+    messageFlowId ? `Message Flow ID: ${messageFlowId}` : "",
     `Assigned agent: ${row.runtime}:${row.agent_id}`,
     `Created by: ${createdBy}`,
     role,
@@ -14180,7 +14182,9 @@ function buildRuntimeBridgePrompt(row) {
           "First-turn ACK contract:",
           `- Return ${ack.expectedPrefix} as the first line within ${ack.timeoutSeconds}s of receiving this complete dispatch.`,
           "- This turn is only a receipt/integrity confirmation, not the semantic task result.",
-          `- Include: ISO timestamp, Dispatch ID ${row.dispatch_id}, Message Flow ID ${payload.payload?.messageFlowId || payload.messageFlowId || ""}, received scope, and any obvious truncation/integrity issue.`,
+          messageFlowId
+            ? `- Include: ISO timestamp, Dispatch ID ${row.dispatch_id}, Message Flow ID ${messageFlowId}, received scope, and any obvious truncation/integrity issue.`
+            : `- Include: ISO timestamp, Dispatch ID ${row.dispatch_id}, received scope, and any obvious truncation/integrity issue.`,
           `- If no ACK is returned, workflow will retry through the ${ack.retryDelaySeconds}s governed retry loop.`
         ]
       : []),
