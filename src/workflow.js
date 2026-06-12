@@ -8772,16 +8772,30 @@ LIMIT ${limit};`, { json: true });
     const textPolicyRefresh = Boolean(existing && existingPayload.textPolicyVersion !== HUMAN_GATE_TEXT_POLICY_VERSION);
     const buttonSet = await ensureHumanGateButtonSet(paths, row, payload, body, workflowId, meetingId);
     if (!buttonSet.audit?.ok) {
-      const revision = await dispatchHumanGatePlanRevision(rootDir, paths, row, workflowId, meetingId, summary, buttonSet.audit);
-      if (existing?.status === "queued") {
+      let outboxToCancel = existing;
+      if (!outboxToCancel) {
+        const fallbackRows = await sqlite(paths.dbFile, `
+SELECT outbox_id, status, payload_json
+FROM telegram_outbox
+WHERE outbox_id=${sqlValue(`hgate-${cleanFileSegment(row.object_id)}`)}
+LIMIT 1;`, { json: true });
+        outboxToCancel = fallbackRows[0] || null;
+      }
+      if (["queued", "delivering", "failed"].includes(String(outboxToCancel?.status || ""))) {
         await sqlite(paths.dbFile, `
 UPDATE telegram_outbox
 SET status='cancelled',
-    payload_json=${sqlValue(JSON.stringify({ ...parseJsonValue(existing.payload_json, {}), cancelledAt: nowIso(), cancelledReason: buttonSet.audit.reason }))},
+    payload_json=${sqlValue(JSON.stringify({ ...parseJsonValue(outboxToCancel.payload_json, {}), cancelledAt: nowIso(), cancelledReason: buttonSet.audit.reason }))},
     updated_at=${sqlValue(nowIso())}
-WHERE outbox_id=${sqlValue(existing.outbox_id)};`);
+WHERE outbox_id=${sqlValue(outboxToCancel.outbox_id)};`);
       }
-      results.push({ humanGateId: row.object_id, workflowId, status: "blocked_missing_abc_options", audit: buttonSet.audit, revisionDispatch: revision.dispatch, outboxId: existing?.outbox_id || "" });
+      let revision = null;
+      try {
+        revision = await dispatchHumanGatePlanRevision(rootDir, paths, row, workflowId, meetingId, summary, buttonSet.audit);
+      } catch (error) {
+        revision = { status: "failed", error: String(error?.message || error).slice(0, 2000) };
+      }
+      results.push({ humanGateId: row.object_id, workflowId, status: "blocked_missing_abc_options", audit: buttonSet.audit, revisionDispatch: revision.dispatch, outboxId: outboxToCancel?.outbox_id || existing?.outbox_id || "" });
       continue;
     }
     const { buttons } = buttonSet;
@@ -9213,8 +9227,6 @@ ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summ
 
 async function enqueueTelegramOutbox(paths, input) {
   const outboxId = input.outboxId || input.outbox_id || safeId("tg");
-  const existing = await sqlite(paths.dbFile, `SELECT outbox_id, status FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`, { json: true });
-  if (existing[0]) return { outboxId, status: existing[0].status, deduped: true };
   const createdAt = nowIso();
   const payload = parseJsonValue(input.payload, input.payload || {});
   const messageType = input.messageType || input.message_type || "meeting_live";
@@ -9222,6 +9234,38 @@ async function enqueueTelegramOutbox(paths, input) {
   const targetRef = input.targetRef || input.target_ref || "";
   if (TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES.has(String(messageType)) && ["queued", "delivering"].includes(String(status)) && !String(targetRef || "").trim()) {
     throw new Error(`telegram_outbox target_ref is required for ${messageType}`);
+  }
+  const existing = await sqlite(paths.dbFile, `SELECT outbox_id, status, message_type FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`, { json: true });
+  if (existing[0]) {
+    const existingStatus = String(existing[0].status || "");
+    const existingType = String(existing[0].message_type || "");
+    if (messageType === "human_gate_request" && existingType === "human_gate_request" && ["cancelled", "failed"].includes(existingStatus)) {
+      await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET meeting_id=${sqlValue(input.meetingId || input.meeting_id || "")},
+    target_kind=${sqlValue(input.targetKind || input.target_kind || "group")},
+    target_ref=${sqlValue(targetRef)},
+    status=${sqlValue(status)},
+    text=${sqlValue(input.text || "")},
+    payload_json=${sqlValue(JSON.stringify(payload))},
+    updated_at=${sqlValue(createdAt)}
+WHERE outbox_id=${sqlValue(outboxId)};`);
+      await writeJsonArtifact(paths.root, path.join(paths.telegramDir, "outbox"), outboxId, {
+        outboxId,
+        meetingId: input.meetingId || input.meeting_id || "",
+        targetKind: input.targetKind || input.target_kind || "group",
+        targetRef,
+        messageType,
+        status,
+        text: input.text || "",
+        payload,
+        createdAt,
+        updatedAt: createdAt,
+        requeuedFromStatus: existingStatus
+      });
+      return { outboxId, status, deduped: true, requeued: true, previousStatus: existingStatus };
+    }
+    return { outboxId, status: existingStatus, deduped: true };
   }
   await sqlite(paths.dbFile, `
 INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
