@@ -10971,9 +10971,7 @@ async function runLocalCodexDispatch(paths, row, input = {}) {
   ].join("\n");
   const outputHash = textHash(receiptText);
   await updateDispatch(paths, row.dispatch_id, "acked", { adapter, completedAt, attempt, messageId: "" });
-  const ackRuntimeRunId = safeId("runtime_run_ack");
-  await recordRuntimeRun(paths, row, {
-    runtimeRunId: ackRuntimeRunId,
+  const ackRuntimeRunId = await completeRuntimeRun(paths, row, runtimeRunId, {
     adapter,
     status: "acked",
     startedAt,
@@ -14362,6 +14360,53 @@ VALUES (${sqlValue(runtimeRunId)}, ${sqlValue(row.dispatch_id)}, ${sqlValue(row.
   return runtimeRunId;
 }
 
+async function completeRuntimeRun(paths, row, runtimeRunId, data) {
+  const startedAt = data.startedAt || nowIso();
+  const completedAt = data.completedAt || data.failedAt || nowIso();
+  const latencyMs = Math.max(0, new Date(completedAt).getTime() - new Date(startedAt).getTime());
+  const payload = parseJsonValue(row.payload_json, {});
+  await sqlite(paths.dbFile, `
+UPDATE runtime_runs
+SET status=${sqlValue(data.status || "acked")},
+    failure_type=${sqlValue(data.failureType || "")},
+    backend=COALESCE(NULLIF(${sqlValue(data.backend || "")}, ''), backend),
+    acp_agent=COALESCE(NULLIF(${sqlValue(data.acpAgent || "")}, ''), acp_agent),
+    session_key=COALESCE(NULLIF(${sqlValue(data.sessionKey || "")}, ''), session_key),
+    completed_at=${sqlValue(completedAt)},
+    latency_ms=${sqlValue(latencyMs)},
+    message_id=${sqlValue(data.messageId || "")},
+    output_hash=${sqlValue(data.outputHash || "")},
+    error=${sqlValue(data.error ? String(data.error).slice(0, 2000) : "")},
+    payload_json=${sqlValue(JSON.stringify(data.payload || {}))}
+WHERE runtime_run_id=${sqlValue(runtimeRunId)};`);
+  const workflowId = row.workflow_id || payload.workflowId || "";
+  const taskId = payload.taskId || payload.task_id || payload.payload?.taskId || payload.payload?.task_id || "";
+  const phaseInfo = await workflowTaskPhaseInfo(paths, workflowId, taskId, payload.phase || "");
+  await upsertWorkflowAgentRun(paths, {
+    agentRunId: `runtime.${runtimeRunId}`,
+    workflowId,
+    phaseId: phaseInfo.phaseId,
+    phaseKey: phaseInfo.phaseKey,
+    taskId,
+    dispatchId: row.dispatch_id,
+    runtimeRunId,
+    runtime: row.runtime,
+    agentId: row.agent_id,
+    status: data.status || "acked",
+    attempt: Number(data.attempt ?? row.attempt ?? 0) || 0,
+    inputHash: data.inputHash || textHash(row.prompt || payload.prompt || ""),
+    outputHash: data.outputHash || "",
+    receiptRef: data.messageId || "",
+    error: data.error || "",
+    payload: { source: "runtime_runs", adapter: data.adapter || "", backend: data.backend || "", failureType: data.failureType || "" },
+    startedAt,
+    completedAt,
+    createdAt: startedAt,
+    updatedAt: completedAt
+  });
+  return runtimeRunId;
+}
+
 async function runHermesDispatch(paths, row, input = {}) {
   const adapter = String(input.adapterName || input.adapter_name || "cli").trim() || "cli";
   const hermesBin = resolveHome(input.hermesBin || input.hermes_bin || process.env.HERMES_BIN || "/home/flashcat/hermes-agent/venv/bin/hermes");
@@ -14429,8 +14474,7 @@ async function runHermesDispatch(paths, row, input = {}) {
     });
     const reportDelivery = ack.required ? null : await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter, profile, completedAt, messageId: ingest.messageId, attempt });
-    const ackRuntimeRunId = safeId("runtime_run_ack");
-    await recordRuntimeRun(paths, row, { runtimeRunId: ackRuntimeRunId, adapter, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { profile } });
+    const ackRuntimeRunId = await completeRuntimeRun(paths, row, runtimeRunId, { adapter, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { profile } });
     const messageFlowDelivery = ack.required ? await acknowledgeMessageFlowRuntime(paths, row, {
       runtimeRunId: ackRuntimeRunId,
       messageId: ingest.messageId,
@@ -14470,7 +14514,7 @@ async function runHermesDispatch(paths, row, input = {}) {
     const failureType = classifyRuntimeError(error);
     const shouldRetry = runtimeFailureShouldRetry(failureType, ack) && attempt < Number(row.max_attempts || 1);
     await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter, profile, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt, ack.required ? ack.retryDelaySeconds : 0) : "" });
-    const failedRuntimeRunId = await recordRuntimeRun(paths, row, { adapter, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { profile, retry: shouldRetry } });
+    const failedRuntimeRunId = await completeRuntimeRun(paths, row, runtimeRunId, { adapter, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { profile, retry: shouldRetry } });
     if (!shouldRetry) {
       await finishMessageFlowRuntime(paths, row, {
         runtimeRunId: failedRuntimeRunId,
@@ -14942,8 +14986,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     });
     const reportDelivery = ack.required ? null : await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "acp", backend: backendId, acpAgent, completedAt, messageId: ingest.messageId, attempt });
-    const ackRuntimeRunId = safeId("runtime_run_ack");
-    await recordRuntimeRun(paths, row, { runtimeRunId: ackRuntimeRunId, adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { sessionMode, backendSource, events: acpEvents.slice(-20) } });
+    const ackRuntimeRunId = await completeRuntimeRun(paths, row, runtimeRunId, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { sessionMode, backendSource, events: acpEvents.slice(-20) } });
     const messageFlowDelivery = ack.required ? await acknowledgeMessageFlowRuntime(paths, row, {
       runtimeRunId: ackRuntimeRunId,
       messageId: ingest.messageId,
@@ -14989,7 +15032,7 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
     const failureType = classifyRuntimeError(error);
     const shouldRetry = runtimeFailureShouldRetry(failureType, ack) && attempt < Number(row.max_attempts || 1);
     await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "acp", backend: backendId, acpAgent, failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt, ack.required ? ack.retryDelaySeconds : 0) : "" });
-    const failedRuntimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, backendSource, retry: shouldRetry } });
+    const failedRuntimeRunId = await completeRuntimeRun(paths, row, runtimeRunId, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { sessionMode, backendSource, retry: shouldRetry } });
     if (!shouldRetry) {
       await finishMessageFlowRuntime(paths, row, {
         runtimeRunId: failedRuntimeRunId,
@@ -15100,8 +15143,7 @@ async function runOpenClawDispatch(paths, row, input = {}) {
     });
     const reportDelivery = ack.required ? null : await autoDeliverReportOutbox(paths, ingest, input);
     await updateDispatch(paths, row.dispatch_id, "acked", { adapter: "openclaw", completedAt, messageId: ingest.messageId, attempt, runId: parsed.runId || "" });
-    const ackRuntimeRunId = safeId("runtime_run_ack");
-    await recordRuntimeRun(paths, row, { runtimeRunId: ackRuntimeRunId, adapter: "openclaw", status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { runId: parsed.runId || "" } });
+    const ackRuntimeRunId = await completeRuntimeRun(paths, row, runtimeRunId, { adapter: "openclaw", status: "acked", startedAt, completedAt, attempt, messageId: ingest.messageId, outputHash, payload: { runId: parsed.runId || "" } });
     const messageFlowDelivery = ack.required ? await acknowledgeMessageFlowRuntime(paths, row, {
       runtimeRunId: ackRuntimeRunId,
       messageId: ingest.messageId,
@@ -15142,7 +15184,7 @@ async function runOpenClawDispatch(paths, row, input = {}) {
     const failureType = classifyRuntimeError(error);
     const shouldRetry = runtimeFailureShouldRetry(failureType, ack) && attempt < Number(row.max_attempts || 1);
     await updateDispatch(paths, row.dispatch_id, shouldRetry ? "queued" : "failed", { adapter: "openclaw", failedAt, error: message.slice(0, 2000), failureType, attempt, nextRetryAt: shouldRetry ? nextRetryAt(attempt, ack.required ? ack.retryDelaySeconds : 0) : "" });
-    const failedRuntimeRunId = await recordRuntimeRun(paths, row, { adapter: "openclaw", status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { retry: shouldRetry } });
+    const failedRuntimeRunId = await completeRuntimeRun(paths, row, runtimeRunId, { adapter: "openclaw", status: shouldRetry ? "retry_scheduled" : "failed", failureType, startedAt, completedAt: failedAt, attempt, error: message, payload: { retry: shouldRetry } });
     if (!shouldRetry) {
       await finishMessageFlowRuntime(paths, row, {
         runtimeRunId: failedRuntimeRunId,

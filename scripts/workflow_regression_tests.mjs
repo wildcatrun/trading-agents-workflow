@@ -6821,6 +6821,7 @@ async function testHermersAcpBackendFallbackToCli() {
   assert.equal(sqliteJson(dbFile, `SELECT status FROM mixed_meeting_dispatches WHERE dispatch_id='${dispatch.dispatchId}';`)[0].status, "acked");
   assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}' AND adapter='acp'`), 0);
   assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}' AND adapter='cli' AND status='acked'`), 1);
+  assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}' AND status='started'`), 0);
   const fallbackReadiness = await runAction(root, {
     action: "workflow.readiness",
     activeChecks: true,
@@ -7026,6 +7027,19 @@ VALUES ('dispatch-empty-prompt', 'meeting-empty-prompt', 'workflow-empty-prompt'
 
   sqliteExec(dbFile, `
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
+VALUES ('dispatch-openclaw-fail', 'meeting-openclaw-fail', 'workflow-openclaw-fail', 'trace-openclaw-fail', 'idem-openclaw-fail', 'openclaw', 'main', 'openclaw:main', 'governance_repair', 'queued', 'normal', 0, 1, 'valid prompt that fake openclaw rejects', '{}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:00.000Z');`);
+  const failedDrain = await runAction(root, {
+    action: "runtime.bridge.drain",
+    runtime: "openclaw",
+    dispatchId: "dispatch-openclaw-fail",
+    openclawBin: fakeOpenClaw
+  });
+  assert.equal(failedDrain.results[0].status, "failed");
+  assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-openclaw-fail' AND adapter='openclaw' AND status='failed'"), 1);
+  assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-openclaw-fail' AND status='started'"), 0);
+
+  sqliteExec(dbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
 VALUES ('dispatch-nested-prompt', 'meeting-nested-prompt', 'workflow-nested-prompt', 'trace-nested-prompt', 'idem-nested-prompt', 'openclaw', 'main', 'openclaw:main', 'governance_repair', 'queued', 'normal', 0, 1, '', '{"payload":{"body":"nested task body for runtime bridge"}}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:00.000Z');`);
   const nestedDryRun = await runAction(root, {
     action: "runtime.bridge.drain",
@@ -7042,6 +7056,7 @@ VALUES ('dispatch-nested-prompt', 'meeting-nested-prompt', 'workflow-nested-prom
   });
   assert.equal(nestedDrain.results[0].status, "acked");
   assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-nested-prompt' AND adapter='openclaw' AND status='acked'"), 1);
+  assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-nested-prompt' AND status='started'"), 0);
 }
 
 async function testRegistryRoutingRankAndDisperseResolution() {
