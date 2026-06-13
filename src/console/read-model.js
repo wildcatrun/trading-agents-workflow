@@ -3836,6 +3836,135 @@ LIMIT 120;`) : Promise.resolve([])
     };
   }
 
+  async commandPalette(query = {}) {
+    const generatedAt = new Date().toISOString();
+    const workflowLimit = clampLimit(query.workflowLimit || query.limit, 25, 80);
+    const agentLimit = clampLimit(query.agentLimit || query.limit, 25, 80);
+    const [workflows, runtimeAgents, health] = await Promise.all([
+      this.workflowList({ view: "", limit: workflowLimit }),
+      this.runtimeAgents(),
+      this.health()
+    ]);
+    const commands = [];
+    const pushCommand = (item = {}) => {
+      if (!item.id || !item.title || !item.target?.consoleView) return;
+      commands.push({
+        id: redactText(item.id),
+        group: redactText(item.group || "navigation"),
+        title: redactText(item.title),
+        subtitle: redactText(compactText(item.subtitle || "", 180)),
+        tone: redactText(item.tone || "neutral"),
+        keywords: (item.keywords || []).map((keyword) => redactText(keyword)).filter(Boolean).slice(0, 12),
+        target: redactConsoleValue(item.target),
+        sourceRefs: (item.sourceRefs || [])
+          .filter((ref) => ref?.id)
+          .map((ref) => ({
+            source: redactText(ref.source || ""),
+            field: redactText(ref.field || ""),
+            id: redactText(ref.id || "")
+          }))
+          .slice(0, 5)
+      });
+    };
+    [
+      ["nav.command", "views", "Command Center", "Global triage home", { consoleView: "command-center" }],
+      ["nav.agents", "views", "Agent Board", "Registry-first runtime and readiness view", { consoleView: "agent-board" }],
+      ["nav.kanban", "views", "Workflow Kanban", "Derived work board across workflow, dispatch, message_flow and Human Gate state", { consoleView: "kanban" }],
+      ["nav.evidence", "views", "Evidence Workspace", "Review package, incident closeout, readiness and export surface", { consoleView: "evidence-workspace" }],
+      ["nav.operations", "views", "Operations", "Dead-letter, queue pressure and governed preview audit", { consoleView: "operations" }],
+      ["nav.workflows", "views", "Workflow List", "Workflow detail, tabs and raw read model", { consoleView: "workflows" }]
+    ].forEach(([id, group, title, subtitle, target]) => pushCommand({
+      id,
+      group,
+      title,
+      subtitle,
+      target,
+      keywords: [title, subtitle, target.consoleView]
+    }));
+    for (const workflow of workflows.workflows || []) {
+      const workflowId = workflow.workflowId || "";
+      const status = workflow.status || "unknown";
+      const subtitle = workflow.summary || workflow.objective || workflow.workflowType || "";
+      pushCommand({
+        id: `workflow.open:${workflowId}`,
+        group: "workflows",
+        title: `Open ${workflowId}`,
+        subtitle,
+        tone: status,
+        target: { consoleView: "workflows", workflowId, tab: "overview" },
+        keywords: [workflowId, status, workflow.ownerAgent, workflow.currentPhase, workflow.currentDecision],
+        sourceRefs: [{ source: "workflow_runs", field: "workflow_id", id: workflowId }]
+      });
+      pushCommand({
+        id: `workflow.evidence:${workflowId}`,
+        group: "evidence",
+        title: `Evidence ${workflowId}`,
+        subtitle,
+        tone: status,
+        target: { consoleView: "evidence-workspace", workflowId },
+        keywords: [workflowId, "evidence", "readiness", "incident", "export"],
+        sourceRefs: [{ source: "workflow_runs", field: "workflow_id", id: workflowId }]
+      });
+      pushCommand({
+        id: `workflow.operations:${workflowId}`,
+        group: "operations",
+        title: `Operations ${workflowId}`,
+        subtitle,
+        tone: status,
+        target: { consoleView: "operations", workflowId },
+        keywords: [workflowId, "operations", "dead_letter", "queue", "audit"],
+        sourceRefs: [{ source: "workflow_runs", field: "workflow_id", id: workflowId }]
+      });
+      pushCommand({
+        id: `workflow.board:${workflowId}`,
+        group: "kanban",
+        title: `Board ${workflowId}`,
+        subtitle,
+        tone: status,
+        target: { consoleView: "kanban", workflowId },
+        keywords: [workflowId, "kanban", "board", "dispatch", "message_flow"],
+        sourceRefs: [{ source: "workflow_runs", field: "workflow_id", id: workflowId }]
+      });
+    }
+    for (const agent of (runtimeAgents.agents || []).slice(0, agentLimit)) {
+      const agentId = agent.agent_id || agent.agentId || "";
+      const agentKey = agent.agent_key || agent.agentKey || "";
+      const focusId = agentId || agentKey;
+      pushCommand({
+        id: `agent.open:${focusId}`,
+        group: "agents",
+        title: `Agent ${focusId}`,
+        subtitle: [agent.display_name || agent.displayName || "", agent.runtime || "", agent.role || ""].filter(Boolean).join(" / "),
+        tone: agent.status || "neutral",
+        target: { consoleView: "agent-board", agentId: focusId },
+        keywords: [agentId, agentKey, agent.display_name, agent.displayName, agent.role, agent.runtime, agent.platform],
+        sourceRefs: [{ source: "runtime_agents", field: "agent_key", id: agentKey }]
+      });
+      pushCommand({
+        id: `agent.board:${focusId}`,
+        group: "kanban",
+        title: `Agent Board ${focusId}`,
+        subtitle: [agent.display_name || agent.displayName || "", agent.runtime || ""].filter(Boolean).join(" / "),
+        tone: agent.status || "neutral",
+        target: { consoleView: "kanban", agentId: focusId },
+        keywords: [agentId, agentKey, "kanban", "board", agent.runtime, agent.platform],
+        sourceRefs: [{ source: "runtime_agents", field: "agent_key", id: agentKey }]
+      });
+    }
+    return {
+      schemaVersion: "workflow_console_command_palette.v1",
+      generatedAt,
+      source: "derived_read_model",
+      health,
+      summary: {
+        commands: commands.length,
+        workflows: (workflows.workflows || []).length,
+        agents: (runtimeAgents.agents || []).length
+      },
+      commands
+    };
+  }
+
   async runtimeCurrentState(query = {}) {
     const generatedAt = new Date().toISOString();
     if (!(await tableExists(this.paths.dbFile, "runtime_current_state"))) {

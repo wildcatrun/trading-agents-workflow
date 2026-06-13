@@ -15,6 +15,7 @@
       <form id="globalSearchForm" class="global-search" role="search">
         <input id="globalSearchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Search workflow, dispatch, agent, artifact..." />
         <button type="submit">Search</button>
+        <button id="commandPaletteButton" type="button">Jump</button>
       </form>
       <nav class="view-tabs" aria-label="Workflow views">
         <button data-console-view="command-center">Command</button>
@@ -79,6 +80,7 @@
       </section>
     </main>
     <div id="drawerRoot"></div>
+    <div id="paletteRoot"></div>
     <script src="/app.js" type="module"></script>
   </body>
 </html>

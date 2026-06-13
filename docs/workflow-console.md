@@ -123,7 +123,9 @@ Current version map:
   Slice B upgrades Command Center into a clickable triage home with blocker
   source refs and drilldowns into Operations or workflow detail evidence.
   Slice C adds URL-backed agent/card focus routing across Command Center,
-  Global Search, Agent Board, Kanban, and Evidence.
+  Global Search, Agent Board, Kanban, and Evidence. Slice D adds a read-only
+  command palette for fast jumps across views, workflows, agents, Kanban,
+  Evidence, and Operations.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

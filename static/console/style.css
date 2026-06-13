@@ -125,6 +125,71 @@ code {
   line-height: 1.4;
 }
 
+.command-palette {
+  position: fixed;
+  z-index: 80;
+  left: 50%;
+  top: 9vh;
+  transform: translateX(-50%);
+  width: min(720px, calc(100vw - 28px));
+  max-height: min(740px, calc(100vh - 80px));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 24px 80px rgb(17 24 39 / 22%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+
+.palette-head,
+.command-item,
+.command-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.palette-head {
+  justify-content: space-between;
+}
+
+.command-palette > input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.command-list {
+  display: grid;
+  gap: 6px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.command-item {
+  width: 100%;
+  justify-content: space-between;
+  text-align: left;
+  align-items: flex-start;
+  min-height: 54px;
+}
+
+.command-item strong,
+.command-item p {
+  overflow-wrap: anywhere;
+}
+
+.command-meta {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .workbench-controls {
   border: 1px solid var(--line-soft);
   border-radius: 8px;

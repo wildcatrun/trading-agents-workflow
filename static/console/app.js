@@ -15,6 +15,8 @@ const state = {
   sortMode: "age_desc",
   focusAgentId: "",
   focusCardId: "",
+  commandPalette: null,
+  commandPaletteQuery: "",
   config: null,
   operationsFilters: {
     kind: "",
@@ -100,6 +102,7 @@ const DRAWER_FOCUSABLE_SELECTOR = [
 ].join(",");
 
 let drawerReturnFocus = null;
+let paletteReturnFocus = null;
 
 function $(selector) {
   return document.querySelector(selector);
@@ -513,6 +516,154 @@ function closeDrawer() {
   setAppInert(false);
   if (drawerReturnFocus?.isConnected) drawerReturnFocus.focus();
   drawerReturnFocus = null;
+}
+
+function closeCommandPalette() {
+  $("#paletteRoot").replaceChildren();
+  setAppInert(false);
+  if (paletteReturnFocus?.isConnected) paletteReturnFocus.focus();
+  paletteReturnFocus = null;
+  state.commandPaletteQuery = "";
+}
+
+function commandText(command = {}) {
+  return [
+    command.id,
+    command.group,
+    command.title,
+    command.subtitle,
+    command.tone,
+    ...(command.keywords || []),
+    command.target?.workflowId,
+    command.target?.agentId,
+    command.target?.cardId,
+    command.target?.consoleView
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function filteredCommands() {
+  const commands = state.commandPalette?.commands || [];
+  const query = state.commandPaletteQuery.trim().toLowerCase();
+  if (!query) return commands.slice(0, 80);
+  const terms = query.split(/\s+/).filter(Boolean);
+  return commands.filter((command) => terms.every((term) => commandText(command).includes(term))).slice(0, 80);
+}
+
+function paletteFocusableElements() {
+  const panel = document.querySelector(".command-palette");
+  if (!panel) return [];
+  return Array.from(panel.querySelectorAll(DRAWER_FOCUSABLE_SELECTOR)).filter((element) => {
+    if (element.disabled) return false;
+    if (element.getAttribute("aria-hidden") === "true") return false;
+    return element.offsetParent !== null || element === document.activeElement;
+  });
+}
+
+function trapPaletteFocus(event) {
+  const panel = document.querySelector(".command-palette");
+  if (!panel || event.key !== "Tab") return;
+  const focusable = paletteFocusableElements();
+  if (!focusable.length) {
+    event.preventDefault();
+    panel.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+async function runCommand(command = {}) {
+  closeCommandPalette();
+  await openCommandTarget(command.target || {});
+}
+
+function renderCommandPalette() {
+  const root = $("#paletteRoot");
+  const commands = filteredCommands();
+  const input = h("input", {
+    type: "search",
+    autocomplete: "off",
+    spellcheck: "false",
+    value: state.commandPaletteQuery,
+    placeholder: "Jump to view, workflow, agent...",
+    onInput: (event) => {
+      state.commandPaletteQuery = event.target.value;
+      renderCommandPalette();
+    },
+    onKeydown: async (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (commands[0]) await runCommand(commands[0]);
+      }
+    }
+  });
+  const body = commands.length
+    ? h("div", { className: "command-list", role: "listbox" }, commands.map((command, index) => h("button", {
+      type: "button",
+      className: "command-item",
+      role: "option",
+      "aria-selected": index === 0 ? "true" : "false",
+      onClick: () => runCommand(command)
+    }, [
+      h("div", {}, [
+        h("strong", {}, command.title),
+        h("p", { className: "muted" }, command.subtitle || command.id)
+      ]),
+      h("div", { className: "command-meta" }, [
+        chip(command.group || "command", "neutral"),
+        chip(command.tone || "neutral", toneFor(command.tone))
+      ])
+    ]))) : emptyState("No matching commands.");
+  const panel = h("section", { className: "command-palette", role: "dialog", "aria-modal": "true", "aria-label": "Command palette", tabindex: "-1" }, [
+    h("div", { className: "palette-head" }, [
+      h("div", {}, [
+        h("strong", {}, "Jump Console"),
+        h("p", { className: "muted" }, `${state.commandPalette?.summary?.commands || 0} commands`)
+      ]),
+      h("button", { type: "button", onClick: closeCommandPalette, "aria-label": "Close command palette" }, "Close")
+    ]),
+    input,
+    body
+  ]);
+  root.replaceChildren(h("div", { className: "drawer-backdrop", onClick: closeCommandPalette }), panel);
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+async function openCommandPalette() {
+  closeDrawer();
+  paletteReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  setAppInert(true);
+  state.commandPaletteQuery = "";
+  state.commandPalette = null;
+  $("#paletteRoot").replaceChildren(h("div", { className: "drawer-backdrop", onClick: closeCommandPalette }), h("section", { className: "command-palette loading", role: "dialog", "aria-modal": "true", "aria-label": "Command palette", tabindex: "-1" }, [
+    h("div", { className: "palette-head" }, [
+      h("strong", {}, "Jump Console"),
+      h("button", { type: "button", onClick: closeCommandPalette, "aria-label": "Close command palette" }, "Close")
+    ]),
+    emptyState("Loading commands...")
+  ]));
+  try {
+    state.commandPalette = await api("/api/command-palette");
+    renderCommandPalette();
+  } catch (error) {
+    const closeButton = h("button", { type: "button", onClick: closeCommandPalette, "aria-label": "Close command palette" }, "Close");
+    $("#paletteRoot").replaceChildren(h("div", { className: "drawer-backdrop", onClick: closeCommandPalette }), h("section", { className: "command-palette", role: "dialog", "aria-modal": "true", "aria-label": "Command palette", tabindex: "-1" }, [
+      h("div", { className: "palette-head" }, [
+        h("strong", {}, "Jump Console"),
+        closeButton
+      ]),
+      h("div", { className: "error" }, error.message)
+    ]));
+    closeButton.focus();
+  }
 }
 
 function drawerFocusableElements() {
@@ -1389,6 +1540,17 @@ async function openSearchResult(result = {}) {
 }
 
 async function openCommandTarget(target = {}) {
+  if (target.consoleView === "workflows" && !target.workflowId) {
+    state.consoleView = "workflows";
+    state.selectedWorkflowId = "";
+    state.detail = null;
+    state.tab = "overview";
+    clearFocusState();
+    setViewButtons();
+    writeUrlState();
+    await loadWorkflows();
+    return;
+  }
   if (target.consoleView === "workflows" && target.workflowId) {
     await openWorkflowTab(target.workflowId, target.tab || "overview");
     return;
@@ -3542,12 +3704,25 @@ $("#refreshButton").addEventListener("click", async () => {
   await loadWorkflows();
 });
 $("#previewButton").addEventListener("click", previewSupervise);
+$("#commandPaletteButton").addEventListener("click", openCommandPalette);
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeDrawer();
-  else if (event.key === "Tab") trapDrawerFocus(event);
+  const paletteOpen = Boolean(document.querySelector(".command-palette"));
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    openCommandPalette();
+    return;
+  }
+  if (event.key === "Escape") {
+    if (paletteOpen) closeCommandPalette();
+    else closeDrawer();
+  } else if (event.key === "Tab") {
+    if (paletteOpen) trapPaletteFocus(event);
+    else trapDrawerFocus(event);
+  }
 });
 window.addEventListener("popstate", async () => {
   closeDrawer();
+  closeCommandPalette();
   suppressUrlWrite = true;
   try {
     readUrlState();

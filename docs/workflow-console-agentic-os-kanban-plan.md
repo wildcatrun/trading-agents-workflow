@@ -1150,6 +1150,20 @@ Implemented Slice C: Cross-Surface Focus Routing
   Command Center blockers, so agent results enter a focused Agent Board and
   future console targets share one navigation path.
 
+Implemented Slice D: Command Palette / Jump Console
+
+- Added a read-only `/api/command-palette` read-model surface that derives
+  redacted jump commands from top-level views, workflow rows, and
+  `runtime_agents`.
+- Added a `Jump` control and keyboard-openable command palette to the console.
+  It filters commands client-side and routes execution through the existing
+  `openCommandTarget()` path, so workflow, agent, Kanban, Evidence, and
+  Operations targets share the same governed URL/focus behavior as Command
+  Center and Global Search.
+- The palette is navigation-only: it does not expose write actions, does not
+  create a second scheduler, and keeps preview/write safety boundaries
+  unchanged.
+
 ## Test Plan
 
 Required checks:
@@ -1197,6 +1211,9 @@ Frontend smoke:
 - verify top-level Operations renders global audit/dead-letter state, restores
   URL filters, scopes by workflow deep link, disables workflow preview controls
   when unscoped, and remains mobile-readable;
+- verify command palette opens from the header and keyboard, filters workflow
+  and agent commands, routes through shared target handling, closes on Escape,
+  and remains mobile-readable without page-level horizontal overflow;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 

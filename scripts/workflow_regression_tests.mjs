@@ -6980,6 +6980,13 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   assert.equal(JSON.stringify(command.triage).includes("triage-critical-secret"), false);
   assert.equal(JSON.stringify(command.triage).includes("leakabc"), false);
   assert.equal(Boolean(command.triage.blockers.some((blocker) => blocker.id === "max_attempt_dispatch:dispatch-token-[redacted]" && blocker.target?.workflowId === `${workflowId}-api-key-[redacted]`)), true);
+  const palette = await readModel.commandPalette();
+  assert.equal(palette.schemaVersion, "workflow_console_command_palette.v1");
+  assert.equal(palette.commands.some((commandItem) => commandItem.id === "nav.command" && commandItem.target.consoleView === "command-center"), true);
+  assert.equal(palette.commands.some((commandItem) => commandItem.id === `workflow.open:${workflowId}` && commandItem.target.workflowId === workflowId && commandItem.target.tab === "overview"), true);
+  assert.equal(palette.commands.some((commandItem) => commandItem.id === `workflow.evidence:${workflowId}` && commandItem.target.consoleView === "evidence-workspace"), true);
+  assert.equal(palette.commands.some((commandItem) => commandItem.id === "agent.open:cat_body" && commandItem.target.consoleView === "agent-board" && commandItem.target.agentId === "cat_body"), true);
+  assert.equal(JSON.stringify(palette).includes("leakabc"), false);
 
   const agentBoard = await readModel.agentBoard();
   assert.equal(agentBoard.schemaVersion, "workflow_console_agent_board.v1");
