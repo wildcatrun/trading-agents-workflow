@@ -8172,6 +8172,33 @@ async function testWorkflowConsoleConfigOperatorPolicyModes() {
   assert.equal(allowWritesConfig.allowedConsoleViews.includes("operations"), true);
 }
 
+async function testWorkflowConsoleStaticContextTrailContract() {
+  const [html, app, css] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), "static/console/index.html"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "static/console/app.js"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "static/console/style.css"), "utf8")
+  ]);
+  assert.equal(html.includes('id="contextTrail"'), true);
+  assert.equal(html.includes('aria-label="Operator context"'), true);
+  assert.equal(app.includes("function updateContextTrail"), true);
+  assert.equal(app.includes("CONSOLE_VIEW_LABELS"), true);
+  assert.equal(app.includes('const urlWorkflowViews = ["workflows", "evidence-workspace", "operations", "kanban"]'), true);
+  assert.equal(app.includes("const canShowWorkflowContext"), true);
+  assert.equal(app.includes("let shouldReplaceWorkflowUrl = false"), true);
+  assert.equal(app.includes("if (shouldReplaceWorkflowUrl) writeUrlState({ replace: true })"), true);
+  assert.equal(app.includes('state.consoleView === "search" && state.searchQuery'), true);
+  assert.equal(app.includes('["agent-board", "kanban"].includes(state.consoleView) && state.focusAgentId'), true);
+  assert.equal(app.includes('state.consoleView === "kanban" && state.focusCardId'), true);
+  assert.equal(app.includes('state.consoleView === "operations" || (state.consoleView === "workflows" && state.tab === "operations")'), true);
+  assert.equal(app.includes("Copy Link"), true);
+  assert.equal(app.includes('copyText(currentUrl, "Console link")'), true);
+  assert.equal(app.includes("state.config?.actionMode"), true);
+  assert.equal(css.includes(".context-trail"), true);
+  assert.equal(css.includes(".context-crumb"), true);
+  assert.equal(css.includes("flex-wrap: wrap"), true);
+  assert.equal(css.includes("flex: 1 1 260px"), true);
+}
+
 try {
   requireSqliteCli();
   const tests = [
@@ -8221,6 +8248,7 @@ try {
     ["workflow console static system status contract", testWorkflowConsoleStaticSystemStatusContract],
     ["workflow console static action gate contract", testWorkflowConsoleStaticActionGateContract],
     ["workflow console config operator policy modes", testWorkflowConsoleConfigOperatorPolicyModes],
+    ["workflow console static context trail contract", testWorkflowConsoleStaticContextTrailContract],
     ["workflow console agentic surfaces", testWorkflowConsoleAgenticSurfaces],
     ["workflow health terminal failed dispatch degraded", testWorkflowHealthTerminalFailedDispatchIsDegraded],
     ["workflow health open incidents visible", testWorkflowHealthOpenIncidentsAreVisible],

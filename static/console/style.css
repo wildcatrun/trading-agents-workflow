@@ -104,6 +104,51 @@ code {
   flex-wrap: wrap;
 }
 
+.context-trail {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 8px;
+}
+
+.context-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.context-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-height: 28px;
+  border: 1px solid #d8dee8;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 4px 7px;
+  font-size: 12px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.context-label {
+  color: var(--muted);
+}
+
+.context-copy {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
 .global-search {
   flex: 1 1 360px;
   max-width: 520px;
@@ -939,6 +984,15 @@ code {
   .topbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .context-trail {
+    align-items: stretch;
+  }
+
+  .context-copy {
+    width: 100%;
+    margin-left: 0;
   }
 
   .global-search {

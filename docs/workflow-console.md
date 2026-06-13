@@ -134,7 +134,8 @@ Current version map:
   boundaries, redaction policy, readiness findings, and allowed views/queues.
   Slice H adds visible Action Gate and Export Gate panels around intervention
   previews and evidence downloads, making role/policy/read-only/audit evidence
-  explicit in the GUI.
+  explicit in the GUI. Slice I adds an operator context trail with current view,
+  workflow, focus, filters, mode, and copyable deep link.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

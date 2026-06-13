@@ -1214,6 +1214,17 @@ Implemented Slice H: Visible Action Gate And Export Gate Evidence
   download policy, workflow scope, Human Gate readiness, and incident-preview
   prerequisites before evidence export and closeout preview controls.
 
+Implemented Slice I: Operator Context Trail And Deep Link Copy
+
+- Added a persistent operator context trail below the top navigation. It
+  summarizes current view, workflow, tab, agent focus, card focus, search,
+  workbench filters, Activity scope, Operations filters, and action mode.
+- Added a `Copy Link` control that copies the current URL after URL state has
+  been normalized, making shareable incident/debug links visible without
+  asking operators to inspect the browser address bar.
+- The context trail is observational only. It does not add write controls,
+  scheduler behavior, runtime dispatch, or workflow business-state mutation.
+
 ## Test Plan
 
 Required checks:
@@ -1277,6 +1288,9 @@ Frontend smoke:
 - verify Action Gate and Export Gate panels render current role/policy,
   read-only or allowlisted mode, scope requirements, audit surface, redacted
   export policy, and disabled-write boundaries next to preview/export controls;
+- verify operator context trail updates across top-level views, scoped
+  workflow links, search/filter/focus state, action mode, and copyable deep
+  links without creating page-level horizontal overflow;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1315,7 +1329,8 @@ unless plugin runtime loading changes require it separately.
   audit, and mobile inspection. Slice A promotes Operations into a top-level
   global/scoped audit workspace while preserving preview-only action safety.
   Slice H makes preview/export policy gates visible in the GUI so operator
-  actions are explainable before execution.
+  actions are explainable before execution. Slice I makes the active console
+  context and shareable deep link visible at all times.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

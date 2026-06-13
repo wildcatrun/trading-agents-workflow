@@ -59,6 +59,17 @@ const SEVERITY_RANK = {
   neutral: 1,
   info: 1
 };
+const CONSOLE_VIEW_LABELS = {
+  "command-center": "Command Center",
+  activity: "Activity Feed",
+  "agent-board": "Agent Board",
+  kanban: "Kanban",
+  "evidence-workspace": "Evidence",
+  operations: "Operations",
+  system: "System",
+  workflows: "Workflows",
+  search: "Search"
+};
 
 let suppressUrlWrite = false;
 let liveRefreshTimer = null;
@@ -253,6 +264,47 @@ function statCard(label, value, detail = "") {
   ]);
 }
 
+function updateContextTrail() {
+  const root = $("#contextTrail");
+  if (!root) return;
+  const urlWorkflowViews = ["workflows", "evidence-workspace", "operations", "kanban"];
+  const canShowWorkflowContext = Boolean(
+    state.selectedWorkflowId &&
+      (urlWorkflowViews.includes(state.consoleView) ||
+        (state.consoleView === "activity" && state.scopedActivity))
+  );
+  const canShowAgentContext = Boolean(["agent-board", "kanban"].includes(state.consoleView) && state.focusAgentId);
+  const canShowCardContext = Boolean(state.consoleView === "kanban" && state.focusCardId);
+  const operationsFilterUrl = state.consoleView === "operations" || (state.consoleView === "workflows" && state.tab === "operations");
+  const crumbs = [
+    { label: "View", value: CONSOLE_VIEW_LABELS[state.consoleView] || state.consoleView },
+    state.consoleView === "workflows" ? { label: "Queue", value: state.view } : null,
+    canShowWorkflowContext ? { label: "Workflow", value: state.selectedWorkflowId } : null,
+    state.tab && state.consoleView === "workflows" && state.tab !== "overview" ? { label: "Tab", value: state.tab } : null,
+    canShowAgentContext ? { label: "Agent", value: state.focusAgentId } : null,
+    canShowCardContext ? { label: "Card", value: state.focusCardId } : null,
+    state.consoleView === "search" && state.searchQuery ? { label: "Search", value: state.searchQuery } : null,
+    isWorkbenchView() && state.workbenchFilter !== "all" ? { label: "Filter", value: state.workbenchFilter } : null,
+    isWorkbenchView() && state.severityFilter !== "all" ? { label: "Severity", value: state.severityFilter } : null,
+    isWorkbenchView() && state.sortMode !== "age_desc" ? { label: "Sort", value: state.sortMode } : null,
+    state.consoleView === "activity" ? { label: "Scope", value: state.scopedActivity ? "workflow" : "global" } : null,
+    operationsFilterUrl && state.operationsFilters.kind ? { label: "Kind", value: state.operationsFilters.kind } : null,
+    operationsFilterUrl && state.operationsFilters.severity ? { label: "Op Severity", value: state.operationsFilters.severity } : null,
+    operationsFilterUrl && state.operationsFilters.status ? { label: "Op Status", value: state.operationsFilters.status } : null,
+    state.config?.actionMode ? { label: "Mode", value: state.config.actionMode } : null
+  ].filter(Boolean);
+  const currentUrl = window.location.href;
+  root.replaceChildren(
+    h("div", { className: "context-crumbs" }, crumbs.map((crumb) => (
+      h("span", { className: "context-crumb" }, [
+        h("span", { className: "context-label" }, crumb.label),
+        h("strong", {}, short(crumb.value, 72))
+      ])
+    ))),
+    h("button", { type: "button", className: "context-copy", onClick: () => copyText(currentUrl, "Console link") }, "Copy Link")
+  );
+}
+
 function actionGatePanel(title, rows = []) {
   return h("div", { className: "action-gate-panel" }, [
     h("div", { className: "workflow-title" }, [
@@ -330,6 +382,7 @@ function writeUrlState({ replace = false } = {}) {
   if (nextUrl !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
     window.history[method]({}, "", nextUrl);
   }
+  updateContextTrail();
 }
 
 function isWorkbenchView() {
@@ -1034,6 +1087,7 @@ function setViewButtons() {
     if (button.dataset.consoleView) button.classList.toggle("active", button.dataset.consoleView === state.consoleView);
     else button.classList.toggle("active", state.consoleView === "workflows" && button.dataset.view === state.view);
   });
+  updateContextTrail();
 }
 
 function setTabButtons() {
@@ -1046,19 +1100,25 @@ async function loadConfig() {
   const config = await api("/api/config");
   state.config = config;
   $("#configLine").textContent = `${config.rootDir} | ${config.actionMode} | ${formatDate(config.serverTime)}`;
+  updateContextTrail();
 }
 
 async function loadWorkflows() {
   setActionStatus("Loading workflows...", "neutral");
   const data = await api(`/api/workflows?view=${encodeURIComponent(state.view)}&limit=100`);
   state.workflows = data.workflows || [];
+  const urlWorkflowViews = ["workflows", "evidence-workspace", "operations", "kanban"];
+  let shouldReplaceWorkflowUrl = false;
   if (!state.selectedWorkflowId && !["activity", "operations"].includes(state.consoleView) && state.workflows[0]) {
     state.selectedWorkflowId = state.workflows[0].workflowId;
+    shouldReplaceWorkflowUrl = urlWorkflowViews.includes(state.consoleView);
   }
   if (state.consoleView === "workflows" && state.selectedWorkflowId && !state.workflows.some((item) => item.workflowId === state.selectedWorkflowId)) {
     state.selectedWorkflowId = state.workflows[0]?.workflowId || "";
     state.detail = null;
+    shouldReplaceWorkflowUrl = true;
   }
+  if (shouldReplaceWorkflowUrl) writeUrlState({ replace: true });
   renderMetrics(state.workflows);
   renderWorkflowList();
   renderDetailHeader();
@@ -4031,6 +4091,7 @@ readUrlState();
 setViewButtons();
 setTabButtons();
 updateLiveControls();
+updateContextTrail();
 try {
   await loadConfig();
   await loadWorkflows();
