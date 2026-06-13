@@ -3356,7 +3356,7 @@ LIMIT ${limit};`);
           summary: row.last_error || row.failure_type || row.prompt,
           lastEventAt: row.updated_at || row.created_at,
           missingEvidence: ["acked", "completed", "runtime_completed"].includes(String(row.status || "")) ? [] : ["runtime_receipt"],
-          previewActions: ["workflow.rerun.dispatch.preview"]
+          previewActions: ["workflow.rerun.agent.preview"]
         }));
       }
     }

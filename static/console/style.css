@@ -94,6 +94,7 @@ code {
 .tabs,
 .panel-head,
 .actions,
+.card-actions,
 .workflow-meta,
 .mini-counts,
 .quick-stats {
@@ -431,6 +432,19 @@ code {
 .kanban-card.warning {
   border-color: #e7cf94;
   background: #fffdf6;
+}
+
+.card-actions {
+  align-items: stretch;
+  margin-top: 2px;
+}
+
+.card-actions button {
+  min-height: 30px;
+  padding: 5px 7px;
+  font-size: 12px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .kanban-empty {

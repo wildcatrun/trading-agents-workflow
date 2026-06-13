@@ -9,6 +9,7 @@ import path from "node:path";
 import { workflowChildPayload } from "../src/console/server.js";
 import { WorkflowActionGateway } from "../src/console/action-gateway.js";
 import { WorkflowReadModel } from "../src/console/read-model.js";
+import { kanbanPreviewActionModel } from "../static/console/preview-actions.js";
 import {
   DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS,
   controlLoopWorkerKillAfterMs
@@ -6920,6 +6921,20 @@ VALUES ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-q
   assert.equal(kanban.summary.byColumn.failed > 0, true);
   assert.equal(kanban.columns.find((column) => column.id === "waiting_receipt")?.cards.some((card) => card.source === "message_flows" && card.sourceId === "flow-waiting-receipt"), true);
   assert.equal(kanban.columns.find((column) => column.id === "working")?.cards.some((card) => card.source === "runtime_current_state" && card.sourceId === "hermers:cat_body"), true);
+  const dispatchPreviewCard = kanban.columns.flatMap((column) => column.cards).find((card) => card.source === "mixed_meeting_dispatches" && card.dispatchId);
+  assert.equal(dispatchPreviewCard?.previewActions.includes("workflow.rerun.agent.preview"), true);
+  assert.equal(dispatchPreviewCard?.previewActions.includes("workflow.rerun.dispatch.preview"), false);
+  const dispatchPreviewAction = kanbanPreviewActionModel(dispatchPreviewCard, "workflow.rerun.dispatch.preview");
+  assert.equal(dispatchPreviewAction.action, "workflow.rerun.agent.preview");
+  assert.equal(dispatchPreviewAction.enabled, true);
+  assert.equal(dispatchPreviewAction.workflowId, workflowId);
+  assert.equal(dispatchPreviewAction.payload.dispatchId, dispatchPreviewCard.dispatchId);
+  const missingWorkflowPreviewAction = kanbanPreviewActionModel({ ...dispatchPreviewCard, workflowId: "" }, "workflow.rerun.agent.preview");
+  assert.equal(missingWorkflowPreviewAction.enabled, false);
+  assert.equal(missingWorkflowPreviewAction.reason, "workflowId is required");
+  const missingOutboxPreviewAction = kanbanPreviewActionModel({ source: "telegram_outbox", sourceId: "" }, "telegram.outbox.delivery.preview");
+  assert.equal(missingOutboxPreviewAction.enabled, false);
+  assert.equal(missingOutboxPreviewAction.reason, "outboxId is required");
   const globalKanban = await readModel.kanban({});
   const globalIncidentCard = globalKanban.columns.flatMap((column) => column.cards).find((card) => card.source === "incident_states" && card.sourceId === "incident-console");
   assert.equal(globalIncidentCard?.workflowId, workflowId);

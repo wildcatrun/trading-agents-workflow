@@ -1,3 +1,5 @@
+import { kanbanPreviewActionModel } from "./preview-actions.js";
+
 const state = {
   consoleView: "command-center",
   view: "active",
@@ -544,8 +546,40 @@ function renderKanbanCard(card) {
       card.dispatchId ? h("span", {}, `dispatch ${card.dispatchId}`) : null,
       card.flowId ? h("span", {}, `flow ${card.flowId}`) : null
     ]),
-    (card.missingEvidence || []).length ? h("div", { className: "chip-list" }, card.missingEvidence.map((item) => chip(item, "warning"))) : null
+    (card.missingEvidence || []).length ? h("div", { className: "chip-list" }, card.missingEvidence.map((item) => chip(item, "warning"))) : null,
+    renderKanbanPreviewActions(card)
   ]);
+}
+
+function renderKanbanPreviewActions(card = {}) {
+  const actions = (card.previewActions || [])
+    .map((action) => kanbanPreviewActionSpec(card, action))
+    .filter(Boolean);
+  if (!actions.length) return null;
+  return h("div", { className: "card-actions" }, actions.map((spec) => h("button", {
+    type: "button",
+    disabled: !spec.enabled,
+    title: spec.reason || spec.label,
+    onClick: spec.enabled ? spec.onClick : undefined
+  }, spec.label)));
+}
+
+function kanbanPreviewActionSpec(card = {}, action = "") {
+  const model = kanbanPreviewActionModel(card, action);
+  if (model.action === "workflow.supervise.preview") return { ...model, onClick: () => previewSupervise(model.workflowId) };
+  if (model.action === "workflow.rerun.agent.preview") {
+    return {
+      ...model,
+      onClick: () => previewIntervention("workflow.rerun.agent.preview", {
+        dispatchId: model.payload.dispatchId || "",
+        runtimeRunId: model.payload.runtimeRunId || "",
+        agentId: model.payload.agentId || ""
+      }, model.workflowId)
+    };
+  }
+  if (model.action === "telegram.outbox.delivery.preview") return { ...model, onClick: () => previewTelegramOutboxDelivery(model.outboxId) };
+  if (model.action === "telegram.outbox.requeue.preview") return { ...model, onClick: () => previewTelegramOutboxRequeue(model.outboxId) };
+  return model;
 }
 
 function renderOverview(data) {
@@ -1800,6 +1834,7 @@ function renderEvidenceDesk(data) {
     section("Missing Evidence", missing.length
       ? h("div", { className: "chip-list" }, missing.map((item) => chip(item, "warning")))
       : emptyState("No missing evidence detected by the derived desk.")),
+    section("Governed Preview Actions", renderEvidenceDeskPreviewActions(data)),
     section("Human Gate Readiness", h("div", { className: "content-grid" }, [
       renderTable([
         { label: "Status", render: (row) => chip(row.status) },
@@ -1860,6 +1895,65 @@ function renderEvidenceDesk(data) {
       jsonBlock(data)
     ]))
   ]));
+}
+
+function renderEvidenceDeskPreviewActions(data = {}) {
+  const workflowId = data.workflowId || state.selectedWorkflowId || "";
+  const incident = data.incidentCloseout?.selectedIncident || null;
+  const outboxRows = (data.outbox?.outbox || [])
+    .filter((row) => ["queued", "failed", "delivering"].includes(String(row.status || "")))
+    .slice(0, 3);
+  const buttons = [
+    h("button", {
+      type: "button",
+      disabled: !workflowId,
+      title: workflowId ? "Preview supervise package through WorkflowActionGateway" : "workflowId is required",
+      onClick: workflowId ? () => previewSupervise(workflowId) : undefined
+    }, "Preview Supervise"),
+    h("button", {
+      type: "button",
+      disabled: !workflowId,
+      title: workflowId ? "Open the read-only evidence pack" : "workflowId is required",
+      onClick: workflowId ? () => loadWorkflowEvidencePack(workflowId) : undefined
+    }, "Open Evidence Pack")
+  ];
+  if (incident?.incidentId) {
+    buttons.push(
+      h("button", {
+        type: "button",
+        disabled: !workflowId,
+        title: workflowId ? `Workflow ${workflowId} / Incident ${incident.incidentId}` : "workflowId is required",
+        onClick: workflowId ? () => previewIncidentCloseout("workflow.incident.closeout.cat_claw_report.preview", incident.incidentId, {}, workflowId) : undefined
+      }, "Preview Cat Claw Report"),
+      h("button", {
+        type: "button",
+        disabled: !workflowId,
+        title: workflowId ? `Workflow ${workflowId} / Incident ${incident.incidentId}` : "workflowId is required",
+        onClick: workflowId ? () => previewIncidentCloseout("workflow.incident.closeout.human_gate_package.preview", incident.incidentId, {}, workflowId) : undefined
+      }, "Preview HGate Package")
+    );
+  }
+  for (const row of outboxRows) {
+    const outboxId = row.outboxId || "";
+    buttons.push(
+      h("button", {
+        type: "button",
+        disabled: !outboxId,
+        title: outboxId ? `Outbox ${outboxId}` : "outboxId is required",
+        onClick: outboxId ? () => previewTelegramOutboxDelivery(outboxId) : undefined
+      }, `Preview Delivery ${short(outboxId || "missing-outbox", 18)}`),
+      h("button", {
+        type: "button",
+        disabled: !outboxId,
+        title: outboxId ? `Outbox ${outboxId}` : "outboxId is required",
+        onClick: outboxId ? () => previewTelegramOutboxRequeue(outboxId) : undefined
+      }, `Preview Requeue ${short(outboxId || "missing-outbox", 18)}`)
+    );
+  }
+  return h("div", { className: "stack" }, [
+    h("div", { className: "actions" }, buttons),
+    h("p", { className: "muted" }, "Preview only. These controls generate governed preview/read packages and audit rows where applicable; they do not mutate workflow state or send Telegram.")
+  ]);
 }
 
 function renderEvidencePack(data) {
@@ -2024,8 +2118,8 @@ function renderSupervisePreview(response) {
   setDetailBody(body);
 }
 
-async function previewSupervise() {
-  if (!state.selectedWorkflowId) return;
+async function previewSupervise(workflowId = state.selectedWorkflowId) {
+  if (!workflowId) return;
   setActionStatus("Preview running...", "neutral");
   try {
     const result = await api("/api/actions", {
@@ -2035,7 +2129,7 @@ async function previewSupervise() {
         actor: "workflow-console",
         reason: "console preview",
         payload: {
-          workflowId: state.selectedWorkflowId,
+          workflowId,
           autoDispatch: true,
           drain: false,
           autoReport: true
@@ -2051,8 +2145,8 @@ async function previewSupervise() {
   }
 }
 
-async function previewIntervention(action, extraPayload = {}) {
-  if (!state.selectedWorkflowId) return;
+async function previewIntervention(action, extraPayload = {}, workflowId = state.selectedWorkflowId) {
+  if (!workflowId) return;
   setActionStatus("Intervention preview running...", "neutral");
   try {
     const result = await api("/api/actions", {
@@ -2062,7 +2156,7 @@ async function previewIntervention(action, extraPayload = {}) {
         actor: "workflow-console",
         reason: "console controlled intervention preview",
         payload: {
-          workflowId: state.selectedWorkflowId,
+          workflowId,
           ...extraPayload
         }
       })
@@ -2233,8 +2327,8 @@ async function previewTelegramOutboxRequeuePackage(outboxId = "") {
   }
 }
 
-async function previewIncidentCloseout(action, incidentId = "", extraPayload = {}) {
-  if (!state.selectedWorkflowId) return;
+async function previewIncidentCloseout(action, incidentId = "", extraPayload = {}, workflowId = state.selectedWorkflowId) {
+  if (!workflowId) return;
   setActionStatus("Closeout package preview running...", "neutral");
   try {
     const result = await api("/api/actions", {
@@ -2244,7 +2338,7 @@ async function previewIncidentCloseout(action, incidentId = "", extraPayload = {
         actor: "workflow-console",
         reason: "console incident closeout package preview",
         payload: {
-          workflowId: state.selectedWorkflowId,
+          workflowId,
           incidentId,
           ...extraPayload
         }
