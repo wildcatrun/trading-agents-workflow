@@ -6577,6 +6577,127 @@ VALUES
   assert.equal(permission.readOnly, true);
 }
 
+async function testWorkflowConsoleAgenticSurfaces() {
+  const root = await tempRoot("workflow-console-agentic-surfaces");
+  await runAction(root, { action: "workflow.init" });
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = "wf-console-agentic";
+  sqliteExec(dbFile, `
+INSERT INTO workflow_runs(workflow_id, workflow_type, status, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
+VALUES ('wf-console-agentic', 'regression', 'active', 'main', 'console agentic surface regression', 'render command center and kanban state', 'all console surfaces expose stable read models', 'manual stop', 'execute', 'observe', '{}', '2026-06-13T00:00:00.000Z', '2026-06-13T00:00:10.000Z');
+INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, platform, execution_adapter, im_ingress_owner, im_ingress_adapter, workflow_ingress_adapter, im_identity, execution_identity, return_policy, can_receive_dispatch, can_start_workflow, gateway_proxy_allowed, routing_policy_json, endpoint_ref, capabilities_json, metadata_json, created_at, updated_at)
+VALUES
+  ('hermers:cat_body', 'hermers', 'cat_body', '猫之体', 'developer', 'active', 'hermers', 'acp', 'hermers', 'telegram', 'acp', 'catbody', 'hermers_acp', 'silent', 1, 1, 0, '{}', 'hermes-profile:catbody', '{}', '{}', '2026-06-13T00:00:00.000Z', '2026-06-13T00:00:01.000Z'),
+  ('openclaw:cat_claw', 'openclaw', 'cat_claw', '猫爪', 'secretary', 'active', 'openclaw', 'openclaw', 'openclaw', 'telegram', 'openclaw_im', 'cat_claw', 'openclaw_agent', 'report_to_flashcat', 1, 0, 0, '{}', 'openclaw-agent:cat_claw', '{}', '{}', '2026-06-13T00:00:00.000Z', '2026-06-13T00:00:01.000Z');
+INSERT INTO readiness_snapshots(snapshot_id, status, checked_at, planes_json, findings_json, payload_json)
+VALUES ('readiness-console-agentic', 'degraded', '2026-06-13T00:00:15.000Z',
+  '{"runtime":{"hermersProfileModes":{"profiles":{"catbody":{"observedMode":"warm","source":"fixture"},"catclaw":{"observedMode":"warm","source":"must_not_match"},"cat_claw":{"observedMode":"warm","source":"must_not_match"}}}}}',
+  '[{"key":"fixture_warning","severity":"warning"}]',
+  '{}');
+INSERT INTO workflow_tasks(task_id, workflow_id, parent_task_id, phase, owner_agent, runtime, agent_id, task_type, status, priority, depends_on_json, expected_artifact, actual_artifact_ref, receipt_required, human_gate_required, summary, prompt, payload_json, blocked_reason, created_by, created_at, due_at, started_at, completed_at, updated_at)
+VALUES
+  ('task-inbox', 'wf-console-agentic', '', 'plan', 'main', 'openclaw', 'cat_claw', 'review', 'created', 'normal', '[]', '', '', 1, 0, 'Cat Claw review draft', '', '{}', '', 'main', '2026-06-13T00:00:01.000Z', '', '', '', '2026-06-13T00:00:01.000Z'),
+  ('task-working', 'wf-console-agentic', '', 'execute', 'cat_body', 'hermers', 'cat_body', 'implementation', 'in_progress', 'high', '[]', 'artifact://console-work', '', 1, 0, 'Cat Body implements console surface', '', '{}', '', 'main', '2026-06-13T00:00:02.000Z', '', '2026-06-13T00:00:03.000Z', '', '2026-06-13T00:00:12.000Z'),
+  ('task-waiting-human', 'wf-console-agentic', '', 'gate', 'cat_claw', 'openclaw', 'cat_claw', 'human_gate', 'in_progress', 'high', '[]', '', '', 1, 1, 'Human Gate waiting for Flashcat', '', '{}', '', 'main', '2026-06-13T00:00:03.000Z', '', '2026-06-13T00:00:04.000Z', '', '2026-06-13T00:00:13.000Z'),
+  ('task-done', 'wf-console-agentic', '', 'verify', 'cat_body', 'hermers', 'cat_body', 'verification', 'done', 'normal', '[]', 'artifact://console-verification', 'artifact://console-verification', 1, 0, 'Verification complete', '', '{}', '', 'main', '2026-06-13T00:00:04.000Z', '', '2026-06-13T00:00:05.000Z', '2026-06-13T00:00:08.000Z', '2026-06-13T00:00:14.000Z'),
+  ('task-blocked', 'wf-console-agentic', '', 'repair', 'cat_body', 'hermers', 'cat_body', 'repair', 'blocked', 'high', '[]', '', '', 1, 0, 'Blocked task', '', '{}', 'fixture blocker', 'main', '2026-06-13T00:00:05.000Z', '', '', '', '2026-06-13T00:00:15.000Z');
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES
+  ('dispatch-queued', 'wf-console-agentic', 'wf-console-agentic', 'trace-dispatch-queued', 'idem-dispatch-queued', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'queued', 'normal', 0, 3, '', '', '', 'queued prompt', '{}', 'main', '2026-06-13T00:00:01.000Z', '', '', '', '2026-06-13T00:00:01.000Z'),
+  ('dispatch-sent', 'wf-console-agentic', 'wf-console-agentic', 'trace-dispatch-sent', 'idem-dispatch-sent', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'sent', 'high', 1, 3, '', '', '', 'sent prompt', '{}', 'main', '2026-06-13T00:00:02.000Z', '2026-06-13T00:00:03.000Z', '', '', '2026-06-13T00:00:03.000Z'),
+  ('dispatch-failed', 'wf-console-agentic', 'wf-console-agentic', 'trace-dispatch-failed', 'idem-dispatch-failed', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'failed', 'high', 3, 3, '', 'timeout', 'fixture dispatch failure', 'failed prompt', '{}', 'main', '2026-06-13T00:00:04.000Z', '', '', '', '2026-06-13T00:00:16.000Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES
+  ('runtime-working', 'dispatch-sent', 'wf-console-agentic', 'wf-console-agentic', 'trace-runtime-working', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'started', '', 1, '2026-06-13T00:00:20.000Z', '', NULL, '', '', '', '', '{}'),
+  ('runtime-failed', 'dispatch-failed', 'wf-console-agentic', 'wf-console-agentic', 'trace-runtime-failed', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'timeout', 3, '2026-06-13T00:00:04.000Z', '2026-06-13T00:00:16.000Z', 12000, '', '', '', 'fixture runtime failure', '{}'),
+  ('runtime-old-completed', 'dispatch-sent', 'wf-console-agentic', 'wf-console-agentic', 'trace-runtime-old', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'completed', '', 1, '2026-06-12T00:00:00.000Z', '2026-06-12T00:00:01.000Z', 1000, '', '', '', '', '{}');
+INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, runtime_run_id, message_id, outbox_id, source_channel, source_system, source_runtime, source_account_id, source_chat_id, sender_id, source_message_id, route_agent_id, route_runtime, target_runtime, target_agent_id, target_platform, workflow_ingress_adapter, im_identity, execution_identity, return_policy, status, inbound_received_at, route_registered_at, runtime_dispatched_at, runtime_completed_at, runtime_failed_at, outbound_queued_at, telegram_sent_at, telegram_failed_at, completed_at, failure_type, last_error, final_output_present, delivery_receipt_present, payload_json, created_at, updated_at)
+VALUES
+  ('flow-waiting-receipt', 'trace-flow-waiting', 'idem-flow-waiting', 'wf-console-agentic', 'wf-console-agentic', 'dispatch-sent', '', '', '', 'telegram', 'workflow', 'openclaw', '', '', 'main', '', 'cat_body', 'hermers', 'hermers', 'cat_body', 'hermers', 'acp', 'catbody', 'hermers_acp', 'report_to_flashcat', 'runtime_completed', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:02.000Z', '2026-06-13T00:00:03.000Z', '2026-06-13T00:00:10.000Z', '', '', '', '', '', '', '', 1, 0, '{}', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:10.000Z'),
+  ('flow-done', 'trace-flow-done', 'idem-flow-done', 'wf-console-agentic', 'wf-console-agentic', 'dispatch-sent', '', '', '', 'telegram', 'workflow', 'openclaw', '', '', 'main', '', 'cat_body', 'hermers', 'hermers', 'cat_body', 'hermers', 'acp', 'catbody', 'hermers_acp', 'silent', 'runtime_completed', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:02.000Z', '2026-06-13T00:00:03.000Z', '2026-06-13T00:00:11.000Z', '', '', '', '', '', '', '', 1, 0, '{}', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:11.000Z'),
+  ('flow-failed', 'trace-flow-failed', 'idem-flow-failed', 'wf-console-agentic', 'wf-console-agentic', 'dispatch-failed', '', '', '', 'telegram', 'workflow', 'openclaw', '', '', 'main', '', 'cat_body', 'hermers', 'hermers', 'cat_body', 'hermers', 'acp', 'catbody', 'hermers_acp', 'report_to_flashcat', 'runtime_failed', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:02.000Z', '2026-06-13T00:00:03.000Z', '', '2026-06-13T00:00:16.000Z', '', '', '', '', 'timeout', 'fixture flow failure', 0, 0, '{}', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:16.000Z');
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES
+  ('outbox-queued', 'wf-console-agentic', 'private_chat', 'flashcat', 'human_gate', 'queued', 'pending human gate', '{}', '2026-06-13T00:00:06.000Z', '2026-06-13T00:00:06.000Z'),
+  ('outbox-sent', 'wf-console-agentic', 'private_chat', 'flashcat', 'status', 'sent', 'delivered status', '{}', '2026-06-13T00:00:07.000Z', '2026-06-13T00:00:07.000Z'),
+  ('outbox-failed', 'wf-console-agentic', 'private_chat', 'flashcat', 'human_gate', 'failed', 'failed human gate', '{}', '2026-06-13T00:00:08.000Z', '2026-06-13T00:00:08.000Z');
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hgate-console', 'human_gate_record', 'pending', NULL, 'regression', 'cat_claw', '', 'artifact://hgate-console', '{"workflowId":"wf-console-agentic","summary":"Fixture Human Gate"}', 'hash-hgate-console', '2026-06-13T00:00:09.000Z', '2026-06-13T00:00:09.000Z');
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hgate-other-agent', 'human_gate_record', 'pending', NULL, 'regression', 'cat_ears', '', 'artifact://hgate-other-agent', '{"workflowId":"wf-console-agentic","summary":"Other agent Human Gate"}', 'hash-hgate-other-agent', '2026-06-13T00:00:09.500Z', '2026-06-13T00:00:09.500Z');
+INSERT INTO human_gate_buttons(button_id, callback_token, human_gate_id, workflow_id, meeting_id, label, decision_status, button_role, artifact_ref, summary, prompt, payload_json, status, created_by, created_at, updated_at, selected_by, selected_at, callback_chat_id, callback_message_id, feedback_status, feedback_text, feedback_received_at, feedback_payload_json)
+VALUES ('button-console-a', 'token-console-a', 'hgate-console', 'wf-console-agentic', 'wf-console-agentic', '方案 A', 'approved', 'approve', 'artifact://hgate-console', 'approve fixture', 'prompt', '{}', 'active', 'cat_claw', '2026-06-13T00:00:09.000Z', '2026-06-13T00:00:09.000Z', '', '', '', '', '', '', '', '{}');
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES ('checkpoint-console', 'wf-console-agentic', 'active', 'execute', 'continue', 'Console checkpoint', '{}', '[]', '["task-blocked"]', '["artifact://console-verification"]', '["continue"]', '{}', 'artifact://checkpoint-console', 'main', '2026-06-13T00:00:10.000Z');
+INSERT INTO artifact_index(artifact_id, instrument_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES ('artifact-console', NULL, 'wf-console-agentic', 'report', 'artifact://console-verification', 'Console verification artifact', 'cat_body', '2026-06-13T00:00:11.000Z');
+INSERT INTO workflow_verification_results(verification_id, workflow_id, phase_id, phase_key, task_id, agent_run_id, dispatch_id, runtime_run_id, result_type, decision, verifier_agent, refuter_agent, source_runtime, source_agent, confidence, risk_band, summary, findings_json, recommendations_json, evidence_refs_json, artifact_refs_json, receipt_refs_json, payload_hash, payload_json, created_by, created_at)
+VALUES ('verification-console', 'wf-console-agentic', '', 'verify', 'task-done', '', 'dispatch-sent', 'runtime-working', 'regression', 'pass', 'cat_claw', '', 'openclaw', 'cat_claw', 'high', 'low', 'Console verification passed', '[]', '[]', '[]', '["artifact://console-verification"]', '["flow-done"]', 'hash-verification-console', '{}', 'cat_claw', '2026-06-13T00:00:12.000Z');
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-console', 'investigating', 'workflow', '["workflow"]', 'Console fixture incident', 'main', 'low', 'fixture', 'observe', 'rollback fixture', 'close fixture', '[]', '{"workflowId":"wf-console-agentic"}', '2026-06-13T00:00:13.000Z', '2026-06-13T00:30:13.000Z', '', '2026-06-13T00:00:13.000Z');
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-other-agent', 'investigating', 'workflow', '["workflow"]', 'Other agent fixture incident', 'cat_ears', 'low', 'fixture', 'observe', 'rollback fixture', 'close fixture', '[]', '{"workflowId":"wf-console-agentic","agentId":"cat_ears"}', '2026-06-13T00:00:14.000Z', '2026-06-13T00:30:14.000Z', '', '2026-06-13T00:00:14.000Z');
+INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at)
+VALUES ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-queued', 'normal', 'queued', 'wf-console-agentic', 'hermers', '{"agentId":"cat_body"}', '{}', 0, 20, '2026-06-13T00:01:00.000Z', '', '', '', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:01.000Z', '');
+`);
+
+  const readModel = new WorkflowReadModel({ dbFile });
+  const command = await readModel.commandCenter();
+  assert.equal(command.schemaVersion, "workflow_console_command_center.v1");
+  assert.equal(command.workflowSummary.total >= 1, true);
+  assert.equal(command.runtimeSummary.total, 2);
+  assert.equal(command.runtimeSummary.dispatchable, 2);
+  assert.equal(command.attention.critical.includes("failed_dispatches"), true);
+  assert.equal(command.communication.messageFlow.runtime_completed >= 2, true);
+
+  const agentBoard = await readModel.agentBoard();
+  assert.equal(agentBoard.schemaVersion, "workflow_console_agent_board.v1");
+  const catBody = agentBoard.agents.find((agent) => agent.agentId === "cat_body");
+  const catClaw = agentBoard.agents.find((agent) => agent.agentId === "cat_claw");
+  assert.equal(catBody?.profileMode?.observedMode, "warm");
+  assert.equal(catClaw?.platform, "openclaw");
+  assert.equal(catClaw?.runtime, "openclaw");
+  assert.equal(catClaw?.endpointRef, "openclaw-agent:cat_claw");
+  assert.equal(catClaw?.profileMode, null);
+  const limitedAgentBoard = await readModel.agentBoard({ limit: 1 });
+  const limitedCatBody = limitedAgentBoard.agents.find((agent) => agent.agentId === "cat_body");
+  assert.equal(limitedCatBody?.counts.working > 0, true);
+
+  const kanban = await readModel.kanban({ workflowId });
+  assert.equal(kanban.schemaVersion, "workflow_console_kanban.v1");
+  for (const columnId of ["inbox", "queued", "dispatched", "working", "waiting_receipt", "waiting_human", "blocked", "done", "failed"]) {
+    assert.equal(Object.hasOwn(kanban.summary.byColumn, columnId), true);
+  }
+  assert.equal(kanban.summary.byColumn.queued > 0, true);
+  assert.equal(kanban.summary.byColumn.working > 0, true);
+  assert.equal(kanban.summary.byColumn.waiting_receipt > 0, true);
+  assert.equal(kanban.summary.byColumn.waiting_human > 0, true);
+  assert.equal(kanban.summary.byColumn.done > 0, true);
+  assert.equal(kanban.summary.byColumn.failed > 0, true);
+  assert.equal(kanban.columns.find((column) => column.id === "waiting_receipt")?.cards.some((card) => card.source === "message_flows" && card.sourceId === "flow-waiting-receipt"), true);
+  const globalKanban = await readModel.kanban({});
+  const globalIncidentCard = globalKanban.columns.flatMap((column) => column.cards).find((card) => card.source === "incident_states" && card.sourceId === "incident-console");
+  assert.equal(globalIncidentCard?.workflowId, workflowId);
+  const agentKanban = await readModel.kanban({ agentId: "cat_body" });
+  const agentScopedCards = agentKanban.columns.flatMap((column) => column.cards);
+  assert.equal(agentScopedCards.length > 0, true);
+  assert.equal(agentScopedCards.some((card) => ["cat_claw", "cat_ears", "main"].includes(card.agentId)), false);
+
+  const evidenceDesk = await readModel.evidenceDesk(workflowId);
+  assert.equal(evidenceDesk.schemaVersion, "workflow_console_evidence_desk.v1");
+  assert.equal(evidenceDesk.workflowId, workflowId);
+  assert.equal(["ready", "needs_attention"].includes(evidenceDesk.status), true);
+  assert.equal(evidenceDesk.summary.evidenceArtifacts, 1);
+  assert.equal(evidenceDesk.summary.checkpoints, 1);
+  assert.equal(evidenceDesk.summary.messageFlows >= 3, true);
+  assert.equal(evidenceDesk.summary.outbox, 3);
+  assert.equal(evidenceDesk.summary.missingEvidence.includes("message_flow_closure"), true);
+
+  const routedEvidenceDesk = await workflowChildPayload(readModel, workflowId, "evidence-desk");
+  assert.equal(routedEvidenceDesk.schemaVersion, "workflow_console_evidence_desk.v1");
+  assert.equal(routedEvidenceDesk.workflowId, workflowId);
+}
+
 async function testWorkflowHealthTerminalFailedDispatchIsDegraded() {
   const root = await tempRoot("workflow-health-terminal-failed-dispatch");
   await runAction(root, { action: "workflow.init" });
@@ -7559,6 +7680,7 @@ try {
     ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],
     ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],
     ["workflow health dashboard", testWorkflowHealthDashboard],
+    ["workflow console agentic surfaces", testWorkflowConsoleAgenticSurfaces],
     ["workflow health terminal failed dispatch degraded", testWorkflowHealthTerminalFailedDispatchIsDegraded],
     ["workflow health open incidents visible", testWorkflowHealthOpenIncidentsAreVisible],
     ["workflow readiness recovered runtime failures", testWorkflowReadinessRecoveredRuntimeFailures],

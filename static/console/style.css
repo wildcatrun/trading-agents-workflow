@@ -235,6 +235,12 @@ code {
   min-width: 0;
 }
 
+.workflow-meta button {
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
 .tabs {
   padding: 10px 12px;
   border-bottom: 1px solid var(--line-soft);
@@ -360,6 +366,81 @@ code {
   color: #344054;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.kanban-board {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(220px, 1fr));
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.kanban-column {
+  min-width: 220px;
+  max-height: calc(100vh - 230px);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.kanban-head {
+  min-height: 42px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kanban-cards {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  overflow: auto;
+}
+
+.kanban-card {
+  min-height: 142px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 9px;
+  background: #ffffff;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.kanban-card.critical {
+  border-color: #efb4b4;
+  background: #fffafa;
+}
+
+.kanban-card.warning {
+  border-color: #e7cf94;
+  background: #fffdf6;
+}
+
+.kanban-empty {
+  min-height: 52px;
+  border: 1px dashed #d4dae4;
+  border-radius: 8px;
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
 }
 
 .phase-card details {

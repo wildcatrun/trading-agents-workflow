@@ -98,6 +98,24 @@ plane patterns and a Hermers-oriented Kanban projection into the existing
 console, starting with read-only Command Center, Agent Board, Workflow Kanban,
 and Evidence Desk surfaces.
 
+v0.4 Slice A-D are implemented as read-only console surfaces:
+
+- Command Center: global readiness, workflow, runtime, queue, communication,
+  Human Gate, evidence, and attention summary.
+- Agent Board: registry-first runtime agent table with platform, endpoint,
+  dispatchability, Hermers profile-mode evidence when available, current work,
+  latest activity, and attention flags.
+- Workflow Kanban: stable read-only columns derived from workflow tasks,
+  dispatches, runtime runs, message flows, Telegram outbox, Human Gate records,
+  and incidents. Cards are source-linked and do not support drag/drop mutation.
+- Evidence Desk: workflow-scoped readiness, receipt chain, verification,
+  artifact, outbox, message_flow, incident closeout, and missing-evidence view.
+
+The Agent Board is intentionally registry-first. `cat_claw` remains an
+OpenClaw secretary/Human Gate entry unless a real Hermers profile is explicitly
+registered in `runtime_agents`; near-match Hermers profile-mode evidence must
+not create a Hermers ACP target.
+
 ## Historical Phase Hold
 
 After v0.2, console feature expansion was intentionally paused. That hold is
@@ -137,6 +155,9 @@ It must not use `workflow.advance` or `workflow.supervise` for planning buttons.
 
 - `GET /health`
 - `GET /api/config`
+- `GET /api/command-center`
+- `GET /api/agent-board`
+- `GET /api/kanban`
 - `GET /api/workflows`
 - `GET /api/workflows/:workflowId`
 - `GET /api/workflows/:workflowId/phases`
@@ -153,6 +174,7 @@ It must not use `workflow.advance` or `workflow.supervise` for planning buttons.
 - `GET /api/workflows/:workflowId/outbox`
 - `GET /api/workflows/:workflowId/checkpoints`
 - `GET /api/workflows/:workflowId/evidence`
+- `GET /api/workflows/:workflowId/evidence-desk`
 - `GET /api/workflows/:workflowId/receipts`
 - `GET /api/workflows/:workflowId/evidence-pack`
 - `GET /api/workflows/:workflowId/timeline`

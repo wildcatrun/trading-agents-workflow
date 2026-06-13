@@ -103,6 +103,7 @@ export async function workflowChildPayload(readModel, workflowId, child = "", qu
   if (child === "evidence") return await readModel.evidence(workflowId);
   if (child === "receipts") return await readModel.receipts(workflowId, query);
   if (child === "evidence-pack") return await readModel.evidencePack(workflowId, query);
+  if (child === "evidence-desk") return await readModel.evidenceDesk(workflowId, query);
   if (child === "timeline") return await readModel.timeline(workflowId, query);
   return undefined;
 }
@@ -178,6 +179,15 @@ export function createConsoleServer(options = {}) {
       }
       if (req.method === "GET" && pathname === "/api/task-launches") {
         return json(res, 200, await readModel.taskLaunches(Object.fromEntries(url.searchParams)));
+      }
+      if (req.method === "GET" && pathname === "/api/command-center") {
+        return json(res, 200, await readModel.commandCenter(Object.fromEntries(url.searchParams)));
+      }
+      if (req.method === "GET" && pathname === "/api/agent-board") {
+        return json(res, 200, await readModel.agentBoard(Object.fromEntries(url.searchParams)));
+      }
+      if (req.method === "GET" && pathname === "/api/kanban") {
+        return json(res, 200, await readModel.kanban(Object.fromEntries(url.searchParams)));
       }
       const workflowMatch = pathname.match(/^\/api\/workflows\/([^/]+)(?:\/([^/]+))?$/);
       if (req.method === "GET" && workflowMatch) {

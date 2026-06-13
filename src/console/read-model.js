@@ -596,6 +596,158 @@ function hasControlButton(buttons = [], patterns = []) {
   return buttons.some((button) => patterns.some((pattern) => pattern.test(buttonClassifierText(button))));
 }
 
+function incMap(map, key, status, count = 1) {
+  if (!key) return;
+  const bucket = map.get(key) || {};
+  bucket[status || "unknown"] = (bucket[status || "unknown"] || 0) + Number(count || 0);
+  map.set(key, bucket);
+}
+
+function sumStatus(bucket = {}, statuses = []) {
+  return statuses.reduce((total, status) => total + Number(bucket[status] || 0), 0);
+}
+
+function agentRuntimeKey(runtime = "", agentId = "") {
+  return `${String(runtime || "").trim()}:${String(agentId || "").trim()}`;
+}
+
+function agentAttentionLevel(flags = []) {
+  if (flags.some((flag) => flag.severity === "critical")) return "critical";
+  if (flags.length) return "warning";
+  return "ok";
+}
+
+function kanbanColumnForTask(row = {}) {
+  const status = String(row.status || "").toLowerCase();
+  if (["done", "completed", "success"].includes(status)) return "done";
+  if (["failed", "cancelled"].includes(status)) return "failed";
+  if (status === "blocked") return "blocked";
+  if (Number(row.human_gate_required || 0) > 0 && !["done", "failed", "cancelled"].includes(status)) return "waiting_human";
+  if (["in_progress", "running", "working"].includes(status)) return "working";
+  if (status === "pending") return "inbox";
+  return "inbox";
+}
+
+function kanbanColumnForDispatch(row = {}) {
+  const status = String(row.status || "").toLowerCase();
+  if (["acked", "completed", "runtime_completed"].includes(status)) return "done";
+  if (["failed", "cancelled", "dead_letter"].includes(status)) return "failed";
+  if (status === "queued") return "queued";
+  if (["sent", "claimed", "dispatching"].includes(status)) return "dispatched";
+  return "dispatched";
+}
+
+function kanbanColumnForRuntimeRun(row = {}) {
+  const status = String(row.status || "").toLowerCase();
+  if (["completed", "acked", "success", "done"].includes(status)) return "done";
+  if (["failed", "cancelled"].includes(status)) return "failed";
+  return "working";
+}
+
+function kanbanColumnForMessageFlow(row = {}) {
+  const status = String(row.status || "").toLowerCase();
+  const targetRuntime = String(row.target_runtime || "").toLowerCase();
+  const returnPolicy = String(row.return_policy || "").toLowerCase();
+  if (["runtime_failed", "telegram_failed", "failed", "dead_letter"].includes(status)) return "failed";
+  if (["telegram_sent", "local_codex_inbox_received"].includes(status)) return "done";
+  if (returnPolicy === "silent" && status === "runtime_completed") return "done";
+  if (["local_codex", "codex"].includes(targetRuntime) && status === "runtime_completed") return "done";
+  if (status === "outbound_queued") return "queued";
+  if (status === "runtime_completed" && Number(row.delivery_receipt_present || 0) === 0) return "waiting_receipt";
+  if (["runtime_dispatched", "route_registered"].includes(status)) return "dispatched";
+  return "queued";
+}
+
+function kanbanColumnForOutbox(row = {}) {
+  const status = String(row.status || "").toLowerCase();
+  if (status === "sent") return "done";
+  if (status === "failed") return "failed";
+  if (status === "delivering") return "dispatched";
+  return "queued";
+}
+
+function kanbanColumnForHumanGate(row = {}) {
+  const status = String(row.status || "").toLowerCase();
+  if (["approved", "completed", "resolved", "selected", "done"].includes(status)) return "done";
+  if (["rejected", "expired", "cancelled", "failed"].includes(status)) return "failed";
+  return "waiting_human";
+}
+
+function makeKanbanCard(column, source, id, values = {}) {
+  return {
+    id: `${source}:${id}`,
+    source,
+    sourceId: id,
+    column,
+    workflowId: values.workflowId || "",
+    taskId: values.taskId || "",
+    dispatchId: values.dispatchId || "",
+    flowId: values.flowId || "",
+    runtimeRunId: values.runtimeRunId || "",
+    outboxId: values.outboxId || "",
+    humanGateId: values.humanGateId || "",
+    agentId: values.agentId || "",
+    runtime: values.runtime || "",
+    status: values.status || "",
+    title: redactText(values.title || id),
+    summary: redactText(compactText(values.summary || "", 220)),
+    lastEventAt: values.lastEventAt || "",
+    missingEvidence: values.missingEvidence || [],
+    artifactRef: redactText(values.artifactRef || ""),
+    receiptRef: redactText(values.receiptRef || ""),
+    previewActions: values.previewActions || []
+  };
+}
+
+function messageFlowClosureStateForDesk(row = {}) {
+  const status = String(row.status || "").toLowerCase();
+  const targetRuntime = String(row.targetRuntime || row.target_runtime || "").toLowerCase();
+  const returnPolicy = String(row.returnPolicy || row.return_policy || "").toLowerCase();
+  const deliveryReceiptPresent = Boolean(row.deliveryReceiptPresent ?? Number(row.delivery_receipt_present || 0));
+  if (["runtime_failed", "telegram_failed", "failed", "dead_letter"].includes(status)) return "attention";
+  if (["telegram_sent", "local_codex_inbox_received"].includes(status)) return "closed";
+  if (returnPolicy === "silent" && status === "runtime_completed") return "closed";
+  if (["local_codex", "codex"].includes(targetRuntime) && status === "runtime_completed") return "closed";
+  if (status === "runtime_completed" && !deliveryReceiptPresent) return "attention";
+  return "open";
+}
+
+function payloadAgentMatches(payload = {}, agentId = "") {
+  const target = String(agentId || "");
+  if (!target) return true;
+  const values = [
+    payload.agentId,
+    payload.agent_id,
+    payload.ownerAgent,
+    payload.owner_agent,
+    payload.sourceAgent,
+    payload.source_agent,
+    payload.targetAgentId,
+    payload.target_agent_id,
+    payload.commander,
+    payload.payload?.agentId,
+    payload.payload?.agent_id,
+    payload.payload?.ownerAgent,
+    payload.payload?.owner_agent,
+    payload.payload?.sourceAgent,
+    payload.payload?.source_agent,
+    payload.payload?.targetAgentId,
+    payload.payload?.target_agent_id
+  ].filter((value) => value !== undefined && value !== null && value !== "");
+  for (const value of values) {
+    if (String(value) === target) return true;
+  }
+  for (const key of ["agentIds", "agent_ids", "agents", "sourceAgents", "source_agents", "targetAgentIds", "target_agent_ids"]) {
+    const items = Array.isArray(payload[key]) ? payload[key] : Array.isArray(payload.payload?.[key]) ? payload.payload[key] : [];
+    if (items.some((value) => String(value) === target)) return true;
+  }
+  return false;
+}
+
+function payloadWorkflowId(payload = {}) {
+  return payload.workflowId || payload.workflow_id || payload.workflow?.id || payload.payload?.workflowId || payload.payload?.workflow_id || "";
+}
+
 export class WorkflowReadModel {
   constructor(paths) {
     this.paths = paths;
@@ -2735,7 +2887,563 @@ LIMIT 120;`) : Promise.resolve([])
     };
   }
 
+  async commandCenter(query = {}) {
+    const generatedAt = new Date().toISOString();
+    const [health, readiness, workflows, operations, runtimeAgents] = await Promise.all([
+      this.health(),
+      this.readinessLatest(),
+      this.workflowList({ view: "", limit: query.limit || 200 }),
+      this.operationsSummary({ deadLetterLimit: query.deadLetterLimit || 200 }),
+      this.runtimeAgents()
+    ]);
+    const workflowRows = workflows.workflows || [];
+    const workflowSummary = workflowRows.reduce((acc, item) => {
+      acc.total += 1;
+      acc.byStatus[item.status || "unknown"] = (acc.byStatus[item.status || "unknown"] || 0) + 1;
+      acc.tasks += item.counts?.tasks || 0;
+      acc.blocked += item.counts?.blocked || 0;
+      acc.pendingHumanGates += item.counts?.pendingHumanGates || 0;
+      acc.failedDispatches += item.counts?.failedDispatches || 0;
+      acc.queuedDispatches += item.counts?.queuedDispatches || 0;
+      acc.failedOutbox += item.counts?.failedOutbox || 0;
+      acc.openIncidents += item.counts?.openIncidents || 0;
+      acc.sideEffectUncertain += item.counts?.sideEffectUncertain || 0;
+      return acc;
+    }, {
+      total: 0,
+      byStatus: {},
+      tasks: 0,
+      blocked: 0,
+      pendingHumanGates: 0,
+      failedDispatches: 0,
+      queuedDispatches: 0,
+      failedOutbox: 0,
+      openIncidents: 0,
+      sideEffectUncertain: 0
+    });
+    const runtimeSummary = (runtimeAgents.agents || []).reduce((acc, agent) => {
+      acc.total += 1;
+      if (agent.status === "active") acc.active += 1;
+      if (Number(agent.can_receive_dispatch || 0) > 0 && agent.status === "active") acc.dispatchable += 1;
+      acc.byPlatform[agent.platform || agent.runtime || "unknown"] = (acc.byPlatform[agent.platform || agent.runtime || "unknown"] || 0) + 1;
+      return acc;
+    }, { total: 0, active: 0, dispatchable: 0, byPlatform: {} });
+    const queueSummary = (operations.controlLoopJobs || []).reduce((acc, row) => {
+      const status = row.status || "unknown";
+      acc[status] = (acc[status] || 0) + toInt(row.count);
+      acc.total += toInt(row.count);
+      return acc;
+    }, { total: 0 });
+    const outboxSummary = (operations.telegramOutbox || []).reduce((acc, row) => {
+      const status = row.status || "unknown";
+      acc[status] = (acc[status] || 0) + toInt(row.count);
+      acc.total += toInt(row.count);
+      return acc;
+    }, { total: 0 });
+    const humanGateSummary = (operations.humanGate || []).reduce((acc, row) => {
+      const status = row.status || "unknown";
+      acc[status] = (acc[status] || 0) + toInt(row.count);
+      acc.total += toInt(row.count);
+      return acc;
+    }, { total: 0 });
+    const messageFlowSummary = (operations.messageFlow || []).reduce((acc, row) => {
+      const status = row.status || "unknown";
+      acc[status] = (acc[status] || 0) + toInt(row.count);
+      acc.total += toInt(row.count);
+      acc.finalOutputPresent += toInt(row.final_output_present);
+      acc.deliveryReceiptPresent += toInt(row.delivery_receipt_present);
+      return acc;
+    }, { total: 0, finalOutputPresent: 0, deliveryReceiptPresent: 0 });
+    return {
+      schemaVersion: "workflow_console_command_center.v1",
+      generatedAt,
+      source: "derived_read_model",
+      health,
+      readiness: readiness ? {
+        snapshotId: readiness.snapshotId,
+        status: readiness.status,
+        checkedAt: readiness.checkedAt,
+        findingCount: readiness.findings?.length || 0,
+        findings: readiness.findings || []
+      } : null,
+      workflowSummary,
+      runtimeSummary,
+      queueSummary,
+      communication: {
+        messageFlow: messageFlowSummary,
+        messageFlowAttention: (operations.messageFlowAttention || []).length,
+        telegramOutbox: outboxSummary
+      },
+      humanGate: humanGateSummary,
+      evidence: {
+        openIncidents: workflowSummary.openIncidents,
+        sideEffectUncertain: workflowSummary.sideEffectUncertain,
+        deadLetters: operations.deadLetterFilter?.totalAfterFilter ?? (operations.deadLetters || []).length,
+        failedDispatches: workflowSummary.failedDispatches,
+        failedOutbox: workflowSummary.failedOutbox
+      },
+      attention: {
+        critical: [
+          ...(readiness?.status && readiness.status !== "ready" ? ["readiness_not_ready"] : []),
+          ...(workflowSummary.failedDispatches ? ["failed_dispatches"] : []),
+          ...(workflowSummary.failedOutbox ? ["failed_outbox"] : []),
+          ...(workflowSummary.openIncidents ? ["open_incidents"] : []),
+          ...(workflowSummary.sideEffectUncertain ? ["side_effect_uncertain"] : [])
+        ],
+        warning: [
+          ...(workflowSummary.pendingHumanGates ? ["pending_human_gate"] : []),
+          ...((operations.messageFlowAttention || []).length ? ["message_flow_attention"] : []),
+          ...(queueSummary.failed || queueSummary.dead_letter ? ["control_loop_failures"] : [])
+        ]
+      },
+      topWorkflows: workflowRows.slice(0, 12)
+    };
+  }
+
+  async agentBoard(query = {}) {
+    const generatedAt = new Date().toISOString();
+    if (!(await tableExists(this.paths.dbFile, "runtime_agents"))) {
+      return {
+        schemaVersion: "workflow_console_agent_board.v1",
+        generatedAt,
+        source: "missing_runtime_agents",
+        summary: { agents: 0, ready: 0, working: 0, blocked: 0, attention: 0 },
+        agents: []
+      };
+    }
+    const limit = clampLimit(query.limit, 500, 1000);
+    const [
+      runtimeAgents,
+      readiness,
+      hasDispatchTable,
+      hasRuntimeRuns,
+      hasMessageFlows,
+      hasControlLoopJobs
+    ] = await Promise.all([
+      this.runtimeAgents(),
+      this.readinessLatest(),
+      tableExists(this.paths.dbFile, "mixed_meeting_dispatches"),
+      tableExists(this.paths.dbFile, "runtime_runs"),
+      tableExists(this.paths.dbFile, "message_flows"),
+      tableExists(this.paths.dbFile, "control_loop_jobs")
+    ]);
+    const [dispatchRows, runtimeRows, flowRows, jobRows] = await Promise.all([
+      hasDispatchTable ? sqlite(this.paths.dbFile, `
+SELECT dispatch_id, workflow_id, runtime, agent_id, status, dispatch_type, attempt, max_attempts, updated_at, created_at, failure_type, last_error
+FROM mixed_meeting_dispatches
+ORDER BY updated_at DESC
+LIMIT ${limit};`) : Promise.resolve([]),
+      hasRuntimeRuns ? sqlite(this.paths.dbFile, `
+SELECT runtime_run_id, dispatch_id, workflow_id, runtime, agent_id, status, adapter, backend, failure_type, started_at, completed_at, error
+FROM runtime_runs
+ORDER BY COALESCE(NULLIF(completed_at, ''), started_at) DESC
+LIMIT ${limit};`) : Promise.resolve([]),
+      hasMessageFlows ? sqlite(this.paths.dbFile, `
+SELECT flow_id, workflow_id, meeting_id, target_runtime, target_agent_id, return_policy, status, final_output_present, delivery_receipt_present, dispatch_id, outbox_id, updated_at, last_error
+FROM message_flows
+ORDER BY updated_at DESC
+LIMIT ${limit};`) : Promise.resolve([]),
+      hasControlLoopJobs ? sqlite(this.paths.dbFile, `
+SELECT job_id, job_type, dedupe_key, status, workflow_id, runtime, payload_json, attempt, max_attempts, updated_at, last_error
+FROM control_loop_jobs
+WHERE job_type IN ('runtime_drain','message_flow_reconcile','telegram_outbox_deliver','human_gate_request_ensure','human_gate_inbox')
+ORDER BY updated_at DESC
+LIMIT ${limit};`) : Promise.resolve([])
+    ]);
+    const dispatchCounts = new Map();
+    const runtimeCounts = new Map();
+    const flowCounts = new Map();
+    const jobCounts = new Map();
+    const latestByAgent = new Map();
+    const setLatest = (key, item) => {
+      if (!key) return;
+      const previous = latestByAgent.get(key);
+      if (!previous || String(item.lastEventAt || "").localeCompare(String(previous.lastEventAt || "")) > 0) latestByAgent.set(key, item);
+    };
+    for (const row of dispatchRows) {
+      const key = agentRuntimeKey(row.runtime, row.agent_id);
+      incMap(dispatchCounts, key, row.status, 1);
+      setLatest(key, {
+        kind: "dispatch",
+        status: row.status,
+        workflowId: row.workflow_id || "",
+        dispatchId: row.dispatch_id || "",
+        lastEventAt: row.updated_at || row.created_at || "",
+        detail: redactText(row.last_error || row.failure_type || row.dispatch_type || "")
+      });
+    }
+    for (const row of runtimeRows) {
+      const key = agentRuntimeKey(row.runtime, row.agent_id);
+      incMap(runtimeCounts, key, row.status, 1);
+      setLatest(key, {
+        kind: "runtime_run",
+        status: row.status,
+        workflowId: row.workflow_id || "",
+        dispatchId: row.dispatch_id || "",
+        runtimeRunId: row.runtime_run_id || "",
+        lastEventAt: row.completed_at || row.started_at || "",
+        detail: redactText(row.error || row.failure_type || row.adapter || "")
+      });
+    }
+    for (const row of flowRows) {
+      const key = agentRuntimeKey(row.target_runtime, row.target_agent_id);
+      incMap(flowCounts, key, row.status, 1);
+      setLatest(key, {
+        kind: "message_flow",
+        status: row.status,
+        workflowId: row.workflow_id || row.meeting_id || "",
+        dispatchId: row.dispatch_id || "",
+        flowId: row.flow_id || "",
+        outboxId: row.outbox_id || "",
+        lastEventAt: row.updated_at || "",
+        detail: redactText(row.last_error || row.return_policy || "")
+      });
+    }
+    for (const row of jobRows) {
+      const payload = parseJson(row.payload_json, {});
+      const agentId = payload.agentId || payload.agent_id || payload.targetAgentId || payload.target_agent_id || "";
+      const key = agentRuntimeKey(row.runtime, agentId);
+      incMap(jobCounts, key, row.status, 1);
+    }
+    const profileModes = readiness?.planes?.runtime?.hermersProfileModes?.profiles || {};
+    const agents = (runtimeAgents.agents || []).map((agent) => {
+      const key = agentRuntimeKey(agent.runtime, agent.agent_id);
+      const profile = String(agent.endpoint_ref || "").replace(/^(hermers-profile:|hermes-profile:|profile:)/, "");
+      const profileMode = profile ? profileModes[profile] || null : null;
+      const dispatch = dispatchCounts.get(key) || {};
+      const runtime = runtimeCounts.get(key) || {};
+      const flows = flowCounts.get(key) || {};
+      const jobs = jobCounts.get(key) || {};
+      const latest = latestByAgent.get(key) || {};
+      const flags = [];
+      if (agent.status !== "active") flags.push({ key: "registry_inactive", severity: "critical", detail: agent.status || "" });
+      if (Number(agent.can_receive_dispatch || 0) <= 0) flags.push({ key: "dispatch_disabled", severity: "warning", detail: "can_receive_dispatch=0" });
+      if (profileMode?.observedMode === "hibernate" || profileMode?.observedMode === "cold") flags.push({ key: "profile_not_warm", severity: "warning", detail: profileMode.observedMode });
+      if (sumStatus(dispatch, ["failed", "dead_letter"]) > 0) flags.push({ key: "failed_dispatch", severity: "critical", detail: String(sumStatus(dispatch, ["failed", "dead_letter"])) });
+      if (sumStatus(runtime, ["failed"]) > 0) flags.push({ key: "failed_runtime", severity: "critical", detail: String(sumStatus(runtime, ["failed"])) });
+      if (sumStatus(flows, ["runtime_failed", "telegram_failed", "failed"]) > 0) flags.push({ key: "message_flow_failed", severity: "critical", detail: String(sumStatus(flows, ["runtime_failed", "telegram_failed", "failed"])) });
+      const working = sumStatus(dispatch, ["sent", "acked"]) + sumStatus(runtime, ["running", "started"]) + sumStatus(flows, ["runtime_dispatched", "route_registered"]);
+      return {
+        agentKey: agent.agent_key,
+        agentId: agent.agent_id,
+        runtime: agent.runtime,
+        displayName: agent.display_name || "",
+        role: agent.role || "",
+        status: agent.status,
+        platform: agent.platform || agent.runtime || "",
+        executionAdapter: agent.execution_adapter || "",
+        workflowIngressAdapter: agent.workflow_ingress_adapter || "",
+        executionIdentity: agent.execution_identity || "",
+        endpointRef: agent.endpoint_ref || "",
+        returnPolicy: agent.return_policy || "",
+        canReceiveDispatch: Boolean(Number(agent.can_receive_dispatch || 0)),
+        canStartWorkflow: Boolean(Number(agent.can_start_workflow || 0)),
+        profileMode: profileMode ? redactConsoleValue(profileMode) : null,
+        counts: {
+          queued: sumStatus(dispatch, ["queued"]) + sumStatus(jobs, ["queued"]),
+          dispatched: sumStatus(dispatch, ["sent", "acked"]) + sumStatus(flows, ["runtime_dispatched", "route_registered"]),
+          working,
+          failed: sumStatus(dispatch, ["failed", "dead_letter"]) + sumStatus(runtime, ["failed"]) + sumStatus(flows, ["runtime_failed", "telegram_failed", "failed"]),
+          messageFlows: Object.values(flows).reduce((total, value) => total + Number(value || 0), 0),
+          runtimeRuns: Object.values(runtime).reduce((total, value) => total + Number(value || 0), 0)
+        },
+        latest,
+        attentionLevel: agentAttentionLevel(flags),
+        attentionFlags: flags
+      };
+    });
+    const summary = agents.reduce((acc, agent) => {
+      acc.agents += 1;
+      if (agent.status === "active" && agent.canReceiveDispatch && agent.attentionLevel === "ok") acc.ready += 1;
+      if (agent.counts.working > 0) acc.working += 1;
+      if (agent.attentionLevel === "critical") acc.blocked += 1;
+      if (agent.attentionFlags.length) acc.attention += 1;
+      return acc;
+    }, { agents: 0, ready: 0, working: 0, blocked: 0, attention: 0 });
+    return {
+      schemaVersion: "workflow_console_agent_board.v1",
+      generatedAt,
+      source: "runtime_agents+derived_runtime_state",
+      summary,
+      agents
+    };
+  }
+
+  async kanban(query = {}) {
+    const generatedAt = new Date().toISOString();
+    const scope = String(query.scope || "global");
+    const workflowId = String(query.workflowId || query.workflow_id || "");
+    const agentId = String(query.agentId || query.agent_id || "");
+    const limit = clampLimit(query.limit, 300, 1000);
+    const columns = [
+      { id: "inbox", label: "Inbox" },
+      { id: "queued", label: "Queued" },
+      { id: "dispatched", label: "Dispatched" },
+      { id: "working", label: "Working" },
+      { id: "waiting_receipt", label: "Waiting Receipt" },
+      { id: "waiting_human", label: "Waiting Human" },
+      { id: "blocked", label: "Blocked" },
+      { id: "done", label: "Done" },
+      { id: "failed", label: "Failed" }
+    ];
+    const cards = [];
+    const workflowFilter = workflowId ? `workflow_id=${sqlValue(workflowId)}` : "1=1";
+    const agentFilter = agentId ? `AND (owner_agent=${sqlValue(agentId)} OR agent_id=${sqlValue(agentId)})` : "";
+    if (await tableExists(this.paths.dbFile, "workflow_tasks")) {
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT task_id, workflow_id, phase, owner_agent, runtime, agent_id, task_type, status, priority, expected_artifact, actual_artifact_ref, receipt_required, human_gate_required, summary, blocked_reason, created_at, updated_at
+FROM workflow_tasks
+WHERE ${workflowFilter} ${agentFilter}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+      for (const row of rows) {
+        const column = kanbanColumnForTask(row);
+        cards.push(makeKanbanCard(column, "workflow_tasks", row.task_id, {
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+          agentId: row.agent_id || row.owner_agent,
+          runtime: row.runtime,
+          status: row.status,
+          title: row.summary || row.task_id,
+          summary: row.blocked_reason || row.task_type || row.phase,
+          lastEventAt: row.updated_at || row.created_at,
+          artifactRef: row.actual_artifact_ref || row.expected_artifact,
+          missingEvidence: [
+            ...(Number(row.receipt_required || 0) > 0 && !row.actual_artifact_ref ? ["receipt_or_artifact"] : []),
+            ...(Number(row.human_gate_required || 0) > 0 && !["done", "failed", "cancelled"].includes(String(row.status || "")) ? ["human_gate"] : [])
+          ],
+          previewActions: ["workflow.supervise.preview"]
+        }));
+      }
+    }
+    if (await tableExists(this.paths.dbFile, "mixed_meeting_dispatches")) {
+      const filters = [`${workflowId ? `workflow_id=${sqlValue(workflowId)}` : "1=1"}`];
+      if (agentId) filters.push(`agent_id=${sqlValue(agentId)}`);
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT dispatch_id, workflow_id, runtime, agent_id, dispatch_type, status, attempt, max_attempts, prompt, failure_type, last_error, created_at, updated_at
+FROM mixed_meeting_dispatches
+WHERE ${filters.join(" AND ")}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+      for (const row of rows) {
+        cards.push(makeKanbanCard(kanbanColumnForDispatch(row), "mixed_meeting_dispatches", row.dispatch_id, {
+          workflowId: row.workflow_id,
+          dispatchId: row.dispatch_id,
+          agentId: row.agent_id,
+          runtime: row.runtime,
+          status: row.status,
+          title: `${row.runtime || ""}:${row.agent_id || ""} ${row.dispatch_type || "dispatch"}`,
+          summary: row.last_error || row.failure_type || row.prompt,
+          lastEventAt: row.updated_at || row.created_at,
+          missingEvidence: ["acked", "completed", "runtime_completed"].includes(String(row.status || "")) ? [] : ["runtime_receipt"],
+          previewActions: ["workflow.rerun.dispatch.preview"]
+        }));
+      }
+    }
+    if (await tableExists(this.paths.dbFile, "runtime_runs")) {
+      const filters = [`${workflowId ? `workflow_id=${sqlValue(workflowId)}` : "1=1"}`];
+      if (agentId) filters.push(`agent_id=${sqlValue(agentId)}`);
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT runtime_run_id, dispatch_id, workflow_id, runtime, agent_id, adapter, backend, status, failure_type, started_at, completed_at, error
+FROM runtime_runs
+WHERE ${filters.join(" AND ")}
+ORDER BY COALESCE(NULLIF(completed_at, ''), started_at) DESC
+LIMIT ${limit};`);
+      for (const row of rows) {
+        cards.push(makeKanbanCard(kanbanColumnForRuntimeRun(row), "runtime_runs", row.runtime_run_id, {
+          workflowId: row.workflow_id,
+          dispatchId: row.dispatch_id,
+          runtimeRunId: row.runtime_run_id,
+          agentId: row.agent_id,
+          runtime: row.runtime,
+          status: row.status,
+          title: `${row.runtime || ""}:${row.agent_id || ""} runtime run`,
+          summary: row.error || row.failure_type || row.adapter || row.backend,
+          lastEventAt: row.completed_at || row.started_at,
+          missingEvidence: ["completed", "acked"].includes(String(row.status || "")) ? ["artifact_or_receipt"] : []
+        }));
+      }
+    }
+    if (await tableExists(this.paths.dbFile, "message_flows")) {
+      const filters = [workflowId ? `(workflow_id=${sqlValue(workflowId)} OR meeting_id=${sqlValue(workflowId)})` : "1=1"];
+      if (agentId) filters.push(`target_agent_id=${sqlValue(agentId)}`);
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT flow_id, workflow_id, meeting_id, target_runtime, target_agent_id, return_policy, status, final_output_present, delivery_receipt_present, dispatch_id, outbox_id, updated_at, last_error
+FROM message_flows
+WHERE ${filters.join(" AND ")}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+      for (const row of rows) {
+        cards.push(makeKanbanCard(kanbanColumnForMessageFlow(row), "message_flows", row.flow_id, {
+          workflowId: row.workflow_id || row.meeting_id,
+          dispatchId: row.dispatch_id,
+          flowId: row.flow_id,
+          outboxId: row.outbox_id,
+          agentId: row.target_agent_id,
+          runtime: row.target_runtime,
+          status: row.status,
+          title: `${row.target_runtime || ""}:${row.target_agent_id || ""} message flow`,
+          summary: row.last_error || row.return_policy,
+          lastEventAt: row.updated_at,
+          missingEvidence: kanbanColumnForMessageFlow(row) === "waiting_receipt" ? ["delivery_receipt"] : []
+        }));
+      }
+    }
+    if (await tableExists(this.paths.dbFile, "telegram_outbox")) {
+      const filters = [workflowId ? `meeting_id=${sqlValue(workflowId)}` : "1=1"];
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at
+FROM telegram_outbox
+WHERE ${filters.join(" AND ")}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+      for (const row of rows) {
+        const payload = parseJson(row.payload_json, {});
+        if (agentId && row.target_ref !== agentId && !payloadAgentMatches(payload, agentId)) continue;
+        cards.push(makeKanbanCard(kanbanColumnForOutbox(row), "telegram_outbox", row.outbox_id, {
+          workflowId: row.meeting_id || payloadWorkflowId(payload),
+          outboxId: row.outbox_id,
+          status: row.status,
+          title: `${row.message_type || "telegram"} ${row.target_kind || ""}:${row.target_ref || ""}`,
+          summary: row.text,
+          lastEventAt: row.updated_at || row.created_at,
+          missingEvidence: row.status === "sent" ? [] : ["telegram_delivery_receipt"],
+          previewActions: ["telegram.outbox.delivery.preview", "telegram.outbox.requeue.preview"]
+        }));
+      }
+    }
+    if (await tableExists(this.paths.dbFile, "protocol_objects")) {
+      const filters = [`object_type='human_gate_record'`];
+      if (workflowId) filters.push(workflowPayloadWhere(workflowId));
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT object_id, status, source_agent, parent_object_id, path, payload_json, created_at, updated_at
+FROM protocol_objects
+WHERE ${filters.join(" AND ")}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+      for (const row of rows) {
+        const payload = parseJson(row.payload_json, {});
+        if (agentId && row.source_agent !== agentId && !payloadAgentMatches(payload, agentId)) continue;
+        const cardWorkflowId = workflowId || payloadWorkflowId(payload) || row.parent_object_id || "";
+        cards.push(makeKanbanCard(kanbanColumnForHumanGate(row), "protocol_objects", row.object_id, {
+          workflowId: cardWorkflowId,
+          humanGateId: row.object_id,
+          agentId: row.source_agent,
+          status: row.status,
+          title: `Human Gate ${row.object_id}`,
+          summary: payload.summary || row.path || row.status,
+          lastEventAt: row.updated_at || row.created_at,
+          missingEvidence: ["pending", "feedback_pending"].includes(String(row.status || "")) ? ["flashcat_feedback"] : []
+        }));
+      }
+    }
+    if (await tableExists(this.paths.dbFile, "incident_states")) {
+      const filters = [workflowId ? incidentWorkflowWhereSql(sqlValue(workflowId), "incident_states") : "1=1"];
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT incident_id, status, mode, summary, commander, updated_at, declared_at, payload_json
+FROM incident_states
+WHERE ${filters.join(" AND ")}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+      for (const row of rows) {
+        const payload = parseJson(row.payload_json, {});
+        if (agentId && row.commander !== agentId && !payloadAgentMatches(payload, agentId)) continue;
+        const cardWorkflowId = workflowId || payloadWorkflowId(payload);
+        cards.push(makeKanbanCard(["resolved", "closed"].includes(String(row.status || "")) ? "done" : "blocked", "incident_states", row.incident_id, {
+          workflowId: cardWorkflowId,
+          agentId: row.commander,
+          status: row.status,
+          title: `Incident ${row.incident_id}`,
+          summary: row.summary || row.mode,
+          lastEventAt: row.updated_at || row.declared_at,
+          missingEvidence: ["resolved", "closed"].includes(String(row.status || "")) ? [] : ["incident_exit_criteria"]
+        }));
+      }
+    }
+    cards.sort((a, b) => String(b.lastEventAt || "").localeCompare(String(a.lastEventAt || "")));
+    const grouped = Object.fromEntries(columns.map((column) => [column.id, []]));
+    for (const card of cards) {
+      if (!grouped[card.column]) grouped[card.column] = [];
+      grouped[card.column].push(card);
+    }
+    return {
+      schemaVersion: "workflow_console_kanban.v1",
+      generatedAt,
+      source: "derived_read_model",
+      query: { scope, workflowId, agentId, limit },
+      columns: columns.map((column) => ({ ...column, count: grouped[column.id]?.length || 0, cards: grouped[column.id] || [] })),
+      summary: {
+        cards: cards.length,
+        byColumn: Object.fromEntries(columns.map((column) => [column.id, grouped[column.id]?.length || 0])),
+        workflows: uniqueNonEmpty(cards.map((card) => card.workflowId)).length,
+        agents: uniqueNonEmpty(cards.map((card) => card.agentId)).length
+      }
+    };
+  }
+
+  async evidenceDesk(workflowId, query = {}) {
+    const generatedAt = new Date().toISOString();
+    if (!String(workflowId || "").trim()) {
+      return { schemaVersion: "workflow_console_evidence_desk.v1", generatedAt, workflowId, status: "missing_workflow_id" };
+    }
+    const [readiness, receipts, verification, evidencePack, checkpoints, evidence, messageFlows, outbox, incidentCloseout] = await Promise.all([
+      this.humanGateReadiness(workflowId),
+      this.receipts(workflowId, { limit: query.limit || 200 }),
+      this.verification(workflowId, { limit: query.limit || 100 }),
+      this.evidencePack(workflowId, { limit: query.limit || 100 }),
+      this.checkpoints(workflowId),
+      this.evidence(workflowId),
+      this.messageFlows(workflowId, { limit: query.limit || 100 }),
+      this.outbox(workflowId, { limit: query.limit || 100 }),
+      this.incidentCloseout(workflowId, query)
+    ]);
+    const missing = [];
+    const readinessSummary = readiness.summary || {};
+    if (!readiness.readyForCatClawAudit) missing.push("cat_claw_audit_readiness");
+    if (!readiness.readyForHumanGateSubmission) missing.push("human_gate_submission_readiness");
+    if (!readinessSummary.checkpointCount) missing.push("checkpoint");
+    if (!readinessSummary.artifactCount) missing.push("artifact");
+    if (!readinessSummary.receiptPresentCount) missing.push("receipt");
+    if ((receipts.summary?.missing || 0) > 0) missing.push("receipt_chain");
+    if ((outbox.outbox || []).some((row) => ["queued", "failed", "delivering"].includes(String(row.status || "")))) missing.push("telegram_outbox_delivery");
+    if ((messageFlows.flows || []).some((row) => messageFlowClosureStateForDesk(row) === "attention")) missing.push("message_flow_closure");
+    if ((incidentCloseout.counts?.failed || 0) > 0) missing.push("incident_closeout");
+    return {
+      schemaVersion: "workflow_console_evidence_desk.v1",
+      generatedAt,
+      source: "derived_read_model",
+      workflowId,
+      status: missing.length ? "needs_attention" : "ready",
+      summary: {
+        missingEvidence: missing,
+        humanGateReadyForCatClawAudit: Boolean(readiness.readyForCatClawAudit),
+        humanGateReadyForSubmission: Boolean(readiness.readyForHumanGateSubmission),
+        receiptCount: receipts.summary?.total || 0,
+        receiptPresent: receipts.summary?.present || 0,
+        receiptMissing: receipts.summary?.missing || 0,
+        verificationResults: verification.summary?.total || 0,
+        evidenceArtifacts: evidence.artifacts?.length || 0,
+        checkpoints: checkpoints.checkpoints?.length || 0,
+        messageFlows: messageFlows.flows?.length || 0,
+        outbox: outbox.outbox?.length || 0,
+        incidents: incidentCloseout.counts?.incidents || 0
+      },
+      readiness,
+      receipts,
+      verification,
+      evidencePack,
+      checkpoints,
+      evidence,
+      messageFlows,
+      outbox,
+      incidentCloseout
+    };
+  }
+
   async runtimeAgents() {
+    if (!(await tableExists(this.paths.dbFile, "runtime_agents"))) {
+      return { warnings: ["runtime_agents table is missing."], count: 0, agents: [] };
+    }
     const rows = await sqlite(this.paths.dbFile, "SELECT * FROM runtime_agents ORDER BY platform, agent_id;");
     return {
       warnings: [

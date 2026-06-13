@@ -510,6 +510,31 @@ Acceptance:
 - It links back to existing raw/detail tabs.
 - It redacts tokens and secret-like values.
 
+### v0.4 Implementation Status
+
+Status: implemented in the read-only console.
+
+Delivered:
+
+- `WorkflowReadModel.commandCenter(query)` and `GET /api/command-center`.
+- `WorkflowReadModel.agentBoard(query)` and `GET /api/agent-board`.
+- `WorkflowReadModel.kanban(query)` and `GET /api/kanban`.
+- `WorkflowReadModel.evidenceDesk(workflowId, query)` and
+  `GET /api/workflows/:workflowId/evidence-desk`.
+- Top-level console tabs for Command, Agents, Kanban, and Workflows.
+- Workflow detail tab for Evidence Desk.
+- Regression coverage for schema versions, registry-first Agent Board behavior,
+  Cat Claw OpenClaw-only guardrail, Kanban column mapping, and Evidence Desk
+  routing.
+
+Validation recorded for this implementation:
+
+- `npm run check`
+- `node scripts/workflow_regression_tests.mjs`
+- Local Playwright smoke against `http://127.0.0.1:18792` with a temporary
+  workflow root, covering Command Center, Agent Board, Kanban, and Evidence
+  Desk rendering.
+
 ## Test Plan
 
 Required checks:

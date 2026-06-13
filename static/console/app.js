@@ -1,4 +1,5 @@
 const state = {
+  consoleView: "command-center",
   view: "active",
   selectedWorkflowId: "",
   tab: "overview",
@@ -259,7 +260,8 @@ function renderDetailHeader() {
 
 function setViewButtons() {
   document.querySelectorAll(".view-tabs button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.view === state.view);
+    if (button.dataset.consoleView) button.classList.toggle("active", button.dataset.consoleView === state.consoleView);
+    else button.classList.toggle("active", state.consoleView === "workflows" && button.dataset.view === state.view);
   });
 }
 
@@ -289,23 +291,64 @@ async function loadWorkflows() {
   renderWorkflowList();
   renderDetailHeader();
   setViewButtons();
+  if (state.consoleView !== "workflows") return loadGlobalView();
   setActionStatus("Loaded", "ok");
   if (state.selectedWorkflowId) await loadDetail();
   else setDetailBody(emptyState("Select a workflow from the left queue."));
 }
 
 async function selectWorkflow(workflowId) {
-  if (state.selectedWorkflowId === workflowId) return;
+  const wasGlobal = state.consoleView !== "workflows";
+  state.consoleView = "workflows";
+  if (state.selectedWorkflowId === workflowId && !wasGlobal) return;
   state.selectedWorkflowId = workflowId;
   state.detail = null;
+  setViewButtons();
   renderWorkflowList();
   renderDetailHeader();
   await loadDetail();
 }
 
+async function loadGlobalView() {
+  setViewButtons();
+  $("#previewButton").disabled = true;
+  const titleByView = {
+    "command-center": "Command Center",
+    "agent-board": "Agent Board",
+    kanban: "Workflow Kanban"
+  };
+  const subtitleByView = {
+    "command-center": "Global readiness, queue, runtime, communication and evidence summary.",
+    "agent-board": "Registry-first agent runtime, dispatchability, current work and attention view.",
+    kanban: "Derived read-only board over workflow, dispatch, runtime, message_flow, outbox and Human Gate state."
+  };
+  $("#detailTitle").textContent = titleByView[state.consoleView] || "Workflow Console";
+  $("#detailSubtitle").textContent = subtitleByView[state.consoleView] || "";
+  $("#detailSummary").replaceChildren();
+  setDetailBody(emptyState("Loading control plane view..."));
+  setActionStatus("Loading control plane view...", "neutral");
+  const path = state.consoleView === "agent-board"
+    ? "/api/agent-board"
+    : state.consoleView === "kanban"
+      ? "/api/kanban"
+      : "/api/command-center";
+  try {
+    const data = await api(path);
+    state.lastPayload = data;
+    if (state.consoleView === "agent-board") renderAgentBoard(data);
+    else if (state.consoleView === "kanban") renderKanban(data);
+    else renderCommandCenter(data);
+    setActionStatus("Ready", "ok");
+  } catch (error) {
+    setDetailBody(h("div", { className: "error" }, error.message));
+    setActionStatus("Error", "critical");
+  }
+}
+
 function detailPath(workflowId, tab) {
   const encoded = encodeURIComponent(workflowId);
   if (tab === "overview" || tab === "raw") return `/api/workflows/${encoded}`;
+  if (tab === "evidence-desk") return `/api/workflows/${encoded}/evidence-desk`;
   if (tab === "operations") {
     const params = new URLSearchParams({ workflowId });
     if (state.operationsFilters.kind) params.set("deadLetterKind", state.operationsFilters.kind);
@@ -354,8 +397,150 @@ function renderCurrentTab(data) {
   if (state.tab === "operations") return renderOperations(data);
   if (state.tab === "evidence") return renderEvidence(data);
   if (state.tab === "receipts") return renderReceipts(data);
+  if (state.tab === "evidence-desk") return renderEvidenceDesk(data);
   if (state.tab === "evidence-pack") return renderEvidencePack(data);
   return setDetailBody(jsonBlock(data));
+}
+
+function renderCommandCenter(data) {
+  const workflow = data.workflowSummary || {};
+  const runtime = data.runtimeSummary || {};
+  const queue = data.queueSummary || {};
+  const communication = data.communication || {};
+  const evidence = data.evidence || {};
+  const readiness = data.readiness || {};
+  const critical = data.attention?.critical || [];
+  const warning = data.attention?.warning || [];
+  setDetailBody(h("div", { className: "stack" }, [
+    section("Control Plane", h("div", { className: "quick-stats" }, [
+      statCard("Readiness", readiness.status || "unknown", formatDate(readiness.checkedAt)),
+      statCard("Findings", readiness.findingCount || 0),
+      statCard("Workflows", workflow.total || 0, `${workflow.blocked || 0} blocked`),
+      statCard("Runtime Agents", runtime.total || 0, `${runtime.dispatchable || 0} dispatchable`),
+      statCard("Queue", queue.total || 0, `${queue.failed || 0} failed / ${queue.dead_letter || 0} dead`),
+      statCard("Human Gate", data.humanGate?.pending || workflow.pendingHumanGates || 0),
+      statCard("Message Flow", communication.messageFlow?.total || 0, `${communication.messageFlowAttention || 0} attention`),
+      statCard("Evidence Gaps", evidence.deadLetters || 0, `${evidence.sideEffectUncertain || 0} side-effect uncertain`)
+    ])),
+    section("Runtime Platforms", renderTable([
+      { label: "Platform", key: "platform" },
+      { label: "Agents", key: "count" }
+    ], Object.entries(runtime.byPlatform || {}).map(([platform, count]) => ({ platform, count })), "No runtime platform summary.")),
+    section("Attention", h("div", { className: "content-grid" }, [
+      renderTable([
+        { label: "Critical", render: (row) => chip(row.key, "critical") }
+      ], critical.map((key) => ({ key })), "No critical attention."),
+      renderTable([
+        { label: "Warning", render: (row) => chip(row.key, "warning") }
+      ], warning.map((key) => ({ key })), "No warning attention.")
+    ])),
+    section("Top Workflows", renderTable([
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Workflow", render: (row) => h("button", { onClick: () => selectWorkflow(row.workflowId) }, row.workflowId) },
+      { label: "Owner", key: "ownerAgent" },
+      { label: "Tasks", render: (row) => row.counts?.tasks || 0 },
+      { label: "Human", render: (row) => row.counts?.pendingHumanGates || 0 },
+      { label: "Failed Dispatch", render: (row) => row.counts?.failedDispatches || 0 },
+      { label: "Updated", render: (row) => formatDate(row.updatedAt) }
+    ], data.topWorkflows || [], "No workflows recorded.")),
+    section("Raw", h("details", {}, [
+      h("summary", {}, "JSON"),
+      jsonBlock(data)
+    ]))
+  ]));
+}
+
+function renderAgentBoard(data) {
+  const agents = data.agents || [];
+  const summary = data.summary || {};
+  setDetailBody(h("div", { className: "stack" }, [
+    section("Agent Board Summary", h("div", { className: "quick-stats" }, [
+      statCard("Agents", summary.agents || agents.length),
+      statCard("Ready", summary.ready || 0),
+      statCard("Working", summary.working || 0),
+      statCard("Blocked", summary.blocked || 0),
+      statCard("Attention", summary.attention || 0),
+      statCard("Source", data.source || "-")
+    ])),
+    section("Agents", renderTable([
+      { label: "Attention", render: (row) => chip(row.attentionLevel || "ok") },
+      { label: "Agent", render: (row) => h("div", {}, [
+        h("strong", {}, row.agentId),
+        h("p", { className: "muted" }, row.displayName || row.role || row.agentKey)
+      ]) },
+      { label: "Runtime", render: (row) => h("div", {}, [
+        h("p", {}, `${present(row.platform)} / ${present(row.runtime)}`),
+        h("p", { className: "muted" }, `${present(row.workflowIngressAdapter)} -> ${present(row.executionIdentity)}`)
+      ]) },
+      { label: "Endpoint", render: (row) => h("code", {}, present(row.endpointRef)) },
+      { label: "Dispatch", render: (row) => row.canReceiveDispatch ? chip("enabled", "ok") : chip("disabled", "warning") },
+      { label: "Profile", render: (row) => row.profileMode ? h("div", {}, [
+        chip(row.profileMode.observedMode || "observed"),
+        h("p", { className: "muted" }, row.profileMode.reason || "")
+      ]) : "-" },
+      { label: "Work", render: (row) => h("div", {}, [
+        h("p", {}, `queued ${row.counts?.queued || 0} / working ${row.counts?.working || 0}`),
+        h("p", { className: "muted" }, `failed ${row.counts?.failed || 0} / flows ${row.counts?.messageFlows || 0}`)
+      ]) },
+      { label: "Latest", render: (row) => h("div", {}, [
+        h("p", {}, `${present(row.latest?.kind)} ${present(row.latest?.status)}`),
+        h("p", { className: "muted" }, short(row.latest?.detail || row.latest?.dispatchId || row.latest?.flowId, 110)),
+        h("p", { className: "muted" }, formatDate(row.latest?.lastEventAt))
+      ]) },
+      { label: "Flags", render: (row) => h("div", { className: "chip-list" }, (row.attentionFlags || []).map((flag) => chip(flag.key, flag.severity))) }
+    ], agents, "No runtime agents registered.")),
+    section("Raw", h("details", {}, [
+      h("summary", {}, "JSON"),
+      jsonBlock(data)
+    ]))
+  ]));
+}
+
+function renderKanban(data) {
+  const columns = data.columns || [];
+  setDetailBody(h("div", { className: "stack" }, [
+    section("Kanban Summary", h("div", { className: "quick-stats" }, [
+      statCard("Cards", data.summary?.cards || 0),
+      statCard("Workflows", data.summary?.workflows || 0),
+      statCard("Agents", data.summary?.agents || 0),
+      statCard("Source", data.source || "-")
+    ])),
+    h("div", { className: "kanban-board" }, columns.map((column) => h("section", { className: "kanban-column" }, [
+      h("div", { className: "kanban-head" }, [
+        h("strong", {}, column.label),
+        chip(column.count || 0, column.count ? "warning" : "neutral")
+      ]),
+      h("div", { className: "kanban-cards" }, (column.cards || []).length
+        ? column.cards.map(renderKanbanCard)
+        : [h("div", { className: "kanban-empty" }, "Empty")])
+    ]))),
+    section("Raw", h("details", {}, [
+      h("summary", {}, "JSON"),
+      jsonBlock(data)
+    ]))
+  ]));
+}
+
+function renderKanbanCard(card) {
+  return h("article", { className: `kanban-card ${toneFor(card.status || card.column)}` }, [
+    h("div", { className: "workflow-title" }, [
+      h("strong", {}, short(card.title || card.sourceId, 70)),
+      chip(card.status || card.source)
+    ]),
+    card.summary ? h("p", { className: "workflow-summary" }, short(card.summary, 120)) : null,
+    h("div", { className: "workflow-meta" }, [
+      card.workflowId ? h("button", { onClick: () => selectWorkflow(card.workflowId) }, card.workflowId) : h("span", {}, "no workflow"),
+      h("span", {}, card.agentId || "-"),
+      h("span", {}, card.runtime || "-")
+    ]),
+    h("div", { className: "mini-counts" }, [
+      h("span", {}, card.source),
+      h("span", {}, formatDate(card.lastEventAt)),
+      card.dispatchId ? h("span", {}, `dispatch ${card.dispatchId}`) : null,
+      card.flowId ? h("span", {}, `flow ${card.flowId}`) : null
+    ]),
+    (card.missingEvidence || []).length ? h("div", { className: "chip-list" }, card.missingEvidence.map((item) => chip(item, "warning"))) : null
+  ]);
 }
 
 function renderOverview(data) {
@@ -1590,6 +1775,88 @@ function renderReceipts(data) {
   setDetailBody(body);
 }
 
+function renderEvidenceDesk(data) {
+  const summary = data.summary || {};
+  const missing = summary.missingEvidence || [];
+  const readiness = data.readiness || {};
+  const incident = data.incidentCloseout || {};
+  const verification = data.verification || {};
+  setDetailBody(h("div", { className: "stack" }, [
+    section("Evidence Desk", h("div", { className: "quick-stats" }, [
+      statCard("Status", data.status || "unknown", data.schemaVersion || ""),
+      statCard("Missing", missing.length),
+      statCard("Cat Claw Audit", summary.humanGateReadyForCatClawAudit ? "ready" : "not ready"),
+      statCard("Human Gate", summary.humanGateReadyForSubmission ? "ready" : "not ready"),
+      statCard("Receipts", summary.receiptPresent || 0, `${summary.receiptMissing || 0} missing`),
+      statCard("Verification", summary.verificationResults || 0),
+      statCard("Artifacts", summary.evidenceArtifacts || 0),
+      statCard("Incidents", summary.incidents || 0)
+    ])),
+    section("Missing Evidence", missing.length
+      ? h("div", { className: "chip-list" }, missing.map((item) => chip(item, "warning")))
+      : emptyState("No missing evidence detected by the derived desk.")),
+    section("Human Gate Readiness", h("div", { className: "content-grid" }, [
+      renderTable([
+        { label: "Status", render: (row) => chip(row.status) },
+        { label: "Check", render: (row) => h("div", {}, [
+          h("strong", {}, row.label),
+          h("p", { className: "muted" }, short(row.detail, 180))
+        ]) },
+        { label: "Severity", render: (row) => chip(row.severity, row.severity === "required" ? "critical" : "warning") },
+        { label: "Refs", render: (row) => h("code", {}, present((row.refs || []).join(", "))) }
+      ], readiness.checklist || [], "No readiness checklist."),
+      h("div", { className: "quick-stats" }, [
+        statCard("Records", readiness.summary?.recordCount || 0),
+        statCard("Buttons", readiness.summary?.buttonCount || 0),
+        statCard("Checkpoints", readiness.summary?.checkpointCount || 0),
+        statCard("Artifacts", readiness.summary?.artifactCount || 0),
+        statCard("Sent Outbox", readiness.summary?.sentOutboxCount || 0),
+        statCard("Receipts", readiness.summary?.receiptPresentCount || 0)
+      ])
+    ])),
+    section("Receipt Chain", renderTable([
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Kind", key: "kind" },
+      { label: "Receipt", render: (row) => h("div", {}, [
+        h("strong", {}, row.receiptId),
+        h("p", { className: "muted" }, short(row.title || row.summary, 120))
+      ]) },
+      { label: "Present", render: (row) => row.present ? chip("present", "ok") : chip("missing", "warning") },
+      { label: "Chain", render: (row) => h("div", {}, [
+        h("p", {}, `task ${present(row.taskId)} / dispatch ${present(row.dispatchId)}`),
+        h("p", { className: "muted" }, `runtime ${present(row.runtimeRunId)} / outbox ${present(row.outboxId)}`)
+      ]) },
+      { label: "Updated", render: (row) => formatDate(row.updatedAt || row.createdAt) }
+    ], (data.receipts?.receipts || []).slice(0, 80), "No receipt chain records.")),
+    section("Verification", renderTable([
+      { label: "Decision", render: (row) => chip(row.decision) },
+      { label: "Type", key: "resultType" },
+      { label: "Result", render: (row) => h("div", {}, [
+        h("strong", {}, row.verificationId),
+        h("p", { className: "muted" }, short(row.summary, 140))
+      ]) },
+      { label: "Reviewer", render: (row) => present(row.verifierAgent || row.refuterAgent || row.sourceAgent) },
+      { label: "Created", render: (row) => formatDate(row.createdAt) }
+    ], verification.results || [], "No verification results.")),
+    section("Incidents / Closeout", h("div", { className: "content-grid" }, [
+      renderTable([
+        { label: "Status", render: (row) => chip(row.status) },
+        { label: "Check", key: "label" },
+        { label: "Detail", render: (row) => short(row.detail, 180) }
+      ], incident.checklist || [], "No incident closeout checklist."),
+      renderIncidentTimeline((incident.timeline || []).slice(0, 20))
+    ])),
+    section("Export", h("div", { className: "actions" }, [
+      h("button", { onClick: () => downloadJson(`${data.workflowId || state.selectedWorkflowId}-evidence-desk.json`, data) }, "Download Desk JSON"),
+      h("button", { onClick: () => loadWorkflowEvidencePack(data.workflowId || state.selectedWorkflowId) }, "Open Evidence Pack")
+    ])),
+    section("Raw", h("details", {}, [
+      h("summary", {}, "JSON"),
+      jsonBlock(data)
+    ]))
+  ]));
+}
+
 function renderEvidencePack(data) {
   const manifest = data.manifest || {};
   const filename = `${present(data.workflowId || state.selectedWorkflowId, "workflow")}-evidence-pack.json`;
@@ -2035,8 +2302,22 @@ async function executeCloseoutHumanGateRequest(preview, fields) {
   }
 }
 
-document.querySelectorAll(".view-tabs button").forEach((button) => {
+document.querySelectorAll(".view-tabs button[data-console-view]").forEach((button) => {
   button.addEventListener("click", async () => {
+    state.consoleView = button.dataset.consoleView;
+    setViewButtons();
+    if (state.consoleView === "workflows") {
+      if (state.selectedWorkflowId) await loadDetail();
+      else await loadWorkflows();
+      return;
+    }
+    await loadGlobalView();
+  });
+});
+
+document.querySelectorAll(".view-tabs button[data-view]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    state.consoleView = "workflows";
     state.view = button.dataset.view;
     state.selectedWorkflowId = "";
     state.detail = null;
