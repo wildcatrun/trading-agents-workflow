@@ -1450,6 +1450,7 @@ function renderCommandCenter(data) {
       statCard("Human Gate", triage.planes?.human_gate || 0),
       statCard("Evidence", triage.planes?.evidence || 0)
     ])),
+    section("Diagnostic Matrix", renderDiagnosticMatrix(data)),
     section("Critical Blockers", blockers.length ? h("div", { className: "search-results" }, blockers.map(renderTriageBlocker)) : emptyState("No current blockers. The command center is ready.")),
     section("Control Plane", h("div", { className: "quick-stats" }, [
       statCard("Readiness", readiness.status || "unknown", formatDate(readiness.checkedAt)),
@@ -1487,6 +1488,104 @@ function renderCommandCenter(data) {
       jsonBlock(data)
     ]))
   ]));
+}
+
+function diagnosticMatrixRows(data = {}) {
+  const blockers = data.triage?.blockers || [];
+  const attention = [...(data.attention?.critical || []), ...(data.attention?.warning || [])];
+  const workflow = data.workflowSummary || {};
+  const communication = data.communication || {};
+  const humanGate = data.humanGate || {};
+  const readiness = data.readiness || {};
+  const readinessStatus = String(readiness.status || "").toLowerCase();
+  const readinessCritical = ["not_ready", "failed", "unavailable", "error", "critical"].includes(readinessStatus);
+  const readinessWarning = Boolean(readinessStatus && readinessStatus !== "ready" && !readinessCritical);
+  const matchBlockers = (predicate) => blockers.filter((blocker) => predicate({
+    ...blocker,
+    idText: String(blocker.id || "").toLowerCase(),
+    titleText: String(blocker.title || "").toLowerCase(),
+    detailText: String(blocker.detail || "").toLowerCase()
+  }));
+  const countBlockers = (items, fallback = 0) => items.length
+    ? items.reduce((total, item) => total + Number(item.count || 1), 0)
+    : fallback;
+  const firstTarget = (items, fallback) => items.find((item) => item.target)?.target || fallback;
+  const staleDispatch = matchBlockers((item) => /failed_dispatch|max_attempt_dispatch|stale_dispatch/.test(item.idText));
+  const missingReceipt = matchBlockers((item) => /message_flow_delivery_missing|receipt_missing|missing_receipt/.test(item.idText + item.detailText));
+  const failedTelegram = matchBlockers((item) => /failed_outbox|telegram/.test(item.idText + item.titleText + item.detailText));
+  const blockedHumanGate = matchBlockers((item) => /pending_human_gate|human_gate_feedback|blocked_human_gate/.test(item.idText));
+  const runtimeFailure = matchBlockers((item) => (
+    item.plane === "runtime" ||
+    /readiness_not_ready|runtime_failed|runtime failure|runtime_failure/.test(item.idText + item.titleText + item.detailText)
+  ));
+  return [
+    {
+      key: "stale_dispatch",
+      label: "Stale Dispatch",
+      count: countBlockers(staleDispatch, workflow.failedDispatches || 0),
+      severity: staleDispatch.some((item) => item.severity === "critical") || workflow.failedDispatches ? "critical" : "ok",
+      detail: "Dispatch evidence needs Operations, board placement, and source refs.",
+      target: firstTarget(staleDispatch, { consoleView: "operations" }),
+      blockers: staleDispatch
+    },
+    {
+      key: "missing_receipt",
+      label: "Missing Receipt",
+      count: countBlockers(missingReceipt, attention.includes("message_flow_attention") ? (communication.messageFlowAttention || 1) : 0),
+      severity: missingReceipt.length || attention.includes("message_flow_attention") ? "warning" : "ok",
+      detail: "Receipt gaps need message_flow, Kanban, and Evidence context.",
+      target: firstTarget(missingReceipt, { consoleView: "kanban" }),
+      blockers: missingReceipt
+    },
+    {
+      key: "failed_telegram",
+      label: "Failed Telegram",
+      count: countBlockers(failedTelegram, workflow.failedOutbox || communication.telegramOutbox?.failed || 0),
+      severity: failedTelegram.length || workflow.failedOutbox || communication.telegramOutbox?.failed ? "critical" : "ok",
+      detail: "Delivery failures need outbox evidence and governed preview paths.",
+      target: firstTarget(failedTelegram, { consoleView: "operations" }),
+      blockers: failedTelegram
+    },
+    {
+      key: "blocked_human_gate",
+      label: "Blocked Human Gate",
+      count: countBlockers(blockedHumanGate, humanGate.pending || workflow.pendingHumanGates || 0),
+      severity: blockedHumanGate.length || humanGate.pending || workflow.pendingHumanGates ? "warning" : "ok",
+      detail: "Human Gate blockers need readiness, buttons, and evidence package review.",
+      target: firstTarget(blockedHumanGate, { consoleView: "evidence-workspace" }),
+      blockers: blockedHumanGate
+    },
+    {
+      key: "runtime_failure",
+      label: "Runtime Failure",
+      count: countBlockers(runtimeFailure, (readinessCritical || readinessWarning) ? (readiness.findingCount || 1) : 0),
+      severity: runtimeFailure.length || readinessCritical ? "critical" : readinessWarning ? "warning" : "ok",
+      detail: "Runtime findings need System status and registry-first agent context.",
+      target: firstTarget(runtimeFailure, { consoleView: "system" }),
+      blockers: runtimeFailure
+    }
+  ];
+}
+
+function renderDiagnosticMatrix(data = {}) {
+  const rows = diagnosticMatrixRows(data);
+  return h("div", { className: "triage-matrix" }, rows.map((row) => h("article", { className: `triage-matrix-row ${row.severity}` }, [
+    h("div", { className: "triage-matrix-main" }, [
+      h("div", { className: "workflow-title" }, [
+        h("strong", {}, row.label),
+        chip(row.severity === "ok" ? "clear" : row.severity, row.severity)
+      ]),
+      h("p", { className: "workflow-summary" }, row.detail),
+      row.blockers.length ? h("div", { className: "mini-counts" }, row.blockers.slice(0, 4).map((blocker) => (
+        h("span", {}, short(blocker.id, 96))
+      ))) : null
+    ]),
+    h("div", { className: "triage-matrix-actions" }, [
+      h("strong", {}, String(row.count || 0)),
+      h("button", { type: "button", onClick: () => openCommandTarget(row.target) }, "Inspect"),
+      row.blockers[0]?.id ? h("button", { type: "button", onClick: () => copyText(row.blockers[0].id, row.label) }, "Copy Ref") : null
+    ])
+  ])));
 }
 
 function renderActivityFeed(data) {

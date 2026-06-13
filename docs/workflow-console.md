@@ -135,7 +135,9 @@ Current version map:
   Slice H adds visible Action Gate and Export Gate panels around intervention
   previews and evidence downloads, making role/policy/read-only/audit evidence
   explicit in the GUI. Slice I adds an operator context trail with current view,
-  workflow, focus, filters, mode, and copyable deep link.
+  workflow, focus, filters, mode, and copyable deep link. Slice J adds a fixed
+  Command Center diagnostic matrix for stale dispatch, missing receipt, failed
+  Telegram, blocked Human Gate, and runtime failure inspection paths.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

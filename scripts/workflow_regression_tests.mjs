@@ -8199,6 +8199,31 @@ async function testWorkflowConsoleStaticContextTrailContract() {
   assert.equal(css.includes("flex: 1 1 260px"), true);
 }
 
+async function testWorkflowConsoleStaticDiagnosticMatrixContract() {
+  const [app, css] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), "static/console/app.js"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "static/console/style.css"), "utf8")
+  ]);
+  assert.equal(app.includes('section("Diagnostic Matrix", renderDiagnosticMatrix(data))'), true);
+  assert.equal(app.includes("function diagnosticMatrixRows"), true);
+  assert.equal(app.includes("function renderDiagnosticMatrix"), true);
+  assert.equal(app.includes('key: "stale_dispatch"'), true);
+  assert.equal(app.includes('key: "missing_receipt"'), true);
+  assert.equal(app.includes('key: "failed_telegram"'), true);
+  assert.equal(app.includes('key: "blocked_human_gate"'), true);
+  assert.equal(app.includes('key: "runtime_failure"'), true);
+  assert.equal(app.includes("openCommandTarget(row.target)"), true);
+  assert.equal(app.includes("Copy Ref"), true);
+  assert.equal(app.includes("const readinessCritical"), true);
+  assert.equal(app.includes("const readinessWarning"), true);
+  assert.equal(app.includes('["not_ready", "failed", "unavailable", "error", "critical"].includes(readinessStatus)'), true);
+  assert.equal(app.includes('severity: runtimeFailure.length || readinessCritical ? "critical" : readinessWarning ? "warning" : "ok"'), true);
+  assert.equal(css.includes(".triage-matrix"), true);
+  assert.equal(css.includes(".triage-matrix-row"), true);
+  assert.equal(css.includes(".triage-matrix-actions"), true);
+  assert.equal(css.includes("grid-template-columns: repeat(auto-fit, minmax(240px, 1fr))"), true);
+}
+
 try {
   requireSqliteCli();
   const tests = [
@@ -8249,6 +8274,7 @@ try {
     ["workflow console static action gate contract", testWorkflowConsoleStaticActionGateContract],
     ["workflow console config operator policy modes", testWorkflowConsoleConfigOperatorPolicyModes],
     ["workflow console static context trail contract", testWorkflowConsoleStaticContextTrailContract],
+    ["workflow console static diagnostic matrix contract", testWorkflowConsoleStaticDiagnosticMatrixContract],
     ["workflow console agentic surfaces", testWorkflowConsoleAgenticSurfaces],
     ["workflow health terminal failed dispatch degraded", testWorkflowHealthTerminalFailedDispatchIsDegraded],
     ["workflow health open incidents visible", testWorkflowHealthOpenIncidentsAreVisible],
