@@ -590,6 +590,336 @@ Validation recorded for this implementation:
 - Independent reviewer pass after the terminal-failure, stale-reconcile, and
   semantic-continuation failure gaps were fixed.
 
+## Target Console Specification
+
+The target console is not a marketing dashboard. It should behave like an
+operator workbench for governed agent workflows, with the same level of
+practical control expected from modern agent consoles:
+
+- a stable command center for global state;
+- an agent board for identity, readiness, workload, and current semantic state;
+- a Kanban work surface for queue, dispatch, runtime, receipt, Human Gate, and
+  incident progression;
+- an evidence desk that shows what is proven, missing, stale, or unsafe;
+- governed preview actions for the next safe intervention;
+- an audit trail that explains who did what, when, why, with which evidence;
+- mobile-readable inspection surfaces for emergency review;
+- no direct browser mutation of workflow business tables.
+
+### Navigation Model
+
+Primary navigation should settle on five top-level surfaces:
+
+1. Command Center
+2. Agent Board
+3. Kanban
+4. Evidence
+5. Operations
+
+Workflow detail remains available from cards, tables, and references, but the
+default operator path should be:
+
+```text
+global health -> agent/work item -> evidence -> preview package
+  -> audited preview or explicitly policy-enabled action
+```
+
+The console should not require the operator to start from a workflow id when
+the actual symptom is "cat_ears has no receipt", "Telegram delivery is stale",
+"Hermes ACP is unavailable", or "Human Gate feedback is waiting".
+
+### Command Center Target
+
+The Command Center should become a triage page, not just a summary page.
+
+Target panels:
+
+- Overall state: `ready`, `degraded`, `blocked`, `incident`, or `unknown`.
+- Critical blockers: top five current issues requiring action.
+- Runtime plane: OpenClaw, Hermes/Hermers, local Codex, and future adapters.
+- Queue plane: queued, leased, retrying, stale, failed, and dead-letter jobs.
+- Agent plane: ready, working, blocked, attention, and unavailable counts.
+- Communication plane: message-flow attention, local Codex inbox, Telegram
+  outbox, and delivery gaps.
+- Human Gate plane: pending, stale, missing buttons, feedback waiting, and
+  resume-boundary status.
+- Evidence plane: missing receipt, missing artifact, side-effect uncertain,
+  incident linkage, and rollback boundary gaps.
+
+Each blocker should link to the exact Agent Board row, Kanban card, Evidence
+Desk section, or Operations audit row that explains it.
+
+### Agent Board Target
+
+The Agent Board should answer four operator questions without raw SQL or log
+inspection:
+
+- Who exists in the governed registry?
+- Can this agent receive work now?
+- What is the agent currently doing, semantically?
+- What blocks the next safe dispatch or closeout?
+
+Target row/card fields:
+
+- registry identity: `agent_id`, display name, role, platform, primary runtime;
+- runtime endpoint: adapter, execution identity, endpoint reference, profile
+  mode, and last readiness source;
+- admission state: dispatchable, denied, unavailable, protected, or unknown;
+- current state: current workflow/task/dispatch, semantic stage, last event,
+  stale kind, current artifact/receipt pointer;
+- workload: queued jobs, active dispatches, message-flow rows, pending receipt
+  rows, and Human Gate dependencies;
+- safety flags: protected agent, deprecated alias risk, runtime mismatch,
+  missing profile evidence, ACK-only stale, failed terminal turn, or side-effect
+  uncertainty.
+
+Desktop should use a dense table plus detail drawer. Mobile should switch to
+agent cards grouped by status, because the current table is readable but too
+dense for sustained mobile operation.
+
+### Kanban Target
+
+The Kanban board should be a projection over workflow state. It should not
+pretend that dragging a card is the source of truth.
+
+Target card classes:
+
+- workflow task;
+- control-loop job;
+- runtime dispatch;
+- runtime current state;
+- message-flow event;
+- Telegram outbox item;
+- Human Gate request;
+- evidence gap;
+- incident;
+- side-effect uncertainty.
+
+Every card should expose:
+
+- source type and source id;
+- workflow/task/dispatch/message-flow ids when known;
+- owner/target agent;
+- current column reason;
+- first-seen and last-updated timestamps;
+- latest event summary;
+- required evidence;
+- next safe preview actions;
+- direct links to raw detail and audit trail.
+
+Column movement remains derived from state:
+
+```text
+Inbox -> Queued -> Dispatched -> Working -> Waiting Receipt
+       -> Waiting Human -> Done
+       -> Blocked / Failed
+```
+
+Cards may appear in Blocked or Failed from any stage when policy, incident, or
+runtime evidence requires it.
+
+### Evidence Desk Target
+
+The Evidence Desk should be the operator's pre-action checklist. It should
+avoid hiding decisive facts in raw JSON.
+
+Target sections:
+
+- Readiness: latest registry/runtime readiness and age.
+- Dispatch: dispatch ids, attempts, runtime runs, ACK state, semantic state.
+- Receipts: terminal receipt, artifact receipt, delivery receipt, and missing
+  receipt reason.
+- Human Gate: request, options, buttons, Telegram/Web App delivery, feedback,
+  resume payload, and token redaction status.
+- Artifacts: latest artifact refs, file existence where available, checksum or
+  size when available.
+- Side effects: outbox, external delivery, database write, production action,
+  or trading-core handoff state.
+- Review gates: Cat Brain/Cat Claw review state, unresolved reviewer findings,
+  rollback and stop conditions.
+- Audit: action previews, executed actions, actor, timestamp, input summary,
+  output summary, and failure evidence.
+
+### Governed Preview Action Target
+
+The next GUI step should make preview actions visible on cards and evidence
+sections while keeping actual mutation locked behind the existing action
+gateway.
+
+Preview action families:
+
+- workflow supervise preview;
+- evidence-pack preview;
+- Human Gate package preview;
+- dispatch rerun preview;
+- semantic-continuation preview;
+- Telegram outbox delivery preview;
+- Telegram outbox requeue/redelivery preview;
+- incident linkage preview;
+- pause/resume/stop intervention preview;
+- closeout/checkpoint preview.
+
+Preview output must be explicit:
+
+- what would be changed;
+- what would not be changed;
+- required evidence;
+- missing evidence;
+- idempotency key or dedupe key;
+- rollback/stop boundary;
+- Human Gate requirement if any;
+- exact server-side allowlist action name.
+
+Preview and export surfaces must be policy-gated. A redacted evidence export is
+still an operator artifact, not a public debug dump; preview-package generation,
+evidence export, and any later policy-enabled write action must record actor,
+source, timestamp, allowlist action, and audit row.
+
+### Mobile And Accessibility Target
+
+Mobile support is for inspection and emergency approval preparation, not heavy
+workflow editing.
+
+Required behavior:
+
+- Command Center cards fit a 390px-wide viewport without overlapping text.
+- Agent Board switches to grouped cards below tablet width.
+- Kanban remains horizontally scrollable, with visible column labels and no
+  overlapping card content.
+- Evidence Desk uses collapsible sections and keeps ids copyable.
+- Buttons have clear labels and cannot be confused with executed actions.
+- Long ids wrap safely or use copy controls.
+- No page relies on hover-only affordances.
+
+### Data Contract Target
+
+Each new endpoint should keep stable schema versions and include:
+
+- `schemaVersion`;
+- `generatedAt`;
+- `query`;
+- `summary`;
+- `items` or named collections;
+- redacted payloads only;
+- `sourceRefs` for raw table/event linkage;
+- `attention` or `findings` for operator next steps.
+
+No endpoint should expose callback tokens, OAuth values, API keys, private keys,
+broker credentials, raw secret-bearing payloads, or unrestricted SQL results.
+
+### Operational Acceptance Target
+
+The GUI should be considered operator-grade only when these checks pass:
+
+- read-only endpoints are deterministic under empty, partial, and populated
+  workflow roots;
+- Agent Board starts from `runtime_agents` and never infers deprecated aliases;
+- Kanban card placement has tested source-to-column reasons;
+- preview actions write `workflow_operations` audit rows;
+- unsupported actions fail closed with visible reason;
+- desktop and mobile smoke screenshots show no overlapping core text;
+- development server serves the same committed code as GitHub main;
+- no Gateway restart is required for static/read-model-only console changes.
+
+## Version Roadmap
+
+### v0.7: Governed Preview Actions In The GUI
+
+Goal: make the console useful for intervention planning without enabling unsafe
+state mutation.
+
+Scope:
+
+- render Kanban card preview buttons from `previewActions`;
+- render Evidence Desk preview actions for missing receipt, missing artifact,
+  Human Gate, outbox, incident, and checkpoint gaps;
+- route every preview through `WorkflowActionGateway`;
+- show preview result in a modal/drawer with audit id and redacted payload;
+- add regression coverage for action allowlist and audit rows.
+
+Non-goals:
+
+- no drag-and-drop mutation;
+- no direct retry button that bypasses preview;
+- no Gateway/profile/process controls.
+
+Acceptance:
+
+- every visible preview button maps to an allowlisted action;
+- unsupported preview actions are hidden or rendered disabled with a reason;
+- preview failures are visible and auditable;
+- mobile can open and read preview packages.
+
+### v0.8: Agentic Workbench UX
+
+Goal: make the operator path fast enough for real incident handling.
+
+Scope:
+
+- add global search over workflow id, dispatch id, agent id, message-flow id,
+  artifact ref, Human Gate id, and incident id;
+- add detail drawers for Agent Board and Kanban cards;
+- add saved filters for blocked, stale ACK-only, waiting receipt, waiting
+  Human, and failed delivery;
+- add severity and age sorting;
+- add copy controls for ids and artifact refs;
+- add mobile Agent Board card layout.
+
+Acceptance:
+
+- an operator can move from Command Center blocker to exact evidence in two
+  clicks;
+- dense desktop tables stay scannable;
+- mobile inspection does not require horizontal table reading for Agent Board;
+- filters are reflected in the URL query so links are shareable.
+
+### v0.9: Evidence And Incident Workspace
+
+Goal: turn scattered governance facts into reviewable packages.
+
+Scope:
+
+- create a workflow evidence package view;
+- create an incident package view;
+- include review-gate status, rollback/stop boundary, missing evidence, and
+  next Human Gate readiness;
+- expose timeline compression for long workflows;
+- support export of a redacted evidence bundle for Cat Claw / Flashcat review.
+
+Acceptance:
+
+- Cat Claw can review a Human Gate package from one page;
+- missing evidence is listed before approval-oriented content;
+- every package links back to raw source refs and audit rows;
+- package export is redacted and timestamped.
+
+### v1.0: Operator-Grade Workflow Console
+
+Goal: reach a stable console baseline comparable to mainstream agent control
+planes while preserving trading-system safety boundaries.
+
+Scope:
+
+- Command Center is the default triage home;
+- Agent Board, Kanban, Evidence, Operations, and workflow detail are integrated
+  through consistent source refs;
+- preview-first actions cover common repair and closeout preparation;
+- write actions remain explicitly disabled unless startup policy enables them;
+- audit, redaction, mobile inspection, and rollback visibility are mandatory.
+
+Acceptance:
+
+- a stale dispatch, missing receipt, failed Telegram delivery, blocked Human
+  Gate, and runtime failure can each be diagnosed from GUI surfaces without
+  raw database inspection;
+- every operator action has preview, audit, and failure evidence;
+- write actions remain disabled by default and require explicit startup policy,
+  role/policy gating, and audit evidence before they can appear as executable
+  controls;
+- preview and evidence export surfaces are role/policy gated and redacted;
+- safety boundaries remain enforced in code, not only documentation;
+- subagent/code-review quality gates are recorded for the release.
+
 ## Test Plan
 
 Required checks:
@@ -640,8 +970,14 @@ unless plugin runtime loading changes require it separately.
 - v0.4 is read-only and implemented.
 - v0.5 semantic current-state projection is implemented.
 - v0.6 runtime bridge semantic event ingestion is implemented.
-- Governed preview actions are deferred to the next stage after runtime
-  observability has enough development-server operating history.
+- v0.7 is the next implementation target: governed preview actions surfaced in
+  Kanban and Evidence Desk, still preview-first and audit-first.
+- v0.8 should focus on operator workflow speed: search, drawers, saved filters,
+  severity/age sorting, copy controls, and mobile Agent Board cards.
+- v0.9 should package evidence and incidents for Cat Claw / Flashcat review.
+- v1.0 is the operator-grade baseline: integrated triage, registry-first agent
+  workbench, derived Kanban, evidence packages, governed previews, redaction,
+  audit, and mobile inspection.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 
@@ -660,8 +996,12 @@ Rollback:
 - Should agent cards show profile-local memory/RAG status, or keep memory
   status in the Hermers platform surface and only show workflow-relevant
   readiness here?
-- Which governed preview actions are safe enough for the next stage after
-  v0.6 runtime observability is observed on the development server?
+- Which v0.7 preview actions should be exposed first if the development server
+  shows sparse real Kanban cards?
+- Should Evidence package export be a console-only artifact, a workflow
+  artifact, or both?
+- Which write actions, if any, should be considered after v1.0, and what Human
+  Gate policy must be attached before they can be enabled?
 
 ## Review Record
 
@@ -674,3 +1014,12 @@ changes`. The requested changes were applied:
 - clarified that `docs/workflow-console.md`'s old Phase Hold is historical and
   superseded by this read-only / preview-first GUI plan;
 - added a Cat Claw OpenClaw-only Agent Board regression requirement.
+
+2026-06-13: local Codex subagent `Heisenberg` reviewed the expanded target
+console specification and v0.7-v1.0 roadmap. Verdict was `approve`; optional
+hardening suggestions were applied:
+
+- clarified the navigation path as audited preview or explicitly
+  policy-enabled action;
+- added role/policy gating for preview and evidence export surfaces;
+- made disabled-by-default write controls part of v1.0 acceptance.
