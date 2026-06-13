@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { workflowChildPayload } from "../src/console/server.js";
+import { buildConsoleConfig, workflowChildPayload } from "../src/console/server.js";
 import { WorkflowActionGateway } from "../src/console/action-gateway.js";
 import { WorkflowReadModel } from "../src/console/read-model.js";
 import { kanbanPreviewActionModel } from "../static/console/preview-actions.js";
@@ -8134,6 +8134,44 @@ async function testWorkflowConsoleStaticSystemStatusContract() {
   assert.equal(readModel.includes('["nav.system", "views", "System Status"'), true);
 }
 
+async function testWorkflowConsoleStaticActionGateContract() {
+  const [app, css, server] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), "static/console/app.js"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "static/console/style.css"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "src/console/server.js"), "utf8")
+  ]);
+  assert.equal(server.includes("operatorPolicy"), true);
+  assert.equal(server.includes("local_console_operator_unverified"), true);
+  assert.equal(server.includes("hidden_read_only"), true);
+  assert.equal(server.includes("hidden_without_allow_writes"), true);
+  assert.equal(server.includes("redacted_browser_download"), true);
+  assert.equal(app.includes("function actionGatePanel"), true);
+  assert.equal(app.includes("Workflow Intervention Gate"), true);
+  assert.equal(app.includes("Evidence Export Gate"), true);
+  assert.equal(app.includes("Preview actions append console operation audit rows."), true);
+  assert.equal(app.includes("Browser download of the redacted read model"), true);
+  assert.equal(css.includes(".action-gate-panel"), true);
+}
+
+async function testWorkflowConsoleConfigOperatorPolicyModes() {
+  const paths = { root: "/tmp/workflow-console-config-policy-test" };
+  const readOnlyConfig = buildConsoleConfig(paths, { readOnly: true, allowWrites: true, serverTime: "2026-01-01T00:00:00.000Z" });
+  assert.equal(readOnlyConfig.actionMode, "preview-only");
+  assert.equal(readOnlyConfig.operatorPolicy.writeActions, "hidden_read_only");
+
+  const noAllowWritesConfig = buildConsoleConfig(paths, { readOnly: false, allowWrites: false, serverTime: "2026-01-01T00:00:00.000Z" });
+  assert.equal(noAllowWritesConfig.actionMode, "preview-only");
+  assert.equal(noAllowWritesConfig.operatorPolicy.writeActions, "hidden_without_allow_writes");
+  assert.equal(noAllowWritesConfig.operatorPolicy.role, "local_console_operator_unverified");
+  assert.equal(noAllowWritesConfig.operatorPolicy.roleEvidence, "static_local_console_role");
+
+  const allowWritesConfig = buildConsoleConfig(paths, { readOnly: false, allowWrites: true, serverTime: "2026-01-01T00:00:00.000Z" });
+  assert.equal(allowWritesConfig.actionMode, "allowlisted");
+  assert.equal(allowWritesConfig.operatorPolicy.writeActions, "allowlisted_by_gateway");
+  assert.equal(allowWritesConfig.allowedViews.includes("active"), true);
+  assert.equal(allowWritesConfig.allowedConsoleViews.includes("operations"), true);
+}
+
 try {
   requireSqliteCli();
   const tests = [
@@ -8181,6 +8219,8 @@ try {
     ["workflow health dashboard", testWorkflowHealthDashboard],
     ["workflow console static live refresh contract", testWorkflowConsoleStaticLiveRefreshContract],
     ["workflow console static system status contract", testWorkflowConsoleStaticSystemStatusContract],
+    ["workflow console static action gate contract", testWorkflowConsoleStaticActionGateContract],
+    ["workflow console config operator policy modes", testWorkflowConsoleConfigOperatorPolicyModes],
     ["workflow console agentic surfaces", testWorkflowConsoleAgenticSurfaces],
     ["workflow health terminal failed dispatch degraded", testWorkflowHealthTerminalFailedDispatchIsDegraded],
     ["workflow health open incidents visible", testWorkflowHealthOpenIncidentsAreVisible],

@@ -108,6 +108,38 @@ export async function workflowChildPayload(readModel, workflowId, child = "", qu
   return undefined;
 }
 
+export function buildConsoleConfig(paths, options = {}) {
+  const readOnly = Boolean(options.readOnly);
+  const allowWrites = Boolean(options.allowWrites);
+  return {
+    service: "workflow-console",
+    rootDir: paths.root,
+    readOnlyMode: readOnly,
+    actionMode: readOnly || !allowWrites ? "preview-only" : "allowlisted",
+    operatorPolicy: {
+      role: "local_console_operator_unverified",
+      roleEvidence: "static_local_console_role",
+      previewActions: "allowed",
+      writeActions: readOnly ? "hidden_read_only" : allowWrites ? "allowlisted_by_gateway" : "hidden_without_allow_writes",
+      evidenceExport: "redacted_browser_download",
+      auditSurface: "workflow_operations"
+    },
+    serverTime: options.serverTime || new Date().toISOString(),
+    allowedViews: ["active", "waiting_human", "blocked", "paused", "updated_24h"],
+    allowedWorkflowQueues: ["active", "waiting_human", "blocked", "paused", "updated_24h"],
+    allowedConsoleViews: ["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "system", "workflows"],
+    redactionPolicyVersion: "workflow_console_redaction_v1",
+    securityBoundaries: [
+      { key: "loopback_default", status: "enforced", detail: "Console binds to loopback unless startup config overrides host." },
+      { key: "host_allowlist", status: "enforced", detail: "Unknown Host headers are rejected before routing." },
+      { key: "no_query_token", status: "enforced", detail: "Authentication accepts headers only; query-string tokens are not used." },
+      { key: "cross_origin_mutation_block", status: "browser_enforced", detail: "Blocks cross-site Sec-Fetch-Site and mismatched Origin/Referer; non-browser requests without Origin/Referer rely on Host allowlist and token policy." },
+      { key: "preview_first_actions", status: readOnly || !allowWrites ? "enforced" : "policy_enabled", detail: readOnly ? "Read-only mode exposes preview actions only." : allowWrites ? "Writes are limited to the action gateway allowlist." : "Non-preview writes are hidden because WORKFLOW_CONSOLE_ALLOW_WRITES is off." },
+      { key: "redaction", status: "enforced", detail: "Read APIs redact callback tokens, secrets, OAuth-ish fields, and sensitive payloads." }
+    ]
+  };
+}
+
 async function serveStatic(req, res, pathname) {
   const clean = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const target = path.resolve(CONSOLE_DIR, clean);
@@ -137,8 +169,9 @@ export function createConsoleServer(options = {}) {
   }
   const paths = workflowPaths(rootDir, { workflowRootDir: rootDir });
   const readOnly = options.readOnly ?? boolEnv("WORKFLOW_CONSOLE_READONLY", true);
+  const allowWrites = Boolean(options.allowWrites ?? boolEnv("WORKFLOW_CONSOLE_ALLOW_WRITES"));
   const readModel = new WorkflowReadModel(paths);
-  const actionGateway = new WorkflowActionGateway(paths, { readOnly, allowWrites: options.allowWrites });
+  const actionGateway = new WorkflowActionGateway(paths, { readOnly, allowWrites });
   const serverOptions = {
     host: options.host || process.env.WORKFLOW_CONSOLE_HOST || "127.0.0.1",
     port: Number(options.port || process.env.WORKFLOW_CONSOLE_PORT || 8791),
@@ -164,25 +197,7 @@ export function createConsoleServer(options = {}) {
         return json(res, 200, { ok: true, service: "workflow-console", ...health, rootDir: paths.root, readOnly });
       }
       if (req.method === "GET" && pathname === "/api/config") {
-        return json(res, 200, {
-          service: "workflow-console",
-          rootDir: paths.root,
-          readOnlyMode: readOnly,
-          actionMode: readOnly ? "preview-only" : "allowlisted",
-          serverTime: new Date().toISOString(),
-          allowedViews: ["active", "waiting_human", "blocked", "paused", "updated_24h"],
-          allowedWorkflowQueues: ["active", "waiting_human", "blocked", "paused", "updated_24h"],
-          allowedConsoleViews: ["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "system", "workflows"],
-          redactionPolicyVersion: "workflow_console_redaction_v1",
-          securityBoundaries: [
-            { key: "loopback_default", status: "enforced", detail: "Console binds to loopback unless startup config overrides host." },
-            { key: "host_allowlist", status: "enforced", detail: "Unknown Host headers are rejected before routing." },
-            { key: "no_query_token", status: "enforced", detail: "Authentication accepts headers only; query-string tokens are not used." },
-            { key: "cross_origin_mutation_block", status: "browser_enforced", detail: "Blocks cross-site Sec-Fetch-Site and mismatched Origin/Referer; non-browser requests without Origin/Referer rely on Host allowlist and token policy." },
-            { key: "preview_first_actions", status: readOnly ? "enforced" : "policy_enabled", detail: readOnly ? "Read-only mode exposes preview actions only." : "Writes are limited to the action gateway allowlist." },
-            { key: "redaction", status: "enforced", detail: "Read APIs redact callback tokens, secrets, OAuth-ish fields, and sensitive payloads." }
-          ]
-        });
+        return json(res, 200, buildConsoleConfig(paths, { readOnly, allowWrites }));
       }
       if (req.method === "GET" && pathname === "/api/workflows") {
         return json(res, 200, await readModel.workflowList(Object.fromEntries(url.searchParams)));

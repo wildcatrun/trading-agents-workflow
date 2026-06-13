@@ -253,6 +253,20 @@ function statCard(label, value, detail = "") {
   ]);
 }
 
+function actionGatePanel(title, rows = []) {
+  return h("div", { className: "action-gate-panel" }, [
+    h("div", { className: "workflow-title" }, [
+      h("strong", {}, title),
+      chip(rows.every((row) => row.tone !== "critical") ? "gated" : "blocked", rows.every((row) => row.tone !== "critical") ? "ok" : "critical")
+    ]),
+    renderTable([
+      { label: "Gate", key: "label" },
+      { label: "Status", render: (row) => chip(row.status || "-", row.tone || toneFor(row.status)) },
+      { label: "Evidence", key: "evidence" }
+    ], rows, "No action gates.")
+  ]);
+}
+
 function optionSelect(value, options = [], onChange) {
   const select = h("select", { onChange: (event) => onChange(event.target.value) }, options.map((option) => (
     h("option", { value: option.value }, option.label)
@@ -2580,6 +2594,14 @@ function renderOperations(data) {
   const workflow = selectedWorkflow() || {};
   const workflowId = data.workflowId || state.selectedWorkflowId || "";
   const scoped = Boolean(workflowId);
+  const policy = state.config?.operatorPolicy || {};
+  const actionGateRows = [
+    { label: "Operator Role", status: policy.role || "local_console_operator_unverified", tone: "neutral", evidence: policy.roleEvidence || "Static local console role; not a user identity assertion." },
+    { label: "Server Mode", status: state.config?.actionMode || "preview-only", tone: state.config?.readOnlyMode === false ? "warning" : "ok", evidence: state.config?.readOnlyMode === false ? "Writes still require action gateway allowlist." : "Read-only mode hides executable writes." },
+    { label: "Workflow Scope", status: scoped ? "available" : "required", tone: scoped ? "ok" : "critical", evidence: scoped ? workflowId : "Deep-link or select a workflow before workflow-scoped previews." },
+    { label: "Preview Audit", status: policy.auditSurface || "workflow_operations", tone: "ok", evidence: "Preview actions append console operation audit rows." },
+    { label: "Executable Writes", status: policy.writeActions || "hidden_read_only", tone: policy.writeActions === "hidden_read_only" ? "ok" : "warning", evidence: "Real writes remain hidden unless startup policy enables them and gateway policy allows them." }
+  ];
   const reloadOperations = async () => {
     writeUrlState();
     if (state.consoleView === "operations") await loadGlobalView();
@@ -2604,8 +2626,9 @@ function renderOperations(data) {
       statCard("Scope", scoped ? "workflow" : "global", scoped ? workflowId : "all workflows"),
       statCard("Dead Letters", deadLetterFilter.totalAfterFilter ?? (data.deadLetters || []).length, `${deadLetterFilter.returned ?? (data.deadLetters || []).length} shown`),
       statCard("Operations", (data.workflowOperations || []).length),
-      statCard("Action Mode", "preview-only", "writes hidden unless server policy enables them")
+      statCard("Action Mode", state.config?.actionMode || "preview-only", state.config?.operatorPolicy?.writeActions || "writes hidden unless server policy enables them")
     ])),
+    section("Action Gate", actionGatePanel("Workflow Intervention Gate", actionGateRows)),
     section("Controlled Intervention Previews", h("div", { className: "copy-block" }, [
       h("div", { className: "actions" }, [
         h("button", { disabled: !scoped, title: scoped ? `Workflow ${workflowId}` : "Select or deep-link a workflow to preview workflow-scoped actions.", onClick: scoped ? () => previewIntervention("workflow.pause.preview", {}, workflowId) : undefined }, "Preview Pause"),
@@ -3185,6 +3208,14 @@ function renderEvidenceWorkspace(data = {}) {
   const pauseControlReady = readinessStatus("pause_control") === "pass";
   const terminateControlReady = readinessStatus("terminate_control") === "pass";
   const stopControlsReady = pauseControlReady && terminateControlReady;
+  const policy = state.config?.operatorPolicy || {};
+  const exportGateRows = [
+    { label: "Operator Role", status: policy.role || "local_console_operator_unverified", tone: "neutral", evidence: policy.roleEvidence || "Static local console role; not a user identity assertion." },
+    { label: "Export Mode", status: policy.evidenceExport || "redacted_browser_download", tone: "ok", evidence: "Browser download of the redacted read model; no workflow business write." },
+    { label: "Workflow Scope", status: workflowId ? "available" : "required", tone: workflowId ? "ok" : "critical", evidence: workflowId || "Select a workflow before exporting evidence." },
+    { label: "Human Gate Readiness", status: summary.humanGateReadyForSubmission ? "ready" : "not ready", tone: summary.humanGateReadyForSubmission ? "ok" : "warning", evidence: summary.humanGateReadyForSubmission ? "Readiness checklist allows submission." : "Evidence export is allowed, but submission still needs readiness." },
+    { label: "Incident Preview Scope", status: selectedIncident ? "available" : "not selected", tone: selectedIncident ? "ok" : "warning", evidence: selectedIncident ? selectedIncident.incidentId : "Incident closeout previews stay disabled until an incident is selected." }
+  ];
   const timeline = [
     ...(incident.timeline || []).map((event) => ({ ...event, packageSource: "incident" })),
     ...((pack.timeline?.events || []).slice(0, 80)).map((event) => ({ ...event, packageSource: "workflow" }))
@@ -3237,6 +3268,7 @@ function renderEvidenceWorkspace(data = {}) {
         ])
       ])
     ])),
+    section("Export Gate", actionGatePanel("Evidence Export Gate", exportGateRows)),
     section("Missing Evidence First", missing.length
       ? h("div", { className: "chip-list padded" }, missing.map((item) => chip(item, "warning")))
       : emptyState("No missing evidence detected by the derived desk.")),

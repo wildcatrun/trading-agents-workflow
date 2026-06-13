@@ -132,6 +132,9 @@ Current version map:
   read-only operator views current without adding a workflow scheduler. Slice G
   adds a System Status view that exposes console health, action policy, safety
   boundaries, redaction policy, readiness findings, and allowed views/queues.
+  Slice H adds visible Action Gate and Export Gate panels around intervention
+  previews and evidence downloads, making role/policy/read-only/audit evidence
+  explicit in the GUI.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

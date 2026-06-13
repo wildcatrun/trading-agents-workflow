@@ -1201,6 +1201,19 @@ Implemented Slice G: System Status / Safety Boundary Inspector
   triage or audit work directly to policy/readiness evidence without using raw
   database or process inspection.
 
+Implemented Slice H: Visible Action Gate And Export Gate Evidence
+
+- Added the `/api/config` field `operatorPolicy` so the console can display
+  the current static local operator role marker, preview policy, write-action
+  policy, evidence-export policy, and audit surface without inferring them from
+  button state. The role marker is not a per-user authentication claim.
+- Added an Action Gate panel to Operations. It shows operator role, server
+  mode, workflow-scope requirement, preview audit surface, and executable-write
+  visibility before intervention preview buttons.
+- Added an Export Gate panel to Evidence Workspace. It shows redacted browser
+  download policy, workflow scope, Human Gate readiness, and incident-preview
+  prerequisites before evidence export and closeout preview controls.
+
 ## Test Plan
 
 Required checks:
@@ -1261,6 +1274,9 @@ Frontend smoke:
 - verify System Status renders console health, action mode, safety boundaries,
   redaction policy, readiness findings, allowed views/queues, and root/health
   JSON without exposing tokens or enabling write actions;
+- verify Action Gate and Export Gate panels render current role/policy,
+  read-only or allowlisted mode, scope requirements, audit surface, redacted
+  export policy, and disabled-write boundaries next to preview/export controls;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1298,6 +1314,8 @@ unless plugin runtime loading changes require it separately.
   workbench, derived Kanban, evidence packages, governed previews, redaction,
   audit, and mobile inspection. Slice A promotes Operations into a top-level
   global/scoped audit workspace while preserving preview-only action safety.
+  Slice H makes preview/export policy gates visible in the GUI so operator
+  actions are explainable before execution.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 
