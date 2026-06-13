@@ -41,6 +41,10 @@ This program has two tracks:
   phase/node orchestration, verification, Human Gate, and resume policy.
 - `adaptation-plan.md`: current plan for applying the reference material to
   `trading-agents-workflow`.
+- `runtime-observability-improvement-plan-2026-06-03.md`: incident-driven
+  plan for closing ACK-only blind spots with runtime semantic events,
+  interruption classification, transcript references, current-state projection,
+  and Agent View / Workflow Trace surfaces.
 - `development-summary-2026-05-31.md`: implementation summary for the first
   P0.1-P0.9 development batch and the P1.1 verification continuation.
 - `development-log-2026-05-31-p0.1-p0.9.md`: detailed development log,
@@ -93,3 +97,9 @@ As of 2026-05-31, Claude Code Dynamic workflows should guide these priorities:
   interruptions;
 - keep every high-impact trading, deployment, database, Gateway, credential,
   or live-execution action behind policy gates and Human Gate.
+
+As of 2026-06-03, the `trading_sim` production disk-full incident added one
+more priority: runtime progress must be semantically observable after ACK. A
+workflow must distinguish mechanical ACK from semantic ACK, expose active agent
+stage, classify interruptions from later messages, and bind artifacts and
+transcript refs to dispatch evidence.

@@ -3,6 +3,57 @@
 This log records changes to the Claude Code workflow reference program and the
 associated `trading-agents-workflow` adaptation plan.
 
+## 2026-06-03
+
+### Trigger
+
+Flashcat asked to turn the `trading_sim` production disk-full incident review
+and Claude Code Dynamic workflow observability research into a development
+plan. The incident showed that `trading-agents-workflow` could prove dispatch
+and ACK to `cat_body`, but could not prove semantic execution progress, active
+stage, interruption by later messages, or artifact provenance.
+
+### Reference Review
+
+Reviewed official Claude Code sources:
+
+- Dynamic workflows launch post:
+  https://claude.com/blog/introducing-dynamic-workflows-in-claude-code
+- Dynamic workflow patterns post:
+  https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code
+- Hooks reference: https://code.claude.com/docs/en/hooks
+- Hooks guide: https://code.claude.com/docs/en/hooks-guide
+- Headless structured output: https://code.claude.com/docs/en/headless
+- Agent View: https://code.claude.com/docs/en/agent-view
+- Agent SDK sessions: https://code.claude.com/docs/en/agent-sdk/sessions
+- Session storage: https://code.claude.com/docs/en/agent-sdk/session-storage
+- OpenTelemetry observability:
+  https://code.claude.com/docs/en/agent-sdk/observability
+- Monitoring reference: https://code.claude.com/docs/en/monitoring-usage
+
+### Decisions
+
+- Treat ACK as mechanical receipt only, not semantic task progress.
+- Add semantic runtime observability as an incident-driven extension of the
+  existing adaptation plan.
+- Prefer append-only runtime events plus current-state projection over raw
+  transcript reconstruction.
+- Keep transcript refs as governed audit attachments, not as the primary state
+  machine.
+- Extend the existing console/CLI surfaces; do not create a parallel console or
+  message system.
+- Keep hooks-like runtime events observational unless explicitly routed through
+  governed workflow policy. They must not become a second scheduler.
+
+### Artifacts Created Or Updated
+
+- Added
+  `docs/claude-code-workflow-reference/runtime-observability-improvement-plan-2026-06-03.md`.
+- Updated `docs/claude-code-workflow-reference/README.md`.
+- Updated `docs/claude-code-workflow-reference/reference-index.md`.
+- Updated `docs/claude-code-workflow-reference/adaptation-plan.md`.
+- Updated this `update-log.md`.
+
 ## 2026-05-31
 
 ### Trigger

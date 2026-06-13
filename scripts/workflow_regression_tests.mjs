@@ -3401,6 +3401,25 @@ LIMIT 1;`)[0];
     finalOutputPresent: 0,
     deliveryReceiptPresent: 0
   });
+  const ackOnlyRuntimeEvents = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, stage
+FROM runtime_semantic_events
+WHERE dispatch_id='${dispatchId}'
+ORDER BY event_sequence;`);
+  assert.deepEqual(ackOnlyRuntimeEvents, [
+    { eventType: "dispatch_bound", status: "dispatched", stage: "dispatch_bound" },
+    { eventType: "mechanical_ack", status: "acked", stage: "ack_received" }
+  ]);
+  const ackOnlyCurrentState = sqliteJson(dbFile, `
+SELECT active_dispatch_id AS activeDispatchId, current_stage AS currentStage, status, semantic_ack_at AS semanticAckAt, latest_receipt_ref AS latestReceiptRef
+FROM runtime_current_state
+WHERE runtime='openclaw' AND agent_id='main'
+LIMIT 1;`)[0];
+  assert.equal(ackOnlyCurrentState.activeDispatchId, dispatchId);
+  assert.equal(ackOnlyCurrentState.currentStage, "ack_received");
+  assert.equal(ackOnlyCurrentState.status, "acked");
+  assert.equal(ackOnlyCurrentState.semanticAckAt, "");
+  assert.ok(ackOnlyCurrentState.latestReceiptRef);
   const semanticDispatch = sqliteJson(dbFile, `
 SELECT status, dispatch_type AS dispatchType, payload_json AS payloadJson
 FROM mixed_meeting_dispatches
@@ -3441,6 +3460,26 @@ LIMIT 1;`)[0];
     deliveryReceiptPresent: 0,
     dispatchId: semanticDispatchId
   });
+  const semanticRuntimeEvents = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, stage
+FROM runtime_semantic_events
+WHERE dispatch_id='${semanticDispatchId}'
+ORDER BY event_sequence;`);
+  assert.deepEqual(semanticRuntimeEvents, [
+    { eventType: "dispatch_bound", status: "dispatched", stage: "dispatch_bound" },
+    { eventType: "semantic_ack", status: "working", stage: "semantic_continuation_received" },
+    { eventType: "turn_completed", status: "completed", stage: "semantic_continuation_completed" }
+  ]);
+  const semanticCurrentState = sqliteJson(dbFile, `
+SELECT active_dispatch_id AS activeDispatchId, current_stage AS currentStage, status, semantic_ack_at AS semanticAckAt, latest_receipt_ref AS latestReceiptRef
+FROM runtime_current_state
+WHERE runtime='openclaw' AND agent_id='main'
+LIMIT 1;`)[0];
+  assert.equal(semanticCurrentState.activeDispatchId, semanticDispatchId);
+  assert.equal(semanticCurrentState.currentStage, "semantic_continuation_completed");
+  assert.equal(semanticCurrentState.status, "completed");
+  assert.ok(semanticCurrentState.semanticAckAt);
+  assert.ok(semanticCurrentState.latestReceiptRef);
 
   const llmFailureAck = await runAction(root, {
     action: "workflow.message_flow.send",
@@ -3485,6 +3524,23 @@ LIMIT 1;`)[0];
     failureType: "incomplete_output",
     lastError: "OpenClaw returned incomplete output: LLM request failed."
   });
+  const llmFailureRuntimeEvents = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, stage, error_class AS errorClass
+FROM runtime_semantic_events
+WHERE dispatch_id='${llmFailureSemanticDispatchId}'
+ORDER BY event_sequence;`);
+  assert.deepEqual(llmFailureRuntimeEvents, [
+    { eventType: "dispatch_bound", status: "dispatched", stage: "dispatch_bound", errorClass: "" },
+    { eventType: "turn_failed", status: "failed", stage: "turn_failed", errorClass: "incomplete_output" }
+  ]);
+  const llmFailureCurrentState = sqliteJson(dbFile, `
+SELECT active_dispatch_id AS activeDispatchId, current_stage AS currentStage, status
+FROM runtime_current_state
+WHERE runtime='openclaw' AND agent_id='main'
+LIMIT 1;`)[0];
+  assert.equal(llmFailureCurrentState.activeDispatchId, llmFailureSemanticDispatchId);
+  assert.equal(llmFailureCurrentState.currentStage, "turn_failed");
+  assert.equal(llmFailureCurrentState.status, "failed");
 
   const leadingFailureText = await runAction(root, {
     action: "workflow.message_flow.send",
@@ -3660,6 +3716,25 @@ FROM message_flow_events
 WHERE flow_id='${continuationFailureAck.dispatches[0].messageFlowId}'
   AND event_type='semantic_continuation_failed';`)[0];
   assert.equal(continuationFailureEvents.count, 1);
+  const continuationFailureRuntimeEvents = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, stage
+FROM runtime_semantic_events
+WHERE dispatch_id='${continuationFailureDispatchId}'
+ORDER BY event_sequence;`);
+  assert.deepEqual(continuationFailureRuntimeEvents, [
+    { eventType: "dispatch_bound", status: "dispatched", stage: "dispatch_bound" },
+    { eventType: "mechanical_ack", status: "acked", stage: "ack_received" },
+    { eventType: "blocked", status: "blocked", stage: "semantic_continuation_failed" }
+  ]);
+  const continuationFailureCurrentState = sqliteJson(dbFile, `
+SELECT active_dispatch_id AS activeDispatchId, current_stage AS currentStage, status, stale_kind AS staleKind
+FROM runtime_current_state
+WHERE runtime='openclaw' AND agent_id='main'
+LIMIT 1;`)[0];
+  assert.equal(continuationFailureCurrentState.activeDispatchId, continuationFailureDispatchId);
+  assert.equal(continuationFailureCurrentState.currentStage, "semantic_continuation_failed");
+  assert.equal(continuationFailureCurrentState.status, "blocked");
+  assert.equal(continuationFailureCurrentState.staleKind, "semantic_continuation_failed");
 }
 
 async function testMessageFlowAckTimeoutClamping() {
@@ -7120,6 +7195,26 @@ ORDER BY flow_id;`);
       lastError: "terminal acked runtime receipt did not reference recoverable message text"
     }
   ]);
+  const reconciledRuntimeEvents = sqliteJson(dbFile, `
+SELECT dispatch_id AS dispatchId, event_type AS eventType, status, stage, error_class AS errorClass
+FROM runtime_semantic_events
+WHERE dispatch_id LIKE 'dispatch-reconcile-%'
+ORDER BY dispatch_id, event_sequence;`);
+  assert.deepEqual(reconciledRuntimeEvents, [
+    { dispatchId: "dispatch-reconcile-ack-contract", eventType: "mechanical_ack", status: "acked", stage: "stale_terminal_ack_synced", errorClass: "" },
+    { dispatchId: "dispatch-reconcile-acked", eventType: "semantic_ack", status: "working", stage: "stale_terminal_semantic_synced", errorClass: "" },
+    { dispatchId: "dispatch-reconcile-acked", eventType: "turn_completed", status: "completed", stage: "stale_terminal_turn_completed", errorClass: "" },
+    { dispatchId: "dispatch-reconcile-failed", eventType: "turn_failed", status: "failed", stage: "turn_failed", errorClass: "runtime_timeout" },
+    { dispatchId: "dispatch-reconcile-missing-output", eventType: "turn_failed", status: "failed", stage: "turn_failed", errorClass: "runtime_output_missing" }
+  ]);
+  const reconciledCurrentState = sqliteJson(dbFile, `
+SELECT active_dispatch_id AS activeDispatchId, current_stage AS currentStage, status
+FROM runtime_current_state
+WHERE runtime='hermers' AND agent_id='cat_body'
+LIMIT 1;`)[0];
+  assert.equal(reconciledCurrentState.activeDispatchId, "dispatch-reconcile-missing-output");
+  assert.equal(reconciledCurrentState.currentStage, "turn_failed");
+  assert.equal(reconciledCurrentState.status, "failed");
   const syncedEvents = sqliteJson(dbFile, `
 SELECT COUNT(*) AS count
 FROM message_flow_events
@@ -7400,6 +7495,22 @@ VALUES ('dispatch-null-agent-key', 'meeting-null-agent-key', 'hermers', 'cat_ear
   });
   assert.equal(overrideDrain.results[0].failureType, "runtime_bridge_error");
   assert.match(overrideDrain.results[0].error, /override is not registry-owned/);
+  const registryFailureCurrentState = sqliteJson(dbFile, `
+SELECT active_dispatch_id AS activeDispatchId, current_stage AS currentStage, status
+FROM runtime_current_state
+WHERE runtime='hermers' AND agent_id='cat_ears'
+LIMIT 1;`)[0];
+  assert.equal(registryFailureCurrentState.activeDispatchId, overrideMismatch.dispatchId);
+  assert.equal(registryFailureCurrentState.currentStage, "runtime_bridge_error");
+  assert.equal(registryFailureCurrentState.status, "failed");
+  const registryFailureEvents = sqliteJson(dbFile, `
+SELECT COUNT(*) AS count
+FROM runtime_semantic_events
+WHERE runtime='hermers'
+  AND agent_id='cat_ears'
+  AND event_type='turn_failed'
+  AND status='failed';`)[0];
+  assert.equal(registryFailureEvents.count >= 1, true);
 }
 
 async function testHermersAcpBackendFallbackToCli() {
@@ -7460,6 +7571,25 @@ async function testHermersAcpBackendFallbackToCli() {
   assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}' AND adapter='acp'`), 0);
   assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}' AND adapter='cli' AND status='acked'`), 1);
   assert.equal(sqliteCount(dbFile, "runtime_runs", `dispatch_id='${dispatch.dispatchId}' AND status='started'`), 0);
+  const hermersFallbackRuntimeEvents = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, stage
+FROM runtime_semantic_events
+WHERE dispatch_id='${dispatch.dispatchId}'
+ORDER BY event_sequence;`);
+  assert.deepEqual(hermersFallbackRuntimeEvents, [
+    { eventType: "dispatch_bound", status: "dispatched", stage: "dispatch_bound" },
+    { eventType: "semantic_ack", status: "working", stage: "semantic_response_received" },
+    { eventType: "turn_completed", status: "completed", stage: "turn_completed" }
+  ]);
+  const hermersFallbackCurrentState = sqliteJson(dbFile, `
+SELECT active_dispatch_id AS activeDispatchId, current_stage AS currentStage, status, semantic_ack_at AS semanticAckAt
+FROM runtime_current_state
+WHERE runtime='hermers' AND agent_id='cat_body'
+LIMIT 1;`)[0];
+  assert.equal(hermersFallbackCurrentState.activeDispatchId, dispatch.dispatchId);
+  assert.equal(hermersFallbackCurrentState.currentStage, "turn_completed");
+  assert.equal(hermersFallbackCurrentState.status, "completed");
+  assert.ok(hermersFallbackCurrentState.semanticAckAt);
   const fallbackReadiness = await runAction(root, {
     action: "workflow.readiness",
     activeChecks: true,
@@ -7616,6 +7746,22 @@ async function testHermersAcpBackendFallbackToCli() {
   assert.equal(explicitDrain.results[0].status, "failed");
   assert.equal(explicitDrain.results[0].adapter, "acp");
   assert.equal(explicitDrain.results[0].failureType, "acp_unavailable");
+  const hermersAcpFailureRuntimeEvents = sqliteJson(dbFile, `
+SELECT event_type AS eventType, status, stage, error_class AS errorClass
+FROM runtime_semantic_events
+WHERE dispatch_id='${explicitDispatch.dispatchId}'
+ORDER BY event_sequence;`);
+  assert.deepEqual(hermersAcpFailureRuntimeEvents, [
+    { eventType: "turn_failed", status: "failed", stage: "turn_failed", errorClass: "acp_unavailable" }
+  ]);
+  const hermersAcpFailureCurrentState = sqliteJson(dbFile, `
+SELECT active_dispatch_id AS activeDispatchId, current_stage AS currentStage, status
+FROM runtime_current_state
+WHERE runtime='hermers' AND agent_id='cat_body'
+LIMIT 1;`)[0];
+  assert.equal(hermersAcpFailureCurrentState.activeDispatchId, explicitDispatch.dispatchId);
+  assert.equal(hermersAcpFailureCurrentState.currentStage, "turn_failed");
+  assert.equal(hermersAcpFailureCurrentState.status, "failed");
 }
 
 async function testRuntimeDrainRejectsEmptyPrompt() {
@@ -7662,6 +7808,11 @@ VALUES ('dispatch-empty-prompt', 'meeting-empty-prompt', 'workflow-empty-prompt'
   assert.equal(sqliteJson(dbFile, "SELECT status, failure_type FROM mixed_meeting_dispatches WHERE dispatch_id='dispatch-empty-prompt';")[0].status, "failed");
   assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-empty-prompt' AND adapter='openclaw'"), 0);
   assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-empty-prompt' AND adapter='runtime_bridge_validation' AND status='failed'"), 1);
+  assert.equal(sqliteJson(dbFile, `
+SELECT active_dispatch_id AS activeDispatchId, current_stage AS currentStage, status
+FROM runtime_current_state
+WHERE runtime='openclaw' AND agent_id='main'
+LIMIT 1;`)[0].currentStage, "dispatch_validation_failed");
 
   sqliteExec(dbFile, `
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
@@ -7675,6 +7826,14 @@ VALUES ('dispatch-openclaw-fail', 'meeting-openclaw-fail', 'workflow-openclaw-fa
   assert.equal(failedDrain.results[0].status, "failed");
   assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-openclaw-fail' AND adapter='openclaw' AND status='failed'"), 1);
   assert.equal(sqliteCount(dbFile, "runtime_runs", "dispatch_id='dispatch-openclaw-fail' AND status='started'"), 0);
+  const failedRuntimeCurrentState = sqliteJson(dbFile, `
+SELECT active_dispatch_id AS activeDispatchId, current_stage AS currentStage, status
+FROM runtime_current_state
+WHERE runtime='openclaw' AND agent_id='main'
+LIMIT 1;`)[0];
+  assert.equal(failedRuntimeCurrentState.activeDispatchId, "dispatch-openclaw-fail");
+  assert.equal(failedRuntimeCurrentState.currentStage, "turn_failed");
+  assert.equal(failedRuntimeCurrentState.status, "failed");
 
   sqliteExec(dbFile, `
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)

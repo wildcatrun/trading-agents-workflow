@@ -535,6 +535,61 @@ Validation recorded for this implementation:
   workflow root, covering Command Center, Agent Board, Kanban, and Evidence
   Desk rendering.
 
+### v0.5 Implementation Status
+
+Status: implemented as semantic runtime current-state projection.
+
+Delivered:
+
+- Additive schema version `14`.
+- Append-only `runtime_semantic_events` table.
+- Derived `runtime_current_state` table keyed by `runtime:agent_id`.
+- `workflow.runtime_event.record`, `workflow.runtime_event.list`, and
+  `workflow.runtime_current_state` actions.
+- `GET /api/runtime-current-state`.
+- Agent Board Current column backed by `runtime_current_state`.
+- Kanban cards sourced from runtime current state.
+
+Validation recorded for this implementation:
+
+- `npm run check`
+- `node scripts/workflow_regression_tests.mjs`
+- `git diff --check`
+- Local Playwright smoke against `http://127.0.0.1:18794`, verifying Agent
+  Board Current rendering and Kanban `runtime_current_state` cards.
+
+### v0.6 Implementation Status
+
+Status: implemented as real runtime bridge semantic event ingestion.
+
+Delivered:
+
+- `runtime.bridge.drain` now records `dispatch_bound` when a real OpenClaw,
+  Hermes CLI, Hermers ACP, or local Codex inbox dispatch is bound to a
+  runtime run.
+- ACK-required first turns record `mechanical_ack` only. They do not record
+  `semantic_ack` or `turn_completed`.
+- Non-ACK final turns and semantic continuations record `semantic_ack` and
+  `turn_completed`.
+- Terminal runtime failures, registry validation failures, invalid dispatch
+  payloads, unsupported adapters, route-shell redirect failures, ACP
+  fail-closed paths, and outer bridge exceptions record `turn_failed`.
+- ACK success followed by semantic-continuation enqueue failure records a
+  `blocked` runtime event with `staleKind=semantic_continuation_failed`.
+- Runtime semantic-event write failures are no longer silent: they emit a
+  degraded workflow event and `runtime_events_errors.jsonl` evidence.
+- `stale_dispatch_reconcile` backfills current-state projection from terminal
+  runtime receipts, including ACK-only, semantic completion, terminal failure,
+  retry scheduling, and missing-output cases.
+
+Validation recorded for this implementation:
+
+- `npm run check`
+- `node scripts/workflow_regression_tests.mjs`
+- `git diff --check`
+- Independent reviewer pass after the terminal-failure, stale-reconcile, and
+  semantic-continuation failure gaps were fixed.
+
 ## Test Plan
 
 Required checks:
@@ -582,9 +637,11 @@ unless plugin runtime loading changes require it separately.
 
 ## Rollout Boundaries
 
-- v0.4 is read-only.
-- v0.5 may add semantic current-state projection.
-- v0.6 may add governed preview actions.
+- v0.4 is read-only and implemented.
+- v0.5 semantic current-state projection is implemented.
+- v0.6 runtime bridge semantic event ingestion is implemented.
+- Governed preview actions are deferred to the next stage after runtime
+  observability has enough development-server operating history.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 
@@ -593,18 +650,18 @@ Rollback:
 - stop the standalone console process;
 - revert the GitHub commit and fast-forward the development checkout back to
   the prior commit;
-- no runtime DB migration is expected for v0.4 if it stays derived/read-only.
+- schema version `14` is additive; rollback can leave the runtime semantic
+  event/current-state tables in place as inert read-model data.
 
 ## Open Questions
 
 - Should Kanban default to global agent work or current workflow work?
 - Should Cat Claw have a secretary-specific Evidence Desk shortcut?
-- Should semantic runtime current-state projection be implemented before or
-  after the read-only board, given current ACK-only blind spots?
 - Should agent cards show profile-local memory/RAG status, or keep memory
   status in the Hermers platform surface and only show workflow-relevant
   readiness here?
-- Which preview actions are safe enough for v0.6 after v0.4/v0.5 observation?
+- Which governed preview actions are safe enough for the next stage after
+  v0.6 runtime observability is observed on the development server?
 
 ## Review Record
 

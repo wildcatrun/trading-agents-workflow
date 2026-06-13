@@ -1,7 +1,7 @@
 # Reference Index
 
 Created: 2026-05-31
-Last reviewed: 2026-05-31
+Last reviewed: 2026-06-03
 
 This file tracks Claude Code workflow-related public references. Update it when
 Claude Code publishes new workflow documentation, release notes, bundled
@@ -22,8 +22,10 @@ workflow examples, API references, or observability/control-plane behavior.
 ### Dynamic Workflows
 
 - URL: https://code.claude.com/docs/en/workflows
+- URL: https://claude.com/blog/introducing-dynamic-workflows-in-claude-code
+- URL: https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code
 - Stability: `official-preview`
-- Reviewed: 2026-05-31
+- Reviewed: 2026-06-03
 - Key observations:
   - Dynamic workflows orchestrate many subagents from a JavaScript script that
     Claude writes and the runtime executes in the background.
@@ -36,6 +38,10 @@ workflow examples, API references, or observability/control-plane behavior.
     restart a selected running agent, and save a run's script as a command.
   - Workflows have limits: no mid-run user input except permission prompts,
     bounded concurrency, and bounded total agents per run.
+  - Public launch and follow-up posts describe long-running parallel work,
+    saved progress, resume after interruption, and patterns such as
+    fan-out-and-synthesize, adversarial verification, tournament, and loop
+    until done.
 - Adaptation permission:
   - Use as the primary reference for phase-first progress, reusable plan
     artifacts, resumable orchestration, and operator intervention patterns.
@@ -98,14 +104,18 @@ workflow examples, API references, or observability/control-plane behavior.
 ### Hooks
 
 - URL: https://code.claude.com/docs/en/hooks-guide
+- URL: https://code.claude.com/docs/en/hooks
 - Stability: `official-context`
-- Reviewed: 2026-05-31
+- Reviewed: 2026-06-03
 - Key observations:
   - Hooks provide deterministic lifecycle control for notifications,
     formatting, protected-file blocks, context reinjection, config audit, and
     permission automation.
   - Hook outcomes can be deterministic, prompt-based, agent-based, HTTP-based,
     or MCP-related depending on configuration.
+  - Hook input includes session, transcript, cwd, and event metadata. Hook
+    events cover session start, prompt submission, tool use, subagent
+    start/stop, stop/failure, compaction, and related lifecycle points.
 - Adaptation permission:
   - Use for policy gates, high-risk action blocking, structured validation, and
     lifecycle event design.
@@ -127,15 +137,50 @@ workflow examples, API references, or observability/control-plane behavior.
 ### Observability
 
 - URL: https://code.claude.com/docs/en/agent-sdk/observability
+- URL: https://code.claude.com/docs/en/monitoring-usage
 - Stability: `official-context`
-- Reviewed: 2026-05-31
+- Reviewed: 2026-06-03
 - Key observations:
   - Claude Code can export traces, metrics, and events through OpenTelemetry.
   - Useful dimensions include model request latency, tool execution, token
     counters, cost counters, and failures.
+  - Metrics, events/logs, and traces have different cardinality and privacy
+    tradeoffs. Workflow ids and prompt ids are better suited to events/logs or
+    traces than high-cardinality metrics labels.
 - Adaptation permission:
   - Use for `workflow_tool_calls`, agent-run spans, cost/tokens, latency,
     failure location, and SLI dashboards.
+
+### Headless / Structured Output
+
+- URL: https://code.claude.com/docs/en/headless
+- Stability: `official-context`
+- Reviewed: 2026-06-03
+- Key observations:
+  - `--output-format json` returns structured output with result, session id,
+    and metadata.
+  - `--output-format stream-json` emits newline-delimited JSON for real-time
+    streaming.
+  - Retry events are exposed as structured system events.
+- Adaptation permission:
+  - Use as a reference for runtime event streams and CLI trace commands.
+
+### Agent View And Sessions
+
+- URL: https://code.claude.com/docs/en/agent-view
+- URL: https://code.claude.com/docs/en/agent-sdk/sessions
+- URL: https://code.claude.com/docs/en/agent-sdk/session-storage
+- Stability: `official-context`
+- Reviewed: 2026-06-03
+- Key observations:
+  - Agent View shows background sessions by state and supports inspection,
+    attach, logs, and daemon status.
+  - Sessions are resumed by session id and local transcript path.
+  - Session transcripts can be mirrored through an external SessionStore for
+    multi-host durability and audit.
+- Adaptation permission:
+  - Use for Agent Current State, Workflow Trace, transcript references,
+    current-state projection, and resume package design.
 
 ## Discovery-Only References
 
@@ -160,4 +205,3 @@ Re-check the official docs when any of these appear:
 - workflow cost/token reporting changes;
 - saved workflow command storage semantics;
 - agent restart/stop behavior details.
-

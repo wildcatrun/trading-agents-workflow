@@ -7812,8 +7812,7 @@ ON CONFLICT(state_key) DO UPDATE SET
   return current;
 }
 
-export async function workflowRuntimeEventRecord(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function appendRuntimeSemanticEvent(paths, input = {}) {
   const record = runtimeEventRecordFromInput(input);
   const duplicateFilters = [`event_id=${sqlValue(record.eventId)}`];
   if (record.idempotencyKey) duplicateFilters.push(`idempotency_key=${sqlValue(record.idempotencyKey)}`);
@@ -7861,6 +7860,11 @@ VALUES (${sqlValue(record.eventId)}, ${sqlValue(record.eventType)}, ${sqlValue(r
     currentState,
     dbFile: paths.dbFile
   };
+}
+
+export async function workflowRuntimeEventRecord(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  return appendRuntimeSemanticEvent(paths, input);
 }
 
 function workflowRuntimeEventWhere(input = {}) {
@@ -11876,6 +11880,14 @@ async function runLocalCodexDispatch(paths, row, input = {}) {
     attempt,
     payload: { deliveryMode: "local_codex_inbox" }
   });
+  await recordRuntimeBridgeSemanticEvent(paths, row, "dispatch_bound", {
+    eventTime: startedAt,
+    runtimeRunId,
+    adapter,
+    attempt,
+    stage: "dispatch_bound",
+    payload: { deliveryMode: "local_codex_inbox" }
+  });
   const flow = await messageFlowForDispatch(paths, row);
   if (flow) {
     await updateMessageFlow(paths, flow.flow_id, messageFlowDispatchStartedStatus(row), {
@@ -11903,6 +11915,18 @@ async function runLocalCodexDispatch(paths, row, input = {}) {
     payload: {
       deliveryMode: "local_codex_inbox",
       localCodexReceivesVia: "workflow_message_flows"
+    }
+  });
+  await recordRuntimeBridgeSemanticEvent(paths, row, "mechanical_ack", {
+    eventTime: completedAt,
+    runtimeRunId: ackRuntimeRunId,
+    adapter,
+    attempt,
+    stage: "local_codex_inbox_received",
+    messageFlowId: flow?.flow_id || "",
+    payload: {
+      deliveryMode: "local_codex_inbox",
+      semanticReply: false
     }
   });
   let messageFlowDelivery = null;
@@ -14929,6 +14953,15 @@ async function failRuntimeBridgeRegistryDispatch(paths, row, validation, input =
     failureType: validation.failureType,
     lastError: validation.error
   }, input);
+  await recordRuntimeBridgeFailureState(paths, row, {
+    eventTime: failedAt,
+    runtimeRunId,
+    adapter: "runtime_registry",
+    failureType: validation.failureType,
+    error: validation.error,
+    stage: "registry_validation_failed",
+    payload: { registryValidation: validation }
+  });
   return {
     dispatchId: row.dispatch_id,
     runtime: row.runtime,
@@ -14962,6 +14995,15 @@ async function failRuntimeBridgeInvalidDispatch(paths, row, validation, input = 
     failureType: validation.failureType,
     lastError: validation.error
   }, input);
+  await recordRuntimeBridgeFailureState(paths, row, {
+    eventTime: failedAt,
+    runtimeRunId,
+    adapter: "runtime_bridge_validation",
+    failureType: validation.failureType,
+    error: validation.error,
+    stage: "dispatch_validation_failed",
+    payload: { validation }
+  });
   return {
     dispatchId: row.dispatch_id,
     runtime: row.runtime,
@@ -15328,6 +15370,124 @@ WHERE runtime_run_id=${sqlValue(runtimeRunId)};`);
   return runtimeRunId;
 }
 
+function runtimeBridgeEventWorkflowId(row = {}) {
+  const payload = parseJsonValue(row.payload_json, {});
+  return String(row.workflow_id || payload.workflowId || payload.workflow_id || "").trim();
+}
+
+function runtimeBridgeEventTaskId(row = {}) {
+  const payload = parseJsonValue(row.payload_json, {});
+  return String(payload.taskId || payload.task_id || payload.payload?.taskId || payload.payload?.task_id || "").trim();
+}
+
+async function recordRuntimeBridgeSemanticEvent(paths, row, eventType, data = {}) {
+  if (!row?.runtime || !row?.agent_id || !eventType) return null;
+  const payload = parseJsonValue(row.payload_json, {});
+  const eventTime = data.eventTime || data.event_time || nowIso();
+  const runtimeRunId = String(data.runtimeRunId || data.runtime_run_id || "").trim();
+  const adapter = String(data.adapter || "").trim();
+  const idempotencyParts = [
+    "runtime-bridge",
+    row.dispatch_id || "",
+    runtimeRunId || `attempt-${data.attempt ?? row.attempt ?? ""}`,
+    eventType
+  ].map((part) => cleanFileSegment(part || "none"));
+  const eventPayload = {
+    adapter,
+    backend: data.backend || "",
+    profile: data.profile || "",
+    acpAgent: data.acpAgent || data.acp_agent || "",
+    sessionKey: data.sessionKey || data.session_key || "",
+    sessionMode: data.sessionMode || data.session_mode || "",
+    messageFlowId: data.messageFlowId || data.message_flow_id || messageFlowIdFromDispatchPayload(row),
+    dispatchType: row.dispatch_type || payload.dispatchType || payload.dispatch_type || "",
+    attempt: Number(data.attempt ?? row.attempt ?? 0) || 0,
+    retryScheduled: Boolean(data.retryScheduled),
+    failureType: data.failureType || "",
+    semanticContinuation: Boolean(data.semanticContinuation),
+    source: "runtime_bridge"
+  };
+  try {
+    return await appendRuntimeSemanticEvent(paths, {
+      eventType,
+      eventTime,
+      workflowId: runtimeBridgeEventWorkflowId(row),
+      taskId: runtimeBridgeEventTaskId(row),
+      dispatchId: row.dispatch_id || "",
+      traceId: row.trace_id || payload.traceId || payload.trace_id || "",
+      correlationId: data.correlationId || data.correlation_id || payload.correlationId || payload.correlation_id || "",
+      runtime: row.runtime,
+      agentId: row.agent_id,
+      endpointRef: row.endpoint_ref || "",
+      runtimeSessionId: data.runtimeSessionId || data.runtime_session_id || data.sessionKey || data.session_key || "",
+      runtimeRunId,
+      acpTurnId: data.acpTurnId || data.acp_turn_id || "",
+      promptId: data.promptId || data.prompt_id || "",
+      stage: data.stage || eventType,
+      status: data.status || "",
+      blockedReason: data.blockedReason || data.blocked_reason || "",
+      latestReceiptRef: data.latestReceiptRef || data.latest_receipt_ref || data.messageId || data.message_id || "",
+      staleKind: data.staleKind || data.stale_kind || "",
+      evidenceRefs: toList(data.evidenceRefs || data.evidence_refs || data.messageId || data.message_id || data.runtimeRunId || data.runtime_run_id).map(String).filter(Boolean),
+      durationMs: data.durationMs || data.duration_ms,
+      errorClass: data.errorClass || data.error_class || data.failureType || "",
+      severity: data.severity || (eventType === "turn_failed" ? "warning" : "info"),
+      idempotencyKey: data.idempotencyKey || data.idempotency_key || idempotencyParts.join(":"),
+      payload: { ...eventPayload, ...(data.payload || {}) }
+    });
+  } catch (error) {
+    await appendWorkflowEvent(paths, {
+      eventType: "runtime.semantic_event_failed",
+      status: "degraded",
+      workflowId: runtimeBridgeEventWorkflowId(row),
+      traceId: row.trace_id || payload.traceId || payload.trace_id || "",
+      dispatchId: row.dispatch_id || "",
+      runtimeRunId,
+      actor: "runtime.bridge",
+      sourceRuntime: row.runtime || "",
+      sourceAgent: row.agent_id || "",
+      payload: {
+        eventType,
+        runtime: row.runtime || "",
+        agentId: row.agent_id || "",
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }).catch(() => {});
+    await appendJsonl(path.join(paths.bridgeDir, "runtime_events_errors.jsonl"), {
+      ts: nowIso(),
+      event: "runtime_semantic_event_record_failed",
+      dispatchId: row.dispatch_id || "",
+      runtime: row.runtime || "",
+      agentId: row.agent_id || "",
+      eventType,
+      error: error instanceof Error ? error.message : String(error)
+    }).catch(() => {});
+    return null;
+  }
+}
+
+async function recordRuntimeBridgeFailureState(paths, row, data = {}) {
+  return recordRuntimeBridgeSemanticEvent(paths, row, "turn_failed", {
+    eventTime: data.eventTime || data.event_time || data.failedAt || data.failed_at || nowIso(),
+    runtimeRunId: data.runtimeRunId || data.runtime_run_id || "",
+    adapter: data.adapter || "runtime_bridge",
+    backend: data.backend || "",
+    acpAgent: data.acpAgent || data.acp_agent || "",
+    sessionMode: data.sessionMode || data.session_mode || "",
+    sessionKey: data.sessionKey || data.session_key || "",
+    attempt: data.attempt ?? row.attempt ?? 0,
+    failureType: data.failureType || data.failure_type || "runtime_bridge_error",
+    retryScheduled: Boolean(data.retryScheduled || data.retry_scheduled),
+    status: data.status || (data.retryScheduled || data.retry_scheduled ? "queued" : "failed"),
+    stage: data.stage || (data.retryScheduled || data.retry_scheduled ? "retry_scheduled" : "turn_failed"),
+    idempotencyKey: data.idempotencyKey || data.idempotency_key || "",
+    payload: {
+      error: String(data.error || "").slice(0, 1000),
+      ...(data.payload || {})
+    }
+  });
+}
+
 async function runHermesDispatch(paths, row, input = {}) {
   const adapter = String(input.adapterName || input.adapter_name || "cli").trim() || "cli";
   const hermesBin = resolveHome(input.hermesBin || input.hermes_bin || process.env.HERMES_BIN || "/home/flashcat/hermes-agent/venv/bin/hermes");
@@ -15346,6 +15506,14 @@ async function runHermesDispatch(paths, row, input = {}) {
   const attempt = Number(row.attempt || 0) + 1;
   await updateDispatch(paths, row.dispatch_id, "sent", { adapter, profile, startedAt, attempt });
   const runtimeRunId = await recordRuntimeRun(paths, row, { adapter, status: "started", startedAt, attempt, payload: { profile } });
+  await recordRuntimeBridgeSemanticEvent(paths, row, "dispatch_bound", {
+    eventTime: startedAt,
+    runtimeRunId,
+    adapter,
+    profile,
+    attempt,
+    stage: "dispatch_bound"
+  });
   const flow = await messageFlowForDispatch(paths, row);
   if (flow) {
     await updateMessageFlow(paths, flow.flow_id, messageFlowDispatchStartedStatus(row), {
@@ -15413,6 +15581,59 @@ async function runHermesDispatch(paths, row, input = {}) {
       messageId: ingest.messageId,
       receivedAt: completedAt
     }, input) : null;
+    if (ack.required) {
+      await recordRuntimeBridgeSemanticEvent(paths, row, "mechanical_ack", {
+        eventTime: completedAt,
+        runtimeRunId: ackRuntimeRunId,
+        adapter,
+        profile,
+        attempt,
+        messageId: ingest.messageId,
+        latestReceiptRef: ingest.messageId,
+        messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+        semanticContinuation: semanticContinuation?.status === "queued",
+        stage: "ack_received"
+      });
+      if (semanticContinuation?.status === "failed") {
+        await recordRuntimeBridgeSemanticEvent(paths, row, "blocked", {
+          eventTime: completedAt,
+          runtimeRunId: ackRuntimeRunId,
+          adapter,
+          profile,
+          attempt,
+          messageId: ingest.messageId,
+          latestReceiptRef: ingest.messageId,
+          messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+          stage: "semantic_continuation_failed",
+          blockedReason: semanticContinuation.reason || semanticContinuation.error || "semantic_continuation_failed",
+          staleKind: "semantic_continuation_failed",
+          payload: { semanticContinuation }
+        });
+      }
+    } else {
+      await recordRuntimeBridgeSemanticEvent(paths, row, "semantic_ack", {
+        eventTime: completedAt,
+        runtimeRunId: ackRuntimeRunId,
+        adapter,
+        profile,
+        attempt,
+        messageId: ingest.messageId,
+        latestReceiptRef: ingest.messageId,
+        messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+        stage: isSemanticContinuationDispatch(row) ? "semantic_continuation_received" : "semantic_response_received"
+      });
+      await recordRuntimeBridgeSemanticEvent(paths, row, "turn_completed", {
+        eventTime: completedAt,
+        runtimeRunId: ackRuntimeRunId,
+        adapter,
+        profile,
+        attempt,
+        messageId: ingest.messageId,
+        latestReceiptRef: ingest.messageId,
+        messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+        stage: isSemanticContinuationDispatch(row) ? "semantic_continuation_completed" : "turn_completed"
+      });
+    }
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       event: "runtime_dispatch_acked",
       dispatchId: row.dispatch_id,
@@ -15444,6 +15665,18 @@ async function runHermesDispatch(paths, row, input = {}) {
         lastError: message
       }, input);
     }
+    await recordRuntimeBridgeSemanticEvent(paths, row, "turn_failed", {
+      eventTime: failedAt,
+      runtimeRunId: failedRuntimeRunId,
+      adapter,
+      profile,
+      attempt,
+      failureType,
+      retryScheduled: shouldRetry,
+      status: shouldRetry ? "queued" : "failed",
+      stage: shouldRetry ? "retry_scheduled" : "turn_failed",
+      payload: { error: message.slice(0, 1000) }
+    });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       event: "runtime_dispatch_failed",
       dispatchId: row.dispatch_id,
@@ -15814,6 +16047,21 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
         lastError: message
       }, input);
     }
+    await recordRuntimeBridgeSemanticEvent(paths, row, "turn_failed", {
+      eventTime: failedAt,
+      runtimeRunId,
+      adapter: "acp",
+      backend: backendId,
+      acpAgent,
+      sessionMode,
+      sessionKey,
+      attempt,
+      failureType,
+      retryScheduled: shouldRetry,
+      status: shouldRetry ? "queued" : "failed",
+      stage: shouldRetry ? "retry_scheduled" : "turn_failed",
+      payload: { error: message.slice(0, 1000), failClosed: true }
+    });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: failedAt,
       event: "runtime_dispatch_failed",
@@ -15838,6 +16086,17 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
   }
   await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "acp", backend: backendId, backendSource, acpAgent, sessionMode, sessionKey, startedAt, attempt });
   const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "acp", backend: backendId, acpAgent, sessionKey, status: "started", startedAt, attempt, payload: { sessionMode, backendSource } });
+  await recordRuntimeBridgeSemanticEvent(paths, row, "dispatch_bound", {
+    eventTime: startedAt,
+    runtimeRunId,
+    adapter: "acp",
+    backend: backendId,
+    acpAgent,
+    sessionMode,
+    sessionKey,
+    attempt,
+    stage: "dispatch_bound"
+  });
   const flow = await messageFlowForDispatch(paths, row);
   if (flow) {
     await updateMessageFlow(paths, flow.flow_id, messageFlowDispatchStartedStatus(row), {
@@ -15925,6 +16184,71 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
       messageId: ingest.messageId,
       receivedAt: completedAt
     }, input) : null;
+    if (ack.required) {
+      await recordRuntimeBridgeSemanticEvent(paths, row, "mechanical_ack", {
+        eventTime: completedAt,
+        runtimeRunId: ackRuntimeRunId,
+        adapter: "acp",
+        backend: backendId,
+        acpAgent,
+        sessionMode,
+        sessionKey,
+        attempt,
+        messageId: ingest.messageId,
+        latestReceiptRef: ingest.messageId,
+        messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+        semanticContinuation: semanticContinuation?.status === "queued",
+        stage: "ack_received"
+      });
+      if (semanticContinuation?.status === "failed") {
+        await recordRuntimeBridgeSemanticEvent(paths, row, "blocked", {
+          eventTime: completedAt,
+          runtimeRunId: ackRuntimeRunId,
+          adapter: "acp",
+          backend: backendId,
+          acpAgent,
+          sessionMode,
+          sessionKey,
+          attempt,
+          messageId: ingest.messageId,
+          latestReceiptRef: ingest.messageId,
+          messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+          stage: "semantic_continuation_failed",
+          blockedReason: semanticContinuation.reason || semanticContinuation.error || "semantic_continuation_failed",
+          staleKind: "semantic_continuation_failed",
+          payload: { semanticContinuation }
+        });
+      }
+    } else {
+      await recordRuntimeBridgeSemanticEvent(paths, row, "semantic_ack", {
+        eventTime: completedAt,
+        runtimeRunId: ackRuntimeRunId,
+        adapter: "acp",
+        backend: backendId,
+        acpAgent,
+        sessionMode,
+        sessionKey,
+        attempt,
+        messageId: ingest.messageId,
+        latestReceiptRef: ingest.messageId,
+        messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+        stage: isSemanticContinuationDispatch(row) ? "semantic_continuation_received" : "semantic_response_received"
+      });
+      await recordRuntimeBridgeSemanticEvent(paths, row, "turn_completed", {
+        eventTime: completedAt,
+        runtimeRunId: ackRuntimeRunId,
+        adapter: "acp",
+        backend: backendId,
+        acpAgent,
+        sessionMode,
+        sessionKey,
+        attempt,
+        messageId: ingest.messageId,
+        latestReceiptRef: ingest.messageId,
+        messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+        stage: isSemanticContinuationDispatch(row) ? "semantic_continuation_completed" : "turn_completed"
+      });
+    }
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: completedAt,
       event: "runtime_dispatch_acked",
@@ -15962,6 +16286,21 @@ async function runHermesAcpDispatch(paths, row, input = {}) {
         lastError: message
       }, input);
     }
+    await recordRuntimeBridgeSemanticEvent(paths, row, "turn_failed", {
+      eventTime: failedAt,
+      runtimeRunId: failedRuntimeRunId,
+      adapter: "acp",
+      backend: backendId,
+      acpAgent,
+      sessionMode,
+      sessionKey,
+      attempt,
+      failureType,
+      retryScheduled: shouldRetry,
+      status: shouldRetry ? "queued" : "failed",
+      stage: shouldRetry ? "retry_scheduled" : "turn_failed",
+      payload: { error: message.slice(0, 1000) }
+    });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: failedAt,
       event: "runtime_dispatch_failed",
@@ -16008,6 +16347,13 @@ async function runOpenClawDispatch(paths, row, input = {}) {
   ];
   await updateDispatch(paths, row.dispatch_id, "sent", { adapter: "openclaw", openclawBin, startedAt, attempt });
   const runtimeRunId = await recordRuntimeRun(paths, row, { adapter: "openclaw", status: "started", startedAt, attempt, payload: { openclawBin } });
+  await recordRuntimeBridgeSemanticEvent(paths, row, "dispatch_bound", {
+    eventTime: startedAt,
+    runtimeRunId,
+    adapter: "openclaw",
+    attempt,
+    stage: "dispatch_bound"
+  });
   const flow = await messageFlowForDispatch(paths, row);
   if (flow) {
     await updateMessageFlow(paths, flow.flow_id, messageFlowDispatchStartedStatus(row), {
@@ -16082,6 +16428,58 @@ async function runOpenClawDispatch(paths, row, input = {}) {
       messageId: ingest.messageId,
       receivedAt: completedAt
     }, input) : null;
+    if (ack.required) {
+      await recordRuntimeBridgeSemanticEvent(paths, row, "mechanical_ack", {
+        eventTime: completedAt,
+        runtimeRunId: ackRuntimeRunId,
+        adapter: "openclaw",
+        attempt,
+        messageId: ingest.messageId,
+        latestReceiptRef: ingest.messageId,
+        messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+        semanticContinuation: semanticContinuation?.status === "queued",
+        stage: "ack_received",
+        payload: { runId: parsed.runId || "" }
+      });
+      if (semanticContinuation?.status === "failed") {
+        await recordRuntimeBridgeSemanticEvent(paths, row, "blocked", {
+          eventTime: completedAt,
+          runtimeRunId: ackRuntimeRunId,
+          adapter: "openclaw",
+          attempt,
+          messageId: ingest.messageId,
+          latestReceiptRef: ingest.messageId,
+          messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+          stage: "semantic_continuation_failed",
+          blockedReason: semanticContinuation.reason || semanticContinuation.error || "semantic_continuation_failed",
+          staleKind: "semantic_continuation_failed",
+          payload: { runId: parsed.runId || "", semanticContinuation }
+        });
+      }
+    } else {
+      await recordRuntimeBridgeSemanticEvent(paths, row, "semantic_ack", {
+        eventTime: completedAt,
+        runtimeRunId: ackRuntimeRunId,
+        adapter: "openclaw",
+        attempt,
+        messageId: ingest.messageId,
+        latestReceiptRef: ingest.messageId,
+        messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+        stage: isSemanticContinuationDispatch(row) ? "semantic_continuation_received" : "semantic_response_received",
+        payload: { runId: parsed.runId || "" }
+      });
+      await recordRuntimeBridgeSemanticEvent(paths, row, "turn_completed", {
+        eventTime: completedAt,
+        runtimeRunId: ackRuntimeRunId,
+        adapter: "openclaw",
+        attempt,
+        messageId: ingest.messageId,
+        latestReceiptRef: ingest.messageId,
+        messageFlowId: messageFlowDelivery?.flowId || flow?.flow_id || "",
+        stage: isSemanticContinuationDispatch(row) ? "semantic_continuation_completed" : "turn_completed",
+        payload: { runId: parsed.runId || "" }
+      });
+    }
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: completedAt,
       event: "runtime_dispatch_acked",
@@ -16114,6 +16512,17 @@ async function runOpenClawDispatch(paths, row, input = {}) {
         lastError: message
       }, input);
     }
+    await recordRuntimeBridgeSemanticEvent(paths, row, "turn_failed", {
+      eventTime: failedAt,
+      runtimeRunId: failedRuntimeRunId,
+      adapter: "openclaw",
+      attempt,
+      failureType,
+      retryScheduled: shouldRetry,
+      status: shouldRetry ? "queued" : "failed",
+      stage: shouldRetry ? "retry_scheduled" : "turn_failed",
+      payload: { error: message.slice(0, 1000) }
+    });
     await appendJsonl(path.join(paths.bridgeDir, "runtime_runs.jsonl"), {
       ts: failedAt,
       event: "runtime_dispatch_failed",
@@ -16190,6 +16599,12 @@ async function redirectQueuedRouteShellDispatch(paths, row, input = {}) {
     failedAt: nowIso(),
     failureType: "route_shell_target_unavailable",
     error: result.reason || "route-shell redirect failed"
+  });
+  await recordRuntimeBridgeFailureState(paths, row, {
+    adapter: "route_shell_redirect",
+    failureType: "route_shell_target_unavailable",
+    error: result.reason || "route-shell redirect failed",
+    stage: "route_shell_redirect_failed"
   });
   return {
     dispatchId: row.dispatch_id,
@@ -16289,28 +16704,123 @@ LIMIT ${limit};`, { json: true });
         } else if (adapter === "cli") {
           result = await runHermesDispatch(paths, claimedRow, { ...input, adapterName: "cli" });
         } else {
-          await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter, failedAt: nowIso(), error: `hermers adapter not implemented: ${adapter}` });
-          result = { dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `hermers adapter not implemented: ${adapter}` };
+          const failedAt = nowIso();
+          const error = `hermers adapter not implemented: ${adapter}`;
+          await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter, failedAt, failureType: "runtime_adapter_unimplemented", error });
+          await recordRuntimeBridgeFailureState(paths, claimedRow, {
+            eventTime: failedAt,
+            adapter,
+            failureType: "runtime_adapter_unimplemented",
+            error,
+            stage: "adapter_unimplemented"
+          });
+          result = { dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", failureType: "runtime_adapter_unimplemented", error };
         }
       } else if (runtime === "openclaw") {
         result = await runOpenClawDispatch(paths, claimedRow, input);
       } else if (runtime === "local_codex" || runtime === "codex") {
         result = await runLocalCodexDispatch(paths, claimedRow, input);
       } else {
-        await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "none", failedAt: nowIso(), error: `runtime adapter not implemented: ${runtime}` });
-        result = { dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", error: `runtime adapter not implemented: ${runtime}` };
+        const failedAt = nowIso();
+        const error = `runtime adapter not implemented: ${runtime}`;
+        await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "none", failedAt, failureType: "runtime_adapter_unimplemented", error });
+        await recordRuntimeBridgeFailureState(paths, claimedRow, {
+          eventTime: failedAt,
+          adapter: "none",
+          failureType: "runtime_adapter_unimplemented",
+          error,
+          stage: "adapter_unimplemented"
+        });
+        result = { dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", failureType: "runtime_adapter_unimplemented", error };
       }
       await appendRuntimeBridgeResultEvent(paths, claimedRow, result);
       results.push(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "runtime_bridge", failedAt: nowIso(), failureType: "runtime_bridge_error", error: message.slice(0, 2000) });
+      const failedAt = nowIso();
+      await updateDispatch(paths, claimedRow.dispatch_id, "failed", { adapter: "runtime_bridge", failedAt, failureType: "runtime_bridge_error", error: message.slice(0, 2000) });
+      await recordRuntimeBridgeFailureState(paths, claimedRow, {
+        eventTime: failedAt,
+        adapter: "runtime_bridge",
+        failureType: "runtime_bridge_error",
+        error: message,
+        stage: "runtime_bridge_error"
+      });
       const result = { dispatchId: claimedRow.dispatch_id, runtime, agentId: claimedRow.agent_id, status: "failed", failureType: "runtime_bridge_error", error: message };
       await appendRuntimeBridgeResultEvent(paths, claimedRow, result);
       results.push(result);
     }
   }
   return { runtime, count: rows.length, results, dbFile: paths.dbFile };
+}
+
+async function recordStaleDispatchProjection(paths, row, receipt = {}, input = {}) {
+  const terminalStatus = String(receipt.status || "").trim();
+  const completedAt = receipt.completedAt || receipt.completed_at || nowIso();
+  const runtimeRunId = receipt.runtimeRunId || receipt.runtime_run_id || "";
+  const messageId = receipt.messageId || receipt.message_id || "";
+  const attempt = Number(receipt.attempt ?? row.attempt ?? 0) || 0;
+  const ack = runtimeAckContract(row, input);
+  const common = {
+    eventTime: completedAt,
+    runtimeRunId,
+    adapter: "stale_dispatch_reconcile",
+    attempt,
+    messageId,
+    latestReceiptRef: messageId,
+    stage: "stale_terminal_receipt_synced",
+    payload: { terminalStatus, reconciled: true }
+  };
+  if (terminalStatus === "acked") {
+    if (ack.required) {
+      await recordRuntimeBridgeSemanticEvent(paths, row, "mechanical_ack", {
+        ...common,
+        stage: "stale_terminal_ack_synced",
+        idempotencyKey: `stale-reconcile:${row.dispatch_id}:${runtimeRunId || "missing-run"}:mechanical_ack`
+      });
+      return;
+    }
+    if (receipt.finalOutputPresent === false || receipt.final_output_present === false || (receipt.finalOutputPresent === undefined && receipt.final_output_present === undefined && !messageId)) {
+      await recordRuntimeBridgeFailureState(paths, row, {
+        eventTime: completedAt,
+        runtimeRunId,
+        adapter: "stale_dispatch_reconcile",
+        attempt,
+        failureType: receipt.failureType || receipt.failure_type || "runtime_output_missing",
+        error: receipt.error || receipt.lastError || receipt.last_error || "terminal acked runtime receipt did not reference final output",
+        status: "failed",
+        stage: "turn_failed",
+        idempotencyKey: `stale-reconcile:${row.dispatch_id}:${runtimeRunId || "missing-run"}:turn_failed`,
+        payload: { terminalStatus, reconciled: true, finalOutputPresent: false }
+      });
+      return;
+    }
+    await recordRuntimeBridgeSemanticEvent(paths, row, "semantic_ack", {
+      ...common,
+      stage: "stale_terminal_semantic_synced",
+      idempotencyKey: `stale-reconcile:${row.dispatch_id}:${runtimeRunId || "missing-run"}:semantic_ack`
+    });
+    await recordRuntimeBridgeSemanticEvent(paths, row, "turn_completed", {
+      ...common,
+      stage: "stale_terminal_turn_completed",
+      idempotencyKey: `stale-reconcile:${row.dispatch_id}:${runtimeRunId || "missing-run"}:turn_completed`
+    });
+    return;
+  }
+  if (terminalStatus === "failed" || terminalStatus === "retry_scheduled") {
+    await recordRuntimeBridgeFailureState(paths, row, {
+      eventTime: completedAt,
+      runtimeRunId,
+      adapter: "stale_dispatch_reconcile",
+      attempt,
+      failureType: receipt.failureType || receipt.failure_type || "runtime_stale",
+      error: receipt.error || receipt.lastError || receipt.last_error || "stale dispatch reconciled from terminal runtime receipt",
+      retryScheduled: terminalStatus === "retry_scheduled" || Boolean(receipt.retryScheduled || receipt.retry_scheduled),
+      status: terminalStatus === "retry_scheduled" || receipt.retryScheduled || receipt.retry_scheduled ? "queued" : "failed",
+      stage: terminalStatus === "retry_scheduled" || receipt.retryScheduled || receipt.retry_scheduled ? "retry_scheduled" : "turn_failed",
+      payload: { terminalStatus, reconciled: true }
+    });
+  }
 }
 
 export async function staleDispatchReconcile(rootDir, input = {}) {
@@ -16349,6 +16859,17 @@ LIMIT ${limit};`, { json: true });
         messageId: row.terminal_message_id || "",
         completedAt: row.terminal_completed_at || ""
       }, input);
+      const syncedFlow = await messageFlowForDispatch(paths, row);
+      await recordStaleDispatchProjection(paths, row, {
+        status: "acked",
+        runtimeRunId: row.terminal_runtime_run_id || "",
+        messageId: row.terminal_message_id || "",
+        completedAt: row.terminal_completed_at || "",
+        attempt: row.terminal_attempt || row.attempt || 0,
+        finalOutputPresent: syncedFlow ? Boolean(Number(syncedFlow.final_output_present || 0)) : undefined,
+        failureType: syncedFlow?.failure_type || "",
+        error: syncedFlow?.last_error || ""
+      }, input);
       results.push({ dispatchId: row.dispatch_id, status: "acked", reason: "terminal_runtime_receipt", messageFlowSync });
       continue;
     }
@@ -16371,6 +16892,16 @@ LIMIT ${limit};`, { json: true });
         completedAt: row.terminal_completed_at || "",
         failureType: row.terminal_failure_type || "runtime_stale",
         error: row.terminal_error || "stale sent dispatch reconciled from terminal runtime receipt"
+      }, input);
+      await recordStaleDispatchProjection(paths, row, {
+        status: shouldRetry ? "retry_scheduled" : "failed",
+        runtimeRunId: row.terminal_runtime_run_id || "",
+        messageId: row.terminal_message_id || "",
+        completedAt: row.terminal_completed_at || "",
+        attempt,
+        failureType: row.terminal_failure_type || "runtime_stale",
+        error: row.terminal_error || "stale sent dispatch reconciled from terminal runtime receipt",
+        retryScheduled: shouldRetry
       }, input);
       results.push({ dispatchId: row.dispatch_id, status: shouldRetry ? "queued" : "failed", reason: "terminal_runtime_receipt", messageFlowSync });
       continue;
@@ -16408,6 +16939,15 @@ LIMIT ${limit};`, { json: true });
         lastError: error
       }, input);
     }
+    await recordStaleDispatchProjection(paths, row, {
+      status: retry ? "retry_scheduled" : "failed",
+      runtimeRunId: staleRuntimeRunId,
+      completedAt,
+      attempt,
+      failureType: "runtime_stale",
+      error,
+      retryScheduled: retry
+    }, input);
     results.push({ dispatchId: row.dispatch_id, status: retry ? "queued" : "failed", reason: "missing_terminal_runtime_receipt" });
   }
   return { operation: "stale_dispatch_reconcile", cutoff, staleAfterMs, count: rows.length, results, dbFile: paths.dbFile };

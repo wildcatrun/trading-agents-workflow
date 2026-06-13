@@ -568,6 +568,29 @@ dead-letter classification or perform any repair.
 
 ## P2: Scale And Operator Experience
 
+### P2.0 Runtime Semantic Observability
+
+The 2026-06-03 `trading_sim` production disk-full incident exposed an ACK-only
+blind spot: workflow evidence proved that `cat_body` received the incident
+handoff, but not whether semantic repair work had started, which stage was
+active, whether later messages interrupted the run, or why a final artifact was
+missing.
+
+The detailed plan is maintained in
+`runtime-observability-improvement-plan-2026-06-03.md`. Required design
+direction:
+
+- distinguish mechanical ACK from semantic ACK;
+- bind dispatches to runtime session, ACP turn, prompt, transcript ref, and
+  artifact refs;
+- record append-only runtime events for stage changes, artifact creation,
+  blocking, interruption, completion, and failure;
+- project current active agent state for operator lookup;
+- classify later-message interaction as queued, parallel, preempted,
+  superseded, or ignored;
+- extend the existing console and CLI with Workflow Trace, Agent Current State,
+  Artifact Provenance, and ACK-only stale queries.
+
 ### P2.1 Workflow Templates
 
 Save successful plan specs as templates. Templates are governed JSON specs, not
@@ -676,6 +699,11 @@ Create a one-click or CLI evidence export:
   includes stale visible-delivery `message_flow` gaps and single-item
   dead-letter evidence bundles with read-only incident candidates and governed
   incident linkage.
+- 2026-06-03: added the runtime semantic observability improvement plan after
+  the `trading_sim` production disk-full incident. The plan closes the
+  ACK-only blind spot with semantic ACK, stage events, interruption
+  classification, transcript references, artifact provenance, and Agent
+  Current State / Workflow Trace surfaces.
 - Next checkpoint: evaluate whether `trade.proposal` or selected
   `side_effect.record` resolution paths have enough stable evidence input
   coverage for similarly narrow hard gates.
