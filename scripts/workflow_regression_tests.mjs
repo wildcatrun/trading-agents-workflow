@@ -8150,13 +8150,18 @@ async function testWorkflowConsoleStaticSystemStatusContract() {
   assert.equal(app.includes('safeApi("/api/readiness/latest")'), true);
   assert.equal(app.includes("partialFailures"), true);
   assert.equal(app.includes("config.allowedConsoleViews"), true);
+  assert.equal(app.includes("Release Quality Gates"), true);
+  assert.equal(app.includes("function renderReleaseQualityRecords"), true);
   assert.equal(server.includes("securityBoundaries"), true);
+  assert.equal(server.includes("releaseQualityGates"), true);
   assert.equal(server.includes("allowedWorkflowQueues"), true);
   assert.equal(server.includes("allowedConsoleViews"), true);
   assert.equal(server.includes('"active", "waiting_human", "blocked", "paused", "updated_24h"'), true);
   assert.equal(server.includes("preview_first_actions"), true);
   assert.equal(server.includes("no_query_token"), true);
   assert.equal(server.includes("browser_enforced"), true);
+  assert.equal(server.includes("spark_code_review"), true);
+  assert.equal(server.includes("browser_smoke"), true);
   assert.equal(readModel.includes('["nav.system", "views", "System Status"'), true);
 }
 
@@ -8184,6 +8189,8 @@ async function testWorkflowConsoleConfigOperatorPolicyModes() {
   const readOnlyConfig = buildConsoleConfig(paths, { readOnly: true, allowWrites: true, serverTime: "2026-01-01T00:00:00.000Z" });
   assert.equal(readOnlyConfig.actionMode, "preview-only");
   assert.equal(readOnlyConfig.operatorPolicy.writeActions, "hidden_read_only");
+  assert.equal(readOnlyConfig.releaseQualityGates.some((row) => row.key === "spark_code_review" && row.status === "required"), true);
+  assert.equal(readOnlyConfig.releaseQualityGates.some((row) => row.key === "deployment_trace"), true);
 
   const noAllowWritesConfig = buildConsoleConfig(paths, { readOnly: false, allowWrites: false, serverTime: "2026-01-01T00:00:00.000Z" });
   assert.equal(noAllowWritesConfig.actionMode, "preview-only");
@@ -8263,11 +8270,15 @@ async function testWorkflowConsoleStaticOperatorGradeReleaseGateContract() {
   assert.equal(app.includes('gate: "Runtime status observable"'), true);
   assert.equal(app.includes('gate: "Readiness evidence available"'), true);
   assert.equal(app.includes('gate: "No partial status failures"'), true);
+  assert.equal(app.includes('gate: "Review gates recorded"'), true);
   assert.equal(app.includes('["loopback_default", "host_allowlist", "no_query_token", "cross_origin_mutation_block", "preview_first_actions", "redaction"]'), true);
   assert.equal(app.includes('["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "system", "workflows"]'), true);
   assert.equal(app.includes('["hidden_read_only", "hidden_without_allow_writes"].includes(policy.writeActions || "")'), true);
   assert.equal(app.includes('const previewOnlyHidden = config.actionMode === "preview-only" && hiddenWrites'), true);
   assert.equal(app.includes('policy.writeActions === "allowlisted_by_gateway"'), true);
+  assert.equal(app.includes('qualityKeys.has("spark_code_review")'), true);
+  assert.equal(app.includes('qualityKeys.has("regression_suite")'), true);
+  assert.equal(app.includes('qualityKeys.has("browser_smoke")'), true);
 
   const fnSource = extractFunctionSource(app, "operatorGradeReleaseGateRows");
   const operatorGradeReleaseGateRows = new Function("formatDate", `${fnSource}; return operatorGradeReleaseGateRows;`)((value) => value || "-");
@@ -8283,7 +8294,13 @@ async function testWorkflowConsoleStaticOperatorGradeReleaseGateContract() {
     },
     allowedConsoleViews: ["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "system", "workflows"],
     redactionPolicyVersion: "workflow_console_redaction_v1",
-    securityBoundaries: boundaries
+    securityBoundaries: boundaries,
+    releaseQualityGates: [
+      { key: "spark_code_review", status: "recorded", detail: "Spark review recorded." },
+      { key: "regression_suite", status: "recorded", detail: "Regression recorded." },
+      { key: "browser_smoke", status: "recorded", detail: "Browser smoke recorded." },
+      { key: "deployment_trace", status: "recorded", detail: "Deployment trace recorded." }
+    ]
   };
   const baseData = {
     config: baseConfig,
@@ -8295,6 +8312,15 @@ async function testWorkflowConsoleStaticOperatorGradeReleaseGateContract() {
   assert.equal(rows.find((row) => row.gate === "Read-only default")?.status, "pass");
   assert.equal(rows.find((row) => row.gate === "No partial status failures")?.status, "pass");
   assert.equal(rows.find((row) => row.gate === "Readiness evidence available")?.status, "pass");
+  assert.equal(rows.find((row) => row.gate === "Review gates recorded")?.status, "pass");
+  const requiredReviewGateRows = operatorGradeReleaseGateRows({
+    ...baseData,
+    config: {
+      ...baseConfig,
+      releaseQualityGates: baseConfig.releaseQualityGates.map((row) => ({ ...row, status: "required" }))
+    }
+  });
+  assert.equal(requiredReviewGateRows.find((row) => row.gate === "Review gates recorded")?.status, "fail");
 
   const allowlistedRows = operatorGradeReleaseGateRows({
     ...baseData,
@@ -8314,6 +8340,14 @@ async function testWorkflowConsoleStaticOperatorGradeReleaseGateContract() {
   assert.equal(missingReadinessRows.find((row) => row.gate === "Readiness evidence available")?.status, "fail");
   const notReadyRows = operatorGradeReleaseGateRows({ ...baseData, readiness: { status: "not_ready", findingCount: 2 } });
   assert.equal(notReadyRows.find((row) => row.gate === "Readiness evidence available")?.status, "warn");
+  const missingReviewGateRows = operatorGradeReleaseGateRows({
+    ...baseData,
+    config: {
+      ...baseConfig,
+      releaseQualityGates: baseConfig.releaseQualityGates.filter((row) => row.key !== "spark_code_review")
+    }
+  });
+  assert.equal(missingReviewGateRows.find((row) => row.gate === "Review gates recorded")?.status, "fail");
 }
 
 try {

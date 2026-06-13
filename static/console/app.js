@@ -1664,6 +1664,7 @@ function renderSystemStatus(data) {
   const health = data.health || {};
   const readiness = data.readiness || {};
   const boundaryRows = config.securityBoundaries || [];
+  const qualityRows = config.releaseQualityGates || [];
   const queueRows = (config.allowedWorkflowQueues || config.allowedViews || []).map((queue) => ({ queue }));
   const viewRows = (config.allowedConsoleViews || []).map((view) => ({ view }));
   const partialFailures = data.partialFailures || [];
@@ -1677,6 +1678,7 @@ function renderSystemStatus(data) {
       statCard("Generated", formatDate(data.generatedAt))
     ])),
     section("Operator-Grade Release Gate", renderOperatorGradeReleaseGate(data)),
+    section("Release Quality Gates", renderReleaseQualityRecords(qualityRows)),
     section("Safety Boundaries", renderTable([
       { label: "Boundary", render: (row) => h("code", {}, row.key || "-") },
       { label: "Status", render: (row) => chip(row.status || "unknown", row.status === "enforced" ? "ok" : "warning") },
@@ -1711,9 +1713,17 @@ function operatorGradeReleaseGateRows(data = {}) {
   const boundaryStatus = (key) => (config.securityBoundaries || []).find((row) => row.key === key)?.status || "";
   const views = new Set(config.allowedConsoleViews || []);
   const policy = config.operatorPolicy || {};
+  const releaseQualityGates = config.releaseQualityGates || [];
   const allBoundaries = ["loopback_default", "host_allowlist", "no_query_token", "cross_origin_mutation_block", "preview_first_actions", "redaction"];
   const hasViews = ["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "system", "workflows"]
     .every((view) => views.has(view));
+  const qualityKeys = new Set(releaseQualityGates.map((row) => row.key));
+  const qualityStatusesRecorded = releaseQualityGates.every((row) => ["recorded", "pass"].includes(row.status || ""));
+  const reviewGatesRecorded = releaseQualityGates.length > 0
+    && qualityKeys.has("spark_code_review")
+    && qualityKeys.has("regression_suite")
+    && qualityKeys.has("browser_smoke")
+    && qualityStatusesRecorded;
   const hiddenWrites = ["hidden_read_only", "hidden_without_allow_writes"].includes(policy.writeActions || "");
   const allowlistedWrites = policy.writeActions === "allowlisted_by_gateway";
   const previewOnlyHidden = config.actionMode === "preview-only" && hiddenWrites;
@@ -1759,6 +1769,11 @@ function operatorGradeReleaseGateRows(data = {}) {
       gate: "No partial status failures",
       status: (data.partialFailures || []).length ? "warn" : "pass",
       evidence: (data.partialFailures || []).length ? `${data.partialFailures.length} endpoint check(s) failed.` : "Config, health, and readiness probes completed."
+    },
+    {
+      gate: "Review gates recorded",
+      status: reviewGatesRecorded ? "pass" : "fail",
+      evidence: reviewGatesRecorded ? `${releaseQualityGates.length} release quality gate record(s), including Spark review, regression, and browser smoke.` : "Spark review, regression, or browser smoke gates are not recorded yet."
     }
   ];
 }
@@ -1769,6 +1784,14 @@ function renderOperatorGradeReleaseGate(data = {}) {
     { label: "Status", render: (row) => chip(row.status, row.status === "pass" ? "ok" : row.status === "warn" ? "warning" : "critical") },
     { label: "Evidence", key: "evidence" }
   ], operatorGradeReleaseGateRows(data), "No operator-grade release gates.");
+}
+
+function renderReleaseQualityRecords(rows = []) {
+  return renderTable([
+    { label: "Gate", render: (row) => h("code", {}, row.key || "-") },
+    { label: "Status", render: (row) => chip(row.status || "unknown", ["recorded", "pass"].includes(row.status) ? "ok" : row.status === "required" ? "warning" : "critical") },
+    { label: "Evidence", key: "detail" }
+  ], rows, "No release quality gates.");
 }
 
 function renderAgentBoard(data) {

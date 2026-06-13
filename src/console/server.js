@@ -124,6 +124,28 @@ export function buildConsoleConfig(paths, options = {}) {
       evidenceExport: "redacted_browser_download",
       auditSurface: "workflow_operations"
     },
+    releaseQualityGates: [
+      {
+        key: "spark_code_review",
+        status: "required",
+        detail: "Medium or higher GUI changes require independent Spark/subagent review, findings, fixes, and residual risks recorded in the rollout note."
+      },
+      {
+        key: "regression_suite",
+        status: "required",
+        detail: "Rollout evidence must record npm run check, workflow regression, syntax checks, and git diff whitespace checks."
+      },
+      {
+        key: "browser_smoke",
+        status: "required",
+        detail: "Rollout evidence must record desktop and mobile console smoke coverage for changed surfaces, redaction, routing, and overflow behavior."
+      },
+      {
+        key: "deployment_trace",
+        status: "required",
+        detail: "Rollout evidence must record Git commit, development checkout HEAD, console process, health probes, and Gateway restart boundary."
+      }
+    ],
     serverTime: options.serverTime || new Date().toISOString(),
     allowedViews: ["active", "waiting_human", "blocked", "paused", "updated_24h"],
     allowedWorkflowQueues: ["active", "waiting_human", "blocked", "paused", "updated_24h"],

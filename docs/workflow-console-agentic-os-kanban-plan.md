@@ -1249,6 +1249,22 @@ Implemented Slice K: System Status Operator-Grade Release Gate
   It does not execute release actions, mutate workflow state, restart services,
   bypass preview policy, or override Flashcat/Cat Claw approval paths.
 
+Implemented Slice L: Release Quality Gates
+
+- Added release quality gate metadata to `/api/config` and rendered it in
+  System Status as Release Quality Gates. The gates cover Spark/subagent code
+  review, regression evidence, browser smoke evidence, and deployment trace
+  evidence.
+- Extended the Operator-Grade Release Gate with `Review gates recorded`, so the
+  v1.0 requirement that subagent/code-review quality gates are recorded is
+  visible in the GUI instead of being only a process note in this document. The
+  default gate status is `required`, not `recorded`; the release gate does not
+  pass this item until quality evidence is actually recorded.
+- This is a read-only release evidence surface. It does not certify a release
+  by itself, execute deployment actions, bypass Human Gate, or claim that a
+  specific future commit has passed tests without the corresponding rollout
+  record.
+
 ## Test Plan
 
 Required checks:
@@ -1322,6 +1338,10 @@ Frontend smoke:
   action policy, safety boundaries, integrated surfaces, redaction, runtime
   health, readiness evidence, and partial-failure status without exposing write
   actions;
+- verify System Status Release Quality Gates renders Spark review,
+  regression, browser smoke, and deployment trace gates, and the Operator-Grade
+  Release Gate fails `Review gates recorded` if required quality metadata is
+  missing or still only marked `required`;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1365,6 +1385,8 @@ unless plugin runtime loading changes require it separately.
   v1.0 diagnostic classes into a fixed Command Center matrix with read-only
   Inspect routes. Slice K exposes an operator-grade release gate in System
   Status so the console's own safety and inspection prerequisites are visible.
+  Slice L makes release quality gates and Spark/code-review evidence
+  requirements visible in System Status.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 
