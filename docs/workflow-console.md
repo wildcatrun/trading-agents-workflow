@@ -120,6 +120,8 @@ Current version map:
   into a top-level audit workspace with global and workflow-scoped views,
   shareable dead-letter filters, operation summaries, queue pressure,
   delivery execution audit, and disabled-by-default workflow preview controls.
+  Slice B upgrades Command Center into a clickable triage home with blocker
+  source refs and drilldowns into Operations or workflow detail evidence.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

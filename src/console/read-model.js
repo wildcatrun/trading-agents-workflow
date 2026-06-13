@@ -187,6 +187,7 @@ function redactText(value) {
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
     .replace(/tawhg:[A-Za-z0-9._=-]+/g, "tawhg:<redacted>")
     .replace(/(callback|token|secret|password|api[_-]?key|access[_-]?key|refresh)(\s*[:=]\s*)([^\s,;]+)/gi, "$1$2[redacted]")
+    .replace(/\b(callback|token|secret|password|api[_-]?key|access[_-]?key|refresh)([-_])[A-Za-z0-9._~+/=-]+/gi, "$1$2[redacted]")
     .replace(/\b(callback|token|secret|password|api[_-]?key|access[_-]?key|refresh)\s+([^\s,;]+)/gi, "$1 [redacted]");
 }
 
@@ -3563,7 +3564,7 @@ LIMIT 120;`) : Promise.resolve([])
       this.health(),
       this.readinessLatest(),
       this.workflowList({ view: "", limit: query.limit || 200 }),
-      this.operationsSummary({ deadLetterLimit: query.deadLetterLimit || 200 }),
+      this.operationsSummary({ deadLetterLimit: query.deadLetterLimit || 500, deadLetterScanLimit: query.deadLetterScanLimit || 2000 }),
       this.runtimeAgents()
     ]);
     const workflowRows = workflows.workflows || [];
@@ -3624,6 +3625,136 @@ LIMIT 120;`) : Promise.resolve([])
       acc.deliveryReceiptPresent += toInt(row.delivery_receipt_present);
       return acc;
     }, { total: 0, finalOutputPresent: 0, deliveryReceiptPresent: 0 });
+    const blockers = [];
+    const severityRank = { critical: 4, warning: 3, ok: 2, neutral: 1 };
+    const pushBlocker = (item = {}) => {
+      if (!item.id || !item.title) return;
+      blockers.push({
+        severity: item.severity || "warning",
+        plane: item.plane || "control",
+        id: redactText(item.id),
+        title: redactText(item.title),
+        detail: redactText(compactText(item.detail || "", 220)),
+        count: toInt(item.count || 1),
+        workflowId: redactText(item.workflowId || ""),
+        agentId: redactText(item.agentId || ""),
+        updatedAt: item.updatedAt || "",
+        target: redactConsoleValue(item.target || { consoleView: "command-center" }),
+        sourceRefs: (item.sourceRefs || [])
+          .filter((ref) => ref?.id)
+          .map((ref) => ({
+            source: redactText(ref.source || ""),
+            field: redactText(ref.field || ""),
+            id: redactText(ref.id || "")
+          }))
+          .slice(0, 8)
+      });
+    };
+    if (readiness?.status && readiness.status !== "ready") {
+      pushBlocker({
+        severity: "critical",
+        plane: "runtime",
+        id: "readiness_not_ready",
+        title: `Readiness is ${readiness.status}`,
+        detail: `${readiness.findings?.length || 0} readiness findings`,
+        count: readiness.findings?.length || 1,
+        updatedAt: readiness.checkedAt,
+        target: { consoleView: "command-center", section: "readiness" },
+        sourceRefs: [{ source: "readiness_snapshots", field: "snapshot_id", id: readiness.snapshotId }]
+      });
+    }
+    for (const item of (operations.deadLetterTriageCandidates || operations.deadLetters || [])) {
+      const sourceByKind = {
+        control_loop_job: ["control_loop_jobs", "job_id"],
+        expired_lease: ["control_loop_jobs", "job_id"],
+        failed_dispatch: ["mixed_meeting_dispatches", "dispatch_id"],
+        max_attempt_dispatch: ["mixed_meeting_dispatches", "dispatch_id"],
+        message_flow_delivery_missing: ["message_flows", "flow_id"],
+        human_gate_feedback: ["human_gate_buttons", "button_id"],
+        side_effect_uncertain: ["side_effect_ledger", "side_effect_id"]
+      };
+      const [source, field] = sourceByKind[item.kind] || ["dead_letters", "ref_id"];
+      pushBlocker({
+        severity: item.severity || "warning",
+        plane: item.kind === "message_flow_delivery_missing" ? "communication"
+          : item.kind === "human_gate_feedback" ? "human_gate"
+            : item.kind === "side_effect_uncertain" ? "evidence"
+              : "queue",
+        id: `${item.kind}:${item.refId}`,
+        title: item.title || `${item.kind} ${item.refId}`,
+        detail: item.detail || item.status || "",
+        workflowId: item.workflowId || "",
+        agentId: item.agentId || "",
+        updatedAt: item.updatedAt || "",
+        target: {
+          consoleView: "operations",
+          workflowId: item.workflowId || "",
+          operationsFilters: { kind: item.kind || "", severity: item.severity || "", status: item.status || "" }
+        },
+        sourceRefs: [
+          { source, field, id: item.refId },
+          { source: "workflow_runs", field: "workflow_id", id: item.workflowId || "" }
+        ]
+      });
+    }
+    for (const item of workflowRows) {
+      const counts = item.counts || {};
+      if (counts.failedOutbox > 0) {
+        pushBlocker({
+          severity: "critical",
+          plane: "communication",
+          id: `failed_outbox:${item.workflowId}`,
+          title: `Failed Telegram outbox in ${item.workflowId}`,
+          detail: item.summary || item.objective || "",
+          count: counts.failedOutbox,
+          workflowId: item.workflowId,
+          updatedAt: item.updatedAt,
+          target: { consoleView: "workflows", workflowId: item.workflowId, tab: "outbox" },
+          sourceRefs: [{ source: "telegram_outbox", field: "meeting_id", id: item.workflowId }]
+        });
+      }
+      if (counts.openIncidents > 0) {
+        pushBlocker({
+          severity: "critical",
+          plane: "evidence",
+          id: `open_incidents:${item.workflowId}`,
+          title: `Open incidents in ${item.workflowId}`,
+          detail: item.summary || item.objective || "",
+          count: counts.openIncidents,
+          workflowId: item.workflowId,
+          updatedAt: item.updatedAt,
+          target: { consoleView: "workflows", workflowId: item.workflowId, tab: "incident-closeout" },
+          sourceRefs: [{ source: "incident_states", field: "workflow_id", id: item.workflowId }]
+        });
+      }
+      if (counts.pendingHumanGates > 0) {
+        pushBlocker({
+          severity: "warning",
+          plane: "human_gate",
+          id: `pending_human_gate:${item.workflowId}`,
+          title: `Pending Human Gate in ${item.workflowId}`,
+          detail: item.summary || item.objective || "",
+          count: counts.pendingHumanGates,
+          workflowId: item.workflowId,
+          updatedAt: item.updatedAt,
+          target: { consoleView: "workflows", workflowId: item.workflowId, tab: "human-gate-readiness" },
+          sourceRefs: [
+            { source: "protocol_objects", field: "workflow_id", id: item.workflowId },
+            { source: "review_gates", field: "workflow_id", id: item.workflowId },
+            { source: "workflow_tasks", field: "workflow_id", id: item.workflowId }
+          ]
+        });
+      }
+    }
+    blockers.sort((a, b) => {
+      const severityDelta = (severityRank[b.severity] || 0) - (severityRank[a.severity] || 0);
+      if (severityDelta) return severityDelta;
+      return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+    });
+    const overallState = blockers.some((item) => item.plane === "evidence" && item.severity === "critical") ? "incident"
+      : blockers.some((item) => item.severity === "critical") ? "blocked"
+        : blockers.some((item) => item.severity === "warning") || (readiness?.status && readiness.status !== "ready") ? "degraded"
+          : (readiness?.status || health.dbReadable) ? "ready" : "unknown";
     return {
       schemaVersion: "workflow_console_command_center.v1",
       generatedAt,
@@ -3665,6 +3796,16 @@ LIMIT 120;`) : Promise.resolve([])
           ...((operations.messageFlowAttention || []).length ? ["message_flow_attention"] : []),
           ...(queueSummary.failed || queueSummary.dead_letter ? ["control_loop_failures"] : [])
         ]
+      },
+      triage: {
+        overallState,
+        blockerCount: blockers.length,
+        topBlockers: blockers.slice(0, 5),
+        blockers,
+        planes: blockers.reduce((acc, item) => {
+          acc[item.plane] = (acc[item.plane] || 0) + 1;
+          return acc;
+        }, {})
       },
       topWorkflows: workflowRows.slice(0, 12)
     };
@@ -4664,6 +4805,7 @@ LIMIT 120;`) : [];
     const deadLetterSeverities = filterValues(query.deadLetterSeverity || query.dead_letter_severity || query.severity);
     const deadLetterStatuses = filterValues(query.deadLetterStatus || query.dead_letter_status || query.status);
     const deadLetterLimit = clampLimit(query.deadLetterLimit || query.dead_letter_limit, 200, 500);
+    const deadLetterScanLimit = clampLimit(query.deadLetterScanLimit || query.dead_letter_scan_limit, 100, 5000);
     const operationColumns = hasWorkflowOperations ? await tableColumnSet(this.paths.dbFile, "workflow_operations") : new Set();
     const operationsCanScope = operationColumns.has("workflow_id");
     const operationsWhere = workflowId
@@ -4721,7 +4863,7 @@ WHERE ${workflowFilter}
   AND ((status='sent' AND updated_at < ${sqlValue(staleDispatchCutoff)})
    OR status='failed')
 ORDER BY updated_at ASC
-LIMIT 100;`) : [];
+LIMIT ${deadLetterScanLimit};`) : [];
     const outbox = hasOutboxTable ? await sqlite(this.paths.dbFile, `
 SELECT status, message_type, COUNT(*) AS count
 FROM telegram_outbox
@@ -4758,7 +4900,7 @@ WHERE
   )
   OR status IN ('runtime_failed','telegram_failed'))
 ORDER BY updated_at ASC
-LIMIT 100;`) : [];
+LIMIT ${deadLetterScanLimit};`) : [];
     const messageFlowDeadLetters = hasMessageFlowTable ? await sqlite(this.paths.dbFile, `
 SELECT flow_id, workflow_id, meeting_id, target_runtime, target_agent_id, return_policy, status,
   final_output_present, delivery_receipt_present, runtime_completed_at, runtime_failed_at,
@@ -4789,7 +4931,7 @@ WHERE
     )
   )
 ORDER BY updated_at ASC
-LIMIT 100;`) : [];
+LIMIT ${deadLetterScanLimit};`) : [];
     const controlLoopJobDetails = hasControlLoopJobs ? await sqlite(this.paths.dbFile, `
 SELECT job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json,
   attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at
@@ -4805,7 +4947,7 @@ WHERE ${workflowFilter}
   AND (status IN ('failed','dead_letter')
     OR (max_attempts > 0 AND attempt >= max_attempts AND status NOT IN ('completed','cancelled','succeeded')))
 ORDER BY updated_at ASC
-LIMIT 100;`) : [];
+LIMIT ${deadLetterScanLimit};`) : [];
     const expiredControlLoopLeases = hasControlLoopJobs ? await sqlite(this.paths.dbFile, `
 SELECT job_id, job_type, status, workflow_id, runtime, attempt, max_attempts, lease_owner, lease_until, last_error, updated_at
 FROM control_loop_jobs
@@ -4815,7 +4957,7 @@ WHERE ${workflowFilter}
   AND lease_until != ''
   AND lease_until <= ${sqlValue(nowIso)}
 ORDER BY lease_until ASC
-LIMIT 100;`) : [];
+LIMIT ${deadLetterScanLimit};`) : [];
     const failedDispatches = hasDispatchTable ? await sqlite(this.paths.dbFile, `
 SELECT dispatch_id, workflow_id, runtime, agent_id, status, attempt, max_attempts, updated_at, failure_type, last_error
 FROM mixed_meeting_dispatches
@@ -4823,7 +4965,7 @@ WHERE ${workflowFilter}
   AND status='failed'
   AND NOT (max_attempts > 0 AND attempt >= max_attempts)
 ORDER BY updated_at ASC
-LIMIT 100;`) : [];
+LIMIT ${deadLetterScanLimit};`) : [];
     const maxAttemptDispatches = hasDispatchTable ? await sqlite(this.paths.dbFile, `
 SELECT dispatch_id, workflow_id, runtime, agent_id, status, attempt, max_attempts, updated_at, failure_type, last_error
 FROM mixed_meeting_dispatches
@@ -4832,7 +4974,7 @@ WHERE ${workflowFilter}
   AND attempt >= max_attempts
   AND status NOT IN ('acked','completed','runtime_completed','cancelled','stopped')
 ORDER BY updated_at ASC
-LIMIT 100;`) : [];
+LIMIT ${deadLetterScanLimit};`) : [];
     const stuckHumanGateFeedback = hasHumanGateButtons ? await sqlite(this.paths.dbFile, `
 SELECT button_id, human_gate_id, workflow_id, meeting_id, label, decision_status, status, created_by, updated_at
 FROM human_gate_buttons
@@ -4840,14 +4982,14 @@ WHERE ${workflowId ? `workflow_id=${sqlValue(workflowId)}` : "1=1"}
   AND status='feedback_pending'
   AND updated_at <= ${sqlValue(humanGateFeedbackCutoff)}
 ORDER BY updated_at ASC
-LIMIT 100;`) : [];
+LIMIT ${deadLetterScanLimit};`) : [];
     const sideEffectUncertainRows = hasSideEffects ? await sqlite(this.paths.dbFile, `
 SELECT side_effect_id, workflow_id, dispatch_id, owner_agent, side_effect_type, status, artifact_ref, updated_at
 FROM side_effect_ledger
 WHERE ${workflowFilter}
   AND status IN ('uncertain','side_effect_uncertain','unknown','failed')
 ORDER BY updated_at ASC
-LIMIT 100;`) : [];
+LIMIT ${deadLetterScanLimit};`) : [];
     const allDeadLetters = [
       ...failedControlLoopJobs.map((row) => ({
         kind: "control_loop_job",
@@ -4950,12 +5092,19 @@ LIMIT 100;`) : [];
       if (deadLetterStatuses.length && !deadLetterStatuses.includes(item.status)) return false;
       return true;
     });
+    const deadLetterSeverityRank = { critical: 4, warning: 3, ok: 2, neutral: 1 };
+    const deadLetterTriageCandidates = [...deadLettersFiltered].sort((a, b) => {
+      const severityDelta = (deadLetterSeverityRank[b.severity] || 0) - (deadLetterSeverityRank[a.severity] || 0);
+      if (severityDelta) return severityDelta;
+      return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+    });
     const deadLetters = deadLettersFiltered.slice(0, deadLetterLimit);
     const readiness = await this.readinessLatest();
     return {
       workflowId,
       source: workflowId ? "workflow_scoped" : "global",
       deadLetters,
+      deadLetterTriageCandidates,
       deadLetterFilter: {
         applied: {
           kinds: deadLetterKinds,

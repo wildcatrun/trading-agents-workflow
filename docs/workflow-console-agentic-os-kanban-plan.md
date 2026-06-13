@@ -1110,6 +1110,32 @@ Validated for this slice on 2026-06-13:
   `Create Incident` remains hidden in the top-level preview-only Operations
   workspace.
 
+Implemented Slice B: Command Center Triage Drilldown
+
+- Promoted Command Center from a passive summary page toward the v1.0 triage
+  home. The read model now emits `triage.overallState`, blocker counts by
+  plane, `topBlockers`, full blocker evidence, navigation targets, and source
+  refs.
+- Critical blockers are derived from readiness, Operations dead-letter rows,
+  failed outbox, open incidents, pending Human Gates, and workflow evidence
+  gaps. Each blocker points to an existing governed console surface instead of
+  requiring raw database inspection.
+- The UI renders an Operator Triage panel and clickable blocker cards. Blockers
+  can open scoped Operations filters or workflow detail tabs such as Outbox,
+  Human Gate, and Incident Closeout while preserving preview-first boundaries.
+
+Validated for this slice on 2026-06-13:
+
+- `git diff --check`
+- `npm run check`
+- `node scripts/workflow_regression_tests.mjs`
+- final Command Center read-model probe against an empty database;
+- local Playwright smoke against a fixture console on `127.0.0.1:18804`:
+  Command Center rendered Operator Triage and blocker cards with source refs,
+  blocker `Open` navigated to scoped Operations with restored filters, operation
+  errors stayed redacted, and a 390px mobile viewport had no horizontal
+  overflow or clipped buttons.
+
 ## Test Plan
 
 Required checks:

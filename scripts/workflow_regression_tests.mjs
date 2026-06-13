@@ -6939,6 +6939,19 @@ VALUES ('legacy:cat_body', 'legacy', 'cat_body', 'Legacy Cat Body', 'developer',
   assert.equal(partialSearch.schemaVersion, "workflow_console_search.v1");
   assert.equal(partialSearch.summary.status, "ok");
   assert.equal(partialSearch.summary.missingSources.includes("runtime_agents:query_error"), true);
+  sqliteExec(dbFile, Array.from({ length: 515 }, (_, index) => `
+INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, outbox_id, target_runtime, target_agent_id, return_policy, status, runtime_completed_at, runtime_failed_at, final_output_present, delivery_receipt_present, last_error, created_at, updated_at)
+VALUES ('flow-triage-old-warning-${index}', 'trace-triage-old-${index}', 'idem-triage-old-${index}', '${workflowId}', '${workflowId}', 'dispatch-new', 'outbox-triage-old-${index}', 'openclaw', 'cat_claw', 'report_to_flashcat', 'runtime_completed', '1999-01-01T00:00:${String(index).padStart(2, "0")}.000Z', '', 1, 0, 'old warning token triage-warning-${index}', '1999-01-01T00:00:${String(index).padStart(2, "0")}.000Z', '1999-01-01T00:00:${String(index).padStart(2, "0")}.000Z');`).join("\n"));
+  sqliteExec(dbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-triage-late-critical', '${workflowId}', '${workflowId}', 'trace-triage-critical', 'idem-triage-critical', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'sent', 'high', 3, 3, '', 'timeout', 'late critical token triage-critical-secret', 'prompt', '{}', 'main', '2999-01-01T00:00:00.000Z', '2999-01-01T00:00:01.000Z', '', '', '2999-01-01T00:00:02.000Z');
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakabc', 'trace-token-leakabc', 'idem-token-leakabc', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'sent', 'high', 3, 3, '', 'timeout', 'embedded token-leakabc must redact', 'prompt', '{}', 'main', '2999-01-01T00:00:03.000Z', '2999-01-01T00:00:04.000Z', '', '', '2999-01-01T00:00:05.000Z');
+`);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "dispatch_id='dispatch-triage-late-critical'"), 1);
+  const triageOperations = await readModel.operationsSummary({ deadLetterLimit: 500, deadLetterScanLimit: 1000 });
+  assert.equal(Boolean(triageOperations.deadLetters.some((row) => row.kind === "max_attempt_dispatch" && row.refId === "dispatch-triage-late-critical" && row.severity === "critical")), false);
+  assert.equal(Boolean(triageOperations.deadLetterTriageCandidates.some((row) => row.kind === "max_attempt_dispatch" && row.refId === "dispatch-triage-late-critical" && row.severity === "critical")), true);
   const command = await readModel.commandCenter();
   assert.equal(command.schemaVersion, "workflow_console_command_center.v1");
   assert.equal(command.workflowSummary.total >= 1, true);
@@ -6946,6 +6959,16 @@ VALUES ('legacy:cat_body', 'legacy', 'cat_body', 'Legacy Cat Body', 'developer',
   assert.equal(command.runtimeSummary.dispatchable, 2);
   assert.equal(command.attention.critical.includes("failed_dispatches"), true);
   assert.equal(command.communication.messageFlow.runtime_completed >= 2, true);
+  assert.equal(["blocked", "degraded", "incident"].includes(command.triage.overallState), true);
+  assert.equal(command.triage.blockerCount > 0, true);
+  assert.equal(command.triage.topBlockers.length > 0, true);
+  assert.equal(Boolean(command.triage.topBlockers.some((blocker) => blocker.target?.consoleView === "operations" && blocker.sourceRefs?.length > 0)), true);
+  assert.equal(Boolean(command.triage.blockers.some((blocker) => blocker.target?.consoleView === "workflows" && blocker.workflowId === workflowId)), true);
+  assert.equal(Boolean(command.triage.blockers.some((blocker) => blocker.id === "max_attempt_dispatch:dispatch-triage-late-critical" && blocker.severity === "critical")), true);
+  assert.equal(Boolean(command.triage.blockers.some((blocker) => blocker.id === "pending_human_gate:wf-console-agentic" && blocker.target?.tab === "human-gate-readiness")), true);
+  assert.equal(JSON.stringify(command.triage).includes("triage-critical-secret"), false);
+  assert.equal(JSON.stringify(command.triage).includes("leakabc"), false);
+  assert.equal(Boolean(command.triage.blockers.some((blocker) => blocker.id === "max_attempt_dispatch:dispatch-token-[redacted]" && blocker.target?.workflowId === `${workflowId}-api-key-[redacted]`)), true);
 
   const agentBoard = await readModel.agentBoard();
   assert.equal(agentBoard.schemaVersion, "workflow_console_agent_board.v1");

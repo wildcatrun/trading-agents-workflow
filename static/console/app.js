@@ -1045,9 +1045,21 @@ function renderCommandCenter(data) {
   const communication = data.communication || {};
   const evidence = data.evidence || {};
   const readiness = data.readiness || {};
+  const triage = data.triage || {};
+  const blockers = triage.topBlockers || [];
   const critical = data.attention?.critical || [];
   const warning = data.attention?.warning || [];
   setDetailBody(h("div", { className: "stack" }, [
+    section("Operator Triage", h("div", { className: "quick-stats" }, [
+      statCard("Overall", triage.overallState || readiness.status || "unknown", formatDate(data.generatedAt)),
+      statCard("Blockers", triage.blockerCount || 0, `${blockers.length || 0} shown`),
+      statCard("Runtime", triage.planes?.runtime || 0),
+      statCard("Queue", triage.planes?.queue || 0),
+      statCard("Communication", triage.planes?.communication || 0),
+      statCard("Human Gate", triage.planes?.human_gate || 0),
+      statCard("Evidence", triage.planes?.evidence || 0)
+    ])),
+    section("Critical Blockers", blockers.length ? h("div", { className: "search-results" }, blockers.map(renderTriageBlocker)) : emptyState("No current blockers. The command center is ready.")),
     section("Control Plane", h("div", { className: "quick-stats" }, [
       statCard("Readiness", readiness.status || "unknown", formatDate(readiness.checkedAt)),
       statCard("Findings", readiness.findingCount || 0),
@@ -1337,6 +1349,67 @@ async function openSearchResult(result = {}) {
     setViewButtons();
     await loadGlobalView();
   }
+}
+
+async function openCommandTarget(target = {}) {
+  if (target.consoleView === "workflows" && target.workflowId) {
+    await openWorkflowTab(target.workflowId, target.tab || "overview");
+    return;
+  }
+  if (target.consoleView === "operations") {
+    state.consoleView = "operations";
+    state.selectedWorkflowId = target.workflowId || "";
+    state.detail = null;
+    state.operationsFilters = {
+      kind: target.operationsFilters?.kind || "",
+      severity: target.operationsFilters?.severity || "",
+      status: target.operationsFilters?.status || ""
+    };
+    setViewButtons();
+    writeUrlState();
+    renderWorkflowList();
+    renderDetailHeader();
+    await loadGlobalView();
+    return;
+  }
+  if (target.consoleView) {
+    state.consoleView = target.consoleView;
+    state.selectedWorkflowId = "";
+    state.detail = null;
+    setViewButtons();
+    writeUrlState();
+    renderWorkflowList();
+    renderDetailHeader();
+    await loadGlobalView();
+  }
+}
+
+function renderTriageBlocker(blocker = {}) {
+  const refs = blocker.sourceRefs || [];
+  return h("article", { className: `search-result ${blocker.severity || "warning"}` }, [
+    h("div", { className: "search-result-head" }, [
+      h("div", {}, [
+        h("div", { className: "workflow-title" }, [
+          h("strong", {}, short(blocker.title || blocker.id, 120)),
+          chip(blocker.plane || "control", "neutral"),
+          chip(blocker.severity || "warning", blocker.severity || "warning")
+        ]),
+        h("p", { className: "workflow-summary" }, short(blocker.detail || blocker.id, 240))
+      ]),
+      h("div", { className: "actions search-actions" }, [
+        h("button", { type: "button", onClick: () => openCommandTarget(blocker.target || {}) }, "Open"),
+        blocker.workflowId ? h("button", { type: "button", onClick: () => copyText(blocker.workflowId, "Workflow") }, "Copy Workflow") : null,
+        blocker.id ? h("button", { type: "button", onClick: () => copyText(blocker.id, "Blocker") }, "Copy Id") : null
+      ])
+    ]),
+    h("div", { className: "workflow-meta" }, [
+      h("span", {}, blocker.workflowId ? `workflow ${blocker.workflowId}` : "global"),
+      h("span", {}, blocker.agentId || "-"),
+      h("span", {}, `count ${present(blocker.count, 1)}`),
+      h("span", {}, formatDate(blocker.updatedAt))
+    ]),
+    refs.length ? h("div", { className: "mini-counts" }, refs.slice(0, 6).map((ref) => h("span", {}, `${ref.source}.${ref.field}=${short(ref.id, 80)}`))) : null
+  ]);
 }
 
 function renderOverview(data) {
