@@ -125,6 +125,33 @@ code {
   line-height: 1.4;
 }
 
+.live-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.live-controls select {
+  min-height: 34px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.live-status {
+  min-width: 92px;
+  overflow-wrap: anywhere;
+}
+
+.live-status.critical {
+  color: var(--red);
+}
+
 .command-palette {
   position: fixed;
   z-index: 80;
@@ -908,6 +935,11 @@ code {
   .global-search {
     max-width: none;
     flex: 1 1 auto;
+  }
+
+  .live-controls {
+    width: 100%;
+    flex-wrap: wrap;
   }
 
   .search-result-head {

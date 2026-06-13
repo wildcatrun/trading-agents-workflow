@@ -15,9 +15,14 @@ const state = {
   sortMode: "age_desc",
   focusAgentId: "",
   focusCardId: "",
+  scopedActivity: false,
   commandPalette: null,
   commandPaletteQuery: "",
   config: null,
+  liveRefreshEnabled: false,
+  liveRefreshIntervalMs: 15000,
+  liveRefreshInFlight: false,
+  liveRefreshLastAt: "",
   operationsFilters: {
     kind: "",
     severity: "",
@@ -56,6 +61,7 @@ const SEVERITY_RANK = {
 };
 
 let suppressUrlWrite = false;
+let liveRefreshTimer = null;
 
 const STATUS_TONES = {
   active: "ok",
@@ -268,6 +274,8 @@ function readUrlState() {
     : params.get("workflow") ? "workflows" : "command-center";
   state.view = normalizeChoice(params.get("wfView"), ["active", "waiting_human", "blocked", "paused", "updated_24h"], "active");
   state.selectedWorkflowId = params.get("workflow") || "";
+  state.scopedActivity = state.consoleView === "activity" && params.get("scope") === "workflow" && Boolean(state.selectedWorkflowId);
+  if (state.consoleView === "activity" && !state.scopedActivity) state.selectedWorkflowId = "";
   state.tab = params.get("tab") || "overview";
   state.searchQuery = params.get("q") || "";
   state.workbenchFilter = normalizeChoice(params.get("filter"), WORKBENCH_FILTERS.map((item) => item.id), "all");
@@ -286,7 +294,11 @@ function writeUrlState({ replace = false } = {}) {
   const params = new URLSearchParams();
   if (state.consoleView !== "command-center") params.set("console", state.consoleView);
   if (state.view !== "active") params.set("wfView", state.view);
-  if (["workflows", "activity", "evidence-workspace", "operations", "kanban"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
+  if (["workflows", "evidence-workspace", "operations", "kanban"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
+  if (state.consoleView === "activity" && state.scopedActivity && state.selectedWorkflowId) {
+    params.set("workflow", state.selectedWorkflowId);
+    params.set("scope", "workflow");
+  }
   if (state.consoleView === "workflows" && state.tab !== "overview") params.set("tab", state.tab);
   if (state.consoleView === "search" && state.searchQuery) params.set("q", state.searchQuery);
   if (isWorkbenchView() && state.workbenchFilter !== "all") params.set("filter", state.workbenchFilter);
@@ -493,6 +505,73 @@ function setActionStatus(message = "", tone = "") {
   const node = $("#actionStatus");
   node.textContent = message;
   node.className = `action-status ${tone}`.trim();
+}
+
+function liveRefreshText() {
+  if (state.liveRefreshInFlight) return "Refreshing";
+  if (!state.liveRefreshEnabled) return state.liveRefreshLastAt ? `Manual | ${formatDate(state.liveRefreshLastAt)}` : "Manual";
+  return state.liveRefreshLastAt
+    ? `Live ${Math.round(state.liveRefreshIntervalMs / 1000)}s | ${formatDate(state.liveRefreshLastAt)}`
+    : `Live ${Math.round(state.liveRefreshIntervalMs / 1000)}s`;
+}
+
+function updateLiveControls(tone = "") {
+  const toggle = $("#liveToggleButton");
+  const interval = $("#liveIntervalSelect");
+  const status = $("#liveStatus");
+  if (!toggle || !interval || !status) return;
+  toggle.textContent = state.liveRefreshEnabled ? "Live On" : "Live Off";
+  toggle.classList.toggle("active", state.liveRefreshEnabled);
+  toggle.setAttribute("aria-pressed", state.liveRefreshEnabled ? "true" : "false");
+  interval.value = String(state.liveRefreshIntervalMs);
+  status.textContent = liveRefreshText();
+  status.className = `muted live-status ${tone}`.trim();
+}
+
+function clearLiveRefreshTimer() {
+  if (!liveRefreshTimer) return;
+  window.clearTimeout(liveRefreshTimer);
+  liveRefreshTimer = null;
+}
+
+function scheduleLiveRefresh() {
+  clearLiveRefreshTimer();
+  if (!state.liveRefreshEnabled) return;
+  liveRefreshTimer = window.setTimeout(() => {
+    refreshConsole({ background: true });
+  }, state.liveRefreshIntervalMs);
+  updateLiveControls();
+}
+
+async function refreshConsole({ background = false } = {}) {
+  if (state.liveRefreshInFlight) return;
+  state.liveRefreshInFlight = true;
+  clearLiveRefreshTimer();
+  updateLiveControls();
+  if (!background) setActionStatus("Refreshing...", "neutral");
+  try {
+    await loadConfig();
+    await loadWorkflows();
+    state.liveRefreshLastAt = new Date().toISOString();
+    if (background) setActionStatus("Live refreshed", "ok");
+    updateLiveControls();
+  } catch (error) {
+    setActionStatus(`Refresh failed: ${error.message}`, "critical");
+    updateLiveControls("critical");
+  } finally {
+    state.liveRefreshInFlight = false;
+    scheduleLiveRefresh();
+  }
+}
+
+function setLiveRefreshEnabled(enabled) {
+  state.liveRefreshEnabled = Boolean(enabled);
+  if (state.liveRefreshEnabled) {
+    refreshConsole({ background: true });
+  } else {
+    clearLiveRefreshTimer();
+    updateLiveControls();
+  }
 }
 
 function setDetailBody(node) {
@@ -959,7 +1038,7 @@ async function loadWorkflows() {
   setActionStatus("Loading workflows...", "neutral");
   const data = await api(`/api/workflows?view=${encodeURIComponent(state.view)}&limit=100`);
   state.workflows = data.workflows || [];
-  if (!state.selectedWorkflowId && state.consoleView !== "operations" && state.workflows[0]) {
+  if (!state.selectedWorkflowId && !["activity", "operations"].includes(state.consoleView) && state.workflows[0]) {
     state.selectedWorkflowId = state.workflows[0].workflowId;
   }
   if (state.consoleView === "workflows" && state.selectedWorkflowId && !state.workflows.some((item) => item.workflowId === state.selectedWorkflowId)) {
@@ -979,6 +1058,7 @@ async function loadWorkflows() {
 async function selectWorkflow(workflowId) {
   const wasGlobal = state.consoleView !== "workflows";
   if (["evidence-workspace", "operations"].includes(state.consoleView)) {
+    state.scopedActivity = false;
     state.selectedWorkflowId = workflowId;
     state.detail = null;
     setViewButtons();
@@ -989,6 +1069,7 @@ async function selectWorkflow(workflowId) {
     return;
   }
   state.consoleView = "workflows";
+  state.scopedActivity = false;
   clearFocusState();
   if (state.selectedWorkflowId === workflowId && !wasGlobal) return;
   state.selectedWorkflowId = workflowId;
@@ -1618,6 +1699,7 @@ async function openSearchResult(result = {}) {
 async function openCommandTarget(target = {}) {
   if (target.consoleView === "workflows" && !target.workflowId) {
     state.consoleView = "workflows";
+    state.scopedActivity = false;
     state.selectedWorkflowId = "";
     state.detail = null;
     state.tab = "overview";
@@ -1633,6 +1715,7 @@ async function openCommandTarget(target = {}) {
   }
   if (target.consoleView === "agent-board") {
     state.consoleView = "agent-board";
+    state.scopedActivity = false;
     state.selectedWorkflowId = "";
     state.detail = null;
     state.focusAgentId = target.agentId || "";
@@ -1646,6 +1729,7 @@ async function openCommandTarget(target = {}) {
   }
   if (target.consoleView === "kanban") {
     state.consoleView = "kanban";
+    state.scopedActivity = false;
     state.selectedWorkflowId = target.workflowId || "";
     state.detail = null;
     state.focusAgentId = target.agentId || "";
@@ -1659,6 +1743,7 @@ async function openCommandTarget(target = {}) {
   }
   if (target.consoleView === "evidence-workspace") {
     state.consoleView = "evidence-workspace";
+    state.scopedActivity = false;
     state.selectedWorkflowId = target.workflowId || "";
     state.detail = null;
     clearFocusState();
@@ -1671,6 +1756,7 @@ async function openCommandTarget(target = {}) {
   }
   if (target.consoleView === "operations") {
     state.consoleView = "operations";
+    state.scopedActivity = false;
     state.selectedWorkflowId = target.workflowId || "";
     state.detail = null;
     clearFocusState();
@@ -1686,9 +1772,23 @@ async function openCommandTarget(target = {}) {
     await loadGlobalView();
     return;
   }
+  if (target.consoleView === "activity") {
+    state.consoleView = "activity";
+    state.selectedWorkflowId = target.workflowId || "";
+    state.scopedActivity = Boolean(target.workflowId);
+    state.detail = null;
+    clearFocusState();
+    setViewButtons();
+    writeUrlState();
+    renderWorkflowList();
+    renderDetailHeader();
+    await loadGlobalView();
+    return;
+  }
   if (target.consoleView) {
     state.consoleView = target.consoleView;
     state.selectedWorkflowId = "";
+    state.scopedActivity = false;
     state.detail = null;
     if (!["agent-board", "kanban"].includes(state.consoleView)) clearFocusState();
     setViewButtons();
@@ -3731,6 +3831,7 @@ document.querySelectorAll(".view-tabs button[data-console-view]").forEach((butto
     if (!["agent-board", "kanban"].includes(state.consoleView)) clearFocusState();
     if (["activity", "operations"].includes(state.consoleView)) {
       state.selectedWorkflowId = "";
+      state.scopedActivity = false;
       state.detail = null;
     }
     setViewButtons();
@@ -3747,6 +3848,7 @@ document.querySelectorAll(".view-tabs button[data-console-view]").forEach((butto
 document.querySelectorAll(".view-tabs button[data-view]").forEach((button) => {
   button.addEventListener("click", async () => {
     state.consoleView = "workflows";
+    state.scopedActivity = false;
     clearFocusState();
     state.view = button.dataset.view;
     state.selectedWorkflowId = "";
@@ -3776,8 +3878,14 @@ $("#globalSearchForm").addEventListener("submit", async (event) => {
 });
 
 $("#refreshButton").addEventListener("click", async () => {
-  await loadConfig();
-  await loadWorkflows();
+  await refreshConsole();
+});
+$("#liveToggleButton").addEventListener("click", () => {
+  setLiveRefreshEnabled(!state.liveRefreshEnabled);
+});
+$("#liveIntervalSelect").addEventListener("change", () => {
+  state.liveRefreshIntervalMs = Number($("#liveIntervalSelect").value || 15000);
+  scheduleLiveRefresh();
 });
 $("#previewButton").addEventListener("click", previewSupervise);
 $("#commandPaletteButton").addEventListener("click", openCommandPalette);
@@ -3813,6 +3921,7 @@ window.addEventListener("popstate", async () => {
 readUrlState();
 setViewButtons();
 setTabButtons();
+updateLiveControls();
 try {
   await loadConfig();
   await loadWorkflows();

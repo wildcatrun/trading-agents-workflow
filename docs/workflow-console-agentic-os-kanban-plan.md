@@ -1176,6 +1176,19 @@ Implemented Slice E: Activity Feed / Control Stream
 - The stream is observational only. It does not retry jobs, drain runtimes,
   mutate workflow state, or create a parallel scheduler.
 
+Implemented Slice F: Browser Live Refresh Controls
+
+- Added top-level manual/live refresh controls with selectable 10s, 15s, 30s,
+  and 60s intervals. Live refresh reuses the same read-only console load path
+  as the manual Refresh button.
+- The feature is browser-side only. It does not create a workflow scheduler,
+  runtime worker, queue tick, drain loop, retry mechanism, or database write
+  path.
+- Activity refresh now preserves the intended global default instead of
+  auto-selecting the first workflow during a background refresh. Workflow-scoped
+  Activity requires explicit `scope=workflow&workflow=<id>` URL state or a
+  scoped navigation target.
+
 ## Test Plan
 
 Required checks:
@@ -1230,6 +1243,9 @@ Frontend smoke:
   message_flow attention items, preserves redaction, opens related surfaces,
   supports workflow-scoped URL state, and remains mobile-readable without
   page-level horizontal overflow;
+- verify Live Refresh toggles on/off, updates status text, respects the
+  selected interval, keeps Activity global when opened globally, and does not
+  introduce page-level horizontal overflow on mobile;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1239,8 +1255,9 @@ Development-server smoke:
 - start console as a separate read-only process on `127.0.0.1:8791`;
 - access through the existing local tunnel `127.0.0.1:18791`;
 - verify `/health`, `/api/config`, `/api/command-center`,
-  `/api/agent-board`, `/api/kanban`, `/api/operations/summary`, and a
-  workflow-scoped `/api/workflows/<workflowId>/evidence-pack`.
+  `/api/activity-feed`, `/api/agent-board`, `/api/kanban`,
+  `/api/operations/summary`, and a workflow-scoped
+  `/api/workflows/<workflowId>/evidence-pack`.
 
 Gateway restart is not required for console-only static/read-model changes
 unless plugin runtime loading changes require it separately.

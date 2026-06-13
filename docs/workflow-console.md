@@ -127,7 +127,9 @@ Current version map:
   command palette for fast jumps across views, workflows, agents, Kanban,
   Evidence, and Operations. Slice E adds a read-only Activity Feed that
   compresses blockers, dead letters, workflow operations, control-loop jobs,
-  and message_flow attention into a clickable operator stream.
+  and message_flow attention into a clickable operator stream. Slice F adds a
+  browser-side Live Refresh control with safe manual/live modes for keeping
+  read-only operator views current without adding a workflow scheduler.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

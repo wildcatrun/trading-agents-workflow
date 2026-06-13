@@ -17,6 +17,16 @@
         <button type="submit">Search</button>
         <button id="commandPaletteButton" type="button">Jump</button>
       </form>
+      <div class="live-controls" aria-label="Live refresh controls">
+        <button id="liveToggleButton" type="button" aria-pressed="false">Live Off</button>
+        <select id="liveIntervalSelect" aria-label="Live refresh interval">
+          <option value="10000">10s</option>
+          <option value="15000" selected>15s</option>
+          <option value="30000">30s</option>
+          <option value="60000">60s</option>
+        </select>
+        <span id="liveStatus" class="muted">Manual</span>
+      </div>
       <nav class="view-tabs" aria-label="Workflow views">
         <button data-console-view="command-center">Command</button>
         <button data-console-view="activity">Activity</button>

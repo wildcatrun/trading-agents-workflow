@@ -8090,6 +8090,25 @@ WHERE agent_key='hermers:cat_claw';`);
   assert.equal(dispatch.workflowIngressAdapter, "openclaw_native");
 }
 
+async function testWorkflowConsoleStaticLiveRefreshContract() {
+  const [html, app] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), "static/console/index.html"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "static/console/app.js"), "utf8")
+  ]);
+  assert.equal(html.includes('id="liveToggleButton"'), true);
+  assert.equal(html.includes('id="liveIntervalSelect"'), true);
+  assert.equal(html.includes('id="liveStatus"'), true);
+  assert.equal(app.includes("async function refreshConsole"), true);
+  assert.equal(app.includes('$("#refreshButton").addEventListener("click"'), true);
+  assert.equal(app.includes("await refreshConsole();"), true);
+  assert.equal(app.includes('!["activity", "operations"].includes(state.consoleView)'), true);
+  assert.equal(app.includes('params.get("scope") === "workflow"'), true);
+  assert.equal(app.includes('state.consoleView === "activity" && !state.scopedActivity'), true);
+  assert.equal(app.includes('params.set("scope", "workflow")'), true);
+  assert.equal(app.includes("setLiveRefreshEnabled(!state.liveRefreshEnabled)"), true);
+  assert.equal(app.includes("scheduleLiveRefresh();"), true);
+}
+
 try {
   requireSqliteCli();
   const tests = [
@@ -8135,6 +8154,7 @@ try {
     ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],
     ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],
     ["workflow health dashboard", testWorkflowHealthDashboard],
+    ["workflow console static live refresh contract", testWorkflowConsoleStaticLiveRefreshContract],
     ["workflow console agentic surfaces", testWorkflowConsoleAgenticSurfaces],
     ["workflow health terminal failed dispatch degraded", testWorkflowHealthTerminalFailedDispatchIsDegraded],
     ["workflow health open incidents visible", testWorkflowHealthOpenIncidentsAreVisible],
