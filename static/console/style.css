@@ -505,6 +505,112 @@ code {
   align-items: flex-start;
 }
 
+.agent-card-list {
+  display: none;
+}
+
+.agent-card {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px;
+  background: #ffffff;
+  display: grid;
+  gap: 8px;
+}
+
+.agent-card.critical {
+  border-color: #efb4b4;
+  background: #fffafa;
+}
+
+.agent-card.warning {
+  border-color: #e7cf94;
+  background: #fffdf6;
+}
+
+.kv-compact {
+  display: grid;
+  grid-template-columns: minmax(84px, auto) minmax(0, 1fr);
+  gap: 5px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.kv-compact span {
+  color: var(--muted);
+}
+
+.kv-compact strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.detail-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 21;
+  width: min(560px, 100vw);
+  border-left: 1px solid var(--line);
+  background: #ffffff;
+  box-shadow: -18px 0 36px rgba(15, 23, 42, 0.16);
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-head {
+  min-height: 72px;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.drawer-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.drawer-actions {
+  padding: 0 2px 2px;
+}
+
+.source-ref-list {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.source-ref-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.5fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  padding: 7px;
+  font-size: 12px;
+}
+
+.source-ref-row span,
+.source-ref-row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .padded {
   padding: 10px;
 }
@@ -603,6 +709,27 @@ code {
 
   .search-actions {
     justify-content: flex-start;
+  }
+
+  .agent-table-view {
+    display: none;
+  }
+
+  .agent-card-list {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .detail-drawer {
+    top: 54px;
+    width: 100vw;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .source-ref-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .form-grid {

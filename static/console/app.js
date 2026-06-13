@@ -51,6 +51,18 @@ const STATUS_TONES = {
   telegram_failed: "critical"
 };
 
+const DRAWER_FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]:not([tabindex='-1'])",
+  "summary"
+].join(",");
+
+let drawerReturnFocus = null;
+
 function $(selector) {
   return document.querySelector(selector);
 }
@@ -198,6 +210,218 @@ function setActionStatus(message = "", tone = "") {
 
 function setDetailBody(node) {
   $("#detailBody").replaceChildren(node);
+}
+
+function setAppInert(isInert) {
+  for (const node of document.querySelectorAll("body > header, body > main")) {
+    if (isInert) {
+      node.setAttribute("aria-hidden", "true");
+      node.inert = true;
+    } else {
+      node.removeAttribute("aria-hidden");
+      node.inert = false;
+    }
+  }
+}
+
+function closeDrawer() {
+  $("#drawerRoot").replaceChildren();
+  setAppInert(false);
+  if (drawerReturnFocus?.isConnected) drawerReturnFocus.focus();
+  drawerReturnFocus = null;
+}
+
+function drawerFocusableElements() {
+  const panel = document.querySelector(".detail-drawer");
+  if (!panel) return [];
+  return Array.from(panel.querySelectorAll(DRAWER_FOCUSABLE_SELECTOR)).filter((element) => {
+    if (element.disabled) return false;
+    if (element.getAttribute("aria-hidden") === "true") return false;
+    return element.offsetParent !== null || element === document.activeElement;
+  });
+}
+
+function trapDrawerFocus(event) {
+  const panel = document.querySelector(".detail-drawer");
+  if (!panel || event.key !== "Tab") return;
+  const focusable = drawerFocusableElements();
+  if (!focusable.length) {
+    event.preventDefault();
+    panel.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function showDrawer({ title, subtitle = "", tone = "neutral", body, raw }) {
+  const root = $("#drawerRoot");
+  drawerReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const closeButton = h("button", { type: "button", onClick: closeDrawer, "aria-label": "Close drawer" }, "Close");
+  const panel = h("aside", { className: "detail-drawer", role: "dialog", "aria-modal": "true", "aria-label": title, tabindex: "-1" }, [
+    h("div", { className: "drawer-head" }, [
+      h("div", {}, [
+        h("div", { className: "workflow-title" }, [
+          h("strong", {}, title),
+          chip(tone, toneFor(tone))
+        ]),
+        subtitle ? h("p", { className: "muted" }, subtitle) : null
+      ]),
+      closeButton
+    ]),
+    h("div", { className: "drawer-body" }, [
+      body,
+      raw ? section("Raw", h("details", {}, [
+        h("summary", {}, "JSON"),
+        jsonBlock(raw)
+      ])) : null
+    ])
+  ]);
+  root.replaceChildren(h("div", { className: "drawer-backdrop", onClick: closeDrawer }), panel);
+  closeButton.focus();
+  setAppInert(true);
+}
+
+function sourceRefList(refs = []) {
+  const list = refs.filter((ref) => ref?.id);
+  if (!list.length) return emptyState("No source refs.");
+  return h("div", { className: "source-ref-list" }, list.map((ref) => h("div", { className: "source-ref-row" }, [
+    h("span", {}, `${present(ref.source)}.${present(ref.field)}`),
+    h("code", {}, present(ref.id)),
+    h("button", { type: "button", onClick: () => copyText(ref.id, "Ref") }, "Copy")
+  ])));
+}
+
+function agentSourceRefs(agent = {}) {
+  return [
+    { source: "runtime_agents", field: "agent_key", id: agent.agentKey },
+    { source: "runtime_agents", field: "runtime_agent", id: agent.runtime && agent.agentId ? `${agent.runtime}:${agent.agentId}` : "" },
+    { source: "runtime_agents", field: "endpoint_ref", id: agent.endpointRef },
+    { source: "runtime_current_state", field: "active_workflow_id", id: agent.currentState?.activeWorkflowId },
+    { source: "runtime_current_state", field: "active_dispatch_id", id: agent.currentState?.activeDispatchId },
+    { source: "runtime_current_state", field: "runtime_run_id", id: agent.currentState?.runtimeRunId },
+    { source: "latest", field: "dispatch_id", id: agent.latest?.dispatchId },
+    { source: "latest", field: "flow_id", id: agent.latest?.flowId }
+  ];
+}
+
+function kanbanSourceRefs(card = {}) {
+  return [
+    { source: card.source || "kanban", field: "source_id", id: card.sourceId },
+    { source: "workflow", field: "workflow_id", id: card.workflowId },
+    { source: "workflow_tasks", field: "task_id", id: card.taskId },
+    { source: "mixed_meeting_dispatches", field: "dispatch_id", id: card.dispatchId },
+    { source: "runtime_runs", field: "runtime_run_id", id: card.runtimeRunId },
+    { source: "message_flows", field: "flow_id", id: card.flowId },
+    { source: "telegram_outbox", field: "outbox_id", id: card.outboxId },
+    { source: "human_gate", field: "human_gate_id", id: card.humanGateId },
+    { source: "artifact", field: "artifact_ref", id: card.artifactRef },
+    { source: "receipt", field: "receipt_ref", id: card.receiptRef }
+  ];
+}
+
+function inspectAgent(agent = {}) {
+  const current = agent.currentState || {};
+  const latest = agent.latest || {};
+  showDrawer({
+    title: agent.agentId || agent.agentKey || "Agent",
+    subtitle: agent.displayName || agent.role || agent.agentKey || "",
+    tone: agent.attentionLevel || "ok",
+    raw: agent,
+    body: h("div", { className: "stack" }, [
+      section("Identity", renderKeyValues([
+        { label: "Agent", value: agent.agentId || "-" },
+        { label: "Runtime", value: `${present(agent.runtime)} / ${present(agent.platform)}` },
+        { label: "Role", value: agent.role || "-" },
+        { label: "Dispatch", value: agent.canReceiveDispatch ? "enabled" : "disabled" },
+        { label: "Endpoint", value: agent.endpointRef || "-" },
+        { label: "Ingress", value: agent.workflowIngressAdapter || "-" }
+      ])),
+      section("Current State", renderKeyValues([
+        { label: "Workflow", value: current.activeWorkflowId || "-" },
+        { label: "Task", value: current.taskId || "-" },
+        { label: "Dispatch", value: current.activeDispatchId || "-" },
+        { label: "Stage", value: current.currentStage || current.status || "-" },
+        { label: "Stage Status", value: current.stageStatus || "-" },
+        { label: "Stale", value: current.staleKind || "-" },
+        { label: "Artifact", value: current.latestArtifactRef || "-" },
+        { label: "Receipt", value: current.latestReceiptRef || "-" },
+        { label: "Updated", value: formatDate(current.lastEventAt || current.updatedAt) }
+      ])),
+      current.blockedReason ? section("Blocker", h("div", { className: "copy-block" }, current.blockedReason)) : null,
+      section("Workload", renderKeyValues([
+        { label: "Queued", value: agent.counts?.queued || 0 },
+        { label: "Working", value: agent.counts?.working || 0 },
+        { label: "Failed", value: agent.counts?.failed || 0 },
+        { label: "Current States", value: agent.counts?.currentStates || 0 },
+        { label: "Message Flows", value: agent.counts?.messageFlows || 0 }
+      ])),
+      section("Latest", renderKeyValues([
+        { label: "Kind", value: latest.kind || "-" },
+        { label: "Status", value: latest.status || "-" },
+        { label: "Dispatch", value: latest.dispatchId || "-" },
+        { label: "Flow", value: latest.flowId || "-" },
+        { label: "At", value: formatDate(latest.lastEventAt) }
+      ])),
+      (agent.attentionFlags || []).length ? section("Attention Flags", h("div", { className: "chip-list padded" }, agent.attentionFlags.map((flag) => chip(flag.key, flag.severity)))) : null,
+      section("Source Refs", sourceRefList(agentSourceRefs(agent))),
+      h("div", { className: "actions drawer-actions" }, [
+        h("button", { type: "button", onClick: () => copyText(agent.agentId || agent.agentKey, "Agent") }, "Copy Agent"),
+        current.activeWorkflowId ? h("button", { type: "button", onClick: () => {
+          closeDrawer();
+          selectWorkflow(current.activeWorkflowId);
+        } }, "Open Workflow") : null
+      ])
+    ])
+  });
+}
+
+function inspectKanbanCard(card = {}) {
+  showDrawer({
+    title: card.title || card.sourceId || "Kanban Card",
+    subtitle: `${present(card.source)} / ${present(card.sourceId)}`,
+    tone: card.status || card.column || "neutral",
+    raw: card,
+    body: h("div", { className: "stack" }, [
+      section("Card", renderKeyValues([
+        { label: "Column", value: card.column || "-" },
+        { label: "Status", value: card.status || "-" },
+        { label: "Workflow", value: card.workflowId || "-" },
+        { label: "Agent", value: card.agentId || "-" },
+        { label: "Runtime", value: card.runtime || "-" },
+        { label: "Updated", value: formatDate(card.lastEventAt) }
+      ])),
+      card.summary ? section("Summary", h("div", { className: "copy-block" }, card.summary)) : null,
+      section("Evidence Chain", renderKeyValues([
+        { label: "Task", value: card.taskId || "-" },
+        { label: "Dispatch", value: card.dispatchId || "-" },
+        { label: "Runtime Run", value: card.runtimeRunId || "-" },
+        { label: "Message Flow", value: card.flowId || "-" },
+        { label: "Outbox", value: card.outboxId || "-" },
+        { label: "Human Gate", value: card.humanGateId || "-" },
+        { label: "Artifact", value: card.artifactRef || "-" },
+        { label: "Receipt", value: card.receiptRef || "-" }
+      ])),
+      (card.missingEvidence || []).length ? section("Missing Evidence", h("div", { className: "chip-list padded" }, card.missingEvidence.map((item) => chip(item, "warning")))) : null,
+      section("Source Refs", sourceRefList(kanbanSourceRefs(card))),
+      h("div", { className: "actions drawer-actions" }, [
+        h("button", { type: "button", onClick: () => copyText(card.sourceId || card.id, "Card") }, "Copy Card"),
+        card.workflowId ? h("button", { type: "button", onClick: () => {
+          closeDrawer();
+          selectWorkflow(card.workflowId);
+        } }, "Open Workflow") : null,
+        card.dispatchId ? h("button", { type: "button", onClick: () => copyText(card.dispatchId, "Dispatch") }, "Copy Dispatch") : null,
+        card.artifactRef ? h("button", { type: "button", onClick: () => copyText(card.artifactRef, "Artifact") }, "Copy Artifact") : null
+      ])
+    ])
+  });
 }
 
 function renderMetrics(workflows) {
@@ -477,6 +701,39 @@ function renderCommandCenter(data) {
 function renderAgentBoard(data) {
   const agents = data.agents || [];
   const summary = data.summary || {};
+  const agentTable = renderTable([
+    { label: "Attention", render: (row) => chip(row.attentionLevel || "ok") },
+    { label: "Agent", render: (row) => h("div", {}, [
+      h("strong", {}, row.agentId),
+      h("p", { className: "muted" }, row.displayName || row.role || row.agentKey)
+    ]) },
+    { label: "Runtime", render: (row) => h("div", {}, [
+      h("p", {}, `${present(row.platform)} / ${present(row.runtime)}`),
+      h("p", { className: "muted" }, `${present(row.workflowIngressAdapter)} -> ${present(row.executionIdentity)}`)
+    ]) },
+    { label: "Endpoint", render: (row) => h("code", {}, present(row.endpointRef)) },
+    { label: "Dispatch", render: (row) => row.canReceiveDispatch ? chip("enabled", "ok") : chip("disabled", "warning") },
+    { label: "Profile", render: (row) => row.profileMode ? h("div", {}, [
+      chip(row.profileMode.observedMode || "observed"),
+      h("p", { className: "muted" }, row.profileMode.reason || "")
+    ]) : "-" },
+    { label: "Current", render: (row) => row.currentState ? h("div", {}, [
+      h("p", {}, `${present(row.currentState.currentStage || row.currentState.status)} ${present(row.currentState.stageStatus)}`),
+      h("p", { className: "muted" }, short(row.currentState.blockedReason || row.currentState.staleKind || row.currentState.activeDispatchId, 110)),
+      h("p", { className: "muted" }, formatDate(row.currentState.lastEventAt || row.currentState.updatedAt))
+    ]) : "-" },
+    { label: "Work", render: (row) => h("div", {}, [
+      h("p", {}, `queued ${row.counts?.queued || 0} / working ${row.counts?.working || 0}`),
+      h("p", { className: "muted" }, `failed ${row.counts?.failed || 0} / current ${row.counts?.currentStates || 0} / flows ${row.counts?.messageFlows || 0}`)
+    ]) },
+    { label: "Latest", render: (row) => h("div", {}, [
+      h("p", {}, `${present(row.latest?.kind)} ${present(row.latest?.status)}`),
+      h("p", { className: "muted" }, short(row.latest?.detail || row.latest?.dispatchId || row.latest?.flowId, 110)),
+      h("p", { className: "muted" }, formatDate(row.latest?.lastEventAt))
+    ]) },
+    { label: "Flags", render: (row) => h("div", { className: "chip-list" }, (row.attentionFlags || []).map((flag) => chip(flag.key, flag.severity))) },
+    { label: "Inspect", render: (row) => h("button", { type: "button", onClick: () => inspectAgent(row) }, "Inspect") }
+  ], agents, "No runtime agents registered.");
   setDetailBody(h("div", { className: "stack" }, [
     section("Agent Board Summary", h("div", { className: "quick-stats" }, [
       statCard("Agents", summary.agents || agents.length),
@@ -486,43 +743,43 @@ function renderAgentBoard(data) {
       statCard("Attention", summary.attention || 0),
       statCard("Source", data.source || "-")
     ])),
-    section("Agents", renderTable([
-      { label: "Attention", render: (row) => chip(row.attentionLevel || "ok") },
-      { label: "Agent", render: (row) => h("div", {}, [
-        h("strong", {}, row.agentId),
-        h("p", { className: "muted" }, row.displayName || row.role || row.agentKey)
-      ]) },
-      { label: "Runtime", render: (row) => h("div", {}, [
-        h("p", {}, `${present(row.platform)} / ${present(row.runtime)}`),
-        h("p", { className: "muted" }, `${present(row.workflowIngressAdapter)} -> ${present(row.executionIdentity)}`)
-      ]) },
-      { label: "Endpoint", render: (row) => h("code", {}, present(row.endpointRef)) },
-      { label: "Dispatch", render: (row) => row.canReceiveDispatch ? chip("enabled", "ok") : chip("disabled", "warning") },
-      { label: "Profile", render: (row) => row.profileMode ? h("div", {}, [
-        chip(row.profileMode.observedMode || "observed"),
-        h("p", { className: "muted" }, row.profileMode.reason || "")
-      ]) : "-" },
-      { label: "Current", render: (row) => row.currentState ? h("div", {}, [
-        h("p", {}, `${present(row.currentState.currentStage || row.currentState.status)} ${present(row.currentState.stageStatus)}`),
-        h("p", { className: "muted" }, short(row.currentState.blockedReason || row.currentState.staleKind || row.currentState.activeDispatchId, 110)),
-        h("p", { className: "muted" }, formatDate(row.currentState.lastEventAt || row.currentState.updatedAt))
-      ]) : "-" },
-      { label: "Work", render: (row) => h("div", {}, [
-        h("p", {}, `queued ${row.counts?.queued || 0} / working ${row.counts?.working || 0}`),
-        h("p", { className: "muted" }, `failed ${row.counts?.failed || 0} / current ${row.counts?.currentStates || 0} / flows ${row.counts?.messageFlows || 0}`)
-      ]) },
-      { label: "Latest", render: (row) => h("div", {}, [
-        h("p", {}, `${present(row.latest?.kind)} ${present(row.latest?.status)}`),
-        h("p", { className: "muted" }, short(row.latest?.detail || row.latest?.dispatchId || row.latest?.flowId, 110)),
-        h("p", { className: "muted" }, formatDate(row.latest?.lastEventAt))
-      ]) },
-      { label: "Flags", render: (row) => h("div", { className: "chip-list" }, (row.attentionFlags || []).map((flag) => chip(flag.key, flag.severity))) }
-    ], agents, "No runtime agents registered.")),
+    section("Agents", h("div", { className: "agent-board-surface" }, [
+      h("div", { className: "agent-table-view" }, agentTable),
+      h("div", { className: "agent-card-list" }, agents.length ? agents.map(renderAgentCard) : [emptyState("No runtime agents registered.")])
+    ])),
     section("Raw", h("details", {}, [
       h("summary", {}, "JSON"),
       jsonBlock(data)
     ]))
   ]));
+}
+
+function renderAgentCard(agent = {}) {
+  const current = agent.currentState || {};
+  const latest = agent.latest || {};
+  return h("article", { className: `agent-card ${agent.attentionLevel || "ok"}` }, [
+    h("div", { className: "workflow-title" }, [
+      h("strong", {}, agent.agentId || agent.agentKey),
+      chip(agent.attentionLevel || "ok", toneFor(agent.attentionLevel || "ok"))
+    ]),
+    h("p", { className: "workflow-summary" }, agent.displayName || agent.role || agent.agentKey || ""),
+    h("div", { className: "kv-compact" }, [
+      h("span", {}, "Runtime"),
+      h("strong", {}, `${present(agent.platform)} / ${present(agent.runtime)}`),
+      h("span", {}, "Dispatch"),
+      h("strong", {}, agent.canReceiveDispatch ? "enabled" : "disabled"),
+      h("span", {}, "Current"),
+      h("strong", {}, current.currentStage || current.status || "-"),
+      h("span", {}, "Latest"),
+      h("strong", {}, `${present(latest.kind)} ${present(latest.status)}`)
+    ]),
+    (agent.attentionFlags || []).length ? h("div", { className: "chip-list" }, agent.attentionFlags.map((flag) => chip(flag.key, flag.severity))) : null,
+    h("div", { className: "actions card-actions" }, [
+      h("button", { type: "button", onClick: () => inspectAgent(agent) }, "Inspect"),
+      current.activeWorkflowId ? h("button", { type: "button", onClick: () => selectWorkflow(current.activeWorkflowId) }, "Open Workflow") : null,
+      h("button", { type: "button", onClick: () => copyText(agent.agentId || agent.agentKey, "Agent") }, "Copy Agent")
+    ])
+  ]);
 }
 
 function renderKanban(data) {
@@ -569,6 +826,10 @@ function renderKanbanCard(card) {
       card.flowId ? h("span", {}, `flow ${card.flowId}`) : null
     ]),
     (card.missingEvidence || []).length ? h("div", { className: "chip-list" }, card.missingEvidence.map((item) => chip(item, "warning"))) : null,
+    h("div", { className: "card-actions" }, [
+      h("button", { type: "button", onClick: () => inspectKanbanCard(card) }, "Inspect"),
+      card.sourceId ? h("button", { type: "button", onClick: () => copyText(card.sourceId, "Card") }, "Copy") : null
+    ]),
     renderKanbanPreviewActions(card)
   ]);
 }
@@ -2535,6 +2796,10 @@ $("#refreshButton").addEventListener("click", async () => {
   await loadWorkflows();
 });
 $("#previewButton").addEventListener("click", previewSupervise);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeDrawer();
+  else if (event.key === "Tab") trapDrawerFocus(event);
+});
 
 setViewButtons();
 setTabButtons();

@@ -95,8 +95,26 @@ The round record and rollout notes are maintained in
 The next GUI evolution plan is maintained in
 `docs/workflow-console-agentic-os-kanban-plan.md`. It adapts Agentic OS control
 plane patterns and a Hermers-oriented Kanban projection into the existing
-console, starting with read-only Command Center, Agent Board, Workflow Kanban,
-and Evidence Desk surfaces.
+console.
+
+Current version map:
+
+- v0.4: implemented read-only Command Center, Agent Board, Workflow Kanban,
+  and Evidence Desk.
+- v0.5: implemented semantic runtime current-state projection through
+  `runtime_semantic_events` and `runtime_current_state`.
+- v0.6: implemented real runtime bridge semantic-event ingestion for dispatch
+  binding, ACK-only turns, terminal turns, failures, and stale reconcile
+  backfill.
+- v0.7: implemented governed preview actions in Kanban and Evidence Desk,
+  routed through `WorkflowActionGateway`.
+- v0.8: in progress as Agentic Workbench UX. Slice A global search and Slice B
+  Agent/Kanban detail drawers plus mobile Agent Board cards are implemented;
+  remaining work covers saved filters, URL-reflected filters, and severity/age
+  sorting controls.
+- v0.9: planned Evidence and Incident Workspace for reviewable packages.
+- v1.0: planned operator-grade baseline comparable to mainstream agent control
+  planes while preserving trading-system safety boundaries.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

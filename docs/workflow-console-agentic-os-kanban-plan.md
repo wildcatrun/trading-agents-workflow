@@ -942,6 +942,31 @@ Validation recorded for this slice:
   transport/echo, result-field redaction, and partial-schema query isolation;
   fixes and regression coverage were applied before commit.
 
+Implemented Slice B: Detail Drawers And Mobile Agent Cards
+
+- Agent Board rows now expose an Inspect control that opens a detail drawer
+  with identity, runtime endpoint, current semantic state, workload, latest
+  activity, source refs, copy controls, and redacted raw JSON.
+- Workflow Kanban cards now expose Inspect and Copy controls before governed
+  preview actions. The drawer shows card state, evidence chain, missing
+  evidence, source refs, copy controls, and workflow navigation.
+- Drawer navigation closes the drawer before opening workflow detail, keeping
+  the operator path clear on desktop and mobile.
+- Mobile Agent Board switches from dense tables to agent cards below tablet
+  width, preserving inspect/copy controls without horizontal table reading.
+- Detail drawers are read-only surfaces. They do not add drag/drop mutation,
+  runtime controls, Gateway controls, or direct workflow writes.
+
+Validation recorded for this slice:
+
+- `npm run check`
+- `git diff --check`
+- Local Playwright smoke against `http://127.0.0.1:18798` with temporary
+  workflow fixtures, covering desktop Agent Inspect, desktop Kanban Inspect,
+  mobile Agent Board card rendering, and mobile drawer rendering at `390x844`.
+  The mobile page-level `scrollWidth` matched viewport width with no detected
+  overflowing elements.
+
 ### v0.9: Evidence And Incident Workspace
 
 Goal: turn scattered governance facts into reviewable packages.
@@ -1024,6 +1049,10 @@ Frontend smoke:
   overlapping text;
 - verify global search renders result cards, copy controls, and workflow-detail
   navigation on desktop and mobile;
+- verify Agent Board and Kanban Inspect drawers render source refs, copy
+  controls, raw JSON, and workflow navigation without mutation;
+- verify mobile Agent Board uses cards instead of requiring horizontal table
+  reading, and drawers do not create page-level horizontal overflow;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1043,11 +1072,12 @@ unless plugin runtime loading changes require it separately.
 - v0.4 is read-only and implemented.
 - v0.5 semantic current-state projection is implemented.
 - v0.6 runtime bridge semantic event ingestion is implemented.
-- v0.7 is the next implementation target: governed preview actions surfaced in
-  Kanban and Evidence Desk, still preview-first and audit-first.
-- v0.8 Slice A implements global search and copy/open controls. Remaining v0.8
-  work should focus on detail drawers, saved filters, URL-reflected filter
-  state, expanded severity/age sorting controls, and mobile Agent Board cards.
+- v0.7 governed preview actions in Kanban and Evidence Desk are implemented,
+  still preview-first and audit-first.
+- v0.8 Slice A implements global search and copy/open controls. Slice B
+  implements Agent/Kanban detail drawers and mobile Agent Board cards.
+  Remaining v0.8 work should focus on saved filters, URL-reflected filter
+  state, and expanded severity/age sorting controls.
 - v0.9 should package evidence and incidents for Cat Claw / Flashcat review.
 - v1.0 is the operator-grade baseline: integrated triage, registry-first agent
   workbench, derived Kanban, evidence packages, governed previews, redaction,
