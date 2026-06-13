@@ -6707,6 +6707,8 @@ INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, deci
 VALUES ('checkpoint-console', 'wf-console-agentic', 'active', 'execute', 'continue', 'Console checkpoint', '{}', '[]', '["task-blocked"]', '["artifact://console-verification"]', '["continue"]', '{}', 'artifact://checkpoint-console', 'main', '2026-06-13T00:00:10.000Z');
 INSERT INTO artifact_index(artifact_id, instrument_id, workflow_id, kind, path, summary, created_by, created_at)
 VALUES ('artifact-console', NULL, 'wf-console-agentic', 'report', 'artifact://console-verification', 'Console verification artifact', 'cat_body', '2026-06-13T00:00:11.000Z');
+INSERT INTO artifact_index(artifact_id, instrument_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES ('artifact-redaction-console', NULL, 'wf-console-agentic', 'report', 'artifact://redaction/tawhg:secret-search-token', 'Sensitive redaction artifact', 'cat_body', '2026-06-13T00:00:11.500Z');
 INSERT INTO workflow_verification_results(verification_id, workflow_id, phase_id, phase_key, task_id, agent_run_id, dispatch_id, runtime_run_id, result_type, decision, verifier_agent, refuter_agent, source_runtime, source_agent, confidence, risk_band, summary, findings_json, recommendations_json, evidence_refs_json, artifact_refs_json, receipt_refs_json, payload_hash, payload_json, created_by, created_at)
 VALUES ('verification-console', 'wf-console-agentic', '', 'verify', 'task-done', '', 'dispatch-sent', 'runtime-working', 'regression', 'pass', 'cat_claw', '', 'openclaw', 'cat_claw', 'high', 'low', 'Console verification passed', '[]', '[]', '[]', '["artifact://console-verification"]', '["flow-done"]', 'hash-verification-console', '{}', 'cat_claw', '2026-06-13T00:00:12.000Z');
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
@@ -6884,6 +6886,55 @@ VALUES ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-q
   const currentStateApi = await readModel.runtimeCurrentState({ workflowId, agentId: "cat_body" });
   assert.equal(currentStateApi.schemaVersion, "workflow_runtime_current_state.v1");
   assert.equal(currentStateApi.states[0].currentStage, "new_dispatch_working");
+  const dispatchSearch = await readModel.globalSearch({ q: "dispatch-failed", limit: 20 });
+  assert.equal(dispatchSearch.schemaVersion, "workflow_console_search.v1");
+  const dispatchSearchResult = dispatchSearch.results.find((item) => item.kind === "dispatch" && item.id === "dispatch-failed");
+  assert.equal(dispatchSearchResult?.workflowId, workflowId);
+  assert.equal(dispatchSearchResult?.target?.tab, "dispatches");
+  assert.equal(dispatchSearchResult?.sourceRefs.some((ref) => ref.field === "dispatch_id" && ref.id === "dispatch-failed"), true);
+  const agentSearch = await readModel.globalSearch({ q: "cat_body", limit: 20 });
+  assert.equal(agentSearch.results.some((item) => item.kind === "agent" && item.id === "cat_body" && item.target.consoleView === "agent-board"), true);
+  assert.equal(agentSearch.results.some((item) => item.kind === "runtime_state" && item.workflowId === workflowId), true);
+  const artifactSearch = await readModel.globalSearch({ q: "artifact://console-verification", limit: 20 });
+  const artifactSearchResult = artifactSearch.results.find((item) => item.kind === "artifact" && item.id === "artifact-console");
+  assert.equal(artifactSearchResult?.target?.tab, "evidence");
+  assert.equal(artifactSearchResult?.sourceRefs.some((ref) => ref.field === "path" && ref.id === "artifact://console-verification"), true);
+  const artifactRedactionSearch = await readModel.globalSearch({ q: "Sensitive redaction artifact", limit: 20 });
+  const artifactRedactionResult = artifactRedactionSearch.results.find((item) => item.kind === "artifact" && item.id === "artifact-redaction-console");
+  assert.equal(JSON.stringify(artifactRedactionResult).includes("secret-search-token"), false);
+  assert.equal(artifactRedactionResult?.sourceRefs.some((ref) => ref.field === "path" && ref.id.includes("tawhg:<redacted>")), true);
+  const humanGateSearch = await readModel.globalSearch({ q: "hgate-console", limit: 20 });
+  assert.equal(humanGateSearch.results.some((item) => item.kind === "human_gate" && item.id === "hgate-console" && item.target.tab === "human-gates"), true);
+  assert.equal(humanGateSearch.results.some((item) => item.kind === "human_gate_button" && item.id === "button-console-a" && item.sourceRefs.some((ref) => ref.field === "human_gate_id")), true);
+  const incidentSearch = await readModel.globalSearch({ q: "incident-console", limit: 20 });
+  assert.equal(incidentSearch.results.some((item) => item.kind === "incident" && item.id === "incident-console" && item.target.tab === "incident-closeout"), true);
+  const emptySearch = await readModel.globalSearch({ q: "" });
+  assert.equal(emptySearch.summary.status, "empty_query");
+  assert.equal(emptySearch.results.length, 0);
+  const callbackTokenSearch = await readModel.globalSearch({ q: "token-console-a", limit: 20 });
+  assert.equal(callbackTokenSearch.summary.status, "rejected_sensitive_query");
+  assert.equal(callbackTokenSearch.results.length, 0);
+  assert.equal(JSON.stringify(callbackTokenSearch).includes("token-console-a"), false);
+  const partialSearchRoot = await tempRoot("workflow-console-search-partial-schema");
+  const partialDbFile = path.join(partialSearchRoot, "tracking.db");
+  sqliteExec(partialDbFile, `
+CREATE TABLE runtime_agents (
+  agent_key TEXT PRIMARY KEY,
+  runtime TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  display_name TEXT,
+  role TEXT,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO runtime_agents(agent_key, runtime, agent_id, display_name, role, status, created_at, updated_at)
+VALUES ('legacy:cat_body', 'legacy', 'cat_body', 'Legacy Cat Body', 'developer', 'active', '2026-06-13T00:00:00.000Z', '2026-06-13T00:00:01.000Z');
+`);
+  const partialSearch = await new WorkflowReadModel({ dbFile: partialDbFile }).globalSearch({ q: "cat_body", limit: 20 });
+  assert.equal(partialSearch.schemaVersion, "workflow_console_search.v1");
+  assert.equal(partialSearch.summary.status, "ok");
+  assert.equal(partialSearch.summary.missingSources.includes("runtime_agents:query_error"), true);
   const command = await readModel.commandCenter();
   assert.equal(command.schemaVersion, "workflow_console_command_center.v1");
   assert.equal(command.workflowSummary.total >= 1, true);
@@ -6947,7 +6998,7 @@ VALUES ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-q
   assert.equal(evidenceDesk.schemaVersion, "workflow_console_evidence_desk.v1");
   assert.equal(evidenceDesk.workflowId, workflowId);
   assert.equal(["ready", "needs_attention"].includes(evidenceDesk.status), true);
-  assert.equal(evidenceDesk.summary.evidenceArtifacts, 1);
+  assert.equal(evidenceDesk.summary.evidenceArtifacts, 2);
   assert.equal(evidenceDesk.summary.checkpoints, 1);
   assert.equal(evidenceDesk.summary.messageFlows >= 3, true);
   assert.equal(evidenceDesk.summary.outbox, 3);

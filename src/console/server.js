@@ -189,6 +189,12 @@ export function createConsoleServer(options = {}) {
       if (req.method === "GET" && pathname === "/api/kanban") {
         return json(res, 200, await readModel.kanban(Object.fromEntries(url.searchParams)));
       }
+      if (req.method === "GET" && pathname === "/api/search") {
+        return json(res, 200, await readModel.globalSearch(Object.fromEntries(url.searchParams)));
+      }
+      if (req.method === "POST" && pathname === "/api/search") {
+        return json(res, 200, await readModel.globalSearch(await readBody(req)));
+      }
       if (req.method === "GET" && pathname === "/api/runtime-current-state") {
         return json(res, 200, await readModel.runtimeCurrentState(Object.fromEntries(url.searchParams)));
       }

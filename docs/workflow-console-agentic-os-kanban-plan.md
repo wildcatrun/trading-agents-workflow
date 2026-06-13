@@ -908,6 +908,40 @@ Acceptance:
 - mobile inspection does not require horizontal table reading for Agent Board;
 - filters are reflected in the URL query so links are shareable.
 
+Implemented Slice A: Global Search
+
+- Added read-only `/api/search` with schema `workflow_console_search.v1`;
+  the console UI uses `POST /api/search` so operator search terms are not
+  placed into browser URLs.
+- Search covers workflow ids, dispatch ids, agent ids, message-flow ids,
+  telegram outbox ids, artifact refs, Human Gate ids/buttons, runtime run/state
+  ids, task ids, and incident ids.
+- Search results return normalized `kind`, `id`, `workflowId`, `status`,
+  `severity`, `lastEventAt`, `target`, `sourceRefs`, and `matchFields` so the
+  UI can jump from a result to the relevant workflow detail tab.
+- Search uses redaction helpers across displayed text, ids, target refs, and
+  source refs; suspicious token/API-key/`tawhg:` search terms are rejected with
+  `rejected_sensitive_query` and are not executed or echoed verbatim.
+- The console topbar now has a global search form; results include Open, Copy
+  Id, and Copy Workflow controls.
+- Current result sorting prioritizes exact id/workflow matches, then id/ref
+  matches, then newest event time. Full saved-filter URL state and detail
+  drawers remain future v0.8 work.
+
+Validation recorded for this slice:
+
+- `npm run check`
+- `node scripts/workflow_regression_tests.mjs`
+- `git diff --check`
+- Local Playwright smoke against `http://127.0.0.1:18797` with temporary
+  workflow fixtures, covering search submission, dispatch/message-flow results,
+  Open navigation to Dispatches, desktop rendering, and mobile rendering at
+  `390x844`; mobile page-level `scrollWidth` matched viewport width, with only
+  expected table-local horizontal scrolling.
+- Independent reviewer `Hilbert` found required fixes for sensitive search-term
+  transport/echo, result-field redaction, and partial-schema query isolation;
+  fixes and regression coverage were applied before commit.
+
 ### v0.9: Evidence And Incident Workspace
 
 Goal: turn scattered governance facts into reviewable packages.
@@ -976,6 +1010,8 @@ Add regression tests for:
   evidence;
 - `/api/kanban` column mapping for queued, working, waiting receipt, waiting
   Human, blocked, done, and failed examples;
+- `/api/search` result coverage for dispatch, agent, artifact ref, Human Gate,
+  Human Gate button, incident, empty query, and callback-token non-discovery;
 - redaction in every new response;
 - no mutation from GET routes;
 - action-gateway audit when preview actions are later added.
@@ -986,6 +1022,8 @@ Frontend smoke:
 - open desktop and mobile viewports;
 - verify Command Center, Agent Board, Kanban, and Evidence Desk render without
   overlapping text;
+- verify global search renders result cards, copy controls, and workflow-detail
+  navigation on desktop and mobile;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1007,8 +1045,9 @@ unless plugin runtime loading changes require it separately.
 - v0.6 runtime bridge semantic event ingestion is implemented.
 - v0.7 is the next implementation target: governed preview actions surfaced in
   Kanban and Evidence Desk, still preview-first and audit-first.
-- v0.8 should focus on operator workflow speed: search, drawers, saved filters,
-  severity/age sorting, copy controls, and mobile Agent Board cards.
+- v0.8 Slice A implements global search and copy/open controls. Remaining v0.8
+  work should focus on detail drawers, saved filters, URL-reflected filter
+  state, expanded severity/age sorting controls, and mobile Agent Board cards.
 - v0.9 should package evidence and incidents for Cat Claw / Flashcat review.
 - v1.0 is the operator-grade baseline: integrated triage, registry-first agent
   workbench, derived Kanban, evidence packages, governed previews, redaction,

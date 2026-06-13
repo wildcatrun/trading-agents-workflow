@@ -12,6 +12,10 @@
         <h1>Workflow Console</h1>
         <p id="configLine">Loading...</p>
       </div>
+      <form id="globalSearchForm" class="global-search" role="search">
+        <input id="globalSearchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Search workflow, dispatch, agent, artifact..." />
+        <button type="submit">Search</button>
+      </form>
       <nav class="view-tabs" aria-label="Workflow views">
         <button data-console-view="command-center">Command</button>
         <button data-console-view="agent-board">Agents</button>

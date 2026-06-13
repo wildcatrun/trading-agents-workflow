@@ -68,6 +68,120 @@ function compactText(value, limit = 180) {
   return `${text.slice(0, limit - 1)}...`;
 }
 
+function normalizeSearchQuery(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function redactSearchText(value) {
+  return redactText(value)
+    .replace(/\btawhg:[A-Za-z0-9._=-]+/g, "tawhg:<redacted>")
+    .replace(/\btoken[-_:][A-Za-z0-9._=-]+/gi, "token-[redacted]")
+    .replace(/\b(callback[_-]?token|api[_-]?key|access[_-]?key|refresh[_-]?token|secret|password)([=:])([^\s,;]+)/gi, "$1$2[redacted]");
+}
+
+function sensitiveSearchQuery(value) {
+  const text = normalizeSearchQuery(value);
+  if (!text) return false;
+  if (redactSearchText(text) !== text) return true;
+  return /\btawhg:/i.test(text)
+    || /\b(callback[_-]?token|api[_-]?key|access[_-]?key|refresh[_-]?token|secret|password)\b/i.test(text)
+    || /\btoken[-_:][A-Za-z0-9._=-]+/i.test(text);
+}
+
+function searchWhereSql(columns = [], value = "") {
+  const q = normalizeSearchQuery(value).toLowerCase();
+  if (!q) return "0=1";
+  const needle = sqlValue(q);
+  return `(${columns.map((column) => `instr(lower(COALESCE(${column}, '')), ${needle}) > 0`).join(" OR ")})`;
+}
+
+function jsonExtractWorkflowSql(column = "payload_json") {
+  return `CASE WHEN json_valid(${column}) THEN COALESCE(
+    json_extract(${column}, '$.workflowId'),
+    json_extract(${column}, '$.workflow_id'),
+    json_extract(${column}, '$.workflow.workflowId'),
+    json_extract(${column}, '$.workflow.id'),
+    json_extract(${column}, '$.payload.workflowId'),
+    json_extract(${column}, '$.payload.workflow_id'),
+    json_extract(${column}, '$.payload.workflow.id'),
+    json_extract(${column}, '$.raw.workflowId'),
+    json_extract(${column}, '$.raw.workflow_id'),
+    json_extract(${column}, '$.deadLetter.workflowId'),
+    json_extract(${column}, '$.deadLetter.workflow_id'),
+    json_extract(${column}, '$.closeoutEvidence.workflowId'),
+    json_extract(${column}, '$.closeoutEvidence.workflow_id'),
+    ''
+  ) ELSE '' END`;
+}
+
+function searchMatchFields(fields = {}, query = "") {
+  const q = normalizeSearchQuery(query).toLowerCase();
+  if (!q) return [];
+  return Object.entries(fields)
+    .filter(([, value]) => String(value || "").toLowerCase().includes(q))
+    .map(([key]) => key);
+}
+
+function searchSeverity(status = "") {
+  const value = String(status || "").toLowerCase();
+  if (["failed", "blocked", "cancelled", "rejected", "expired", "uncertain", "runtime_failed", "telegram_failed", "dead_letter"].includes(value)) return "critical";
+  if (["pending", "queued", "waiting_human", "mitigating", "monitoring", "route_registered", "runtime_dispatched", "outbound_queued", "sent"].includes(value)) return "warning";
+  if (["done", "completed", "approved", "sent", "acked", "success", "resolved", "runtime_completed", "telegram_sent", "active"].includes(value)) return "ok";
+  return "neutral";
+}
+
+function searchResult(kind, id, row = {}, values = {}, query = "") {
+  const workflowId = redactSearchText(values.workflowId || row.workflow_id || "");
+  const status = values.status || row.status || "";
+  const title = redactSearchText(values.title || id);
+  const summary = redactSearchText(compactText(values.summary || "", 260));
+  const target = values.target || (workflowId ? {
+    consoleView: "workflows",
+    workflowId,
+    tab: values.tab || "overview"
+  } : {
+    consoleView: values.consoleView || "command-center"
+  });
+  const matchFields = searchMatchFields(values.matchFields || {}, query);
+  return {
+    kind,
+    id: redactSearchText(id || ""),
+    workflowId,
+    status: redactSearchText(status),
+    severity: values.severity || searchSeverity(status),
+    title,
+    summary,
+    runtime: redactSearchText(values.runtime || row.runtime || ""),
+    agentId: redactSearchText(values.agentId || row.agent_id || row.owner_agent || ""),
+    lastEventAt: redactSearchText(values.lastEventAt || row.updated_at || row.created_at || row.started_at || ""),
+    target: redactConsoleValue(target),
+    sourceRefs: (values.sourceRefs || [])
+      .filter((ref) => ref?.id)
+      .map((ref) => ({ ...ref, id: redactSearchText(ref.id) })),
+    matchFields
+  };
+}
+
+function searchSortRank(result = {}, query = "") {
+  const q = normalizeSearchQuery(query).toLowerCase();
+  const id = String(result.id || "").toLowerCase();
+  const workflowId = String(result.workflowId || "").toLowerCase();
+  if (id === q || workflowId === q) return 0;
+  if (id.includes(q) || workflowId.includes(q)) return 1;
+  if ((result.matchFields || []).some((field) => /id|ref/i.test(field))) return 2;
+  return 3;
+}
+
+function sortSearchResults(results = [], query = "") {
+  return results.sort((a, b) => {
+    const rank = searchSortRank(a, query) - searchSortRank(b, query);
+    if (rank) return rank;
+    const time = String(b.lastEventAt || "").localeCompare(String(a.lastEventAt || ""));
+    if (time) return time;
+    return String(a.kind || "").localeCompare(String(b.kind || "")) || String(a.id || "").localeCompare(String(b.id || ""));
+  });
+}
+
 function redactText(value) {
   return String(value || "")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
@@ -860,6 +974,516 @@ LIMIT ${limit};`);
     const list = await this.workflowList({ q: workflowId, limit: 50, view: "" });
     const enriched = list.workflows.find((item) => item.workflowId === workflowId);
     return enriched || parseWorkflowRow(rows[0]);
+  }
+
+  async globalSearch(query = {}) {
+    const generatedAt = new Date().toISOString();
+    const q = normalizeSearchQuery(query.q || query.query || "");
+    const displayQ = redactSearchText(q);
+    const limit = clampLimit(query.limit, 100, 500);
+    const perSourceLimit = clampLimit(query.perSourceLimit || query.per_source_limit || limit, 100, 200);
+    const missingSources = [];
+    const results = [];
+    if (!q) {
+      return {
+        schemaVersion: "workflow_console_search.v1",
+        generatedAt,
+        query: { q: "", limit, perSourceLimit, redacted: false },
+        summary: { total: 0, byKind: {}, missingSources, status: "empty_query" },
+        results: []
+      };
+    }
+    if (sensitiveSearchQuery(q)) {
+      return {
+        schemaVersion: "workflow_console_search.v1",
+        generatedAt,
+        query: { q: displayQ, limit, perSourceLimit, redacted: displayQ !== q },
+        summary: { total: 0, byKind: {}, missingSources, status: "rejected_sensitive_query" },
+        results: []
+      };
+    }
+
+    const addMissing = (name) => missingSources.push(name);
+    const searchRows = async (source, sql) => {
+      try {
+        return await sqlite(this.paths.dbFile, sql);
+      } catch (error) {
+        missingSources.push(`${source}:query_error`);
+        return [];
+      }
+    };
+
+    if (await tableExists(this.paths.dbFile, "workflow_runs")) {
+      const rows = await searchRows("workflow_runs", `
+SELECT workflow_id, workflow_type, status, owner_agent, summary, objective, current_phase, current_decision, payload_json, created_at, updated_at
+FROM workflow_runs wr
+WHERE ${searchWhereSql(["wr.workflow_id", "wr.workflow_type", "wr.status", "wr.owner_agent", "wr.summary", "wr.objective", "wr.current_phase", "wr.current_decision", "wr.payload_json"], q)}
+ORDER BY updated_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("workflow", row.workflow_id, row, {
+          workflowId: row.workflow_id,
+          title: row.workflow_id,
+          summary: row.summary || row.objective || row.workflow_type,
+          agentId: row.owner_agent,
+          tab: "overview",
+          sourceRefs: [{ source: "workflow_runs", field: "workflow_id", id: row.workflow_id }],
+          matchFields: {
+            workflowId: row.workflow_id,
+            workflowType: row.workflow_type,
+            status: row.status,
+            ownerAgent: row.owner_agent,
+            summary: row.summary,
+            objective: row.objective,
+            currentPhase: row.current_phase,
+            currentDecision: row.current_decision,
+            payload: row.payload_json
+          }
+        }, q));
+      }
+    } else addMissing("workflow_runs");
+
+    if (await tableExists(this.paths.dbFile, "runtime_agents")) {
+      const rows = await searchRows("runtime_agents", `
+SELECT agent_key, runtime, agent_id, display_name, role, status, platform, workflow_ingress_adapter, execution_identity, endpoint_ref, metadata_json, created_at, updated_at
+FROM runtime_agents ra
+WHERE ${searchWhereSql(["ra.agent_key", "ra.runtime", "ra.agent_id", "ra.display_name", "ra.role", "ra.status", "ra.platform", "ra.workflow_ingress_adapter", "ra.execution_identity", "ra.endpoint_ref", "ra.metadata_json"], q)}
+ORDER BY updated_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("agent", row.agent_id || row.agent_key, row, {
+          title: row.display_name || row.agent_id || row.agent_key,
+          summary: `${row.platform || row.runtime || "-"} / ${row.role || row.workflow_ingress_adapter || row.execution_identity || ""}`,
+          runtime: row.runtime,
+          agentId: row.agent_id,
+          consoleView: "agent-board",
+          target: { consoleView: "agent-board", agentId: row.agent_id, runtime: row.runtime },
+          sourceRefs: [{ source: "runtime_agents", field: "agent_key", id: row.agent_key }],
+          matchFields: {
+            agentKey: row.agent_key,
+            runtime: row.runtime,
+            agentId: row.agent_id,
+            displayName: row.display_name,
+            role: row.role,
+            status: row.status,
+            platform: row.platform,
+            endpointRef: row.endpoint_ref,
+            metadata: row.metadata_json
+          }
+        }, q));
+      }
+    } else addMissing("runtime_agents");
+
+    if (await tableExists(this.paths.dbFile, "workflow_tasks")) {
+      const rows = await searchRows("workflow_tasks", `
+SELECT task_id, workflow_id, phase, owner_agent, runtime, agent_id, task_type, status, expected_artifact, actual_artifact_ref, summary, prompt, blocked_reason, payload_json, created_at, updated_at
+FROM workflow_tasks wt
+WHERE ${searchWhereSql(["wt.task_id", "wt.workflow_id", "wt.phase", "wt.owner_agent", "wt.runtime", "wt.agent_id", "wt.task_type", "wt.status", "wt.expected_artifact", "wt.actual_artifact_ref", "wt.summary", "wt.prompt", "wt.blocked_reason", "wt.payload_json"], q)}
+ORDER BY updated_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("task", row.task_id, row, {
+          workflowId: row.workflow_id,
+          title: row.task_id,
+          summary: row.blocked_reason || row.summary || row.prompt || row.task_type,
+          runtime: row.runtime,
+          agentId: row.agent_id || row.owner_agent,
+          tab: "tasks",
+          sourceRefs: [
+            { source: "workflow_tasks", field: "task_id", id: row.task_id },
+            { source: "workflow_tasks", field: "workflow_id", id: row.workflow_id },
+            { source: "workflow_tasks", field: "actual_artifact_ref", id: row.actual_artifact_ref || row.expected_artifact }
+          ],
+          matchFields: {
+            taskId: row.task_id,
+            workflowId: row.workflow_id,
+            phase: row.phase,
+            ownerAgent: row.owner_agent,
+            runtime: row.runtime,
+            agentId: row.agent_id,
+            taskType: row.task_type,
+            status: row.status,
+            expectedArtifact: row.expected_artifact,
+            actualArtifactRef: row.actual_artifact_ref,
+            summary: row.summary,
+            prompt: row.prompt,
+            blockedReason: row.blocked_reason,
+            payload: row.payload_json
+          }
+        }, q));
+      }
+    } else addMissing("workflow_tasks");
+
+    if (await tableExists(this.paths.dbFile, "mixed_meeting_dispatches")) {
+      const rows = await searchRows("mixed_meeting_dispatches", `
+SELECT dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, failure_type, last_error, prompt, payload_json, created_at, updated_at
+FROM mixed_meeting_dispatches md
+WHERE ${searchWhereSql(["md.dispatch_id", "md.meeting_id", "md.workflow_id", "md.trace_id", "md.idempotency_key", "md.runtime", "md.agent_id", "md.agent_key", "md.dispatch_type", "md.status", "md.priority", "md.failure_type", "md.last_error", "md.prompt", "md.payload_json"], q)}
+ORDER BY updated_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("dispatch", row.dispatch_id, row, {
+          workflowId: row.workflow_id || row.meeting_id,
+          title: row.dispatch_id,
+          summary: row.last_error || row.failure_type || row.prompt || row.dispatch_type,
+          runtime: row.runtime,
+          agentId: row.agent_id,
+          tab: "dispatches",
+          sourceRefs: [
+            { source: "mixed_meeting_dispatches", field: "dispatch_id", id: row.dispatch_id },
+            { source: "mixed_meeting_dispatches", field: "trace_id", id: row.trace_id }
+          ],
+          matchFields: {
+            dispatchId: row.dispatch_id,
+            meetingId: row.meeting_id,
+            workflowId: row.workflow_id,
+            traceId: row.trace_id,
+            idempotencyKey: row.idempotency_key,
+            runtime: row.runtime,
+            agentId: row.agent_id,
+            agentKey: row.agent_key,
+            dispatchType: row.dispatch_type,
+            status: row.status,
+            priority: row.priority,
+            failureType: row.failure_type,
+            lastError: row.last_error,
+            prompt: row.prompt,
+            payload: row.payload_json
+          }
+        }, q));
+      }
+    } else addMissing("mixed_meeting_dispatches");
+
+    if (await tableExists(this.paths.dbFile, "runtime_runs")) {
+      const rows = await searchRows("runtime_runs", `
+SELECT runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, message_id, input_hash, output_hash, error, payload_json, started_at, completed_at
+FROM runtime_runs rr
+WHERE ${searchWhereSql(["rr.runtime_run_id", "rr.dispatch_id", "rr.meeting_id", "rr.workflow_id", "rr.trace_id", "rr.runtime", "rr.agent_id", "rr.adapter", "rr.backend", "rr.acp_agent", "rr.session_key", "rr.status", "rr.failure_type", "rr.message_id", "rr.input_hash", "rr.output_hash", "rr.error", "rr.payload_json"], q)}
+ORDER BY COALESCE(NULLIF(completed_at, ''), started_at) DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("runtime_run", row.runtime_run_id, row, {
+          workflowId: row.workflow_id || row.meeting_id,
+          title: row.runtime_run_id,
+          summary: row.error || row.failure_type || row.adapter || row.backend,
+          runtime: row.runtime,
+          agentId: row.agent_id,
+          lastEventAt: row.completed_at || row.started_at,
+          tab: "runtime-runs",
+          sourceRefs: [
+            { source: "runtime_runs", field: "runtime_run_id", id: row.runtime_run_id },
+            { source: "runtime_runs", field: "dispatch_id", id: row.dispatch_id }
+          ],
+          matchFields: {
+            runtimeRunId: row.runtime_run_id,
+            dispatchId: row.dispatch_id,
+            meetingId: row.meeting_id,
+            workflowId: row.workflow_id,
+            traceId: row.trace_id,
+            runtime: row.runtime,
+            agentId: row.agent_id,
+            adapter: row.adapter,
+            backend: row.backend,
+            acpAgent: row.acp_agent,
+            sessionKey: row.session_key,
+            status: row.status,
+            failureType: row.failure_type,
+            messageId: row.message_id,
+            inputHash: row.input_hash,
+            outputHash: row.output_hash,
+            error: row.error,
+            payload: row.payload_json
+          }
+        }, q));
+      }
+    } else addMissing("runtime_runs");
+
+    if (await tableExists(this.paths.dbFile, "runtime_current_state")) {
+      const rows = await searchRows("runtime_current_state", `
+SELECT state_key, runtime, agent_id, endpoint_ref, active_workflow_id AS workflow_id, task_id, active_dispatch_id, trace_id, runtime_session_id, runtime_run_id, acp_turn_id, prompt_id, current_stage, stage_status, latest_artifact_ref, latest_receipt_ref, blocked_reason, interruption_class, interrupted_dispatch_id, stale_kind, status, payload_json, created_at, updated_at, last_event_at
+FROM runtime_current_state rcs
+WHERE ${searchWhereSql(["rcs.state_key", "rcs.runtime", "rcs.agent_id", "rcs.endpoint_ref", "rcs.active_workflow_id", "rcs.task_id", "rcs.active_dispatch_id", "rcs.trace_id", "rcs.runtime_session_id", "rcs.runtime_run_id", "rcs.acp_turn_id", "rcs.prompt_id", "rcs.current_stage", "rcs.stage_status", "rcs.latest_artifact_ref", "rcs.latest_receipt_ref", "rcs.blocked_reason", "rcs.interruption_class", "rcs.interrupted_dispatch_id", "rcs.stale_kind", "rcs.status", "rcs.payload_json"], q)}
+ORDER BY updated_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("runtime_state", row.state_key, row, {
+          workflowId: row.workflow_id,
+          title: row.state_key,
+          summary: row.blocked_reason || row.stale_kind || row.current_stage || row.stage_status,
+          runtime: row.runtime,
+          agentId: row.agent_id,
+          lastEventAt: row.last_event_at || row.updated_at,
+          tab: "runtime-runs",
+          sourceRefs: [
+            { source: "runtime_current_state", field: "state_key", id: row.state_key },
+            { source: "runtime_current_state", field: "active_dispatch_id", id: row.active_dispatch_id },
+            { source: "runtime_current_state", field: "latest_artifact_ref", id: row.latest_artifact_ref },
+            { source: "runtime_current_state", field: "latest_receipt_ref", id: row.latest_receipt_ref }
+          ],
+          matchFields: {
+            stateKey: row.state_key,
+            runtime: row.runtime,
+            agentId: row.agent_id,
+            endpointRef: row.endpoint_ref,
+            workflowId: row.workflow_id,
+            taskId: row.task_id,
+            activeDispatchId: row.active_dispatch_id,
+            traceId: row.trace_id,
+            runtimeSessionId: row.runtime_session_id,
+            runtimeRunId: row.runtime_run_id,
+            acpTurnId: row.acp_turn_id,
+            promptId: row.prompt_id,
+            currentStage: row.current_stage,
+            stageStatus: row.stage_status,
+            latestArtifactRef: row.latest_artifact_ref,
+            latestReceiptRef: row.latest_receipt_ref,
+            blockedReason: row.blocked_reason,
+            interruptionClass: row.interruption_class,
+            interruptedDispatchId: row.interrupted_dispatch_id,
+            staleKind: row.stale_kind,
+            status: row.status,
+            payload: row.payload_json
+          }
+        }, q));
+      }
+    } else addMissing("runtime_current_state");
+
+    if (await tableExists(this.paths.dbFile, "message_flows")) {
+      const rows = await searchRows("message_flows", `
+SELECT flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, runtime_run_id, message_id, outbox_id, source_channel, source_system, source_runtime, sender_id, route_agent_id, route_runtime, target_runtime, target_agent_id, target_platform, return_policy, status, failure_type, last_error, payload_json, created_at, updated_at
+FROM message_flows mf
+WHERE ${searchWhereSql(["mf.flow_id", "mf.trace_id", "mf.idempotency_key", "mf.meeting_id", "mf.workflow_id", "mf.dispatch_id", "mf.runtime_run_id", "mf.message_id", "mf.outbox_id", "mf.source_channel", "mf.source_system", "mf.source_runtime", "mf.sender_id", "mf.route_agent_id", "mf.route_runtime", "mf.target_runtime", "mf.target_agent_id", "mf.target_platform", "mf.return_policy", "mf.status", "mf.failure_type", "mf.last_error", "mf.payload_json"], q)}
+ORDER BY updated_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("message_flow", row.flow_id, row, {
+          workflowId: row.workflow_id || row.meeting_id,
+          title: row.flow_id,
+          summary: row.last_error || row.failure_type || `${row.source_runtime || row.source_system || "-"} -> ${row.target_runtime || "-"}:${row.target_agent_id || "-"}`,
+          runtime: row.target_runtime || row.route_runtime,
+          agentId: row.target_agent_id || row.route_agent_id,
+          tab: "message-flows",
+          sourceRefs: [
+            { source: "message_flows", field: "flow_id", id: row.flow_id },
+            { source: "message_flows", field: "dispatch_id", id: row.dispatch_id },
+            { source: "message_flows", field: "outbox_id", id: row.outbox_id }
+          ],
+          matchFields: {
+            flowId: row.flow_id,
+            traceId: row.trace_id,
+            idempotencyKey: row.idempotency_key,
+            meetingId: row.meeting_id,
+            workflowId: row.workflow_id,
+            dispatchId: row.dispatch_id,
+            runtimeRunId: row.runtime_run_id,
+            messageId: row.message_id,
+            outboxId: row.outbox_id,
+            sourceChannel: row.source_channel,
+            sourceSystem: row.source_system,
+            sourceRuntime: row.source_runtime,
+            senderId: row.sender_id,
+            routeAgentId: row.route_agent_id,
+            routeRuntime: row.route_runtime,
+            targetRuntime: row.target_runtime,
+            targetAgentId: row.target_agent_id,
+            targetPlatform: row.target_platform,
+            returnPolicy: row.return_policy,
+            status: row.status,
+            failureType: row.failure_type,
+            lastError: row.last_error,
+            payload: row.payload_json
+          }
+        }, q));
+      }
+    } else addMissing("message_flows");
+
+    if (await tableExists(this.paths.dbFile, "telegram_outbox")) {
+      const rows = await searchRows("telegram_outbox", `
+SELECT outbox_id, meeting_id AS workflow_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at
+FROM telegram_outbox tg
+WHERE ${searchWhereSql(["tg.outbox_id", "tg.meeting_id", "tg.target_kind", "tg.target_ref", "tg.message_type", "tg.status", "tg.text", "tg.payload_json"], q)}
+ORDER BY updated_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("outbox", row.outbox_id, row, {
+          workflowId: row.workflow_id,
+          title: row.outbox_id,
+          summary: row.text || `${row.target_kind || ""}:${row.target_ref || ""} ${row.message_type || ""}`,
+          tab: "outbox",
+          sourceRefs: [
+            { source: "telegram_outbox", field: "outbox_id", id: row.outbox_id },
+            { source: "telegram_outbox", field: "target_ref", id: row.target_ref }
+          ],
+          matchFields: {
+            outboxId: row.outbox_id,
+            workflowId: row.workflow_id,
+            targetKind: row.target_kind,
+            targetRef: row.target_ref,
+            messageType: row.message_type,
+            status: row.status,
+            text: row.text,
+            payload: row.payload_json
+          }
+        }, q));
+      }
+    } else addMissing("telegram_outbox");
+
+    if (await tableExists(this.paths.dbFile, "protocol_objects")) {
+      const rows = await searchRows("protocol_objects", `
+SELECT object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, created_at, updated_at,
+  ${jsonExtractWorkflowSql("payload_json")} AS workflow_id
+FROM protocol_objects po
+WHERE ${searchWhereSql(["po.object_id", "po.object_type", "po.status", "po.source_system", "po.source_agent", "po.parent_object_id", "po.path", "po.payload_json"], q)}
+ORDER BY updated_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        const isHumanGate = String(row.object_type || "").toLowerCase().includes("human_gate");
+        results.push(searchResult(isHumanGate ? "human_gate" : "protocol_object", row.object_id, row, {
+          workflowId: row.workflow_id || (isHumanGate ? row.parent_object_id : ""),
+          title: row.object_id,
+          summary: row.path || `${row.object_type || ""} from ${row.source_agent || row.source_system || ""}`,
+          agentId: row.source_agent,
+          tab: isHumanGate ? "human-gates" : "evidence",
+          sourceRefs: [
+            { source: "protocol_objects", field: "object_id", id: row.object_id },
+            { source: "protocol_objects", field: "parent_object_id", id: row.parent_object_id },
+            { source: "protocol_objects", field: "path", id: row.path }
+          ],
+          matchFields: {
+            objectId: row.object_id,
+            objectType: row.object_type,
+            status: row.status,
+            sourceSystem: row.source_system,
+            sourceAgent: row.source_agent,
+            parentObjectId: row.parent_object_id,
+            path: row.path,
+            payload: row.payload_json
+          }
+        }, q));
+      }
+    } else addMissing("protocol_objects");
+
+    if (await tableExists(this.paths.dbFile, "human_gate_buttons")) {
+      const rows = await searchRows("human_gate_buttons", `
+SELECT button_id, human_gate_id, workflow_id, meeting_id, label, decision_status AS status, button_role, artifact_ref, summary, prompt, selected_by, feedback_status, feedback_text, payload_json, created_at, updated_at, selected_at, feedback_received_at
+FROM human_gate_buttons hgb
+WHERE ${searchWhereSql(["hgb.button_id", "hgb.human_gate_id", "hgb.workflow_id", "hgb.meeting_id", "hgb.label", "hgb.decision_status", "hgb.button_role", "hgb.artifact_ref", "hgb.summary", "hgb.prompt", "hgb.selected_by", "hgb.feedback_status", "hgb.feedback_text", "hgb.payload_json"], q)}
+ORDER BY updated_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("human_gate_button", row.button_id, row, {
+          workflowId: row.workflow_id || row.meeting_id,
+          title: row.label || row.button_id,
+          summary: row.feedback_text || row.summary || row.prompt || row.button_role,
+          tab: "human-gates",
+          lastEventAt: row.feedback_received_at || row.selected_at || row.updated_at,
+          sourceRefs: [
+            { source: "human_gate_buttons", field: "button_id", id: row.button_id },
+            { source: "human_gate_buttons", field: "human_gate_id", id: row.human_gate_id },
+            { source: "human_gate_buttons", field: "artifact_ref", id: row.artifact_ref }
+          ],
+          matchFields: {
+            buttonId: row.button_id,
+            humanGateId: row.human_gate_id,
+            workflowId: row.workflow_id,
+            meetingId: row.meeting_id,
+            label: row.label,
+            status: row.status,
+            buttonRole: row.button_role,
+            artifactRef: row.artifact_ref,
+            summary: row.summary,
+            prompt: row.prompt,
+            selectedBy: row.selected_by,
+            feedbackStatus: row.feedback_status,
+            feedbackText: row.feedback_text,
+            payload: row.payload_json
+          }
+        }, q));
+      }
+    } else addMissing("human_gate_buttons");
+
+    if (await tableExists(this.paths.dbFile, "incident_states")) {
+      const rows = await searchRows("incident_states", `
+SELECT incident_id, status, mode, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, payload_json, declared_at, next_update_at, resolved_at, updated_at,
+  ${jsonExtractWorkflowSql("payload_json")} AS workflow_id
+FROM incident_states inc
+WHERE ${searchWhereSql(["inc.incident_id", "inc.status", "inc.mode", "inc.summary", "inc.commander", "inc.impact", "inc.current_hypothesis", "inc.mitigation", "inc.rollback_options", "inc.exit_criteria", "inc.payload_json"], q)}
+ORDER BY updated_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("incident", row.incident_id, row, {
+          workflowId: row.workflow_id,
+          title: row.incident_id,
+          summary: row.summary || row.impact || row.current_hypothesis,
+          agentId: row.commander,
+          tab: "incident-closeout",
+          sourceRefs: [{ source: "incident_states", field: "incident_id", id: row.incident_id }],
+          matchFields: {
+            incidentId: row.incident_id,
+            status: row.status,
+            mode: row.mode,
+            summary: row.summary,
+            commander: row.commander,
+            impact: row.impact,
+            currentHypothesis: row.current_hypothesis,
+            mitigation: row.mitigation,
+            rollbackOptions: row.rollback_options,
+            exitCriteria: row.exit_criteria,
+            payload: row.payload_json
+          }
+        }, q));
+      }
+    } else addMissing("incident_states");
+
+    if (await tableExists(this.paths.dbFile, "artifact_index")) {
+      const rows = await searchRows("artifact_index", `
+SELECT artifact_id, workflow_id, kind, path, summary, created_by, created_at
+FROM artifact_index ai
+WHERE ${searchWhereSql(["ai.artifact_id", "ai.workflow_id", "ai.kind", "ai.path", "ai.summary", "ai.created_by"], q)}
+ORDER BY created_at DESC
+LIMIT ${perSourceLimit};`);
+      for (const row of rows) {
+        results.push(searchResult("artifact", row.artifact_id, row, {
+          workflowId: row.workflow_id,
+          title: row.artifact_id,
+          summary: row.summary || row.path || row.kind,
+          agentId: row.created_by,
+          lastEventAt: row.created_at,
+          tab: "evidence",
+          sourceRefs: [
+            { source: "artifact_index", field: "artifact_id", id: row.artifact_id },
+            { source: "artifact_index", field: "path", id: row.path }
+          ],
+          matchFields: {
+            artifactId: row.artifact_id,
+            workflowId: row.workflow_id,
+            kind: row.kind,
+            path: row.path,
+            summary: row.summary,
+            createdBy: row.created_by
+          }
+        }, q));
+      }
+    } else addMissing("artifact_index");
+
+    const sorted = sortSearchResults(results, q).slice(0, limit);
+    const byKind = sorted.reduce((acc, item) => {
+      acc[item.kind] = (acc[item.kind] || 0) + 1;
+      return acc;
+    }, {});
+    return {
+      schemaVersion: "workflow_console_search.v1",
+      generatedAt,
+      query: { q: displayQ, limit, perSourceLimit, redacted: displayQ !== q },
+      summary: {
+        total: sorted.length,
+        scanned: results.length,
+        byKind,
+        missingSources,
+        status: "ok"
+      },
+      results: sorted
+    };
   }
 
   async tasks(workflowId) {

@@ -9,6 +9,7 @@ const state = {
   detail: null,
   lastPayload: null,
   detailSeq: 0,
+  searchQuery: "",
   operationsFilters: {
     kind: "",
     severity: "",
@@ -121,6 +122,22 @@ function downloadJson(filename, value) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function copyText(value, label = "Value") {
+  const text = present(value, "");
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    setActionStatus(`${label} copied`, "ok");
+  } catch {
+    const textarea = h("textarea", { value: text, style: "position: fixed; left: -9999px; top: 0;" });
+    document.body.append(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+    setActionStatus(`${label} copied`, "ok");
+  }
 }
 
 function emptyState(text) {
@@ -317,12 +334,14 @@ async function loadGlobalView() {
   const titleByView = {
     "command-center": "Command Center",
     "agent-board": "Agent Board",
-    kanban: "Workflow Kanban"
+    kanban: "Workflow Kanban",
+    search: "Global Search"
   };
   const subtitleByView = {
     "command-center": "Global readiness, queue, runtime, communication and evidence summary.",
     "agent-board": "Registry-first agent runtime, dispatchability, current work and attention view.",
-    kanban: "Derived read-only board over workflow, dispatch, runtime, message_flow, outbox and Human Gate state."
+    kanban: "Derived read-only board over workflow, dispatch, runtime, message_flow, outbox and Human Gate state.",
+    search: "Search workflow, dispatch, agent, message_flow, artifact, Human Gate and incident anchors."
   };
   $("#detailTitle").textContent = titleByView[state.consoleView] || "Workflow Console";
   $("#detailSubtitle").textContent = subtitleByView[state.consoleView] || "";
@@ -335,10 +354,13 @@ async function loadGlobalView() {
       ? "/api/kanban"
       : "/api/command-center";
   try {
-    const data = await api(path);
+    const data = state.consoleView === "search"
+      ? await api("/api/search", { method: "POST", body: JSON.stringify({ q: state.searchQuery, limit: 100 }) })
+      : await api(path);
     state.lastPayload = data;
     if (state.consoleView === "agent-board") renderAgentBoard(data);
     else if (state.consoleView === "kanban") renderKanban(data);
+    else if (state.consoleView === "search") renderSearchResults(data);
     else renderCommandCenter(data);
     setActionStatus("Ready", "ok");
   } catch (error) {
@@ -580,6 +602,74 @@ function kanbanPreviewActionSpec(card = {}, action = "") {
   if (model.action === "telegram.outbox.delivery.preview") return { ...model, onClick: () => previewTelegramOutboxDelivery(model.outboxId) };
   if (model.action === "telegram.outbox.requeue.preview") return { ...model, onClick: () => previewTelegramOutboxRequeue(model.outboxId) };
   return model;
+}
+
+function renderSearchResults(data) {
+  const results = data.results || [];
+  const byKind = Object.entries(data.summary?.byKind || {}).map(([kind, count]) => ({ kind, count }));
+  setDetailBody(h("div", { className: "stack" }, [
+    section("Search Summary", h("div", { className: "quick-stats" }, [
+      statCard("Query", data.query?.q || "-", data.summary?.status || ""),
+      statCard("Results", data.summary?.total || 0, `${data.summary?.scanned || 0} scanned`),
+      statCard("Kinds", byKind.length || 0),
+      statCard("Generated", formatDate(data.generatedAt))
+    ])),
+    section("Result Types", renderTable([
+      { label: "Kind", render: (row) => chip(row.kind, "neutral") },
+      { label: "Count", key: "count" }
+    ], byKind, "No result types.")),
+    section("Results", results.length ? h("div", { className: "search-results" }, results.map(renderSearchResult)) : emptyState(data.query?.q ? "No matching workflow records." : "Enter a search query.")),
+    data.summary?.missingSources?.length ? section("Missing Sources", h("div", { className: "chip-list padded" }, data.summary.missingSources.map((source) => chip(source, "warning")))) : null,
+    section("Raw", h("details", {}, [
+      h("summary", {}, "JSON"),
+      jsonBlock(data)
+    ]))
+  ]));
+}
+
+function renderSearchResult(result) {
+  const refs = result.sourceRefs || [];
+  const matches = result.matchFields || [];
+  return h("article", { className: `search-result ${result.severity || toneFor(result.status)}` }, [
+    h("div", { className: "search-result-head" }, [
+      h("div", {}, [
+        h("div", { className: "workflow-title" }, [
+          h("strong", {}, short(result.title || result.id, 120)),
+          chip(result.kind, "neutral")
+        ]),
+        h("p", { className: "workflow-summary" }, short(result.summary || result.id, 240))
+      ]),
+      h("div", { className: "actions search-actions" }, [
+        h("button", { type: "button", onClick: () => openSearchResult(result) }, "Open"),
+        h("button", { type: "button", onClick: () => copyText(result.id, "Id") }, "Copy Id"),
+        result.workflowId ? h("button", { type: "button", onClick: () => copyText(result.workflowId, "Workflow") }, "Copy Workflow") : null
+      ])
+    ]),
+    h("div", { className: "workflow-meta" }, [
+      chip(result.status || "unknown", toneFor(result.status || result.severity)),
+      h("span", {}, result.workflowId ? `workflow ${result.workflowId}` : "no workflow"),
+      h("span", {}, result.runtime || "-"),
+      h("span", {}, result.agentId || "-"),
+      h("span", {}, formatDate(result.lastEventAt))
+    ]),
+    matches.length ? h("div", { className: "chip-list" }, matches.map((field) => chip(field, "neutral"))) : null,
+    refs.length ? h("div", { className: "mini-counts" }, refs.slice(0, 6).map((ref) => h("span", {}, `${ref.source}.${ref.field}=${short(ref.id, 80)}`))) : null
+  ]);
+}
+
+async function openSearchResult(result = {}) {
+  const target = result.target || {};
+  if (target.workflowId) {
+    state.tab = target.tab || "overview";
+    setTabButtons();
+    await selectWorkflow(target.workflowId);
+    return;
+  }
+  if (target.consoleView) {
+    state.consoleView = target.consoleView;
+    setViewButtons();
+    await loadGlobalView();
+  }
 }
 
 function renderOverview(data) {
@@ -2430,6 +2520,14 @@ document.querySelectorAll(".tabs button").forEach((button) => {
     setTabButtons();
     await loadDetail();
   });
+});
+
+$("#globalSearchForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  state.searchQuery = $("#globalSearchInput").value.trim();
+  state.consoleView = "search";
+  setViewButtons();
+  await loadGlobalView();
 });
 
 $("#refreshButton").addEventListener("click", async () => {
