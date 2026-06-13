@@ -644,6 +644,19 @@ function kanbanColumnForRuntimeRun(row = {}) {
   return "working";
 }
 
+function kanbanColumnForRuntimeCurrentState(row = {}) {
+  const status = String(row.status || row.stage_status || "").toLowerCase();
+  const staleKind = String(row.stale_kind || "").trim();
+  if (["completed", "done", "success"].includes(status)) return "done";
+  if (["failed", "cancelled"].includes(status)) return "failed";
+  if (["blocked", "interrupted"].includes(status)) return "blocked";
+  if (staleKind === "ack_only" || staleKind === "receipt_missing") return "waiting_receipt";
+  if (staleKind) return "blocked";
+  if (["queued"].includes(status)) return "queued";
+  if (["dispatched", "acked"].includes(status)) return "dispatched";
+  return "working";
+}
+
 function kanbanColumnForMessageFlow(row = {}) {
   const status = String(row.status || "").toLowerCase();
   const targetRuntime = String(row.target_runtime || "").toLowerCase();
@@ -696,6 +709,39 @@ function makeKanbanCard(column, source, id, values = {}) {
     artifactRef: redactText(values.artifactRef || ""),
     receiptRef: redactText(values.receiptRef || ""),
     previewActions: values.previewActions || []
+  };
+}
+
+function runtimeCurrentStateFromRow(row = {}) {
+  return {
+    stateKey: row.state_key || "",
+    runtime: row.runtime || "",
+    agentId: row.agent_id || "",
+    endpointRef: row.endpoint_ref || "",
+    activeWorkflowId: row.active_workflow_id || "",
+    taskId: row.task_id || "",
+    activeDispatchId: row.active_dispatch_id || "",
+    traceId: row.trace_id || "",
+    runtimeSessionId: row.runtime_session_id || "",
+    runtimeRunId: row.runtime_run_id || "",
+    acpTurnId: row.acp_turn_id || "",
+    promptId: row.prompt_id || "",
+    currentStage: row.current_stage || "",
+    stageStatus: row.stage_status || "",
+    semanticAckAt: row.semantic_ack_at || "",
+    lastEventId: row.last_event_id || "",
+    lastEventAt: row.last_event_at || "",
+    lastEventSequence: Number(row.last_event_sequence || 0),
+    latestArtifactRef: row.latest_artifact_ref || "",
+    latestReceiptRef: row.latest_receipt_ref || "",
+    blockedReason: redactText(row.blocked_reason || ""),
+    interruptionClass: row.interruption_class || "",
+    interruptedDispatchId: row.interrupted_dispatch_id || "",
+    staleKind: row.stale_kind || "",
+    status: row.status || "",
+    payload: redactConsoleValue(parseJson(row.payload_json, {})),
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
   };
 }
 
@@ -3000,6 +3046,47 @@ LIMIT 120;`) : Promise.resolve([])
     };
   }
 
+  async runtimeCurrentState(query = {}) {
+    const generatedAt = new Date().toISOString();
+    if (!(await tableExists(this.paths.dbFile, "runtime_current_state"))) {
+      return {
+        schemaVersion: "workflow_runtime_current_state.v1",
+        generatedAt,
+        source: "missing_runtime_current_state",
+        count: 0,
+        states: []
+      };
+    }
+    const filters = [];
+    const workflowId = String(query.workflowId || query.workflow_id || "");
+    const dispatchId = String(query.dispatchId || query.dispatch_id || "");
+    const runtime = String(query.runtime || "");
+    const agentId = String(query.agentId || query.agent_id || "");
+    const status = String(query.status || "");
+    if (workflowId) filters.push(`active_workflow_id=${sqlValue(workflowId)}`);
+    if (dispatchId) filters.push(`active_dispatch_id=${sqlValue(dispatchId)}`);
+    if (runtime) filters.push(`runtime=${sqlValue(runtime)}`);
+    if (agentId) filters.push(`agent_id=${sqlValue(agentId)}`);
+    if (status) filters.push(`status=${sqlValue(status)}`);
+    const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+    const limit = clampLimit(query.limit, 100, 1000);
+    const rows = await sqlite(this.paths.dbFile, `
+SELECT *
+FROM runtime_current_state
+${where}
+ORDER BY updated_at DESC, state_key
+LIMIT ${limit};`);
+    const states = rows.map(runtimeCurrentStateFromRow);
+    return {
+      schemaVersion: "workflow_runtime_current_state.v1",
+      generatedAt,
+      source: "runtime_current_state",
+      query: { workflowId, dispatchId, runtime, agentId, status, limit },
+      count: states.length,
+      states
+    };
+  }
+
   async agentBoard(query = {}) {
     const generatedAt = new Date().toISOString();
     if (!(await tableExists(this.paths.dbFile, "runtime_agents"))) {
@@ -3017,6 +3104,7 @@ LIMIT 120;`) : Promise.resolve([])
       readiness,
       hasDispatchTable,
       hasRuntimeRuns,
+      hasRuntimeCurrentState,
       hasMessageFlows,
       hasControlLoopJobs
     ] = await Promise.all([
@@ -3024,10 +3112,11 @@ LIMIT 120;`) : Promise.resolve([])
       this.readinessLatest(),
       tableExists(this.paths.dbFile, "mixed_meeting_dispatches"),
       tableExists(this.paths.dbFile, "runtime_runs"),
+      tableExists(this.paths.dbFile, "runtime_current_state"),
       tableExists(this.paths.dbFile, "message_flows"),
       tableExists(this.paths.dbFile, "control_loop_jobs")
     ]);
-    const [dispatchRows, runtimeRows, flowRows, jobRows] = await Promise.all([
+    const [dispatchRows, runtimeRows, currentStateRows, flowRows, jobRows] = await Promise.all([
       hasDispatchTable ? sqlite(this.paths.dbFile, `
 SELECT dispatch_id, workflow_id, runtime, agent_id, status, dispatch_type, attempt, max_attempts, updated_at, created_at, failure_type, last_error
 FROM mixed_meeting_dispatches
@@ -3037,6 +3126,11 @@ LIMIT ${limit};`) : Promise.resolve([]),
 SELECT runtime_run_id, dispatch_id, workflow_id, runtime, agent_id, status, adapter, backend, failure_type, started_at, completed_at, error
 FROM runtime_runs
 ORDER BY COALESCE(NULLIF(completed_at, ''), started_at) DESC
+LIMIT ${limit};`) : Promise.resolve([]),
+      hasRuntimeCurrentState ? sqlite(this.paths.dbFile, `
+SELECT *
+FROM runtime_current_state
+ORDER BY updated_at DESC
 LIMIT ${limit};`) : Promise.resolve([]),
       hasMessageFlows ? sqlite(this.paths.dbFile, `
 SELECT flow_id, workflow_id, meeting_id, target_runtime, target_agent_id, return_policy, status, final_output_present, delivery_receipt_present, dispatch_id, outbox_id, updated_at, last_error
@@ -3052,6 +3146,8 @@ LIMIT ${limit};`) : Promise.resolve([])
     ]);
     const dispatchCounts = new Map();
     const runtimeCounts = new Map();
+    const currentStateCounts = new Map();
+    const currentStateByAgent = new Map();
     const flowCounts = new Map();
     const jobCounts = new Map();
     const latestByAgent = new Map();
@@ -3085,6 +3181,20 @@ LIMIT ${limit};`) : Promise.resolve([])
         detail: redactText(row.error || row.failure_type || row.adapter || "")
       });
     }
+    for (const row of currentStateRows) {
+      const key = agentRuntimeKey(row.runtime, row.agent_id);
+      incMap(currentStateCounts, key, row.status || row.stage_status, 1);
+      if (!currentStateByAgent.has(key)) currentStateByAgent.set(key, runtimeCurrentStateFromRow(row));
+      setLatest(key, {
+        kind: "runtime_current_state",
+        status: row.status || row.stage_status,
+        workflowId: row.active_workflow_id || "",
+        dispatchId: row.active_dispatch_id || "",
+        runtimeRunId: row.runtime_run_id || "",
+        lastEventAt: row.last_event_at || row.updated_at || "",
+        detail: redactText(row.blocked_reason || row.stale_kind || row.current_stage || "")
+      });
+    }
     for (const row of flowRows) {
       const key = agentRuntimeKey(row.target_runtime, row.target_agent_id);
       incMap(flowCounts, key, row.status, 1);
@@ -3112,6 +3222,8 @@ LIMIT ${limit};`) : Promise.resolve([])
       const profileMode = profile ? profileModes[profile] || null : null;
       const dispatch = dispatchCounts.get(key) || {};
       const runtime = runtimeCounts.get(key) || {};
+      const current = currentStateCounts.get(key) || {};
+      const currentState = currentStateByAgent.get(key) || null;
       const flows = flowCounts.get(key) || {};
       const jobs = jobCounts.get(key) || {};
       const latest = latestByAgent.get(key) || {};
@@ -3121,8 +3233,14 @@ LIMIT ${limit};`) : Promise.resolve([])
       if (profileMode?.observedMode === "hibernate" || profileMode?.observedMode === "cold") flags.push({ key: "profile_not_warm", severity: "warning", detail: profileMode.observedMode });
       if (sumStatus(dispatch, ["failed", "dead_letter"]) > 0) flags.push({ key: "failed_dispatch", severity: "critical", detail: String(sumStatus(dispatch, ["failed", "dead_letter"])) });
       if (sumStatus(runtime, ["failed"]) > 0) flags.push({ key: "failed_runtime", severity: "critical", detail: String(sumStatus(runtime, ["failed"])) });
+      if (currentState?.status === "failed") flags.push({ key: "runtime_state_failed", severity: "critical", detail: currentState.currentStage || "failed" });
+      if (currentState?.status === "blocked") flags.push({ key: "runtime_state_blocked", severity: "critical", detail: currentState.blockedReason || currentState.currentStage || "blocked" });
+      if (currentState?.staleKind) flags.push({ key: "runtime_state_stale", severity: currentState.staleKind === "ack_only" ? "warning" : "critical", detail: currentState.staleKind });
       if (sumStatus(flows, ["runtime_failed", "telegram_failed", "failed"]) > 0) flags.push({ key: "message_flow_failed", severity: "critical", detail: String(sumStatus(flows, ["runtime_failed", "telegram_failed", "failed"])) });
-      const working = sumStatus(dispatch, ["sent", "acked"]) + sumStatus(runtime, ["running", "started"]) + sumStatus(flows, ["runtime_dispatched", "route_registered"]);
+      const working = sumStatus(dispatch, ["sent", "acked"])
+        + sumStatus(runtime, ["running", "started"])
+        + sumStatus(current, ["working", "running"])
+        + sumStatus(flows, ["runtime_dispatched", "route_registered"]);
       return {
         agentKey: agent.agent_key,
         agentId: agent.agent_id,
@@ -3139,11 +3257,13 @@ LIMIT ${limit};`) : Promise.resolve([])
         canReceiveDispatch: Boolean(Number(agent.can_receive_dispatch || 0)),
         canStartWorkflow: Boolean(Number(agent.can_start_workflow || 0)),
         profileMode: profileMode ? redactConsoleValue(profileMode) : null,
+        currentState,
         counts: {
           queued: sumStatus(dispatch, ["queued"]) + sumStatus(jobs, ["queued"]),
           dispatched: sumStatus(dispatch, ["sent", "acked"]) + sumStatus(flows, ["runtime_dispatched", "route_registered"]),
           working,
-          failed: sumStatus(dispatch, ["failed", "dead_letter"]) + sumStatus(runtime, ["failed"]) + sumStatus(flows, ["runtime_failed", "telegram_failed", "failed"]),
+          failed: sumStatus(dispatch, ["failed", "dead_letter"]) + sumStatus(runtime, ["failed"]) + sumStatus(current, ["failed"]) + sumStatus(flows, ["runtime_failed", "telegram_failed", "failed"]),
+          currentStates: Object.values(current).reduce((total, value) => total + Number(value || 0), 0),
           messageFlows: Object.values(flows).reduce((total, value) => total + Number(value || 0), 0),
           runtimeRuns: Object.values(runtime).reduce((total, value) => total + Number(value || 0), 0)
         },
@@ -3261,6 +3381,33 @@ LIMIT ${limit};`);
           summary: row.error || row.failure_type || row.adapter || row.backend,
           lastEventAt: row.completed_at || row.started_at,
           missingEvidence: ["completed", "acked"].includes(String(row.status || "")) ? ["artifact_or_receipt"] : []
+        }));
+      }
+    }
+    if (await tableExists(this.paths.dbFile, "runtime_current_state")) {
+      const filters = [`${workflowId ? `active_workflow_id=${sqlValue(workflowId)}` : "1=1"}`];
+      if (agentId) filters.push(`agent_id=${sqlValue(agentId)}`);
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT *
+FROM runtime_current_state
+WHERE ${filters.join(" AND ")}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+      for (const row of rows) {
+        const column = kanbanColumnForRuntimeCurrentState(row);
+        cards.push(makeKanbanCard(column, "runtime_current_state", row.state_key, {
+          workflowId: row.active_workflow_id,
+          taskId: row.task_id,
+          dispatchId: row.active_dispatch_id,
+          runtimeRunId: row.runtime_run_id,
+          agentId: row.agent_id,
+          runtime: row.runtime,
+          status: row.status || row.stage_status,
+          title: `${row.runtime || ""}:${row.agent_id || ""} ${row.current_stage || "current state"}`,
+          summary: row.blocked_reason || row.stale_kind || row.stage_status || row.last_event_id,
+          lastEventAt: row.last_event_at || row.updated_at,
+          artifactRef: row.latest_artifact_ref,
+          missingEvidence: row.stale_kind ? [row.stale_kind] : []
         }));
       }
     }

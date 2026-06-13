@@ -478,9 +478,14 @@ function renderAgentBoard(data) {
         chip(row.profileMode.observedMode || "observed"),
         h("p", { className: "muted" }, row.profileMode.reason || "")
       ]) : "-" },
+      { label: "Current", render: (row) => row.currentState ? h("div", {}, [
+        h("p", {}, `${present(row.currentState.currentStage || row.currentState.status)} ${present(row.currentState.stageStatus)}`),
+        h("p", { className: "muted" }, short(row.currentState.blockedReason || row.currentState.staleKind || row.currentState.activeDispatchId, 110)),
+        h("p", { className: "muted" }, formatDate(row.currentState.lastEventAt || row.currentState.updatedAt))
+      ]) : "-" },
       { label: "Work", render: (row) => h("div", {}, [
         h("p", {}, `queued ${row.counts?.queued || 0} / working ${row.counts?.working || 0}`),
-        h("p", { className: "muted" }, `failed ${row.counts?.failed || 0} / flows ${row.counts?.messageFlows || 0}`)
+        h("p", { className: "muted" }, `failed ${row.counts?.failed || 0} / current ${row.counts?.currentStates || 0} / flows ${row.counts?.messageFlows || 0}`)
       ]) },
       { label: "Latest", render: (row) => h("div", {}, [
         h("p", {}, `${present(row.latest?.kind)} ${present(row.latest?.status)}`),

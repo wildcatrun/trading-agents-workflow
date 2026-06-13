@@ -6641,7 +6641,173 @@ INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, wo
 VALUES ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-queued', 'normal', 'queued', 'wf-console-agentic', 'hermers', '{"agentId":"cat_body"}', '{}', 0, 20, '2026-06-13T00:01:00.000Z', '', '', '', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:01.000Z', '');
 `);
 
+  const semanticAck = await runAction(root, {
+    action: "workflow.runtime_event.record",
+    eventType: "semantic_ack",
+    eventTime: "2026-06-13T00:00:21.000Z",
+    workflowId,
+    taskId: "task-working",
+    dispatchId: "dispatch-sent",
+    traceId: "trace-runtime-current-state",
+    runtime: "hermers",
+    agentId: "cat_body",
+    runtimeRunId: "runtime-working",
+    stage: "implement_console_state_projection",
+    idempotencyKey: "runtime-current-state-semantic-ack",
+    payload: { note: "semantic ack visible to console", token: "must-redact" }
+  });
+  assert.equal(semanticAck.schemaVersion, "workflow_runtime_semantic_event.v1");
+  assert.equal(semanticAck.currentState.status, "working");
+  assert.equal(semanticAck.currentState.semanticAckAt, "2026-06-13T00:00:21.000Z");
+  const duplicateSemanticAck = await runAction(root, {
+    action: "workflow.runtime_event.record",
+    eventType: "semantic_ack",
+    eventTime: "2026-06-13T00:00:21.000Z",
+    workflowId,
+    taskId: "task-working",
+    dispatchId: "dispatch-sent",
+    traceId: "trace-runtime-current-state",
+    runtime: "hermers",
+    agentId: "cat_body",
+    runtimeRunId: "runtime-working",
+    stage: "implement_console_state_projection",
+    idempotencyKey: "runtime-current-state-semantic-ack",
+    payload: { note: "semantic ack visible to console", token: "must-redact" }
+  });
+  assert.equal(duplicateSemanticAck.event.deduped, true);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.runtime_event.record",
+      eventType: "semantic_ack",
+      eventTime: "2026-06-13T00:00:21.000Z",
+      workflowId,
+      taskId: "task-working",
+      dispatchId: "dispatch-sent",
+      traceId: "trace-runtime-current-state",
+      runtime: "hermers",
+      agentId: "cat_body",
+      runtimeRunId: "runtime-working",
+      stage: "implement_console_state_projection",
+      artifactUri: "artifact://conflicting-runtime-state",
+      latestReceiptRef: "receipt://conflicting-runtime-state",
+      staleKind: "ack_only",
+      idempotencyKey: "runtime-current-state-semantic-ack",
+      payload: { note: "semantic ack visible to console", token: "must-redact" }
+    }),
+    /runtime semantic event idempotency conflict/
+  );
+  await runAction(root, {
+    action: "workflow.runtime_event.record",
+    eventType: "artifact_created",
+    eventTime: "2026-06-13T00:00:22.000Z",
+    workflowId,
+    taskId: "task-working",
+    dispatchId: "dispatch-sent",
+    traceId: "trace-runtime-current-state",
+    runtime: "hermers",
+    agentId: "cat_body",
+    runtimeRunId: "runtime-working",
+    stage: "publish_console_artifact",
+    artifactUri: "artifact://console-runtime-state",
+    latestReceiptRef: "receipt://console-runtime-state",
+    idempotencyKey: "runtime-current-state-artifact"
+  });
+  const olderBackfill = await runAction(root, {
+    action: "workflow.runtime_event.record",
+    eventType: "blocked",
+    eventTime: "2026-06-13T00:00:20.000Z",
+    workflowId,
+    taskId: "task-working",
+    dispatchId: "dispatch-sent",
+    traceId: "trace-runtime-current-state",
+    runtime: "hermers",
+    agentId: "cat_body",
+    stage: "older_backfill_should_not_regress_current_state",
+    blockedReason: "older backfill",
+    idempotencyKey: "runtime-current-state-older-backfill"
+  });
+  assert.equal(olderBackfill.currentState.currentStage, "publish_console_artifact");
+  assert.equal(olderBackfill.currentState.status, "working");
+  const sameTimestampLowerSequence = await runAction(root, {
+    action: "workflow.runtime_event.record",
+    eventType: "blocked",
+    eventTime: "2026-06-13T00:00:22.000Z",
+    eventSequence: 1,
+    workflowId,
+    taskId: "task-working",
+    dispatchId: "dispatch-sent",
+    traceId: "trace-runtime-current-state",
+    runtime: "hermers",
+    agentId: "cat_body",
+    stage: "same_timestamp_lower_sequence_should_not_regress",
+    blockedReason: "same timestamp lower sequence",
+    idempotencyKey: "runtime-current-state-same-timestamp-lower-sequence"
+  });
+  assert.equal(sameTimestampLowerSequence.currentState.currentStage, "publish_console_artifact");
+  assert.equal(sameTimestampLowerSequence.currentState.status, "working");
+  const staleState = await runAction(root, {
+    action: "workflow.runtime_event.record",
+    eventType: "blocked",
+    eventTime: "2026-06-13T00:00:23.000Z",
+    workflowId,
+    taskId: "task-working",
+    dispatchId: "dispatch-sent",
+    traceId: "trace-runtime-current-state",
+    runtime: "hermers",
+    agentId: "cat_body",
+    stage: "waiting_for_receipt",
+    blockedReason: "receipt missing",
+    staleKind: "receipt_missing",
+    idempotencyKey: "runtime-current-state-stale"
+  });
+  assert.equal(staleState.currentState.status, "blocked");
+  assert.equal(staleState.currentState.latestArtifactRef, "artifact://console-runtime-state");
+  assert.equal(staleState.currentState.staleKind, "receipt_missing");
+  const newDispatchState = await runAction(root, {
+    action: "workflow.runtime_event.record",
+    eventType: "semantic_ack",
+    eventTime: "2026-06-13T00:00:24.000Z",
+    workflowId,
+    taskId: "task-new-dispatch",
+    dispatchId: "dispatch-new",
+    traceId: "trace-runtime-current-state-new",
+    runtime: "hermers",
+    agentId: "cat_body",
+    runtimeRunId: "runtime-new",
+    stage: "new_dispatch_working",
+    idempotencyKey: "runtime-current-state-new-dispatch"
+  });
+  assert.equal(newDispatchState.currentState.currentStage, "new_dispatch_working");
+  assert.equal(newDispatchState.currentState.activeDispatchId, "dispatch-new");
+  assert.equal(newDispatchState.currentState.semanticAckAt, "2026-06-13T00:00:24.000Z");
+  assert.equal(newDispatchState.currentState.latestArtifactRef, "");
+  assert.equal(newDispatchState.currentState.latestReceiptRef, "");
+  assert.equal(newDispatchState.currentState.staleKind, "");
+  assert.equal(newDispatchState.currentState.blockedReason, "");
+  const runtimeEvents = await runAction(root, {
+    action: "workflow.runtime_event.list",
+    workflowId,
+    runtime: "hermers",
+    agentId: "cat_body",
+    order: "asc"
+  });
+  assert.equal(runtimeEvents.count, 6);
+  assert.equal(JSON.stringify(runtimeEvents.events).includes("must-redact"), false);
+  const runtimeCurrentState = await runAction(root, {
+    action: "workflow.runtime_current_state",
+    workflowId,
+    runtime: "hermers",
+    agentId: "cat_body"
+  });
+  assert.equal(runtimeCurrentState.count, 1);
+  assert.equal(runtimeCurrentState.states[0].activeDispatchId, "dispatch-new");
+  assert.equal(runtimeCurrentState.states[0].latestArtifactRef, "");
+  assert.equal(runtimeCurrentState.states[0].semanticAckAt, "2026-06-13T00:00:24.000Z");
+
   const readModel = new WorkflowReadModel({ dbFile });
+  const currentStateApi = await readModel.runtimeCurrentState({ workflowId, agentId: "cat_body" });
+  assert.equal(currentStateApi.schemaVersion, "workflow_runtime_current_state.v1");
+  assert.equal(currentStateApi.states[0].currentStage, "new_dispatch_working");
   const command = await readModel.commandCenter();
   assert.equal(command.schemaVersion, "workflow_console_command_center.v1");
   assert.equal(command.workflowSummary.total >= 1, true);
@@ -6655,6 +6821,9 @@ VALUES ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-q
   const catBody = agentBoard.agents.find((agent) => agent.agentId === "cat_body");
   const catClaw = agentBoard.agents.find((agent) => agent.agentId === "cat_claw");
   assert.equal(catBody?.profileMode?.observedMode, "warm");
+  assert.equal(catBody?.currentState?.currentStage, "new_dispatch_working");
+  assert.equal(catBody?.currentState?.latestArtifactRef, "");
+  assert.equal(catBody?.counts.currentStates, 1);
   assert.equal(catClaw?.platform, "openclaw");
   assert.equal(catClaw?.runtime, "openclaw");
   assert.equal(catClaw?.endpointRef, "openclaw-agent:cat_claw");
@@ -6675,6 +6844,7 @@ VALUES ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-q
   assert.equal(kanban.summary.byColumn.done > 0, true);
   assert.equal(kanban.summary.byColumn.failed > 0, true);
   assert.equal(kanban.columns.find((column) => column.id === "waiting_receipt")?.cards.some((card) => card.source === "message_flows" && card.sourceId === "flow-waiting-receipt"), true);
+  assert.equal(kanban.columns.find((column) => column.id === "working")?.cards.some((card) => card.source === "runtime_current_state" && card.sourceId === "hermers:cat_body"), true);
   const globalKanban = await readModel.kanban({});
   const globalIncidentCard = globalKanban.columns.flatMap((column) => column.cards).find((card) => card.source === "incident_states" && card.sourceId === "incident-console");
   assert.equal(globalIncidentCard?.workflowId, workflowId);
