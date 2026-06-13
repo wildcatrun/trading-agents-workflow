@@ -137,6 +137,7 @@ code {
 }
 
 .filter-preset-group,
+.focus-strip,
 .filter-selects {
   display: flex;
   flex-wrap: wrap;
@@ -146,10 +147,24 @@ code {
 }
 
 .filter-preset-group button,
+.focus-chip,
 .filter-selects button,
 .filter-selects select {
   min-height: 32px;
   font-size: 12px;
+}
+
+.focus-strip {
+  grid-column: 1 / -1;
+}
+
+.focus-chip {
+  max-width: 100%;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  overflow-wrap: anywhere;
 }
 
 .filter-selects select {

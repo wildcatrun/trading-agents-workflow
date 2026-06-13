@@ -13,6 +13,8 @@ const state = {
   workbenchFilter: "all",
   severityFilter: "all",
   sortMode: "age_desc",
+  focusAgentId: "",
+  focusCardId: "",
   config: null,
   operationsFilters: {
     kind: "",
@@ -268,6 +270,8 @@ function readUrlState() {
   state.workbenchFilter = normalizeChoice(params.get("filter"), WORKBENCH_FILTERS.map((item) => item.id), "all");
   state.severityFilter = normalizeChoice(params.get("severity"), SEVERITY_FILTERS.map((item) => item.value), "all");
   state.sortMode = normalizeChoice(params.get("sort"), SORT_MODES.map((item) => item.value), "age_desc");
+  state.focusAgentId = params.get("agent") || "";
+  state.focusCardId = params.get("card") || "";
   state.operationsFilters.kind = params.get("opKind") || "";
   state.operationsFilters.severity = params.get("opSeverity") || "";
   state.operationsFilters.status = params.get("opStatus") || "";
@@ -279,12 +283,14 @@ function writeUrlState({ replace = false } = {}) {
   const params = new URLSearchParams();
   if (state.consoleView !== "command-center") params.set("console", state.consoleView);
   if (state.view !== "active") params.set("wfView", state.view);
-  if (["workflows", "evidence-workspace", "operations"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
+  if (["workflows", "evidence-workspace", "operations", "kanban"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
   if (state.consoleView === "workflows" && state.tab !== "overview") params.set("tab", state.tab);
   if (state.consoleView === "search" && state.searchQuery) params.set("q", state.searchQuery);
   if (isWorkbenchView() && state.workbenchFilter !== "all") params.set("filter", state.workbenchFilter);
   if (isWorkbenchView() && state.severityFilter !== "all") params.set("severity", state.severityFilter);
   if (isWorkbenchView() && state.sortMode !== "age_desc") params.set("sort", state.sortMode);
+  if (["agent-board", "kanban"].includes(state.consoleView) && state.focusAgentId) params.set("agent", state.focusAgentId);
+  if (state.consoleView === "kanban" && state.focusCardId) params.set("card", state.focusCardId);
   const operationsFilterUrl = state.consoleView === "operations" || (state.consoleView === "workflows" && state.tab === "operations");
   if (operationsFilterUrl && state.operationsFilters.kind) params.set("opKind", state.operationsFilters.kind);
   if (operationsFilterUrl && state.operationsFilters.severity) params.set("opSeverity", state.operationsFilters.severity);
@@ -299,6 +305,11 @@ function writeUrlState({ replace = false } = {}) {
 
 function isWorkbenchView() {
   return ["agent-board", "kanban", "search"].includes(state.consoleView);
+}
+
+function clearFocusState() {
+  state.focusAgentId = "";
+  state.focusCardId = "";
 }
 
 function recordText(record = {}) {
@@ -390,6 +401,17 @@ function matchesSeverityFilter(record = {}) {
   return state.severityFilter === "all" || recordSeverity(record) === state.severityFilter;
 }
 
+function matchesFocusFilter(record = {}) {
+  if (state.consoleView === "agent-board" && state.focusAgentId) {
+    return [record.agentId, record.agentKey, record.runtime && record.agentId ? `${record.runtime}:${record.agentId}` : ""]
+      .some((value) => String(value || "") === state.focusAgentId);
+  }
+  if (state.consoleView === "kanban") {
+    if (state.focusCardId && ![record.sourceId, record.id, record.dispatchId, record.flowId, record.outboxId, record.humanGateId, record.taskId, record.runtimeRunId].some((value) => String(value || "") === state.focusCardId)) return false;
+  }
+  return true;
+}
+
 function sortWorkbenchRecords(records = []) {
   const copy = [...records];
   return copy.sort((a, b) => {
@@ -403,12 +425,25 @@ function sortWorkbenchRecords(records = []) {
 }
 
 function applyWorkbench(records = []) {
-  return sortWorkbenchRecords(records.filter((record) => matchesWorkbenchFilter(record) && matchesSeverityFilter(record)));
+  return sortWorkbenchRecords(records.filter((record) => matchesFocusFilter(record) && matchesWorkbenchFilter(record) && matchesSeverityFilter(record)));
 }
 
 function renderWorkbenchControls({ total = 0, shown = 0 } = {}) {
   if (!isWorkbenchView()) return null;
+  const focusChips = [
+    state.focusAgentId ? h("button", { type: "button", className: "focus-chip", onClick: () => {
+      state.focusAgentId = "";
+      writeUrlState();
+      loadGlobalView();
+    } }, `Agent ${state.focusAgentId} x`) : null,
+    state.focusCardId ? h("button", { type: "button", className: "focus-chip", onClick: () => {
+      state.focusCardId = "";
+      writeUrlState();
+      loadGlobalView();
+    } }, `Card ${state.focusCardId} x`) : null
+  ].filter(Boolean);
   return h("div", { className: "workbench-controls" }, [
+    focusChips.length ? h("div", { className: "focus-strip", "aria-label": "Active focus" }, focusChips) : null,
     h("div", { className: "filter-preset-group", role: "group", "aria-label": "Saved filters" }, WORKBENCH_FILTERS.map((filter) => h("button", {
       type: "button",
       className: filter.id === state.workbenchFilter ? "active" : "",
@@ -433,8 +468,10 @@ function renderWorkbenchControls({ total = 0, shown = 0 } = {}) {
         state.workbenchFilter = "all";
         state.severityFilter = "all";
         state.sortMode = "age_desc";
+        state.focusAgentId = "";
+        state.focusCardId = "";
         writeUrlState();
-        renderGlobalPayload(state.lastPayload);
+        loadGlobalView();
       } }, "Reset")
     ]),
     h("div", { className: "filter-count" }, `${shown}/${total}`)
@@ -801,6 +838,7 @@ async function selectWorkflow(workflowId) {
     return;
   }
   state.consoleView = "workflows";
+  clearFocusState();
   if (state.selectedWorkflowId === workflowId && !wasGlobal) return;
   state.selectedWorkflowId = workflowId;
   state.detail = null;
@@ -848,7 +886,7 @@ async function loadGlobalView() {
   const path = state.consoleView === "agent-board"
     ? "/api/agent-board"
     : state.consoleView === "kanban"
-      ? "/api/kanban"
+      ? `/api/kanban?${kanbanQueryParams().toString()}`
       : "/api/command-center";
   try {
     const data = state.consoleView === "evidence-workspace"
@@ -909,6 +947,13 @@ function operationsQueryParams(workflowId = "") {
   if (state.operationsFilters.kind) params.set("deadLetterKind", state.operationsFilters.kind);
   if (state.operationsFilters.severity) params.set("deadLetterSeverity", state.operationsFilters.severity);
   if (state.operationsFilters.status) params.set("deadLetterStatus", state.operationsFilters.status);
+  return params;
+}
+
+function kanbanQueryParams() {
+  const params = new URLSearchParams();
+  if (state.selectedWorkflowId) params.set("workflowId", state.selectedWorkflowId);
+  if (state.focusAgentId) params.set("agentId", state.focusAgentId);
   return params;
 }
 
@@ -1005,6 +1050,7 @@ async function loadDetail() {
 async function openWorkflowTab(workflowId, tab = "overview") {
   if (!workflowId) return;
   state.consoleView = "workflows";
+  clearFocusState();
   state.selectedWorkflowId = workflowId;
   state.tab = tab;
   state.detail = null;
@@ -1338,17 +1384,8 @@ function renderSearchResult(result) {
 
 async function openSearchResult(result = {}) {
   const target = result.target || {};
-  if (target.workflowId) {
-    state.tab = target.tab || "overview";
-    setTabButtons();
-    await selectWorkflow(target.workflowId);
-    return;
-  }
-  if (target.consoleView) {
-    state.consoleView = target.consoleView;
-    setViewButtons();
-    await loadGlobalView();
-  }
+  if (target.consoleView) return openCommandTarget(target);
+  if (target.workflowId) return openWorkflowTab(target.workflowId, target.tab || "overview");
 }
 
 async function openCommandTarget(target = {}) {
@@ -1356,10 +1393,49 @@ async function openCommandTarget(target = {}) {
     await openWorkflowTab(target.workflowId, target.tab || "overview");
     return;
   }
+  if (target.consoleView === "agent-board") {
+    state.consoleView = "agent-board";
+    state.selectedWorkflowId = "";
+    state.detail = null;
+    state.focusAgentId = target.agentId || "";
+    state.focusCardId = "";
+    setViewButtons();
+    writeUrlState();
+    renderWorkflowList();
+    renderDetailHeader();
+    await loadGlobalView();
+    return;
+  }
+  if (target.consoleView === "kanban") {
+    state.consoleView = "kanban";
+    state.selectedWorkflowId = target.workflowId || "";
+    state.detail = null;
+    state.focusAgentId = target.agentId || "";
+    state.focusCardId = target.cardId || "";
+    setViewButtons();
+    writeUrlState();
+    renderWorkflowList();
+    renderDetailHeader();
+    await loadGlobalView();
+    return;
+  }
+  if (target.consoleView === "evidence-workspace") {
+    state.consoleView = "evidence-workspace";
+    state.selectedWorkflowId = target.workflowId || "";
+    state.detail = null;
+    clearFocusState();
+    setViewButtons();
+    writeUrlState();
+    renderWorkflowList();
+    renderDetailHeader();
+    await loadGlobalView();
+    return;
+  }
   if (target.consoleView === "operations") {
     state.consoleView = "operations";
     state.selectedWorkflowId = target.workflowId || "";
     state.detail = null;
+    clearFocusState();
     state.operationsFilters = {
       kind: target.operationsFilters?.kind || "",
       severity: target.operationsFilters?.severity || "",
@@ -1376,6 +1452,7 @@ async function openCommandTarget(target = {}) {
     state.consoleView = target.consoleView;
     state.selectedWorkflowId = "";
     state.detail = null;
+    if (!["agent-board", "kanban"].includes(state.consoleView)) clearFocusState();
     setViewButtons();
     writeUrlState();
     renderWorkflowList();
@@ -1386,6 +1463,14 @@ async function openCommandTarget(target = {}) {
 
 function renderTriageBlocker(blocker = {}) {
   const refs = blocker.sourceRefs || [];
+  const relatedTargets = blocker.relatedTargets || [];
+  const relatedButton = (target = {}) => {
+    const label = target.label || (target.consoleView === "agent-board" ? "Agent"
+      : target.consoleView === "kanban" ? "Board"
+        : target.consoleView === "evidence-workspace" ? "Evidence"
+          : "Open");
+    return h("button", { type: "button", onClick: () => openCommandTarget(target) }, label);
+  };
   return h("article", { className: `search-result ${blocker.severity || "warning"}` }, [
     h("div", { className: "search-result-head" }, [
       h("div", {}, [
@@ -1398,6 +1483,7 @@ function renderTriageBlocker(blocker = {}) {
       ]),
       h("div", { className: "actions search-actions" }, [
         h("button", { type: "button", onClick: () => openCommandTarget(blocker.target || {}) }, "Open"),
+        ...relatedTargets.slice(0, 3).map(relatedButton),
         blocker.workflowId ? h("button", { type: "button", onClick: () => copyText(blocker.workflowId, "Workflow") }, "Copy Workflow") : null,
         blocker.id ? h("button", { type: "button", onClick: () => copyText(blocker.id, "Blocker") }, "Copy Id") : null
       ])
@@ -3404,6 +3490,7 @@ async function executeCloseoutHumanGateRequest(preview, fields) {
 document.querySelectorAll(".view-tabs button[data-console-view]").forEach((button) => {
   button.addEventListener("click", async () => {
     state.consoleView = button.dataset.consoleView;
+    if (!["agent-board", "kanban"].includes(state.consoleView)) clearFocusState();
     if (state.consoleView === "operations") {
       state.selectedWorkflowId = "";
       state.detail = null;
@@ -3422,6 +3509,7 @@ document.querySelectorAll(".view-tabs button[data-console-view]").forEach((butto
 document.querySelectorAll(".view-tabs button[data-view]").forEach((button) => {
   button.addEventListener("click", async () => {
     state.consoleView = "workflows";
+    clearFocusState();
     state.view = button.dataset.view;
     state.selectedWorkflowId = "";
     state.detail = null;
@@ -3443,6 +3531,7 @@ $("#globalSearchForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   state.searchQuery = $("#globalSearchInput").value.trim();
   state.consoleView = "search";
+  clearFocusState();
   setViewButtons();
   writeUrlState();
   await loadGlobalView();

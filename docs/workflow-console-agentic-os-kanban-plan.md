@@ -1136,6 +1136,20 @@ Validated for this slice on 2026-06-13:
   errors stayed redacted, and a 390px mobile viewport had no horizontal
   overflow or clipped buttons.
 
+Implemented Slice C: Cross-Surface Focus Routing
+
+- Added URL-backed operator focus state for `agent=<agent_id>` and
+  `card=<source_id>`. Agent Board and Kanban can now open as scoped inspection
+  surfaces instead of generic dashboards when a blocker or search result names
+  a specific agent or work item.
+- Command Center blocker cards now expose related Agent, Board, and Evidence
+  drilldowns where source facts provide enough context. The primary `Open`
+  action still goes to the most direct evidence surface, while related targets
+  support the v1.0 path from global health to agent/work item to evidence.
+- Global search result opening now reuses the same governed target router as
+  Command Center blockers, so agent results enter a focused Agent Board and
+  future console targets share one navigation path.
+
 ## Test Plan
 
 Required checks:

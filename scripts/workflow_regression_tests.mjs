@@ -6700,7 +6700,8 @@ INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, mess
 VALUES
   ('outbox-queued', 'wf-console-agentic', 'private_chat', 'flashcat', 'human_gate', 'queued', 'pending human gate', '{}', '2026-06-13T00:00:06.000Z', '2026-06-13T00:00:06.000Z'),
   ('outbox-sent', 'wf-console-agentic', 'private_chat', 'flashcat', 'status', 'sent', 'delivered status', '{}', '2026-06-13T00:00:07.000Z', '2026-06-13T00:00:07.000Z'),
-  ('outbox-failed', 'wf-console-agentic', 'private_chat', 'flashcat', 'human_gate', 'failed', 'failed human gate', '{}', '2026-06-13T00:00:08.000Z', '2026-06-13T00:00:08.000Z');
+  ('outbox-failed', 'wf-console-agentic', 'private_chat', 'flashcat', 'human_gate', 'failed', 'failed human gate', '{}', '2026-06-13T00:00:08.000Z', '2026-06-13T00:00:08.000Z'),
+  ('outbox-agent-payload', 'wf-console-agentic', 'private_chat', 'flashcat', 'status', 'queued', 'agent payload delivery', '{"agentId":"cat_body"}', '2026-06-13T00:00:08.500Z', '2026-06-13T00:00:08.500Z');
 INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
 VALUES ('hgate-console', 'human_gate_record', 'pending', NULL, 'regression', 'cat_claw', '', 'artifact://hgate-console', '{"workflowId":"wf-console-agentic","summary":"Fixture Human Gate"}', 'hash-hgate-console', '2026-06-13T00:00:09.000Z', '2026-06-13T00:00:09.000Z');
 INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
@@ -6720,7 +6721,9 @@ VALUES ('incident-console', 'investigating', 'workflow', '["workflow"]', 'Consol
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
 VALUES ('incident-other-agent', 'investigating', 'workflow', '["workflow"]', 'Other agent fixture incident', 'cat_ears', 'low', 'fixture', 'observe', 'rollback fixture', 'close fixture', '[]', '{"workflowId":"wf-console-agentic","agentId":"cat_ears"}', '2026-06-13T00:00:14.000Z', '2026-06-13T00:30:14.000Z', '', '2026-06-13T00:00:14.000Z');
 INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at)
-VALUES ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-queued', 'normal', 'queued', 'wf-console-agentic', 'hermers', '{"agentId":"cat_body"}', '{}', 0, 20, '2026-06-13T00:01:00.000Z', '', '', '', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:01.000Z', '');
+VALUES
+  ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-queued', 'normal', 'queued', 'wf-console-agentic', 'hermers', '{"agentId":"cat_body"}', '{}', 0, 20, '2026-06-13T00:01:00.000Z', '', '', '', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:01.000Z', ''),
+  ('job-console-failed', 'runtime_drain', 'runtime_drain:hermers:dispatch-failed', 'high', 'failed', 'wf-console-agentic', 'hermers', '{"agentId":"cat_body"}', '{}', 3, 3, '', '', '', 'failed control loop job', '2026-06-13T00:00:02.000Z', '2026-06-13T00:00:17.000Z', '');
 `);
 
   const semanticAck = await runAction(root, {
@@ -6897,7 +6900,7 @@ VALUES ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-q
   assert.equal(dispatchSearchResult?.target?.tab, "dispatches");
   assert.equal(dispatchSearchResult?.sourceRefs.some((ref) => ref.field === "dispatch_id" && ref.id === "dispatch-failed"), true);
   const agentSearch = await readModel.globalSearch({ q: "cat_body", limit: 20 });
-  assert.equal(agentSearch.results.some((item) => item.kind === "agent" && item.id === "cat_body" && item.target.consoleView === "agent-board"), true);
+  assert.equal(agentSearch.results.some((item) => item.kind === "agent" && item.id === "cat_body" && item.target.consoleView === "agent-board" && item.target.agentId === "cat_body"), true);
   assert.equal(agentSearch.results.some((item) => item.kind === "runtime_state" && item.workflowId === workflowId), true);
   const artifactSearch = await readModel.globalSearch({ q: "artifact://console-verification", limit: 20 });
   const artifactSearchResult = artifactSearch.results.find((item) => item.kind === "artifact" && item.id === "artifact-console");
@@ -6965,7 +6968,15 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   assert.equal(Boolean(command.triage.topBlockers.some((blocker) => blocker.target?.consoleView === "operations" && blocker.sourceRefs?.length > 0)), true);
   assert.equal(Boolean(command.triage.blockers.some((blocker) => blocker.target?.consoleView === "workflows" && blocker.workflowId === workflowId)), true);
   assert.equal(Boolean(command.triage.blockers.some((blocker) => blocker.id === "max_attempt_dispatch:dispatch-triage-late-critical" && blocker.severity === "critical")), true);
-  assert.equal(Boolean(command.triage.blockers.some((blocker) => blocker.id === "pending_human_gate:wf-console-agentic" && blocker.target?.tab === "human-gate-readiness")), true);
+  const triageDispatchBlocker = command.triage.blockers.find((blocker) => blocker.id === "max_attempt_dispatch:dispatch-triage-late-critical");
+  assert.equal(triageDispatchBlocker?.relatedTargets.some((target) => target.consoleView === "agent-board" && target.agentId === "cat_body"), true);
+  assert.equal(triageDispatchBlocker?.relatedTargets.some((target) => target.consoleView === "kanban" && target.workflowId === workflowId && target.agentId === "cat_body" && target.cardId === "dispatch-triage-late-critical"), true);
+  assert.equal(triageDispatchBlocker?.relatedTargets.some((target) => target.consoleView === "evidence-workspace" && target.workflowId === workflowId), true);
+  const controlLoopBlocker = command.triage.blockers.find((blocker) => blocker.id === "control_loop_job:job-console-failed");
+  assert.equal(controlLoopBlocker?.relatedTargets.some((target) => target.consoleView === "kanban" && !target.cardId), true);
+  const pendingHumanGateBlocker = command.triage.blockers.find((blocker) => blocker.id === "pending_human_gate:wf-console-agentic");
+  assert.equal(pendingHumanGateBlocker?.target?.tab, "human-gate-readiness");
+  assert.equal(pendingHumanGateBlocker?.relatedTargets.some((target) => target.consoleView === "kanban" && !target.cardId), true);
   assert.equal(JSON.stringify(command.triage).includes("triage-critical-secret"), false);
   assert.equal(JSON.stringify(command.triage).includes("leakabc"), false);
   assert.equal(Boolean(command.triage.blockers.some((blocker) => blocker.id === "max_attempt_dispatch:dispatch-token-[redacted]" && blocker.target?.workflowId === `${workflowId}-api-key-[redacted]`)), true);
@@ -7019,6 +7030,7 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   const agentKanban = await readModel.kanban({ agentId: "cat_body" });
   const agentScopedCards = agentKanban.columns.flatMap((column) => column.cards);
   assert.equal(agentScopedCards.length > 0, true);
+  assert.equal(agentScopedCards.some((card) => card.source === "telegram_outbox" && card.sourceId === "outbox-agent-payload"), true);
   assert.equal(agentScopedCards.some((card) => ["cat_claw", "cat_ears", "main"].includes(card.agentId)), false);
 
   const evidenceDesk = await readModel.evidenceDesk(workflowId);
@@ -7028,7 +7040,7 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   assert.equal(evidenceDesk.summary.evidenceArtifacts, 2);
   assert.equal(evidenceDesk.summary.checkpoints, 1);
   assert.equal(evidenceDesk.summary.messageFlows >= 3, true);
-  assert.equal(evidenceDesk.summary.outbox, 3);
+  assert.equal(evidenceDesk.summary.outbox, 4);
   assert.equal(evidenceDesk.summary.missingEvidence.includes("message_flow_closure"), true);
 
   const routedEvidenceDesk = await workflowChildPayload(readModel, workflowId, "evidence-desk");

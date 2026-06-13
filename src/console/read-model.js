@@ -283,6 +283,12 @@ function deadLetterIncidentPlanes(kind) {
   return planes[kind] || ["workflow", "audit"];
 }
 
+function deadLetterKanbanCardId(item = {}) {
+  if (["failed_dispatch", "max_attempt_dispatch", "message_flow_delivery_missing"].includes(item.kind)) return item.refId || "";
+  if (item.kind === "human_gate_feedback") return item.humanGateId || "";
+  return "";
+}
+
 function deadLetterPrimaryRows(primary = {}) {
   return Object.values(primary).flatMap((rows) => Array.isArray(rows) ? rows : []);
 }
@@ -3640,6 +3646,7 @@ LIMIT 120;`) : Promise.resolve([])
         agentId: redactText(item.agentId || ""),
         updatedAt: item.updatedAt || "",
         target: redactConsoleValue(item.target || { consoleView: "command-center" }),
+        relatedTargets: (item.relatedTargets || []).map((target) => redactConsoleValue(target)).slice(0, 5),
         sourceRefs: (item.sourceRefs || [])
           .filter((ref) => ref?.id)
           .map((ref) => ({
@@ -3674,6 +3681,7 @@ LIMIT 120;`) : Promise.resolve([])
         side_effect_uncertain: ["side_effect_ledger", "side_effect_id"]
       };
       const [source, field] = sourceByKind[item.kind] || ["dead_letters", "ref_id"];
+      const kanbanCardId = deadLetterKanbanCardId(item);
       pushBlocker({
         severity: item.severity || "warning",
         plane: item.kind === "message_flow_delivery_missing" ? "communication"
@@ -3691,6 +3699,11 @@ LIMIT 120;`) : Promise.resolve([])
           workflowId: item.workflowId || "",
           operationsFilters: { kind: item.kind || "", severity: item.severity || "", status: item.status || "" }
         },
+        relatedTargets: [
+          item.agentId ? { label: "Agent", consoleView: "agent-board", agentId: item.agentId } : null,
+          { label: "Board", consoleView: "kanban", workflowId: item.workflowId || "", agentId: item.agentId || "", cardId: kanbanCardId },
+          item.workflowId ? { label: "Evidence", consoleView: "evidence-workspace", workflowId: item.workflowId || "" } : null
+        ].filter(Boolean),
         sourceRefs: [
           { source, field, id: item.refId },
           { source: "workflow_runs", field: "workflow_id", id: item.workflowId || "" }
@@ -3710,6 +3723,10 @@ LIMIT 120;`) : Promise.resolve([])
           workflowId: item.workflowId,
           updatedAt: item.updatedAt,
           target: { consoleView: "workflows", workflowId: item.workflowId, tab: "outbox" },
+          relatedTargets: [
+            { label: "Board", consoleView: "kanban", workflowId: item.workflowId },
+            { label: "Evidence", consoleView: "evidence-workspace", workflowId: item.workflowId }
+          ],
           sourceRefs: [{ source: "telegram_outbox", field: "meeting_id", id: item.workflowId }]
         });
       }
@@ -3724,6 +3741,10 @@ LIMIT 120;`) : Promise.resolve([])
           workflowId: item.workflowId,
           updatedAt: item.updatedAt,
           target: { consoleView: "workflows", workflowId: item.workflowId, tab: "incident-closeout" },
+          relatedTargets: [
+            { label: "Board", consoleView: "kanban", workflowId: item.workflowId },
+            { label: "Evidence", consoleView: "evidence-workspace", workflowId: item.workflowId }
+          ],
           sourceRefs: [{ source: "incident_states", field: "workflow_id", id: item.workflowId }]
         });
       }
@@ -3738,6 +3759,10 @@ LIMIT 120;`) : Promise.resolve([])
           workflowId: item.workflowId,
           updatedAt: item.updatedAt,
           target: { consoleView: "workflows", workflowId: item.workflowId, tab: "human-gate-readiness" },
+          relatedTargets: [
+            { label: "Board", consoleView: "kanban", workflowId: item.workflowId },
+            { label: "Evidence", consoleView: "evidence-workspace", workflowId: item.workflowId }
+          ],
           sourceRefs: [
             { source: "protocol_objects", field: "workflow_id", id: item.workflowId },
             { source: "review_gates", field: "workflow_id", id: item.workflowId },
