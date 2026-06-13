@@ -2900,7 +2900,7 @@ LIMIT ${limit};`) : Promise.resolve([])
 
   async deadLetterEvidence(query = {}) {
     const generatedAt = new Date().toISOString();
-    const workflowId = String(query.workflowId || query.workflow_id || "").trim();
+    const workflowId = String(query.workflowId || query.workflow_id || query.workflow || "").trim();
     const kind = String(query.kind || "").trim();
     const refId = String(query.refId || query.ref_id || "").trim();
     const empty = {
@@ -3868,6 +3868,7 @@ LIMIT 120;`) : Promise.resolve([])
     };
     [
       ["nav.command", "views", "Command Center", "Global triage home", { consoleView: "command-center" }],
+      ["nav.activity", "views", "Activity Feed", "Recent blocker, operation, control-loop and message_flow stream", { consoleView: "activity" }],
       ["nav.agents", "views", "Agent Board", "Registry-first runtime and readiness view", { consoleView: "agent-board" }],
       ["nav.kanban", "views", "Workflow Kanban", "Derived work board across workflow, dispatch, message_flow and Human Gate state", { consoleView: "kanban" }],
       ["nav.evidence", "views", "Evidence Workspace", "Review package, incident closeout, readiness and export surface", { consoleView: "evidence-workspace" }],
@@ -3962,6 +3963,175 @@ LIMIT 120;`) : Promise.resolve([])
         agents: (runtimeAgents.agents || []).length
       },
       commands
+    };
+  }
+
+  async activityFeed(query = {}) {
+    const generatedAt = new Date().toISOString();
+    const workflowId = String(query.workflowId || query.workflow_id || query.workflow || "").trim();
+    const limit = clampLimit(query.limit, 80, 200);
+    const [command, operations] = await Promise.all([
+      this.commandCenter({ deadLetterLimit: 500, deadLetterScanLimit: 2000 }),
+      this.operationsSummary({ workflowId, deadLetterLimit: 120, deadLetterScanLimit: 2000 })
+    ]);
+    const items = [];
+    const pushItem = (item = {}) => {
+      if (!item.id || !item.title) return;
+      if (workflowId && item.workflowId && item.workflowId !== workflowId) return;
+      items.push({
+        id: redactText(item.id),
+        group: redactText(item.group || "activity"),
+        severity: redactText(item.severity || "neutral"),
+        status: redactText(item.status || item.severity || "neutral"),
+        title: redactText(item.title),
+        subtitle: redactText(compactText(item.subtitle || item.detail || "", 240)),
+        workflowId: redactText(item.workflowId || ""),
+        agentId: redactText(item.agentId || ""),
+        runtime: redactText(item.runtime || ""),
+        at: item.at || item.updatedAt || item.createdAt || "",
+        target: redactConsoleValue(item.target || { consoleView: "command-center" }),
+        relatedTargets: (item.relatedTargets || []).map((target) => redactConsoleValue(target)).slice(0, 5),
+        sourceRefs: (item.sourceRefs || [])
+          .filter((ref) => ref?.id)
+          .map((ref) => ({
+            source: redactText(ref.source || ""),
+            field: redactText(ref.field || ""),
+            id: redactText(ref.id || "")
+          }))
+          .slice(0, 8)
+      });
+    };
+    for (const blocker of command.triage?.blockers || []) {
+      pushItem({
+        id: `blocker:${blocker.id}`,
+        group: `blocker:${blocker.plane || "control"}`,
+        severity: blocker.severity || "warning",
+        status: blocker.severity || "warning",
+        title: blocker.title || blocker.id,
+        subtitle: blocker.detail || "",
+        workflowId: blocker.workflowId || "",
+        agentId: blocker.agentId || "",
+        at: blocker.updatedAt || command.generatedAt,
+        target: blocker.target,
+        relatedTargets: blocker.relatedTargets || [],
+        sourceRefs: blocker.sourceRefs || []
+      });
+    }
+    for (const item of operations.deadLetters || []) {
+      const kanbanCardId = deadLetterKanbanCardId(item);
+      pushItem({
+        id: `dead_letter:${item.kind}:${item.refId}`,
+        group: "dead_letter",
+        severity: item.severity || "warning",
+        status: item.status || item.severity || "warning",
+        title: item.title || `${item.kind} ${item.refId}`,
+        subtitle: item.detail || "",
+        workflowId: item.workflowId || "",
+        agentId: item.agentId || "",
+        runtime: item.runtime || "",
+        at: item.updatedAt || "",
+        target: {
+          consoleView: "operations",
+          workflowId: item.workflowId || "",
+          operationsFilters: { kind: item.kind || "", severity: item.severity || "", status: item.status || "" }
+        },
+        relatedTargets: [
+          item.agentId ? { label: "Agent", consoleView: "agent-board", agentId: item.agentId } : null,
+          { label: "Board", consoleView: "kanban", workflowId: item.workflowId || "", agentId: item.agentId || "", cardId: kanbanCardId },
+          item.workflowId ? { label: "Evidence", consoleView: "evidence-workspace", workflowId: item.workflowId || "" } : null
+        ].filter(Boolean),
+        sourceRefs: [{ source: "dead_letters", field: "ref_id", id: item.refId }]
+      });
+    }
+    for (const op of operations.workflowOperations || []) {
+      pushItem({
+        id: `operation:${op.operationId}`,
+        group: "operation",
+        severity: op.status === "failed" ? "critical" : op.status === "completed" || op.status === "succeeded" ? "ok" : "warning",
+        status: op.status || "unknown",
+        title: `Operation ${op.action || "unknown"}`,
+        subtitle: op.reason || op.error || op.operationId,
+        workflowId: op.workflowId || "",
+        agentId: op.requestedBy || "",
+        at: op.completedAt || op.updatedAt || op.createdAt,
+        target: { consoleView: "operations", workflowId: op.workflowId || "" },
+        sourceRefs: [{ source: "workflow_operations", field: "operation_id", id: op.operationId }]
+      });
+    }
+    for (const job of operations.controlLoopJobDetails || []) {
+      pushItem({
+        id: `control_loop:${job.jobId}`,
+        group: "control_loop",
+        severity: job.status === "failed" || job.status === "dead_letter" ? "critical" : job.status === "completed" || job.status === "succeeded" ? "ok" : "warning",
+        status: job.status || "unknown",
+        title: `${job.jobType || "control_loop"} ${job.status || ""}`.trim(),
+        subtitle: job.lastError || job.dedupeKey || job.resultStatus || "",
+        workflowId: job.workflowId || "",
+        runtime: job.runtime || "",
+        at: job.completedAt || job.updatedAt || job.createdAt,
+        target: { consoleView: "operations", workflowId: job.workflowId || "" },
+        sourceRefs: [{ source: "control_loop_jobs", field: "job_id", id: job.jobId }]
+      });
+    }
+    for (const flow of operations.messageFlowAttention || []) {
+      pushItem({
+        id: `message_flow:${flow.flow_id}`,
+        group: "message_flow",
+        severity: flow.status === "runtime_failed" || flow.status === "telegram_failed" ? "critical" : "warning",
+        status: flow.status || "attention",
+        title: `${flow.target_runtime || ""}:${flow.target_agent_id || ""} message_flow attention`,
+        subtitle: flow.last_error || flow.return_policy || "",
+        workflowId: flow.workflow_id || flow.meeting_id || "",
+        agentId: flow.target_agent_id || "",
+        runtime: flow.target_runtime || "",
+        at: flow.updated_at || flow.runtime_failed_at || flow.runtime_completed_at || "",
+        target: { consoleView: "kanban", workflowId: flow.workflow_id || flow.meeting_id || "", agentId: flow.target_agent_id || "", cardId: flow.flow_id },
+        relatedTargets: [
+          flow.target_agent_id ? { label: "Agent", consoleView: "agent-board", agentId: flow.target_agent_id } : null,
+          (flow.workflow_id || flow.meeting_id) ? { label: "Evidence", consoleView: "evidence-workspace", workflowId: flow.workflow_id || flow.meeting_id || "" } : null
+        ].filter(Boolean),
+        sourceRefs: [{ source: "message_flows", field: "flow_id", id: flow.flow_id }]
+      });
+    }
+    const severityRank = { critical: 4, warning: 3, ok: 2, neutral: 1 };
+    const compareActivityItems = (a, b) => {
+      const timeDelta = String(b.at || "").localeCompare(String(a.at || ""));
+      if (timeDelta) return timeDelta;
+      return (severityRank[b.severity] || 0) - (severityRank[a.severity] || 0);
+    };
+    const itemKey = (item) => `${item.group}:${item.id}`;
+    items.sort(compareActivityItems);
+    const visible = items.slice(0, limit);
+    for (const group of ["dead_letter", "message_flow", "control_loop", "operation"]) {
+      if (visible.some((item) => item.group === group)) continue;
+      const representative = items.find((item) => item.group === group);
+      if (!representative || visible.some((item) => itemKey(item) === itemKey(representative))) continue;
+      if (visible.length < limit) {
+        visible.push(representative);
+      } else if (visible.length > 0) {
+        visible[visible.length - 1] = representative;
+      }
+      visible.sort(compareActivityItems);
+    }
+    return {
+      schemaVersion: "workflow_console_activity_feed.v1",
+      generatedAt,
+      source: "derived_read_model",
+      workflowId,
+      query: { workflowId, limit },
+      summary: {
+        totalBeforeLimit: items.length,
+        returned: visible.length,
+        byGroup: visible.reduce((acc, item) => {
+          acc[item.group] = (acc[item.group] || 0) + 1;
+          return acc;
+        }, {}),
+        bySeverity: visible.reduce((acc, item) => {
+          acc[item.severity] = (acc[item.severity] || 0) + 1;
+          return acc;
+        }, {})
+      },
+      items: visible
     };
   }
 

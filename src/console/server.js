@@ -183,6 +183,9 @@ export function createConsoleServer(options = {}) {
       if (req.method === "GET" && pathname === "/api/command-center") {
         return json(res, 200, await readModel.commandCenter(Object.fromEntries(url.searchParams)));
       }
+      if (req.method === "GET" && pathname === "/api/activity-feed") {
+        return json(res, 200, await readModel.activityFeed(Object.fromEntries(url.searchParams)));
+      }
       if (req.method === "GET" && pathname === "/api/command-palette") {
         return json(res, 200, await readModel.commandPalette(Object.fromEntries(url.searchParams)));
       }

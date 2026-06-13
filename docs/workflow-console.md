@@ -125,7 +125,9 @@ Current version map:
   Slice C adds URL-backed agent/card focus routing across Command Center,
   Global Search, Agent Board, Kanban, and Evidence. Slice D adds a read-only
   command palette for fast jumps across views, workflows, agents, Kanban,
-  Evidence, and Operations.
+  Evidence, and Operations. Slice E adds a read-only Activity Feed that
+  compresses blockers, dead letters, workflow operations, control-loop jobs,
+  and message_flow attention into a clickable operator stream.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

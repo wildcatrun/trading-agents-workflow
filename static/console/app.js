@@ -25,7 +25,7 @@ const state = {
   }
 };
 
-const CONSOLE_VIEWS = new Set(["command-center", "agent-board", "kanban", "evidence-workspace", "operations", "workflows", "search"]);
+const CONSOLE_VIEWS = new Set(["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "workflows", "search"]);
 const WORKBENCH_FILTERS = [
   { id: "all", label: "All" },
   { id: "blocked", label: "Blocked" },
@@ -286,7 +286,7 @@ function writeUrlState({ replace = false } = {}) {
   const params = new URLSearchParams();
   if (state.consoleView !== "command-center") params.set("console", state.consoleView);
   if (state.view !== "active") params.set("wfView", state.view);
-  if (["workflows", "evidence-workspace", "operations", "kanban"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
+  if (["workflows", "activity", "evidence-workspace", "operations", "kanban"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
   if (state.consoleView === "workflows" && state.tab !== "overview") params.set("tab", state.tab);
   if (state.consoleView === "search" && state.searchQuery) params.set("q", state.searchQuery);
   if (isWorkbenchView() && state.workbenchFilter !== "all") params.set("filter", state.workbenchFilter);
@@ -1001,7 +1001,8 @@ async function selectWorkflow(workflowId) {
 }
 
 function renderGlobalPayload(data) {
-  if (state.consoleView === "agent-board") renderAgentBoard(data);
+  if (state.consoleView === "activity") renderActivityFeed(data);
+  else if (state.consoleView === "agent-board") renderAgentBoard(data);
   else if (state.consoleView === "kanban") renderKanban(data);
   else if (state.consoleView === "evidence-workspace") renderEvidenceWorkspace(data);
   else if (state.consoleView === "operations") renderOperations(data);
@@ -1015,6 +1016,7 @@ async function loadGlobalView() {
   $("#previewButton").disabled = true;
   const titleByView = {
     "command-center": "Command Center",
+    activity: "Activity Feed",
     "agent-board": "Agent Board",
     kanban: "Workflow Kanban",
     "evidence-workspace": "Evidence Workspace",
@@ -1023,6 +1025,7 @@ async function loadGlobalView() {
   };
   const subtitleByView = {
     "command-center": "Global readiness, queue, runtime, communication and evidence summary.",
+    activity: "Recent blockers, operations, dead letters, control-loop jobs and message_flow attention.",
     "agent-board": "Registry-first agent runtime, dispatchability, current work and attention view.",
     kanban: "Derived read-only board over workflow, dispatch, runtime, message_flow, outbox and Human Gate state.",
     "evidence-workspace": "Workflow evidence package, incident closeout, Human Gate readiness and export surface.",
@@ -1034,7 +1037,9 @@ async function loadGlobalView() {
   $("#detailSummary").replaceChildren();
   setDetailBody(emptyState("Loading control plane view..."));
   setActionStatus("Loading control plane view...", "neutral");
-  const path = state.consoleView === "agent-board"
+  const path = state.consoleView === "activity"
+    ? `/api/activity-feed${state.selectedWorkflowId ? `?workflowId=${encodeURIComponent(state.selectedWorkflowId)}` : ""}`
+    : state.consoleView === "agent-board"
     ? "/api/agent-board"
     : state.consoleView === "kanban"
       ? `/api/kanban?${kanbanQueryParams().toString()}`
@@ -1288,6 +1293,77 @@ function renderCommandCenter(data) {
       { label: "Failed Dispatch", render: (row) => row.counts?.failedDispatches || 0 },
       { label: "Updated", render: (row) => formatDate(row.updatedAt) }
     ], data.topWorkflows || [], "No workflows recorded.")),
+    section("Raw", h("details", {}, [
+      h("summary", {}, "JSON"),
+      jsonBlock(data)
+    ]))
+  ]));
+}
+
+function renderActivityFeed(data) {
+  const summary = data.summary || {};
+  const items = data.items || [];
+  const groupRows = Object.entries(summary.byGroup || {}).map(([group, count]) => ({ group, count }));
+  const severityRows = Object.entries(summary.bySeverity || {}).map(([severity, count]) => ({ severity, count }));
+  const relatedButton = (target = {}) => {
+    const label = target.label || (target.consoleView === "agent-board" ? "Agent"
+      : target.consoleView === "kanban" ? "Board"
+        : target.consoleView === "evidence-workspace" ? "Evidence"
+          : target.consoleView === "operations" ? "Operations"
+            : "Open");
+    return h("button", { type: "button", onClick: () => openCommandTarget(target) }, label);
+  };
+  const activityItem = (item = {}) => {
+    const refs = item.sourceRefs || [];
+    const relatedTargets = item.relatedTargets || [];
+    return h("article", { className: `activity-item ${item.severity || "neutral"}` }, [
+      h("div", { className: "activity-marker" }),
+      h("div", { className: "activity-body" }, [
+        h("div", { className: "search-result-head" }, [
+          h("div", {}, [
+            h("div", { className: "workflow-title" }, [
+              h("strong", {}, short(item.title || item.id, 140)),
+              chip(item.group || "activity", "neutral"),
+              chip(item.status || item.severity || "neutral", item.severity || toneFor(item.status))
+            ]),
+            item.subtitle ? h("p", { className: "workflow-summary" }, short(item.subtitle, 260)) : null
+          ]),
+          h("div", { className: "actions search-actions" }, [
+            h("button", { type: "button", onClick: () => openCommandTarget(item.target || {}) }, "Open"),
+            ...relatedTargets.slice(0, 3).map(relatedButton),
+            item.workflowId ? h("button", { type: "button", onClick: () => copyText(item.workflowId, "Workflow") }, "Copy Workflow") : null,
+            h("button", { type: "button", onClick: () => copyText(item.id, "Activity") }, "Copy Id")
+          ])
+        ]),
+        h("div", { className: "workflow-meta" }, [
+          h("span", {}, formatDate(item.at)),
+          h("span", {}, item.workflowId ? `workflow ${item.workflowId}` : "global"),
+          h("span", {}, item.agentId || "-"),
+          h("span", {}, item.runtime || "-")
+        ]),
+        refs.length ? h("div", { className: "mini-counts" }, refs.slice(0, 6).map((ref) => h("span", {}, `${ref.source}.${ref.field}=${short(ref.id, 80)}`))) : null
+      ])
+    ]);
+  };
+  setDetailBody(h("div", { className: "stack" }, [
+    section("Activity Summary", h("div", { className: "quick-stats" }, [
+      statCard("Scope", data.workflowId ? "workflow" : "global", data.workflowId || "all workflows"),
+      statCard("Returned", summary.returned || items.length, `${summary.totalBeforeLimit || items.length} total`),
+      statCard("Critical", summary.bySeverity?.critical || 0),
+      statCard("Warning", summary.bySeverity?.warning || 0),
+      statCard("OK", summary.bySeverity?.ok || 0)
+    ])),
+    section("Groups", h("div", { className: "content-grid" }, [
+      renderTable([
+        { label: "Group", render: (row) => chip(row.group, "neutral") },
+        { label: "Count", key: "count" }
+      ], groupRows, "No activity groups."),
+      renderTable([
+        { label: "Severity", render: (row) => chip(row.severity, row.severity) },
+        { label: "Count", key: "count" }
+      ], severityRows, "No severity counts.")
+    ])),
+    section("Control Stream", items.length ? h("div", { className: "activity-feed" }, items.map(activityItem)) : emptyState("No activity items.")),
     section("Raw", h("details", {}, [
       h("summary", {}, "JSON"),
       jsonBlock(data)
@@ -3653,7 +3729,7 @@ document.querySelectorAll(".view-tabs button[data-console-view]").forEach((butto
   button.addEventListener("click", async () => {
     state.consoleView = button.dataset.consoleView;
     if (!["agent-board", "kanban"].includes(state.consoleView)) clearFocusState();
-    if (state.consoleView === "operations") {
+    if (["activity", "operations"].includes(state.consoleView)) {
       state.selectedWorkflowId = "";
       state.detail = null;
     }

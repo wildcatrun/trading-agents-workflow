@@ -1164,6 +1164,18 @@ Implemented Slice D: Command Palette / Jump Console
   create a second scheduler, and keeps preview/write safety boundaries
   unchanged.
 
+Implemented Slice E: Activity Feed / Control Stream
+
+- Added a read-only `/api/activity-feed` read-model surface that derives a
+  recent operator stream from Command Center blockers, Operations dead letters,
+  workflow operation audit rows, control-loop jobs, and message_flow attention.
+- Added a top-level Activity view. Activity items expose severity, source refs,
+  workflow/agent/runtime context, and clickable targets that reuse
+  `openCommandTarget()` for Operations, Agent Board, Kanban, Evidence, or
+  workflow detail navigation.
+- The stream is observational only. It does not retry jobs, drain runtimes,
+  mutate workflow state, or create a parallel scheduler.
+
 ## Test Plan
 
 Required checks:
@@ -1214,6 +1226,10 @@ Frontend smoke:
 - verify command palette opens from the header and keyboard, filters workflow
   and agent commands, routes through shared target handling, closes on Escape,
   and remains mobile-readable without page-level horizontal overflow;
+- verify Activity Feed renders blocker/dead-letter/operation/control-loop and
+  message_flow attention items, preserves redaction, opens related surfaces,
+  supports workflow-scoped URL state, and remains mobile-readable without
+  page-level horizontal overflow;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 

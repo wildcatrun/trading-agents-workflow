@@ -190,6 +190,45 @@ code {
   justify-content: flex-end;
 }
 
+.activity-feed {
+  display: grid;
+  gap: 10px;
+}
+
+.activity-item {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.activity-marker {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  margin-top: 5px;
+  background: var(--neutral);
+}
+
+.activity-item.critical .activity-marker {
+  background: var(--red);
+}
+
+.activity-item.warning .activity-marker {
+  background: var(--amber);
+}
+
+.activity-item.ok .activity-marker {
+  background: var(--green);
+}
+
+.activity-body {
+  min-width: 0;
+}
+
 .workbench-controls {
   border: 1px solid var(--line-soft);
   border-radius: 8px;
