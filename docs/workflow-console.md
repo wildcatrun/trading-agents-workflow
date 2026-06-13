@@ -129,7 +129,9 @@ Current version map:
   compresses blockers, dead letters, workflow operations, control-loop jobs,
   and message_flow attention into a clickable operator stream. Slice F adds a
   browser-side Live Refresh control with safe manual/live modes for keeping
-  read-only operator views current without adding a workflow scheduler.
+  read-only operator views current without adding a workflow scheduler. Slice G
+  adds a System Status view that exposes console health, action policy, safety
+  boundaries, redaction policy, readiness findings, and allowed views/queues.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

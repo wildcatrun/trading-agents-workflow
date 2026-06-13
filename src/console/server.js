@@ -171,7 +171,17 @@ export function createConsoleServer(options = {}) {
           actionMode: readOnly ? "preview-only" : "allowlisted",
           serverTime: new Date().toISOString(),
           allowedViews: ["active", "waiting_human", "blocked", "paused", "updated_24h"],
-          redactionPolicyVersion: "workflow_console_redaction_v1"
+          allowedWorkflowQueues: ["active", "waiting_human", "blocked", "paused", "updated_24h"],
+          allowedConsoleViews: ["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "system", "workflows"],
+          redactionPolicyVersion: "workflow_console_redaction_v1",
+          securityBoundaries: [
+            { key: "loopback_default", status: "enforced", detail: "Console binds to loopback unless startup config overrides host." },
+            { key: "host_allowlist", status: "enforced", detail: "Unknown Host headers are rejected before routing." },
+            { key: "no_query_token", status: "enforced", detail: "Authentication accepts headers only; query-string tokens are not used." },
+            { key: "cross_origin_mutation_block", status: "browser_enforced", detail: "Blocks cross-site Sec-Fetch-Site and mismatched Origin/Referer; non-browser requests without Origin/Referer rely on Host allowlist and token policy." },
+            { key: "preview_first_actions", status: readOnly ? "enforced" : "policy_enabled", detail: readOnly ? "Read-only mode exposes preview actions only." : "Writes are limited to the action gateway allowlist." },
+            { key: "redaction", status: "enforced", detail: "Read APIs redact callback tokens, secrets, OAuth-ish fields, and sensitive payloads." }
+          ]
         });
       }
       if (req.method === "GET" && pathname === "/api/workflows") {

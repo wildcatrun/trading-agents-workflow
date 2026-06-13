@@ -30,7 +30,7 @@ const state = {
   }
 };
 
-const CONSOLE_VIEWS = new Set(["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "workflows", "search"]);
+const CONSOLE_VIEWS = new Set(["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "system", "workflows", "search"]);
 const WORKBENCH_FILTERS = [
   { id: "all", label: "All" },
   { id: "blocked", label: "Blocked" },
@@ -1087,6 +1087,7 @@ function renderGlobalPayload(data) {
   else if (state.consoleView === "kanban") renderKanban(data);
   else if (state.consoleView === "evidence-workspace") renderEvidenceWorkspace(data);
   else if (state.consoleView === "operations") renderOperations(data);
+  else if (state.consoleView === "system") renderSystemStatus(data);
   else if (state.consoleView === "search") renderSearchResults(data);
   else renderCommandCenter(data);
 }
@@ -1102,6 +1103,7 @@ async function loadGlobalView() {
     kanban: "Workflow Kanban",
     "evidence-workspace": "Evidence Workspace",
     operations: "Operations",
+    system: "System Status",
     search: "Global Search"
   };
   const subtitleByView = {
@@ -1111,6 +1113,7 @@ async function loadGlobalView() {
     kanban: "Derived read-only board over workflow, dispatch, runtime, message_flow, outbox and Human Gate state.",
     "evidence-workspace": "Workflow evidence package, incident closeout, Human Gate readiness and export surface.",
     operations: "Global operation audit, dead-letter evidence, queue pressure and governed preview surface.",
+    system: "Console health, action policy, safety boundaries, redaction and readiness evidence.",
     search: "Search workflow, dispatch, agent, message_flow, artifact, Human Gate and incident anchors."
   };
   $("#detailTitle").textContent = titleByView[state.consoleView] || "Workflow Console";
@@ -1122,17 +1125,19 @@ async function loadGlobalView() {
     ? `/api/activity-feed${state.selectedWorkflowId ? `?workflowId=${encodeURIComponent(state.selectedWorkflowId)}` : ""}`
     : state.consoleView === "agent-board"
     ? "/api/agent-board"
-    : state.consoleView === "kanban"
-      ? `/api/kanban?${kanbanQueryParams().toString()}`
-      : "/api/command-center";
+      : state.consoleView === "kanban"
+        ? `/api/kanban?${kanbanQueryParams().toString()}`
+        : "/api/command-center";
   try {
     const data = state.consoleView === "evidence-workspace"
       ? await loadEvidenceWorkspacePayload()
       : state.consoleView === "operations"
         ? await loadOperationsPayload()
-        : state.consoleView === "search"
-          ? await api("/api/search", { method: "POST", body: JSON.stringify({ q: state.searchQuery, limit: 100 }) })
-          : await api(path);
+        : state.consoleView === "system"
+          ? await loadSystemStatusPayload()
+          : state.consoleView === "search"
+            ? await api("/api/search", { method: "POST", body: JSON.stringify({ q: state.searchQuery, limit: 100 }) })
+            : await api(path);
     state.lastPayload = data;
     renderGlobalPayload(data);
     setActionStatus("Ready", "ok");
@@ -1140,6 +1145,35 @@ async function loadGlobalView() {
     setDetailBody(h("div", { className: "error" }, error.message));
     setActionStatus("Error", "critical");
   }
+}
+
+async function loadSystemStatusPayload() {
+  const safeApi = async (path) => {
+    try {
+      return { ok: true, value: await api(path) };
+    } catch (error) {
+      return { ok: false, error: { path, message: error.message } };
+    }
+  };
+  const [configResult, healthResult, readinessResult] = await Promise.all([
+    safeApi("/api/config"),
+    safeApi("/health"),
+    safeApi("/api/readiness/latest")
+  ]);
+  const config = configResult.ok ? configResult.value : (state.config || { service: "workflow-console", configError: configResult.error });
+  const health = healthResult.ok ? healthResult.value : { ok: false, service: "workflow-console", error: healthResult.error };
+  const readiness = readinessResult.ok ? readinessResult.value : { status: "unavailable", checkedAt: "", findings: [readinessResult.error] };
+  state.config = config;
+  return {
+    schemaVersion: "workflow_console_system_status.v1",
+    generatedAt: new Date().toISOString(),
+    config,
+    health,
+    readiness,
+    partialFailures: [configResult, healthResult, readinessResult]
+      .filter((result) => !result.ok)
+      .map((result) => result.error)
+  };
 }
 
 async function loadEvidenceWorkspacePayload() {
@@ -1448,6 +1482,49 @@ function renderActivityFeed(data) {
     section("Raw", h("details", {}, [
       h("summary", {}, "JSON"),
       jsonBlock(data)
+    ]))
+  ]));
+}
+
+function renderSystemStatus(data) {
+  const config = data.config || {};
+  const health = data.health || {};
+  const readiness = data.readiness || {};
+  const boundaryRows = config.securityBoundaries || [];
+  const queueRows = (config.allowedWorkflowQueues || config.allowedViews || []).map((queue) => ({ queue }));
+  const viewRows = (config.allowedConsoleViews || []).map((view) => ({ view }));
+  const partialFailures = data.partialFailures || [];
+  setDetailBody(h("div", { className: "stack" }, [
+    section("Console Runtime", h("div", { className: "quick-stats" }, [
+      statCard("Service", health.service || config.service || "workflow-console", health.ok ? "ok" : "not ok"),
+      statCard("DB", health.dbReadable ? "readable" : "unreadable", `schema ${health.schemaVersion || "-"}`),
+      statCard("Action Mode", config.actionMode || "-", config.readOnlyMode ? "read-only" : "writes allowlisted"),
+      statCard("Readiness", readiness?.status || "unknown", formatDate(readiness?.checkedAt)),
+      statCard("Redaction", config.redactionPolicyVersion || "-"),
+      statCard("Generated", formatDate(data.generatedAt))
+    ])),
+    section("Safety Boundaries", renderTable([
+      { label: "Boundary", render: (row) => h("code", {}, row.key || "-") },
+      { label: "Status", render: (row) => chip(row.status || "unknown", row.status === "enforced" ? "ok" : "warning") },
+      { label: "Detail", key: "detail" }
+    ], boundaryRows, "No safety boundary metadata.")),
+    partialFailures.length ? section("Partial Failures", renderTable([
+      { label: "Endpoint", key: "path" },
+      { label: "Error", key: "message" }
+    ], partialFailures, "No partial failures.")) : null,
+    section("Readiness Findings", readiness?.findings?.length ? jsonBlock(readiness.findings) : emptyState("No readiness findings in the latest snapshot.")),
+    section("Routes And Queues", h("div", { className: "content-grid" }, [
+      renderTable([
+        { label: "Console View", key: "view" }
+      ], viewRows, "No console views reported."),
+      renderTable([
+        { label: "Workflow Queue", key: "queue" }
+      ], queueRows, "No workflow queues reported.")
+    ])),
+    section("Root And Health", h("div", { className: "copy-block" }, [
+      h("p", {}, `Root: ${config.rootDir || health.rootDir || "-"}`),
+      h("p", {}, `Server time: ${formatDate(config.serverTime)}`),
+      jsonBlock({ health, config: { ...config, securityBoundaries: undefined } })
     ]))
   ]));
 }

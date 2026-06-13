@@ -3873,6 +3873,7 @@ LIMIT 120;`) : Promise.resolve([])
       ["nav.kanban", "views", "Workflow Kanban", "Derived work board across workflow, dispatch, message_flow and Human Gate state", { consoleView: "kanban" }],
       ["nav.evidence", "views", "Evidence Workspace", "Review package, incident closeout, readiness and export surface", { consoleView: "evidence-workspace" }],
       ["nav.operations", "views", "Operations", "Dead-letter, queue pressure and governed preview audit", { consoleView: "operations" }],
+      ["nav.system", "views", "System Status", "Console health, action policy, safety boundaries and readiness evidence", { consoleView: "system" }],
       ["nav.workflows", "views", "Workflow List", "Workflow detail, tabs and raw read model", { consoleView: "workflows" }]
     ].forEach(([id, group, title, subtitle, target]) => pushCommand({
       id,

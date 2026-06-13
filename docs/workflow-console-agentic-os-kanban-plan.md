@@ -1189,6 +1189,18 @@ Implemented Slice F: Browser Live Refresh Controls
   Activity requires explicit `scope=workflow&workflow=<id>` URL state or a
   scoped navigation target.
 
+Implemented Slice G: System Status / Safety Boundary Inspector
+
+- Added a top-level System view for console health, database readability,
+  schema version, action mode, redaction policy, latest readiness findings,
+  allowed console views, allowed workflow queues, root path, and server time.
+- Extended `/api/config` with explicit safety-boundary metadata for loopback
+  defaults, Host allowlist enforcement, no query-string tokens, cross-origin
+  mutation blocking, preview-first action policy, and response redaction.
+- Added System Status to the command palette so operators can jump from
+  triage or audit work directly to policy/readiness evidence without using raw
+  database or process inspection.
+
 ## Test Plan
 
 Required checks:
@@ -1246,6 +1258,9 @@ Frontend smoke:
 - verify Live Refresh toggles on/off, updates status text, respects the
   selected interval, keeps Activity global when opened globally, and does not
   introduce page-level horizontal overflow on mobile;
+- verify System Status renders console health, action mode, safety boundaries,
+  redaction policy, readiness findings, allowed views/queues, and root/health
+  JSON without exposing tokens or enabling write actions;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 

@@ -8109,6 +8109,31 @@ async function testWorkflowConsoleStaticLiveRefreshContract() {
   assert.equal(app.includes("scheduleLiveRefresh();"), true);
 }
 
+async function testWorkflowConsoleStaticSystemStatusContract() {
+  const [html, app, server, readModel] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), "static/console/index.html"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "static/console/app.js"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "src/console/server.js"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "src/console/read-model.js"), "utf8")
+  ]);
+  assert.equal(html.includes('data-console-view="system"'), true);
+  assert.equal(app.includes('"system", "workflows", "search"'), true);
+  assert.equal(app.includes("function renderSystemStatus"), true);
+  assert.equal(app.includes("workflow_console_system_status.v1"), true);
+  assert.equal(app.includes('safeApi("/health")'), true);
+  assert.equal(app.includes('safeApi("/api/readiness/latest")'), true);
+  assert.equal(app.includes("partialFailures"), true);
+  assert.equal(app.includes("config.allowedConsoleViews"), true);
+  assert.equal(server.includes("securityBoundaries"), true);
+  assert.equal(server.includes("allowedWorkflowQueues"), true);
+  assert.equal(server.includes("allowedConsoleViews"), true);
+  assert.equal(server.includes('"active", "waiting_human", "blocked", "paused", "updated_24h"'), true);
+  assert.equal(server.includes("preview_first_actions"), true);
+  assert.equal(server.includes("no_query_token"), true);
+  assert.equal(server.includes("browser_enforced"), true);
+  assert.equal(readModel.includes('["nav.system", "views", "System Status"'), true);
+}
+
 try {
   requireSqliteCli();
   const tests = [
@@ -8155,6 +8180,7 @@ try {
     ["human_gate missing telegram sender blocked", testHumanGateRejectsMissingTelegramSender],
     ["workflow health dashboard", testWorkflowHealthDashboard],
     ["workflow console static live refresh contract", testWorkflowConsoleStaticLiveRefreshContract],
+    ["workflow console static system status contract", testWorkflowConsoleStaticSystemStatusContract],
     ["workflow console agentic surfaces", testWorkflowConsoleAgenticSurfaces],
     ["workflow health terminal failed dispatch degraded", testWorkflowHealthTerminalFailedDispatchIsDegraded],
     ["workflow health open incidents visible", testWorkflowHealthOpenIncidentsAreVisible],
