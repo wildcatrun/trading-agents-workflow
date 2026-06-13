@@ -1073,6 +1073,43 @@ Acceptance:
 - safety boundaries remain enforced in code, not only documentation;
 - subagent/code-review quality gates are recorded for the release.
 
+Implemented Slice A: Global Operations Workspace
+
+- Added a top-level Operations console view next to Evidence and Workflows.
+  It reuses `/api/operations/summary` as a global audit/work-queue surface
+  instead of creating a second scheduler or direct DB writer.
+- Operations can run globally by default or be scoped with
+  `console=operations&workflow=<id>`. Dead-letter filters are URL-reflected as
+  `opKind`, `opSeverity`, and `opStatus`; the workflow detail Operations tab
+  reuses the same filters for shareable scoped audit views.
+- The view shows scope, dead-letter totals, workflow operation counts, action
+  mode, readiness snapshot, dead-letter/stuck attention, workflow operation
+  audit rows, control-loop jobs, stale/failed dispatches, Telegram outbox,
+  governed delivery executions, Human Gate summary, runtime drain jobs, and
+  message_flow attention.
+- Workflow intervention previews remain disabled in global mode. They become
+  available only when the Operations view is explicitly scoped to a workflow,
+  and still call preview-only actions.
+
+Validated for this slice on 2026-06-13:
+
+- `npm run check`
+- `git diff --check`
+- `node scripts/workflow_regression_tests.mjs`
+- local Playwright smoke against a fixture console on `127.0.0.1:18802`:
+  global Operations stayed unscoped, workflow preview controls were disabled
+  globally, scoped Operations restored `workflow`, `opKind`, `opSeverity`, and
+  `opStatus` URL state, workflow preview controls were enabled only when
+  scoped, Operations audit/dead-letter rows rendered, operation errors were
+  redacted, and a 390px mobile viewport had no horizontal overflow or clipped
+  buttons.
+- follow-up review fixes validated by Playwright: invalid Operations filter
+  deep links are normalized back to available values in both top-level and
+  workflow-detail Operations, `Back to Operations` returns from dead-letter
+  evidence to both global and scoped Operations, and non-preview
+  `Create Incident` remains hidden in the top-level preview-only Operations
+  workspace.
+
 ## Test Plan
 
 Required checks:
@@ -1117,6 +1154,9 @@ Frontend smoke:
 - verify Evidence workspace loads from URL state, lists missing evidence before
   Human Gate readiness, exposes source refs, opens underlying Evidence Desk /
   Pack / Incident tabs, and downloads the redacted workspace bundle JSON;
+- verify top-level Operations renders global audit/dead-letter state, restores
+  URL filters, scopes by workflow deep link, disables workflow preview controls
+  when unscoped, and remains mobile-readable;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1126,8 +1166,8 @@ Development-server smoke:
 - start console as a separate read-only process on `127.0.0.1:8791`;
 - access through the existing local tunnel `127.0.0.1:18791`;
 - verify `/health`, `/api/config`, `/api/command-center`,
-  `/api/agent-board`, `/api/kanban`, and a workflow-scoped
-  `/api/workflows/<workflowId>/evidence-pack`.
+  `/api/agent-board`, `/api/kanban`, `/api/operations/summary`, and a
+  workflow-scoped `/api/workflows/<workflowId>/evidence-pack`.
 
 Gateway restart is not required for console-only static/read-model changes
 unless plugin runtime loading changes require it separately.
@@ -1151,7 +1191,8 @@ unless plugin runtime loading changes require it separately.
   model exposes stable row anchors.
 - v1.0 is the operator-grade baseline: integrated triage, registry-first agent
   workbench, derived Kanban, evidence packages, governed previews, redaction,
-  audit, and mobile inspection.
+  audit, and mobile inspection. Slice A promotes Operations into a top-level
+  global/scoped audit workspace while preserving preview-only action safety.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

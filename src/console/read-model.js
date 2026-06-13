@@ -5062,7 +5062,7 @@ LIMIT 100;`) : [];
           nextRunAt: row.next_run_at || "",
           leaseOwner: row.lease_owner || "",
           leaseUntil: row.lease_until || "",
-          lastError: row.last_error || "",
+          lastError: redactText(row.last_error || ""),
           resultStatus: result.status || "",
           payload: redactConsoleValue(payload),
           result: redactConsoleValue(result),
@@ -5071,11 +5071,17 @@ LIMIT 100;`) : [];
           completedAt: row.completed_at || ""
         };
       }),
-      staleDispatches,
+      staleDispatches: staleDispatches.map((row) => ({
+        ...row,
+        last_error: redactText(row.last_error || "")
+      })),
       telegramOutbox: outbox,
       humanGate,
       messageFlow,
-      messageFlowAttention,
+      messageFlowAttention: messageFlowAttention.map((row) => ({
+        ...row,
+        last_error: redactText(row.last_error || "")
+      })),
       readiness
     };
   }

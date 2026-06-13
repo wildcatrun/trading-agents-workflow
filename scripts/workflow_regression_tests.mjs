@@ -821,6 +821,10 @@ VALUES ('job-other-workflow-failed', 'runtime_drain', 'runtime_drain:other', 'hi
   assert.equal(JSON.stringify(operations.deadLetters).includes("dispatch-secret"), false);
   assert.equal(JSON.stringify(operations.deadLetters).includes("side-secret"), false);
   assert.equal(JSON.stringify(operations.deadLetters).includes("flow-secret"), false);
+  assert.equal(JSON.stringify(operations.controlLoopJobDetails).includes("job-secret"), false);
+  assert.equal(JSON.stringify(operations.controlLoopJobDetails).includes("lease-secret"), false);
+  assert.equal(JSON.stringify(operations.staleDispatches).includes("dispatch-secret"), false);
+  assert.equal(JSON.stringify(operations.messageFlowAttention).includes("flow-secret"), false);
   const readOnlyEvidenceCountsBefore = {
     workflows: sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`),
     dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),

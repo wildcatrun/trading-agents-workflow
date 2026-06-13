@@ -116,8 +116,10 @@ Current version map:
   incident closeout, Human Gate readiness, missing evidence, compressed
   timeline, source refs, and timestamped workspace JSON export into one review
   surface.
-- v1.0: planned operator-grade baseline comparable to mainstream agent control
-  planes while preserving trading-system safety boundaries.
+- v1.0: in progress as operator-grade baseline. Slice A promotes Operations
+  into a top-level audit workspace with global and workflow-scoped views,
+  shareable dead-letter filters, operation summaries, queue pressure,
+  delivery execution audit, and disabled-by-default workflow preview controls.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

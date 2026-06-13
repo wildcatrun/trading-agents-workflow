@@ -13,6 +13,7 @@ const state = {
   workbenchFilter: "all",
   severityFilter: "all",
   sortMode: "age_desc",
+  config: null,
   operationsFilters: {
     kind: "",
     severity: "",
@@ -20,7 +21,7 @@ const state = {
   }
 };
 
-const CONSOLE_VIEWS = new Set(["command-center", "agent-board", "kanban", "evidence-workspace", "workflows", "search"]);
+const CONSOLE_VIEWS = new Set(["command-center", "agent-board", "kanban", "evidence-workspace", "operations", "workflows", "search"]);
 const WORKBENCH_FILTERS = [
   { id: "all", label: "All" },
   { id: "blocked", label: "Blocked" },
@@ -267,6 +268,9 @@ function readUrlState() {
   state.workbenchFilter = normalizeChoice(params.get("filter"), WORKBENCH_FILTERS.map((item) => item.id), "all");
   state.severityFilter = normalizeChoice(params.get("severity"), SEVERITY_FILTERS.map((item) => item.value), "all");
   state.sortMode = normalizeChoice(params.get("sort"), SORT_MODES.map((item) => item.value), "age_desc");
+  state.operationsFilters.kind = params.get("opKind") || "";
+  state.operationsFilters.severity = params.get("opSeverity") || "";
+  state.operationsFilters.status = params.get("opStatus") || "";
   $("#globalSearchInput").value = state.searchQuery;
 }
 
@@ -275,12 +279,16 @@ function writeUrlState({ replace = false } = {}) {
   const params = new URLSearchParams();
   if (state.consoleView !== "command-center") params.set("console", state.consoleView);
   if (state.view !== "active") params.set("wfView", state.view);
-  if (["workflows", "evidence-workspace"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
+  if (["workflows", "evidence-workspace", "operations"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
   if (state.consoleView === "workflows" && state.tab !== "overview") params.set("tab", state.tab);
   if (state.consoleView === "search" && state.searchQuery) params.set("q", state.searchQuery);
   if (isWorkbenchView() && state.workbenchFilter !== "all") params.set("filter", state.workbenchFilter);
   if (isWorkbenchView() && state.severityFilter !== "all") params.set("severity", state.severityFilter);
   if (isWorkbenchView() && state.sortMode !== "age_desc") params.set("sort", state.sortMode);
+  const operationsFilterUrl = state.consoleView === "operations" || (state.consoleView === "workflows" && state.tab === "operations");
+  if (operationsFilterUrl && state.operationsFilters.kind) params.set("opKind", state.operationsFilters.kind);
+  if (operationsFilterUrl && state.operationsFilters.severity) params.set("opSeverity", state.operationsFilters.severity);
+  if (operationsFilterUrl && state.operationsFilters.status) params.set("opStatus", state.operationsFilters.status);
   const query = params.toString();
   const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
   const method = replace ? "replaceState" : "pushState";
@@ -755,6 +763,7 @@ function setTabButtons() {
 
 async function loadConfig() {
   const config = await api("/api/config");
+  state.config = config;
   $("#configLine").textContent = `${config.rootDir} | ${config.actionMode} | ${formatDate(config.serverTime)}`;
 }
 
@@ -762,7 +771,7 @@ async function loadWorkflows() {
   setActionStatus("Loading workflows...", "neutral");
   const data = await api(`/api/workflows?view=${encodeURIComponent(state.view)}&limit=100`);
   state.workflows = data.workflows || [];
-  if (!state.selectedWorkflowId && state.workflows[0]) {
+  if (!state.selectedWorkflowId && state.consoleView !== "operations" && state.workflows[0]) {
     state.selectedWorkflowId = state.workflows[0].workflowId;
   }
   if (state.consoleView === "workflows" && state.selectedWorkflowId && !state.workflows.some((item) => item.workflowId === state.selectedWorkflowId)) {
@@ -781,7 +790,7 @@ async function loadWorkflows() {
 
 async function selectWorkflow(workflowId) {
   const wasGlobal = state.consoleView !== "workflows";
-  if (state.consoleView === "evidence-workspace") {
+  if (["evidence-workspace", "operations"].includes(state.consoleView)) {
     state.selectedWorkflowId = workflowId;
     state.detail = null;
     setViewButtons();
@@ -806,6 +815,7 @@ function renderGlobalPayload(data) {
   if (state.consoleView === "agent-board") renderAgentBoard(data);
   else if (state.consoleView === "kanban") renderKanban(data);
   else if (state.consoleView === "evidence-workspace") renderEvidenceWorkspace(data);
+  else if (state.consoleView === "operations") renderOperations(data);
   else if (state.consoleView === "search") renderSearchResults(data);
   else renderCommandCenter(data);
 }
@@ -819,6 +829,7 @@ async function loadGlobalView() {
     "agent-board": "Agent Board",
     kanban: "Workflow Kanban",
     "evidence-workspace": "Evidence Workspace",
+    operations: "Operations",
     search: "Global Search"
   };
   const subtitleByView = {
@@ -826,6 +837,7 @@ async function loadGlobalView() {
     "agent-board": "Registry-first agent runtime, dispatchability, current work and attention view.",
     kanban: "Derived read-only board over workflow, dispatch, runtime, message_flow, outbox and Human Gate state.",
     "evidence-workspace": "Workflow evidence package, incident closeout, Human Gate readiness and export surface.",
+    operations: "Global operation audit, dead-letter evidence, queue pressure and governed preview surface.",
     search: "Search workflow, dispatch, agent, message_flow, artifact, Human Gate and incident anchors."
   };
   $("#detailTitle").textContent = titleByView[state.consoleView] || "Workflow Console";
@@ -841,9 +853,11 @@ async function loadGlobalView() {
   try {
     const data = state.consoleView === "evidence-workspace"
       ? await loadEvidenceWorkspacePayload()
-      : state.consoleView === "search"
-        ? await api("/api/search", { method: "POST", body: JSON.stringify({ q: state.searchQuery, limit: 100 }) })
-        : await api(path);
+      : state.consoleView === "operations"
+        ? await loadOperationsPayload()
+        : state.consoleView === "search"
+          ? await api("/api/search", { method: "POST", body: JSON.stringify({ q: state.searchQuery, limit: 100 }) })
+          : await api(path);
     state.lastPayload = data;
     renderGlobalPayload(data);
     setActionStatus("Ready", "ok");
@@ -889,15 +903,75 @@ async function loadEvidenceWorkspacePayload() {
   };
 }
 
+function operationsQueryParams(workflowId = "") {
+  const params = new URLSearchParams();
+  if (workflowId) params.set("workflowId", workflowId);
+  if (state.operationsFilters.kind) params.set("deadLetterKind", state.operationsFilters.kind);
+  if (state.operationsFilters.severity) params.set("deadLetterSeverity", state.operationsFilters.severity);
+  if (state.operationsFilters.status) params.set("deadLetterStatus", state.operationsFilters.status);
+  return params;
+}
+
+function availableValues(rows = [], key) {
+  return new Set(rows.map((row) => String(row?.[key] || "").trim()).filter(Boolean));
+}
+
+function normalizeOperationsFiltersFromPayload(data = {}) {
+  let changed = false;
+  const availableKinds = availableValues(data.deadLetterAvailableSummary || [], "kind");
+  const availableSeverities = availableValues(data.deadLetterAvailableSummary || [], "severity");
+  const availableStatuses = availableValues(data.deadLetterAvailableStatuses || [], "status");
+  if (state.operationsFilters.kind && !availableKinds.has(state.operationsFilters.kind)) {
+    state.operationsFilters.kind = "";
+    changed = true;
+  }
+  if (state.operationsFilters.severity && !availableSeverities.has(state.operationsFilters.severity)) {
+    state.operationsFilters.severity = "";
+    changed = true;
+  }
+  if (state.operationsFilters.status && !availableStatuses.has(state.operationsFilters.status)) {
+    state.operationsFilters.status = "";
+    changed = true;
+  }
+  return changed;
+}
+
+async function loadOperationsPayload() {
+  const workflowId = state.selectedWorkflowId || "";
+  const fetchOperations = () => {
+    const params = operationsQueryParams(workflowId);
+    return api(`/api/operations/summary?${params.toString()}`);
+  };
+  let operations = null;
+  if (workflowId) {
+    const encoded = encodeURIComponent(workflowId);
+    const [firstOperations, detail] = await Promise.all([
+      fetchOperations(),
+      api(`/api/workflows/${encoded}`).catch(() => null)
+    ]);
+    operations = firstOperations;
+    if (normalizeOperationsFiltersFromPayload(operations)) {
+      writeUrlState({ replace: true });
+      operations = await fetchOperations();
+    }
+    state.detail = detail || null;
+    renderDetailHeader();
+    return operations;
+  }
+  operations = await fetchOperations();
+  if (normalizeOperationsFiltersFromPayload(operations)) {
+    writeUrlState({ replace: true });
+    operations = await fetchOperations();
+  }
+  return operations;
+}
+
 function detailPath(workflowId, tab) {
   const encoded = encodeURIComponent(workflowId);
   if (tab === "overview" || tab === "raw") return `/api/workflows/${encoded}`;
   if (tab === "evidence-desk") return `/api/workflows/${encoded}/evidence-desk`;
   if (tab === "operations") {
-    const params = new URLSearchParams({ workflowId });
-    if (state.operationsFilters.kind) params.set("deadLetterKind", state.operationsFilters.kind);
-    if (state.operationsFilters.severity) params.set("deadLetterSeverity", state.operationsFilters.severity);
-    if (state.operationsFilters.status) params.set("deadLetterStatus", state.operationsFilters.status);
+    const params = operationsQueryParams(workflowId);
     return `/api/operations/summary?${params.toString()}`;
   }
   return `/api/workflows/${encoded}/${tab}`;
@@ -910,7 +984,11 @@ async function loadDetail() {
   setDetailBody(emptyState("Loading detail..."));
   setActionStatus("Loading detail...", "neutral");
   try {
-    const data = await api(detailPath(workflowId, state.tab));
+    let data = await api(detailPath(workflowId, state.tab));
+    if (state.tab === "operations" && normalizeOperationsFiltersFromPayload(data)) {
+      writeUrlState({ replace: true });
+      data = await api(detailPath(workflowId, state.tab));
+    }
     if (seq !== state.detailSeq) return;
     state.lastPayload = data;
     if (state.tab === "overview" || state.tab === "raw") state.detail = data;
@@ -1926,6 +2004,13 @@ function renderOutbox(data) {
 function renderOperations(data) {
   const readiness = data.readiness || {};
   const workflow = selectedWorkflow() || {};
+  const workflowId = data.workflowId || state.selectedWorkflowId || "";
+  const scoped = Boolean(workflowId);
+  const reloadOperations = async () => {
+    writeUrlState();
+    if (state.consoleView === "operations") await loadGlobalView();
+    else await loadDetail();
+  };
   const availableDeadLetters = data.deadLetterAvailableSummary || data.deadLetterSummary || [];
   const kindOptions = [
     { value: "", label: "All kinds" },
@@ -1941,12 +2026,18 @@ function renderOperations(data) {
   ];
   const deadLetterFilter = data.deadLetterFilter || {};
   const body = h("div", { className: "stack" }, [
+    section("Operations Scope", h("div", { className: "quick-stats" }, [
+      statCard("Scope", scoped ? "workflow" : "global", scoped ? workflowId : "all workflows"),
+      statCard("Dead Letters", deadLetterFilter.totalAfterFilter ?? (data.deadLetters || []).length, `${deadLetterFilter.returned ?? (data.deadLetters || []).length} shown`),
+      statCard("Operations", (data.workflowOperations || []).length),
+      statCard("Action Mode", "preview-only", "writes hidden unless server policy enables them")
+    ])),
     section("Controlled Intervention Previews", h("div", { className: "copy-block" }, [
       h("div", { className: "actions" }, [
-        h("button", { onClick: () => previewIntervention("workflow.pause.preview") }, "Preview Pause"),
-        h("button", { onClick: () => previewIntervention("workflow.resume.preview") }, "Preview Resume"),
-        h("button", { onClick: () => previewIntervention("workflow.stop.preview") }, "Preview Stop"),
-        h("button", { onClick: () => previewIntervention("workflow.rerun.phase.preview", { phaseKey: workflow.currentPhase || "" }) }, "Preview Rerun Phase")
+        h("button", { disabled: !scoped, title: scoped ? `Workflow ${workflowId}` : "Select or deep-link a workflow to preview workflow-scoped actions.", onClick: scoped ? () => previewIntervention("workflow.pause.preview", {}, workflowId) : undefined }, "Preview Pause"),
+        h("button", { disabled: !scoped, title: scoped ? `Workflow ${workflowId}` : "Select or deep-link a workflow to preview workflow-scoped actions.", onClick: scoped ? () => previewIntervention("workflow.resume.preview", {}, workflowId) : undefined }, "Preview Resume"),
+        h("button", { disabled: !scoped, title: scoped ? `Workflow ${workflowId}` : "Select or deep-link a workflow to preview workflow-scoped actions.", onClick: scoped ? () => previewIntervention("workflow.stop.preview", {}, workflowId) : undefined }, "Preview Stop"),
+        h("button", { disabled: !scoped, title: scoped ? `Workflow ${workflowId}` : "Select or deep-link a workflow to preview workflow-scoped actions.", onClick: scoped ? () => previewIntervention("workflow.rerun.phase.preview", { phaseKey: workflow.currentPhase || "" }, workflowId) : undefined }, "Preview Rerun Phase")
       ]),
       h("p", { className: "muted" }, "Preview only. These controls do not pause, resume, stop, rerun, submit Human Gate, drain runtime, or mutate workflow state.")
     ])),
@@ -1959,21 +2050,21 @@ function renderOperations(data) {
       h("div", { className: "actions" }, [
         optionSelect(state.operationsFilters.kind, kindOptions, async (value) => {
           state.operationsFilters.kind = value;
-          await loadDetail();
+          await reloadOperations();
         }),
         optionSelect(state.operationsFilters.severity, severityOptions, async (value) => {
           state.operationsFilters.severity = value;
-          await loadDetail();
+          await reloadOperations();
         }),
         optionSelect(state.operationsFilters.status, statusOptions, async (value) => {
           state.operationsFilters.status = value;
-          await loadDetail();
+          await reloadOperations();
         }),
         h("button", { onClick: async () => {
           state.operationsFilters.kind = "";
           state.operationsFilters.severity = "";
           state.operationsFilters.status = "";
-          await loadDetail();
+          await reloadOperations();
         } }, "Clear")
       ]),
       h("p", { className: "muted" }, `${present(deadLetterFilter.returned, (data.deadLetters || []).length)} shown / ${present(deadLetterFilter.totalAfterFilter, (data.deadLetters || []).length)} matching / ${present(deadLetterFilter.totalBeforeFilter, (data.deadLetters || []).length)} total`),
@@ -2103,6 +2194,14 @@ async function loadDeadLetterEvidence(row = {}) {
     setActionStatus("Evidence load failed", "critical");
     setDetailBody(h("div", { className: "error" }, error.message));
   }
+}
+
+async function backToOperations() {
+  if (state.consoleView === "operations") {
+    await loadGlobalView();
+    return;
+  }
+  await loadDetail();
 }
 
 async function loadWorkflowEvidencePack(workflowId) {
@@ -2247,6 +2346,7 @@ function renderDeadLetterIncidentPreview(response, sourceData, evidenceOptions =
   const result = response.result || {};
   const humanGateOptions = evidenceOptions?.humanGateOptions || [];
   const catClawAuditOptions = evidenceOptions?.catClawAuditOptions || [];
+  const canCreateIncident = state.consoleView === "workflows" && state.config?.readOnlyMode === false;
   const humanGateInput = evidenceSelect("humanGateId", humanGateOptions, "Select Human Gate evidence", "humanGateId");
   const auditInput = evidenceSelect("catClawAuditId", catClawAuditOptions, "Select Cat Claw audit evidence", "catClawAuditId");
   const reasonInput = h("textarea", {
@@ -2268,7 +2368,7 @@ function renderDeadLetterIncidentPreview(response, sourceData, evidenceOptions =
       { label: "Would Retry", value: result.wouldRetryOrRepair ? "yes" : "no" },
       { label: "Boundary", value: result.wouldMutate ? "incident_state_only" : "-" }
     ])),
-    section("Create Linked Incident", h("div", { className: "form-grid" }, [
+    canCreateIncident ? section("Create Linked Incident", h("div", { className: "form-grid" }, [
       h("label", {}, [
         h("span", {}, "Human Gate"),
         humanGateInput
@@ -2287,7 +2387,9 @@ function renderDeadLetterIncidentPreview(response, sourceData, evidenceOptions =
           onClick: () => executeDeadLetterIncident(sourceData, fields)
         }, "Create Incident")
       ])
-    ])),
+    ])) : section("Create Linked Incident", emptyState(state.consoleView === "operations"
+      ? "Real incident creation is hidden in preview-only Operations. Use Incident Preview to inspect the package; executable writes require the workflow detail console with writes explicitly enabled."
+      : "Real incident creation is hidden while the console is read-only. Use Incident Preview to inspect the package; executable writes require startup policy to enable writes.")),
     section("Evidence Options", evidenceOptions ? h("div", { className: "content-grid" }, [
       renderTable([
         { label: "Human Gate", key: "id" },
@@ -2318,7 +2420,7 @@ function renderDeadLetterEvidence(data) {
   const body = h("div", { className: "stack" }, [
     section("Dead-Letter Evidence", h("div", { className: "copy-block" }, [
       h("div", { className: "actions" }, [
-        h("button", { onClick: () => loadDetail() }, "Back to Operations"),
+        h("button", { onClick: () => backToOperations() }, "Back to Operations"),
         h("button", { disabled: !data.workflowId, onClick: () => loadWorkflowEvidencePack(data.workflowId) }, "Workflow Pack"),
         h("button", { disabled: !incidentCandidate, onClick: () => previewDeadLetterIncident(data) }, "Incident Preview"),
         h("button", { onClick: () => downloadJson(filename, data) }, "Download JSON")
@@ -3229,6 +3331,10 @@ async function executeCloseoutHumanGateRequest(preview, fields) {
 document.querySelectorAll(".view-tabs button[data-console-view]").forEach((button) => {
   button.addEventListener("click", async () => {
     state.consoleView = button.dataset.consoleView;
+    if (state.consoleView === "operations") {
+      state.selectedWorkflowId = "";
+      state.detail = null;
+    }
     setViewButtons();
     writeUrlState();
     if (state.consoleView === "workflows") {
