@@ -925,8 +925,8 @@ Implemented Slice A: Global Search
 - The console topbar now has a global search form; results include Open, Copy
   Id, and Copy Workflow controls.
 - Current result sorting prioritizes exact id/workflow matches, then id/ref
-  matches, then newest event time. Full saved-filter URL state and detail
-  drawers remain future v0.8 work.
+  matches, then newest event time. Full saved-filter URL state remains future
+  v0.8 work.
 
 Validation recorded for this slice:
 
@@ -966,6 +966,31 @@ Validation recorded for this slice:
   mobile Agent Board card rendering, and mobile drawer rendering at `390x844`.
   The mobile page-level `scrollWidth` matched viewport width with no detected
   overflowing elements.
+
+Implemented Slice C: Saved Filters, URL State, And Sorting Controls
+
+- Added shared workbench controls to Agent Board, Workflow Kanban, and Global
+  Search. Saved filters cover all, blocked, stale ACK, waiting receipt, waiting
+  Human, and failed delivery.
+- Added severity filtering and age/severity sorting controls. Sorting and
+  filtering are derived client-side from already-redacted read-model payloads;
+  they do not mutate workflow business state.
+- Added URL-reflected state for `console`, `workflow`, `tab`, `q`, `filter`,
+  `severity`, and `sort`. Filtered Agent Board, Kanban, and Search links can
+  be refreshed or shared and restore the same operator view.
+- Added visible shown/total counters and filtered summary cards so operators
+  can tell whether they are looking at the full read model or a narrowed view.
+- Mobile controls collapse into a one-column layout and keep page-level width
+  within a 390px viewport.
+
+Validation recorded for this slice:
+
+- `npm run check`
+- `git diff --check`
+- Local Playwright smoke against `http://127.0.0.1:18799` with temporary
+  workflow fixtures, covering Agent Board saved filter URL restore, Search
+  query/filter/sort URL state, Kanban saved filter URL state, select visual
+  state restoration from URL, and mobile `390x844` no-overflow checks.
 
 ### v0.9: Evidence And Incident Workspace
 
@@ -1053,6 +1078,8 @@ Frontend smoke:
   controls, raw JSON, and workflow navigation without mutation;
 - verify mobile Agent Board uses cards instead of requiring horizontal table
   reading, and drawers do not create page-level horizontal overflow;
+- verify saved filters, severity filters, age/severity sorting, URL refresh
+  restore, and browser back/forward behavior in Agent Board, Kanban, and Search;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1076,8 +1103,10 @@ unless plugin runtime loading changes require it separately.
   still preview-first and audit-first.
 - v0.8 Slice A implements global search and copy/open controls. Slice B
   implements Agent/Kanban detail drawers and mobile Agent Board cards.
-  Remaining v0.8 work should focus on saved filters, URL-reflected filter
-  state, and expanded severity/age sorting controls.
+  Slice C implements saved filters, URL-reflected filter state, and expanded
+  severity/age sorting controls. Remaining v0.8 work should focus on
+  hardening filter semantics against richer production fixtures and adding any
+  missing shareable deep links from Command Center blockers.
 - v0.9 should package evidence and incidents for Cat Claw / Flashcat review.
 - v1.0 is the operator-grade baseline: integrated triage, registry-first agent
   workbench, derived Kanban, evidence packages, governed previews, redaction,

@@ -125,6 +125,53 @@ code {
   line-height: 1.4;
 }
 
+.workbench-controls {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px;
+  background: #ffffff;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.filter-preset-group,
+.filter-selects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.filter-preset-group button,
+.filter-selects button,
+.filter-selects select {
+  min-height: 32px;
+  font-size: 12px;
+}
+
+.filter-selects select {
+  max-width: 160px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 6px 8px;
+}
+
+.filter-count {
+  min-width: 52px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
 .layout {
   height: calc(100vh - 76px);
   display: grid;
@@ -709,6 +756,20 @@ code {
 
   .search-actions {
     justify-content: flex-start;
+  }
+
+  .workbench-controls {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .filter-selects select {
+    flex: 1 1 130px;
+    max-width: none;
+  }
+
+  .filter-count {
+    justify-self: flex-start;
   }
 
   .agent-table-view {

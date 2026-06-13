@@ -10,12 +10,47 @@ const state = {
   lastPayload: null,
   detailSeq: 0,
   searchQuery: "",
+  workbenchFilter: "all",
+  severityFilter: "all",
+  sortMode: "age_desc",
   operationsFilters: {
     kind: "",
     severity: "",
     status: ""
   }
 };
+
+const CONSOLE_VIEWS = new Set(["command-center", "agent-board", "kanban", "workflows", "search"]);
+const WORKBENCH_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "blocked", label: "Blocked" },
+  { id: "stale_ack", label: "Stale ACK" },
+  { id: "waiting_receipt", label: "Waiting Receipt" },
+  { id: "waiting_human", label: "Waiting Human" },
+  { id: "failed_delivery", label: "Failed Delivery" }
+];
+const SEVERITY_FILTERS = [
+  { value: "all", label: "All severity" },
+  { value: "critical", label: "Critical" },
+  { value: "warning", label: "Warning" },
+  { value: "ok", label: "OK" },
+  { value: "neutral", label: "Neutral" }
+];
+const SORT_MODES = [
+  { value: "age_desc", label: "Newest first" },
+  { value: "age_asc", label: "Oldest first" },
+  { value: "severity_desc", label: "Severity high" },
+  { value: "severity_asc", label: "Severity low" }
+];
+const SEVERITY_RANK = {
+  critical: 4,
+  warning: 3,
+  ok: 2,
+  neutral: 1,
+  info: 1
+};
+
+let suppressUrlWrite = false;
 
 const STATUS_TONES = {
   active: "ok",
@@ -114,6 +149,12 @@ function formatDate(value) {
   return String(value).replace("T", " ").replace(/\.\d+Z$/, "Z");
 }
 
+function timestampValue(value) {
+  if (!value) return 0;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : 0;
+}
+
 function toneFor(value) {
   return STATUS_TONES[String(value || "").toLowerCase()] || "neutral";
 }
@@ -189,9 +230,195 @@ function statCard(label, value, detail = "") {
 }
 
 function optionSelect(value, options = [], onChange) {
-  return h("select", { value, onChange: (event) => onChange(event.target.value) }, options.map((option) => (
+  const select = h("select", { onChange: (event) => onChange(event.target.value) }, options.map((option) => (
     h("option", { value: option.value }, option.label)
   )));
+  select.value = value;
+  return select;
+}
+
+function normalizeChoice(value, allowed, fallback) {
+  const text = String(value || "").trim();
+  return allowed.includes(text) ? text : fallback;
+}
+
+function readUrlState() {
+  const params = new URLSearchParams(window.location.search);
+  const consoleView = params.get("console");
+  state.consoleView = CONSOLE_VIEWS.has(consoleView)
+    ? consoleView
+    : params.get("workflow") ? "workflows" : "command-center";
+  state.view = normalizeChoice(params.get("wfView"), ["active", "waiting_human", "blocked", "paused", "updated_24h"], "active");
+  state.selectedWorkflowId = params.get("workflow") || "";
+  state.tab = params.get("tab") || "overview";
+  state.searchQuery = params.get("q") || "";
+  state.workbenchFilter = normalizeChoice(params.get("filter"), WORKBENCH_FILTERS.map((item) => item.id), "all");
+  state.severityFilter = normalizeChoice(params.get("severity"), SEVERITY_FILTERS.map((item) => item.value), "all");
+  state.sortMode = normalizeChoice(params.get("sort"), SORT_MODES.map((item) => item.value), "age_desc");
+  $("#globalSearchInput").value = state.searchQuery;
+}
+
+function writeUrlState({ replace = false } = {}) {
+  if (suppressUrlWrite) return;
+  const params = new URLSearchParams();
+  if (state.consoleView !== "command-center") params.set("console", state.consoleView);
+  if (state.view !== "active") params.set("wfView", state.view);
+  if (state.consoleView === "workflows" && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
+  if (state.consoleView === "workflows" && state.tab !== "overview") params.set("tab", state.tab);
+  if (state.consoleView === "search" && state.searchQuery) params.set("q", state.searchQuery);
+  if (isWorkbenchView() && state.workbenchFilter !== "all") params.set("filter", state.workbenchFilter);
+  if (isWorkbenchView() && state.severityFilter !== "all") params.set("severity", state.severityFilter);
+  if (isWorkbenchView() && state.sortMode !== "age_desc") params.set("sort", state.sortMode);
+  const query = params.toString();
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+  const method = replace ? "replaceState" : "pushState";
+  if (nextUrl !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+    window.history[method]({}, "", nextUrl);
+  }
+}
+
+function isWorkbenchView() {
+  return ["agent-board", "kanban", "search"].includes(state.consoleView);
+}
+
+function recordText(record = {}) {
+  return [
+    record.kind,
+    record.id,
+    record.title,
+    record.summary,
+    record.status,
+    record.column,
+    record.source,
+    record.sourceId,
+    record.workflowId,
+    record.agentId,
+    record.runtime,
+    record.dispatchId,
+    record.flowId,
+    record.outboxId,
+    record.humanGateId,
+    record.artifactRef,
+    record.receiptRef,
+    record.currentStage,
+    record.staleKind,
+    record.blockedReason,
+    record.latest?.kind,
+    record.latest?.status,
+    record.currentState?.status,
+    record.currentState?.currentStage,
+    record.currentState?.staleKind,
+    record.currentState?.blockedReason,
+    ...(record.missingEvidence || []),
+    ...(record.attentionFlags || []).flatMap((flag) => [flag.key, flag.severity, flag.detail]),
+    ...(record.matchFields || [])
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function recordSeverity(record = {}) {
+  const flagSeverity = (record.attentionFlags || [])
+    .map((flag) => toneFor(flag.severity || flag.key))
+    .sort((a, b) => (SEVERITY_RANK[b] || 0) - (SEVERITY_RANK[a] || 0))[0];
+  if (flagSeverity) return flagSeverity;
+  if (record.severity) return toneFor(record.severity);
+  const column = String(record.column || "").toLowerCase();
+  if (["blocked", "failed"].includes(column)) return "critical";
+  if (["queued", "dispatched", "working", "waiting_receipt", "waiting_human"].includes(column)) return "warning";
+  if ((record.missingEvidence || []).length) return "warning";
+  if (record.currentState?.staleKind || record.staleKind) return "warning";
+  return toneFor(record.attentionLevel || record.status || column);
+}
+
+function recordUpdatedAt(record = {}) {
+  return record.latest?.lastEventAt
+    || record.lastEventAt
+    || record.updatedAt
+    || record.createdAt
+    || record.currentState?.lastEventAt
+    || record.currentState?.updatedAt
+    || record.latest?.lastEventAt
+    || "";
+}
+
+function matchesWorkbenchFilter(record = {}) {
+  const filter = state.workbenchFilter;
+  if (filter === "all") return true;
+  const text = recordText(record);
+  const status = String(record.status || record.column || record.attentionLevel || "").toLowerCase();
+  const column = String(record.column || "").toLowerCase();
+  const source = String(record.source || record.kind || "").toLowerCase();
+  const staleKind = String(record.staleKind || record.currentState?.staleKind || "").toLowerCase();
+  const missingEvidence = (record.missingEvidence || []).map((item) => String(item || "").toLowerCase());
+  if (filter === "blocked") {
+    return ["blocked", "failed", "critical", "dead_letter"].some((token) => status.includes(token) || column.includes(token) || text.includes(token));
+  }
+  if (filter === "stale_ack") return staleKind === "ack_only" || text.includes("ack_only") || text.includes("ack-only") || text.includes("mechanical_ack");
+  if (filter === "waiting_receipt") {
+    return column === "waiting_receipt"
+      || staleKind === "receipt_missing"
+      || missingEvidence.some((item) => ["delivery_receipt", "runtime_receipt", "artifact_or_receipt", "receipt_or_artifact", "receipt"].includes(item))
+      || text.includes("waiting receipt")
+      || text.includes("missing receipt")
+      || text.includes("receipt_required");
+  }
+  if (filter === "waiting_human") return column === "waiting_human" || status.includes("waiting_human") || text.includes("human_gate") || text.includes("human gate") || text.includes("feedback waiting");
+  if (filter === "failed_delivery") return source === "telegram_outbox" && status.includes("failed") || text.includes("telegram_failed") || text.includes("failed delivery") || text.includes("delivery failed") || (text.includes("telegram") && status.includes("failed"));
+  return true;
+}
+
+function matchesSeverityFilter(record = {}) {
+  return state.severityFilter === "all" || recordSeverity(record) === state.severityFilter;
+}
+
+function sortWorkbenchRecords(records = []) {
+  const copy = [...records];
+  return copy.sort((a, b) => {
+    const severityDelta = (SEVERITY_RANK[recordSeverity(b)] || 0) - (SEVERITY_RANK[recordSeverity(a)] || 0);
+    const timeDelta = timestampValue(recordUpdatedAt(b)) - timestampValue(recordUpdatedAt(a));
+    if (state.sortMode === "severity_desc") return severityDelta || timeDelta;
+    if (state.sortMode === "severity_asc") return -severityDelta || timeDelta;
+    if (state.sortMode === "age_asc") return -timeDelta || severityDelta;
+    return timeDelta || severityDelta;
+  });
+}
+
+function applyWorkbench(records = []) {
+  return sortWorkbenchRecords(records.filter((record) => matchesWorkbenchFilter(record) && matchesSeverityFilter(record)));
+}
+
+function renderWorkbenchControls({ total = 0, shown = 0 } = {}) {
+  if (!isWorkbenchView()) return null;
+  return h("div", { className: "workbench-controls" }, [
+    h("div", { className: "filter-preset-group", role: "group", "aria-label": "Saved filters" }, WORKBENCH_FILTERS.map((filter) => h("button", {
+      type: "button",
+      className: filter.id === state.workbenchFilter ? "active" : "",
+      onClick: () => {
+        state.workbenchFilter = filter.id;
+        writeUrlState();
+        renderGlobalPayload(state.lastPayload);
+      }
+    }, filter.label))),
+    h("div", { className: "filter-selects" }, [
+      optionSelect(state.severityFilter, SEVERITY_FILTERS, (value) => {
+        state.severityFilter = value;
+        writeUrlState();
+        renderGlobalPayload(state.lastPayload);
+      }),
+      optionSelect(state.sortMode, SORT_MODES, (value) => {
+        state.sortMode = value;
+        writeUrlState();
+        renderGlobalPayload(state.lastPayload);
+      }),
+      h("button", { type: "button", onClick: () => {
+        state.workbenchFilter = "all";
+        state.severityFilter = "all";
+        state.sortMode = "age_desc";
+        writeUrlState();
+        renderGlobalPayload(state.lastPayload);
+      } }, "Reset")
+    ]),
+    h("div", { className: "filter-count" }, `${shown}/${total}`)
+  ]);
 }
 
 function selectedWorkflow() {
@@ -547,13 +774,22 @@ async function selectWorkflow(workflowId) {
   state.selectedWorkflowId = workflowId;
   state.detail = null;
   setViewButtons();
+  writeUrlState();
   renderWorkflowList();
   renderDetailHeader();
   await loadDetail();
 }
 
+function renderGlobalPayload(data) {
+  if (state.consoleView === "agent-board") renderAgentBoard(data);
+  else if (state.consoleView === "kanban") renderKanban(data);
+  else if (state.consoleView === "search") renderSearchResults(data);
+  else renderCommandCenter(data);
+}
+
 async function loadGlobalView() {
   setViewButtons();
+  writeUrlState();
   $("#previewButton").disabled = true;
   const titleByView = {
     "command-center": "Command Center",
@@ -582,10 +818,7 @@ async function loadGlobalView() {
       ? await api("/api/search", { method: "POST", body: JSON.stringify({ q: state.searchQuery, limit: 100 }) })
       : await api(path);
     state.lastPayload = data;
-    if (state.consoleView === "agent-board") renderAgentBoard(data);
-    else if (state.consoleView === "kanban") renderKanban(data);
-    else if (state.consoleView === "search") renderSearchResults(data);
-    else renderCommandCenter(data);
+    renderGlobalPayload(data);
     setActionStatus("Ready", "ok");
   } catch (error) {
     setDetailBody(h("div", { className: "error" }, error.message));
@@ -700,6 +933,7 @@ function renderCommandCenter(data) {
 
 function renderAgentBoard(data) {
   const agents = data.agents || [];
+  const visibleAgents = applyWorkbench(agents);
   const summary = data.summary || {};
   const agentTable = renderTable([
     { label: "Attention", render: (row) => chip(row.attentionLevel || "ok") },
@@ -733,10 +967,12 @@ function renderAgentBoard(data) {
     ]) },
     { label: "Flags", render: (row) => h("div", { className: "chip-list" }, (row.attentionFlags || []).map((flag) => chip(flag.key, flag.severity))) },
     { label: "Inspect", render: (row) => h("button", { type: "button", onClick: () => inspectAgent(row) }, "Inspect") }
-  ], agents, "No runtime agents registered.");
+  ], visibleAgents, "No runtime agents match the current filters.");
   setDetailBody(h("div", { className: "stack" }, [
+    renderWorkbenchControls({ total: agents.length, shown: visibleAgents.length }),
     section("Agent Board Summary", h("div", { className: "quick-stats" }, [
       statCard("Agents", summary.agents || agents.length),
+      statCard("Shown", visibleAgents.length, state.workbenchFilter === "all" && state.severityFilter === "all" ? "unfiltered" : "filtered"),
       statCard("Ready", summary.ready || 0),
       statCard("Working", summary.working || 0),
       statCard("Blocked", summary.blocked || 0),
@@ -745,7 +981,7 @@ function renderAgentBoard(data) {
     ])),
     section("Agents", h("div", { className: "agent-board-surface" }, [
       h("div", { className: "agent-table-view" }, agentTable),
-      h("div", { className: "agent-card-list" }, agents.length ? agents.map(renderAgentCard) : [emptyState("No runtime agents registered.")])
+      h("div", { className: "agent-card-list" }, visibleAgents.length ? visibleAgents.map(renderAgentCard) : [emptyState("No runtime agents match the current filters.")])
     ])),
     section("Raw", h("details", {}, [
       h("summary", {}, "JSON"),
@@ -784,14 +1020,22 @@ function renderAgentCard(agent = {}) {
 
 function renderKanban(data) {
   const columns = data.columns || [];
+  const filteredColumns = columns.map((column) => {
+    const cards = applyWorkbench(column.cards || []);
+    return { ...column, count: cards.length, cards };
+  });
+  const totalCards = columns.reduce((sum, column) => sum + ((column.cards || []).length), 0);
+  const shownCards = filteredColumns.reduce((sum, column) => sum + ((column.cards || []).length), 0);
   setDetailBody(h("div", { className: "stack" }, [
+    renderWorkbenchControls({ total: totalCards, shown: shownCards }),
     section("Kanban Summary", h("div", { className: "quick-stats" }, [
       statCard("Cards", data.summary?.cards || 0),
+      statCard("Shown", shownCards, state.workbenchFilter === "all" && state.severityFilter === "all" ? "unfiltered" : "filtered"),
       statCard("Workflows", data.summary?.workflows || 0),
       statCard("Agents", data.summary?.agents || 0),
       statCard("Source", data.source || "-")
     ])),
-    h("div", { className: "kanban-board" }, columns.map((column) => h("section", { className: "kanban-column" }, [
+    h("div", { className: "kanban-board" }, filteredColumns.map((column) => h("section", { className: "kanban-column" }, [
       h("div", { className: "kanban-head" }, [
         h("strong", {}, column.label),
         chip(column.count || 0, column.count ? "warning" : "neutral")
@@ -867,11 +1111,18 @@ function kanbanPreviewActionSpec(card = {}, action = "") {
 
 function renderSearchResults(data) {
   const results = data.results || [];
-  const byKind = Object.entries(data.summary?.byKind || {}).map(([kind, count]) => ({ kind, count }));
+  const visibleResults = applyWorkbench(results);
+  const byKind = Object.entries(visibleResults.reduce((acc, result) => {
+    const kind = result.kind || "unknown";
+    acc[kind] = (acc[kind] || 0) + 1;
+    return acc;
+  }, {})).map(([kind, count]) => ({ kind, count }));
   setDetailBody(h("div", { className: "stack" }, [
+    renderWorkbenchControls({ total: results.length, shown: visibleResults.length }),
     section("Search Summary", h("div", { className: "quick-stats" }, [
       statCard("Query", data.query?.q || "-", data.summary?.status || ""),
       statCard("Results", data.summary?.total || 0, `${data.summary?.scanned || 0} scanned`),
+      statCard("Shown", visibleResults.length, state.workbenchFilter === "all" && state.severityFilter === "all" ? "unfiltered" : "filtered"),
       statCard("Kinds", byKind.length || 0),
       statCard("Generated", formatDate(data.generatedAt))
     ])),
@@ -879,7 +1130,7 @@ function renderSearchResults(data) {
       { label: "Kind", render: (row) => chip(row.kind, "neutral") },
       { label: "Count", key: "count" }
     ], byKind, "No result types.")),
-    section("Results", results.length ? h("div", { className: "search-results" }, results.map(renderSearchResult)) : emptyState(data.query?.q ? "No matching workflow records." : "Enter a search query.")),
+    section("Results", visibleResults.length ? h("div", { className: "search-results" }, visibleResults.map(renderSearchResult)) : emptyState(data.query?.q ? "No matching workflow records for the current filters." : "Enter a search query.")),
     data.summary?.missingSources?.length ? section("Missing Sources", h("div", { className: "chip-list padded" }, data.summary.missingSources.map((source) => chip(source, "warning")))) : null,
     section("Raw", h("details", {}, [
       h("summary", {}, "JSON"),
@@ -2756,6 +3007,7 @@ document.querySelectorAll(".view-tabs button[data-console-view]").forEach((butto
   button.addEventListener("click", async () => {
     state.consoleView = button.dataset.consoleView;
     setViewButtons();
+    writeUrlState();
     if (state.consoleView === "workflows") {
       if (state.selectedWorkflowId) await loadDetail();
       else await loadWorkflows();
@@ -2771,6 +3023,7 @@ document.querySelectorAll(".view-tabs button[data-view]").forEach((button) => {
     state.view = button.dataset.view;
     state.selectedWorkflowId = "";
     state.detail = null;
+    writeUrlState();
     await loadWorkflows();
   });
 });
@@ -2779,6 +3032,7 @@ document.querySelectorAll(".tabs button").forEach((button) => {
   button.addEventListener("click", async () => {
     state.tab = button.dataset.tab;
     setTabButtons();
+    writeUrlState();
     await loadDetail();
   });
 });
@@ -2788,6 +3042,7 @@ $("#globalSearchForm").addEventListener("submit", async (event) => {
   state.searchQuery = $("#globalSearchInput").value.trim();
   state.consoleView = "search";
   setViewButtons();
+  writeUrlState();
   await loadGlobalView();
 });
 
@@ -2800,7 +3055,20 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeDrawer();
   else if (event.key === "Tab") trapDrawerFocus(event);
 });
+window.addEventListener("popstate", async () => {
+  closeDrawer();
+  suppressUrlWrite = true;
+  try {
+    readUrlState();
+    setViewButtons();
+    setTabButtons();
+    await loadWorkflows();
+  } finally {
+    suppressUrlWrite = false;
+  }
+});
 
+readUrlState();
 setViewButtons();
 setTabButtons();
 try {
