@@ -1238,6 +1238,17 @@ Implemented Slice J: Command Center Diagnostic Matrix
   classifier, scheduler, queue, retry path, runtime actuator, or business-table
   mutation.
 
+Implemented Slice K: System Status Operator-Grade Release Gate
+
+- Added an Operator-Grade Release Gate section to System Status. It summarizes
+  whether the console is currently exposing the v1.0 safety and inspection
+  prerequisites: read-only default, visible action policy, enforced safety
+  boundaries, integrated operator surfaces, redaction policy, runtime health,
+  readiness evidence, and partial endpoint failures.
+- The gate is a status surface, not a deployment authorization or Human Gate.
+  It does not execute release actions, mutate workflow state, restart services,
+  bypass preview policy, or override Flashcat/Cat Claw approval paths.
+
 ## Test Plan
 
 Required checks:
@@ -1307,6 +1318,10 @@ Frontend smoke:
 - verify Command Center diagnostic matrix shows stale dispatch, missing
   receipt, failed Telegram, blocked Human Gate, and runtime failure rows with
   Inspect/Copy Ref controls and mobile-readable wrapping;
+- verify System Status Operator-Grade Release Gate renders read-only default,
+  action policy, safety boundaries, integrated surfaces, redaction, runtime
+  health, readiness evidence, and partial-failure status without exposing write
+  actions;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1348,7 +1363,8 @@ unless plugin runtime loading changes require it separately.
   actions are explainable before execution. Slice I makes the active console
   context and shareable deep link visible at all times. Slice J maps the five
   v1.0 diagnostic classes into a fixed Command Center matrix with read-only
-  Inspect routes.
+  Inspect routes. Slice K exposes an operator-grade release gate in System
+  Status so the console's own safety and inspection prerequisites are visible.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

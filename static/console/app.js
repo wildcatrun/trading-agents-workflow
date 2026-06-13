@@ -1676,6 +1676,7 @@ function renderSystemStatus(data) {
       statCard("Redaction", config.redactionPolicyVersion || "-"),
       statCard("Generated", formatDate(data.generatedAt))
     ])),
+    section("Operator-Grade Release Gate", renderOperatorGradeReleaseGate(data)),
     section("Safety Boundaries", renderTable([
       { label: "Boundary", render: (row) => h("code", {}, row.key || "-") },
       { label: "Status", render: (row) => chip(row.status || "unknown", row.status === "enforced" ? "ok" : "warning") },
@@ -1700,6 +1701,74 @@ function renderSystemStatus(data) {
       jsonBlock({ health, config: { ...config, securityBoundaries: undefined } })
     ]))
   ]));
+}
+
+function operatorGradeReleaseGateRows(data = {}) {
+  const config = data.config || {};
+  const health = data.health || {};
+  const readiness = data.readiness || {};
+  const boundaryKeys = new Set((config.securityBoundaries || []).map((row) => row.key));
+  const boundaryStatus = (key) => (config.securityBoundaries || []).find((row) => row.key === key)?.status || "";
+  const views = new Set(config.allowedConsoleViews || []);
+  const policy = config.operatorPolicy || {};
+  const allBoundaries = ["loopback_default", "host_allowlist", "no_query_token", "cross_origin_mutation_block", "preview_first_actions", "redaction"];
+  const hasViews = ["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "system", "workflows"]
+    .every((view) => views.has(view));
+  const hiddenWrites = ["hidden_read_only", "hidden_without_allow_writes"].includes(policy.writeActions || "");
+  const allowlistedWrites = policy.writeActions === "allowlisted_by_gateway";
+  const previewOnlyHidden = config.actionMode === "preview-only" && hiddenWrites;
+  const readinessStatus = String(readiness.status || "").toLowerCase();
+  const readinessOk = ["ready", "needs_attention"].includes(readinessStatus);
+  return [
+    {
+      gate: "Read-only default",
+      status: previewOnlyHidden ? "pass" : allowlistedWrites ? "warn" : "fail",
+      evidence: previewOnlyHidden ? "Console exposes preview-only controls and executable writes are hidden." : `Mode ${config.actionMode || "unknown"} / ${policy.writeActions || "unknown"}.`
+    },
+    {
+      gate: "Action policy visible",
+      status: policy.previewActions === "allowed" && (hiddenWrites || allowlistedWrites) && policy.auditSurface ? "pass" : "fail",
+      evidence: `${policy.previewActions || "preview unknown"} / ${policy.writeActions || "writes unknown"} / ${policy.auditSurface || "audit unknown"}`
+    },
+    {
+      gate: "Safety boundaries enforced",
+      status: allBoundaries.every((key) => boundaryKeys.has(key) && ["enforced", "browser_enforced", "policy_enabled"].includes(boundaryStatus(key))) ? "pass" : "fail",
+      evidence: allBoundaries.filter((key) => boundaryKeys.has(key)).join(", ") || "No boundary metadata."
+    },
+    {
+      gate: "Operator surfaces integrated",
+      status: hasViews ? "pass" : "fail",
+      evidence: "Command, Activity, Agent Board, Kanban, Evidence, Operations, System, and Workflow detail are registered views."
+    },
+    {
+      gate: "Redaction policy present",
+      status: config.redactionPolicyVersion && boundaryStatus("redaction") === "enforced" ? "pass" : "fail",
+      evidence: config.redactionPolicyVersion || "Missing redaction policy version."
+    },
+    {
+      gate: "Runtime status observable",
+      status: health.ok && health.dbReadable ? "pass" : "fail",
+      evidence: `health=${health.ok ? "ok" : "failed"} db=${health.dbReadable ? "readable" : "unreadable"} schema=${health.schemaVersion || "-"}`
+    },
+    {
+      gate: "Readiness evidence available",
+      status: readinessOk ? "pass" : readinessStatus ? "warn" : "fail",
+      evidence: `${readiness.status || "missing"} ${readiness.checkedAt ? `at ${formatDate(readiness.checkedAt)}` : ""}`.trim()
+    },
+    {
+      gate: "No partial status failures",
+      status: (data.partialFailures || []).length ? "warn" : "pass",
+      evidence: (data.partialFailures || []).length ? `${data.partialFailures.length} endpoint check(s) failed.` : "Config, health, and readiness probes completed."
+    }
+  ];
+}
+
+function renderOperatorGradeReleaseGate(data = {}) {
+  return renderTable([
+    { label: "Gate", key: "gate" },
+    { label: "Status", render: (row) => chip(row.status, row.status === "pass" ? "ok" : row.status === "warn" ? "warning" : "critical") },
+    { label: "Evidence", key: "evidence" }
+  ], operatorGradeReleaseGateRows(data), "No operator-grade release gates.");
 }
 
 function renderAgentBoard(data) {

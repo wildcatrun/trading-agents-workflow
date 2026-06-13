@@ -137,7 +137,9 @@ Current version map:
   explicit in the GUI. Slice I adds an operator context trail with current view,
   workflow, focus, filters, mode, and copyable deep link. Slice J adds a fixed
   Command Center diagnostic matrix for stale dispatch, missing receipt, failed
-  Telegram, blocked Human Gate, and runtime failure inspection paths.
+  Telegram, blocked Human Gate, and runtime failure inspection paths. Slice K
+  adds a System Status release gate for the console's operator-grade safety and
+  inspection prerequisites.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

@@ -60,6 +60,32 @@ function sha256Text(value) {
   return createHash("sha256").update(String(value || "")).digest("hex");
 }
 
+function extractFunctionSource(source, name) {
+  const marker = `function ${name}`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `${name} source should exist`);
+  let parenDepth = 0;
+  let braceStart = -1;
+  for (let index = start; index < source.length; index++) {
+    const char = source[index];
+    if (char === "(") parenDepth += 1;
+    if (char === ")") parenDepth -= 1;
+    if (char === "{" && parenDepth === 0) {
+      braceStart = index;
+      break;
+    }
+  }
+  assert.notEqual(braceStart, -1, `${name} body should start`);
+  let depth = 0;
+  for (let index = braceStart; index < source.length; index++) {
+    const char = source[index];
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
+    if (depth === 0) return source.slice(start, index + 1);
+  }
+  throw new Error(`${name} body did not close`);
+}
+
 function workflowCliJson(args) {
   const output = execFileSync("node", [path.resolve("bin/cat-meeting-governance.mjs"), ...args], { encoding: "utf8" }).trim();
   return output ? JSON.parse(output) : {};
@@ -8224,6 +8250,72 @@ async function testWorkflowConsoleStaticDiagnosticMatrixContract() {
   assert.equal(css.includes("grid-template-columns: repeat(auto-fit, minmax(240px, 1fr))"), true);
 }
 
+async function testWorkflowConsoleStaticOperatorGradeReleaseGateContract() {
+  const app = await fs.readFile(path.join(process.cwd(), "static/console/app.js"), "utf8");
+  assert.equal(app.includes('section("Operator-Grade Release Gate", renderOperatorGradeReleaseGate(data))'), true);
+  assert.equal(app.includes("function operatorGradeReleaseGateRows"), true);
+  assert.equal(app.includes("function renderOperatorGradeReleaseGate"), true);
+  assert.equal(app.includes('gate: "Read-only default"'), true);
+  assert.equal(app.includes('gate: "Action policy visible"'), true);
+  assert.equal(app.includes('gate: "Safety boundaries enforced"'), true);
+  assert.equal(app.includes('gate: "Operator surfaces integrated"'), true);
+  assert.equal(app.includes('gate: "Redaction policy present"'), true);
+  assert.equal(app.includes('gate: "Runtime status observable"'), true);
+  assert.equal(app.includes('gate: "Readiness evidence available"'), true);
+  assert.equal(app.includes('gate: "No partial status failures"'), true);
+  assert.equal(app.includes('["loopback_default", "host_allowlist", "no_query_token", "cross_origin_mutation_block", "preview_first_actions", "redaction"]'), true);
+  assert.equal(app.includes('["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "system", "workflows"]'), true);
+  assert.equal(app.includes('["hidden_read_only", "hidden_without_allow_writes"].includes(policy.writeActions || "")'), true);
+  assert.equal(app.includes('const previewOnlyHidden = config.actionMode === "preview-only" && hiddenWrites'), true);
+  assert.equal(app.includes('policy.writeActions === "allowlisted_by_gateway"'), true);
+
+  const fnSource = extractFunctionSource(app, "operatorGradeReleaseGateRows");
+  const operatorGradeReleaseGateRows = new Function("formatDate", `${fnSource}; return operatorGradeReleaseGateRows;`)((value) => value || "-");
+  const boundaries = ["loopback_default", "host_allowlist", "no_query_token", "cross_origin_mutation_block", "preview_first_actions", "redaction"]
+    .map((key) => ({ key, status: key === "cross_origin_mutation_block" ? "browser_enforced" : "enforced", detail: key }));
+  const baseConfig = {
+    actionMode: "preview-only",
+    readOnlyMode: false,
+    operatorPolicy: {
+      previewActions: "allowed",
+      writeActions: "hidden_without_allow_writes",
+      auditSurface: "workflow_operations"
+    },
+    allowedConsoleViews: ["command-center", "activity", "agent-board", "kanban", "evidence-workspace", "operations", "system", "workflows"],
+    redactionPolicyVersion: "workflow_console_redaction_v1",
+    securityBoundaries: boundaries
+  };
+  const baseData = {
+    config: baseConfig,
+    health: { ok: true, dbReadable: true, schemaVersion: "14" },
+    readiness: { status: "ready", checkedAt: "2026-06-13T00:00:00.000Z", findingCount: 0 },
+    partialFailures: []
+  };
+  const rows = operatorGradeReleaseGateRows(baseData);
+  assert.equal(rows.find((row) => row.gate === "Read-only default")?.status, "pass");
+  assert.equal(rows.find((row) => row.gate === "No partial status failures")?.status, "pass");
+  assert.equal(rows.find((row) => row.gate === "Readiness evidence available")?.status, "pass");
+
+  const allowlistedRows = operatorGradeReleaseGateRows({
+    ...baseData,
+    config: {
+      ...baseConfig,
+      actionMode: "allowlisted",
+      operatorPolicy: { ...baseConfig.operatorPolicy, writeActions: "allowlisted_by_gateway" }
+    }
+  });
+  assert.equal(allowlistedRows.find((row) => row.gate === "Read-only default")?.status, "warn");
+  assert.equal(allowlistedRows.find((row) => row.gate === "Action policy visible")?.status, "pass");
+
+  const partialFailureRows = operatorGradeReleaseGateRows({ ...baseData, partialFailures: [{ path: "/health", message: "failed" }] });
+  assert.equal(partialFailureRows.find((row) => row.gate === "No partial status failures")?.status, "warn");
+
+  const missingReadinessRows = operatorGradeReleaseGateRows({ ...baseData, readiness: { status: "", findingCount: 0 } });
+  assert.equal(missingReadinessRows.find((row) => row.gate === "Readiness evidence available")?.status, "fail");
+  const notReadyRows = operatorGradeReleaseGateRows({ ...baseData, readiness: { status: "not_ready", findingCount: 2 } });
+  assert.equal(notReadyRows.find((row) => row.gate === "Readiness evidence available")?.status, "warn");
+}
+
 try {
   requireSqliteCli();
   const tests = [
@@ -8275,6 +8367,7 @@ try {
     ["workflow console config operator policy modes", testWorkflowConsoleConfigOperatorPolicyModes],
     ["workflow console static context trail contract", testWorkflowConsoleStaticContextTrailContract],
     ["workflow console static diagnostic matrix contract", testWorkflowConsoleStaticDiagnosticMatrixContract],
+    ["workflow console static operator-grade release gate contract", testWorkflowConsoleStaticOperatorGradeReleaseGateContract],
     ["workflow console agentic surfaces", testWorkflowConsoleAgenticSurfaces],
     ["workflow health terminal failed dispatch degraded", testWorkflowHealthTerminalFailedDispatchIsDegraded],
     ["workflow health open incidents visible", testWorkflowHealthOpenIncidentsAreVisible],
