@@ -850,6 +850,41 @@ Acceptance:
 - preview failures are visible and auditable;
 - mobile can open and read preview packages.
 
+### v0.7 Slice A Implementation Status
+
+Status: implemented as governed preview action surfacing.
+
+Delivered:
+
+- Kanban cards now render preview buttons from card-level `previewActions`.
+- Dispatch-card rerun preview is mapped to the allowlisted
+  `workflow.rerun.agent.preview` action with `dispatchId` payload; the old
+  non-allowlisted `workflow.rerun.dispatch.preview` name is no longer emitted
+  by the read model.
+- Kanban card actions require the card's own `workflowId`; they do not fall
+  back to the currently selected workflow, avoiding cross-card/global-board
+  preview misbinding.
+- Telegram outbox cards expose delivery and requeue previews when an `outboxId`
+  is present.
+- Evidence Desk now has a Governed Preview Actions section for supervise
+  preview, evidence pack opening, incident closeout previews, and outbox
+  delivery/requeue previews where applicable.
+- Preview action mapping is isolated in `static/console/preview-actions.js` so
+  browser behavior and Node regression tests share the same action model.
+- Static frontend modules are included in `npm run check`.
+
+Validation recorded for this slice:
+
+- `npm run check`
+- `node scripts/workflow_regression_tests.mjs`
+- `git diff --check`
+- Local Playwright smoke against `http://127.0.0.1:18796` with temporary
+  workflow fixtures, covering Kanban preview buttons, rerun preview execution,
+  and Evidence Desk governed preview actions on desktop/mobile viewports.
+- Independent reviewer `Goodall` checked action routing and confirmed there is
+  no bypass of `WorkflowActionGateway`; required fixes for workflow-id binding
+  and UI mapping regression coverage were applied before commit.
+
 ### v0.8: Agentic Workbench UX
 
 Goal: make the operator path fast enough for real incident handling.
