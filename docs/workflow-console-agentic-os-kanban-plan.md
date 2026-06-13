@@ -1012,6 +1012,40 @@ Acceptance:
 - every package links back to raw source refs and audit rows;
 - package export is redacted and timestamped.
 
+Implemented Slice A: Top-Level Evidence Workspace
+
+- Added a dedicated Evidence console view between Kanban and Workflows. The
+  view keeps the selected workflow in URL state so an operator can refresh or
+  share `console=evidence-workspace&workflow=<id>`.
+- The workspace assembles the existing workflow evidence desk, evidence pack,
+  and incident closeout read models into one review surface. It does not add
+  new business-state writes.
+- Missing evidence appears before approval-oriented sections. Review readiness
+  summarizes Cat Claw audit readiness, Human Gate submission readiness, receipt
+  presence, Human Gate records/buttons, checkpoints, artifacts, and sent outbox
+  evidence.
+- Evidence pack manifest counts, source refs, incident package previews, and a
+  compressed latest-first timeline are visible on the same page.
+- Export downloads the already redacted Evidence workspace aggregate
+  (`workflow_console_evidence_workspace.v1`) as a timestamped JSON bundle for
+  Cat Claw / Flashcat review; the underlying Evidence Pack tab keeps its own
+  timestamped pack-only export.
+
+Validation recorded for this slice:
+
+- `npm run check`
+- `git diff --check`
+- `node scripts/workflow_regression_tests.mjs`
+- Local Playwright smoke against `http://127.0.0.1:18800` with a temporary
+  workflow fixture, covering Evidence workspace URL deep link restore,
+  workflow header hydration for workflows outside the current left-queue view,
+  missing-evidence-first ordering, rollback/pause/stop boundary rendering,
+  full workspace JSON export control, underlying Evidence Pack tab navigation,
+  visible timeline text cleanup, and mobile `390x844` no-overflow checks.
+- Independent reviewer `Lagrange` found required fixes for workspace export
+  scope, Human Gate pause/stop control derivation, and timestamped pack-only
+  export filenames; fixes were applied before commit.
+
 ### v1.0: Operator-Grade Workflow Console
 
 Goal: reach a stable console baseline comparable to mainstream agent control
@@ -1080,6 +1114,9 @@ Frontend smoke:
   reading, and drawers do not create page-level horizontal overflow;
 - verify saved filters, severity filters, age/severity sorting, URL refresh
   restore, and browser back/forward behavior in Agent Board, Kanban, and Search;
+- verify Evidence workspace loads from URL state, lists missing evidence before
+  Human Gate readiness, exposes source refs, opens underlying Evidence Desk /
+  Pack / Incident tabs, and downloads the redacted workspace bundle JSON;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1089,7 +1126,8 @@ Development-server smoke:
 - start console as a separate read-only process on `127.0.0.1:8791`;
 - access through the existing local tunnel `127.0.0.1:18791`;
 - verify `/health`, `/api/config`, `/api/command-center`,
-  `/api/agent-board`, and `/api/kanban`.
+  `/api/agent-board`, `/api/kanban`, and a workflow-scoped
+  `/api/workflows/<workflowId>/evidence-pack`.
 
 Gateway restart is not required for console-only static/read-model changes
 unless plugin runtime loading changes require it separately.
@@ -1104,10 +1142,13 @@ unless plugin runtime loading changes require it separately.
 - v0.8 Slice A implements global search and copy/open controls. Slice B
   implements Agent/Kanban detail drawers and mobile Agent Board cards.
   Slice C implements saved filters, URL-reflected filter state, and expanded
-  severity/age sorting controls. Remaining v0.8 work should focus on
-  hardening filter semantics against richer production fixtures and adding any
-  missing shareable deep links from Command Center blockers.
-- v0.9 should package evidence and incidents for Cat Claw / Flashcat review.
+  severity/age sorting controls.
+- v0.9 Slice A implements the top-level Evidence workspace that packages
+  workflow evidence desk, evidence pack, incident closeout, readiness, missing
+  evidence, compressed timeline, source refs, and redacted export for Cat Claw /
+  Flashcat review. Remaining v0.9 work should harden package semantics against
+  richer production incidents and expand raw audit-row links where the read
+  model exposes stable row anchors.
 - v1.0 is the operator-grade baseline: integrated triage, registry-first agent
   workbench, derived Kanban, evidence packages, governed previews, redaction,
   audit, and mobile inspection.

@@ -108,12 +108,14 @@ Current version map:
   backfill.
 - v0.7: implemented governed preview actions in Kanban and Evidence Desk,
   routed through `WorkflowActionGateway`.
-- v0.8: in progress as Agentic Workbench UX. Slice A global search, Slice B
-  Agent/Kanban detail drawers plus mobile Agent Board cards, and Slice C saved
-  filters / URL-reflected filters / severity-age sorting controls are
-  implemented; remaining work focuses on production-fixture hardening and
-  shareable deep links from Command Center blockers.
-- v0.9: planned Evidence and Incident Workspace for reviewable packages.
+- v0.8: implemented Agentic Workbench UX slices: global search, Agent/Kanban
+  detail drawers, mobile Agent Board cards, saved filters, URL-reflected
+  filters, and severity-age sorting controls.
+- v0.9: in progress as Evidence and Incident Workspace. Slice A adds a
+  top-level Evidence view that assembles workflow evidence desk, evidence pack,
+  incident closeout, Human Gate readiness, missing evidence, compressed
+  timeline, source refs, and timestamped workspace JSON export into one review
+  surface.
 - v1.0: planned operator-grade baseline comparable to mainstream agent control
   planes while preserving trading-system safety boundaries.
 

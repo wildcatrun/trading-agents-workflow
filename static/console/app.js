@@ -20,7 +20,7 @@ const state = {
   }
 };
 
-const CONSOLE_VIEWS = new Set(["command-center", "agent-board", "kanban", "workflows", "search"]);
+const CONSOLE_VIEWS = new Set(["command-center", "agent-board", "kanban", "evidence-workspace", "workflows", "search"]);
 const WORKBENCH_FILTERS = [
   { id: "all", label: "All" },
   { id: "blocked", label: "Blocked" },
@@ -149,6 +149,18 @@ function formatDate(value) {
   return String(value).replace("T", " ").replace(/\.\d+Z$/, "Z");
 }
 
+function displayText(value, limit = 180) {
+  if (value && typeof value === "object") {
+    try {
+      return short(JSON.stringify(value), limit);
+    } catch {
+      return short(String(value), limit);
+    }
+  }
+  if (String(value || "").trim() === "[object Object]") return "Structured timeline note";
+  return short(value, limit);
+}
+
 function timestampValue(value) {
   if (!value) return 0;
   const time = Date.parse(value);
@@ -263,7 +275,7 @@ function writeUrlState({ replace = false } = {}) {
   const params = new URLSearchParams();
   if (state.consoleView !== "command-center") params.set("console", state.consoleView);
   if (state.view !== "active") params.set("wfView", state.view);
-  if (state.consoleView === "workflows" && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
+  if (["workflows", "evidence-workspace"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
   if (state.consoleView === "workflows" && state.tab !== "overview") params.set("tab", state.tab);
   if (state.consoleView === "search" && state.searchQuery) params.set("q", state.searchQuery);
   if (isWorkbenchView() && state.workbenchFilter !== "all") params.set("filter", state.workbenchFilter);
@@ -753,7 +765,7 @@ async function loadWorkflows() {
   if (!state.selectedWorkflowId && state.workflows[0]) {
     state.selectedWorkflowId = state.workflows[0].workflowId;
   }
-  if (state.selectedWorkflowId && !state.workflows.some((item) => item.workflowId === state.selectedWorkflowId)) {
+  if (state.consoleView === "workflows" && state.selectedWorkflowId && !state.workflows.some((item) => item.workflowId === state.selectedWorkflowId)) {
     state.selectedWorkflowId = state.workflows[0]?.workflowId || "";
     state.detail = null;
   }
@@ -769,6 +781,16 @@ async function loadWorkflows() {
 
 async function selectWorkflow(workflowId) {
   const wasGlobal = state.consoleView !== "workflows";
+  if (state.consoleView === "evidence-workspace") {
+    state.selectedWorkflowId = workflowId;
+    state.detail = null;
+    setViewButtons();
+    writeUrlState();
+    renderWorkflowList();
+    renderDetailHeader();
+    await loadGlobalView();
+    return;
+  }
   state.consoleView = "workflows";
   if (state.selectedWorkflowId === workflowId && !wasGlobal) return;
   state.selectedWorkflowId = workflowId;
@@ -783,6 +805,7 @@ async function selectWorkflow(workflowId) {
 function renderGlobalPayload(data) {
   if (state.consoleView === "agent-board") renderAgentBoard(data);
   else if (state.consoleView === "kanban") renderKanban(data);
+  else if (state.consoleView === "evidence-workspace") renderEvidenceWorkspace(data);
   else if (state.consoleView === "search") renderSearchResults(data);
   else renderCommandCenter(data);
 }
@@ -795,12 +818,14 @@ async function loadGlobalView() {
     "command-center": "Command Center",
     "agent-board": "Agent Board",
     kanban: "Workflow Kanban",
+    "evidence-workspace": "Evidence Workspace",
     search: "Global Search"
   };
   const subtitleByView = {
     "command-center": "Global readiness, queue, runtime, communication and evidence summary.",
     "agent-board": "Registry-first agent runtime, dispatchability, current work and attention view.",
     kanban: "Derived read-only board over workflow, dispatch, runtime, message_flow, outbox and Human Gate state.",
+    "evidence-workspace": "Workflow evidence package, incident closeout, Human Gate readiness and export surface.",
     search: "Search workflow, dispatch, agent, message_flow, artifact, Human Gate and incident anchors."
   };
   $("#detailTitle").textContent = titleByView[state.consoleView] || "Workflow Console";
@@ -814,9 +839,11 @@ async function loadGlobalView() {
       ? "/api/kanban"
       : "/api/command-center";
   try {
-    const data = state.consoleView === "search"
-      ? await api("/api/search", { method: "POST", body: JSON.stringify({ q: state.searchQuery, limit: 100 }) })
-      : await api(path);
+    const data = state.consoleView === "evidence-workspace"
+      ? await loadEvidenceWorkspacePayload()
+      : state.consoleView === "search"
+        ? await api("/api/search", { method: "POST", body: JSON.stringify({ q: state.searchQuery, limit: 100 }) })
+        : await api(path);
     state.lastPayload = data;
     renderGlobalPayload(data);
     setActionStatus("Ready", "ok");
@@ -824,6 +851,42 @@ async function loadGlobalView() {
     setDetailBody(h("div", { className: "error" }, error.message));
     setActionStatus("Error", "critical");
   }
+}
+
+async function loadEvidenceWorkspacePayload() {
+  const workflowId = state.selectedWorkflowId || state.workflows[0]?.workflowId || "";
+  if (!workflowId) {
+    return {
+      schemaVersion: "workflow_console_evidence_workspace.v1",
+      generatedAt: new Date().toISOString(),
+      workflowId: "",
+      status: "no_workflow_selected",
+      evidenceDesk: null,
+      evidencePack: null,
+      incidentCloseout: null
+    };
+  }
+  state.selectedWorkflowId = workflowId;
+  writeUrlState();
+  renderWorkflowList();
+  renderDetailHeader();
+  const encoded = encodeURIComponent(workflowId);
+  const [evidenceDesk, evidencePack, incidentCloseout] = await Promise.all([
+    api(`/api/workflows/${encoded}/evidence-desk`),
+    api(`/api/workflows/${encoded}/evidence-pack`),
+    api(`/api/workflows/${encoded}/incident-closeout`)
+  ]);
+  state.detail = evidencePack.workflow || evidenceDesk.workflow || null;
+  renderDetailHeader();
+  return {
+    schemaVersion: "workflow_console_evidence_workspace.v1",
+    generatedAt: new Date().toISOString(),
+    workflowId,
+    status: evidenceDesk.status || incidentCloseout.status || "ready",
+    evidenceDesk,
+    evidencePack,
+    incidentCloseout
+  };
 }
 
 function detailPath(workflowId, tab) {
@@ -859,6 +922,20 @@ async function loadDetail() {
     setDetailBody(h("div", { className: "error" }, error.message));
     setActionStatus("Error", "critical");
   }
+}
+
+async function openWorkflowTab(workflowId, tab = "overview") {
+  if (!workflowId) return;
+  state.consoleView = "workflows";
+  state.selectedWorkflowId = workflowId;
+  state.tab = tab;
+  state.detail = null;
+  setViewButtons();
+  setTabButtons();
+  writeUrlState();
+  renderWorkflowList();
+  renderDetailHeader();
+  await loadDetail();
 }
 
 function renderCurrentTab(data) {
@@ -1537,7 +1614,7 @@ function renderTimeline(data) {
           h("strong", {}, event.title),
           chip(event.status || event.kind, event.severity || toneFor(event.status))
         ]),
-        event.subtitle ? h("p", { className: "muted" }, event.subtitle) : null,
+        event.subtitle ? h("p", { className: "muted" }, displayText(event.subtitle, 220)) : null,
         h("div", { className: "workflow-meta" }, [
           h("span", {}, formatDate(event.at)),
           h("span", {}, event.kind),
@@ -1565,7 +1642,7 @@ function renderIncidentTimeline(events = []) {
           h("strong", {}, event.title || event.kind || "-"),
           chip(event.status || event.kind, event.severity || toneFor(event.status))
         ]),
-        event.subtitle ? h("p", { className: "muted" }, event.subtitle) : null,
+        event.subtitle ? h("p", { className: "muted" }, displayText(event.subtitle, 220)) : null,
         h("div", { className: "workflow-meta" }, [
           h("span", {}, formatDate(event.at)),
           h("span", {}, event.kind || "-"),
@@ -2416,6 +2493,151 @@ function renderReceipts(data) {
   setDetailBody(body);
 }
 
+function renderEvidenceWorkspace(data = {}) {
+  const workflowId = data.workflowId || state.selectedWorkflowId || "";
+  const desk = data.evidenceDesk || {};
+  const pack = data.evidencePack || {};
+  const incident = data.incidentCloseout || {};
+  const summary = desk.summary || {};
+  const missing = summary.missingEvidence || [];
+  const readiness = desk.readiness || {};
+  const manifest = pack.manifest || {};
+  const selectedIncident = incident.selectedIncident || null;
+  const exportStamp = String(data.generatedAt || pack.generatedAt || new Date().toISOString()).replace(/[^0-9TZ]/g, "");
+  const readinessChecklist = readiness.checklist || [];
+  const readinessStatus = (key) => readinessChecklist.find((item) => item.key === key)?.status || "";
+  const pauseControlReady = readinessStatus("pause_control") === "pass";
+  const terminateControlReady = readinessStatus("terminate_control") === "pass";
+  const stopControlsReady = pauseControlReady && terminateControlReady;
+  const timeline = [
+    ...(incident.timeline || []).map((event) => ({ ...event, packageSource: "incident" })),
+    ...((pack.timeline?.events || []).slice(0, 80)).map((event) => ({ ...event, packageSource: "workflow" }))
+  ].sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 18);
+  if (!workflowId) {
+    setDetailBody(emptyState("Select a workflow from the queue to open its evidence workspace."));
+    return;
+  }
+  setDetailBody(h("div", { className: "stack" }, [
+    section("Evidence Package", h("div", { className: "package-grid" }, [
+      h("article", { className: `package-card ${toneFor(desk.status || data.status)}` }, [
+        h("div", { className: "workflow-title" }, [
+          h("strong", {}, workflowId),
+          chip(desk.status || data.status || "unknown")
+        ]),
+        h("p", { className: "workflow-summary" }, selectedWorkflow()?.summary || selectedWorkflow()?.objective || "Workflow evidence package."),
+        h("div", { className: "mini-counts" }, [
+          h("span", {}, `generated ${formatDate(data.generatedAt)}`),
+          h("span", {}, `pack ${formatDate(pack.generatedAt)}`),
+          h("span", {}, pack.writeMode || "read_only")
+        ]),
+        h("div", { className: "actions card-actions" }, [
+          h("button", { type: "button", onClick: () => openWorkflowTab(workflowId, "evidence-desk") }, "Open Evidence Desk"),
+          h("button", { type: "button", onClick: () => openWorkflowTab(workflowId, "evidence-pack") }, "Open Pack Tab"),
+          h("button", { type: "button", onClick: () => downloadJson(`${workflowId}-evidence-workspace-${exportStamp}.json`, data) }, "Download Workspace")
+        ])
+      ]),
+      h("article", { className: `package-card ${missing.length ? "warning" : "ok"}` }, [
+        h("div", { className: "workflow-title" }, [
+          h("strong", {}, "Review Readiness"),
+          chip(missing.length ? "needs evidence" : "ready", missing.length ? "warning" : "ok")
+        ]),
+        h("div", { className: "quick-stats compact-stats" }, [
+          statCard("Missing", missing.length),
+          statCard("Cat Claw", summary.humanGateReadyForCatClawAudit ? "ready" : "not ready"),
+          statCard("Human Gate", summary.humanGateReadyForSubmission ? "ready" : "not ready"),
+          statCard("Receipts", summary.receiptPresent || 0, `${summary.receiptMissing || 0} missing`)
+        ])
+      ]),
+      h("article", { className: `package-card ${selectedIncident ? toneFor(incident.status) : "neutral"}` }, [
+        h("div", { className: "workflow-title" }, [
+          h("strong", {}, "Incident Package"),
+          chip(selectedIncident ? (incident.status || selectedIncident.status) : "none")
+        ]),
+        selectedIncident ? h("p", { className: "workflow-summary" }, `${selectedIncident.incidentId}: ${short(selectedIncident.summary, 180)}`) : h("p", { className: "workflow-summary" }, "No incident linked to this workflow."),
+        h("div", { className: "actions card-actions" }, [
+          h("button", { type: "button", disabled: !selectedIncident, onClick: selectedIncident ? () => openWorkflowTab(workflowId, "incident-closeout") : undefined }, "Open Incident"),
+          h("button", { type: "button", disabled: !selectedIncident, onClick: selectedIncident ? () => previewIncidentCloseout("workflow.incident.closeout.cat_claw_report.preview", selectedIncident.incidentId, {}, workflowId) : undefined }, "Preview Cat Claw"),
+          h("button", { type: "button", disabled: !selectedIncident, onClick: selectedIncident ? () => previewIncidentCloseout("workflow.incident.closeout.human_gate_package.preview", selectedIncident.incidentId, {}, workflowId) : undefined }, "Preview HGate")
+        ])
+      ])
+    ])),
+    section("Missing Evidence First", missing.length
+      ? h("div", { className: "chip-list padded" }, missing.map((item) => chip(item, "warning")))
+      : emptyState("No missing evidence detected by the derived desk.")),
+    section("Rollback And Stop Boundary", h("div", { className: "content-grid" }, [
+      renderTable([
+        { label: "Boundary", key: "label" },
+        { label: "Status", render: (row) => chip(row.status, row.tone) },
+        { label: "Evidence", render: (row) => h("code", {}, present(row.evidence)) }
+      ], [
+        { label: "Checkpoint", status: manifest.checkpointCount ? "available" : "missing", tone: manifest.checkpointCount ? "ok" : "warning", evidence: `${manifest.checkpointCount || 0} checkpoint rows` },
+        { label: "Pause/Stop Preview", status: "preview-only", tone: "neutral", evidence: "open workflow detail actions" },
+        {
+          label: "Human Gate Pause/Stop Controls",
+          status: stopControlsReady ? "available" : "missing",
+          tone: stopControlsReady ? "ok" : "critical",
+          evidence: `pause ${pauseControlReady ? "pass" : "missing"} / terminate ${terminateControlReady ? "pass" : "missing"}`
+        },
+        { label: "Side Effects", status: manifest.sideEffectCount ? "review required" : "none recorded", tone: manifest.sideEffectCount ? "warning" : "ok", evidence: `${manifest.sideEffectCount || 0} side-effect rows` }
+      ]),
+      sourceRefList([
+        { source: "workflow_checkpoints", field: "workflow_id", id: manifest.checkpointCount ? workflowId : "" },
+        { source: "workflow_side_effects", field: "workflow_id", id: manifest.sideEffectCount ? workflowId : "" },
+        { source: "console_actions", field: "workflow_id", id: workflowId }
+      ])
+    ])),
+    section("Human Gate And Review Gates", h("div", { className: "content-grid" }, [
+      renderTable([
+        { label: "Status", render: (row) => chip(row.status) },
+        { label: "Check", render: (row) => h("div", {}, [
+          h("strong", {}, row.label),
+          h("p", { className: "muted" }, short(row.detail, 180))
+        ]) },
+        { label: "Severity", render: (row) => chip(row.severity, row.severity === "required" ? "critical" : "warning") },
+        { label: "Refs", render: (row) => h("code", {}, present((row.refs || []).join(", "))) }
+      ], readinessChecklist, "No Human Gate readiness checklist."),
+      h("div", { className: "quick-stats" }, [
+        statCard("Records", readiness.summary?.recordCount || 0),
+        statCard("Buttons", readiness.summary?.buttonCount || 0),
+        statCard("Checkpoints", readiness.summary?.checkpointCount || 0),
+        statCard("Artifacts", readiness.summary?.artifactCount || 0),
+        statCard("Sent Outbox", readiness.summary?.sentOutboxCount || 0),
+        statCard("Receipts", readiness.summary?.receiptPresentCount || 0)
+      ])
+    ])),
+    section("Evidence Pack Manifest", renderTable([
+      { label: "Section", key: "section" },
+      { label: "Count", key: "count" }
+    ], [
+      { section: "phases", count: manifest.phaseCount || 0 },
+      { section: "tasks", count: manifest.taskCount || 0 },
+      { section: "dispatches", count: manifest.dispatchCount || 0 },
+      { section: "runtimeRuns", count: manifest.runtimeRunCount || 0 },
+      { section: "agentRuns", count: manifest.agentRunCount || 0 },
+      { section: "messageFlows", count: manifest.messageFlowCount || 0 },
+      { section: "humanGate records/buttons", count: `${manifest.humanGateRecordCount || 0}/${manifest.humanGateButtonCount || 0}` },
+      { section: "outbox", count: manifest.outboxCount || 0 },
+      { section: "checkpoints", count: manifest.checkpointCount || 0 },
+      { section: "artifacts/sideEffects", count: `${manifest.artifactCount || 0}/${manifest.sideEffectCount || 0}` },
+      { section: "receipts", count: manifest.receiptCount || 0 },
+      { section: "operations", count: manifest.operationCount || 0 },
+      { section: "timeline", count: manifest.timelineEventCount || 0 }
+    ], "No evidence pack manifest.")),
+    section("Compressed Timeline", renderIncidentTimeline(timeline)),
+    section("Source Package Refs", sourceRefList([
+      { source: "workflow", field: "workflow_id", id: workflowId },
+      { source: "evidence_pack", field: "schema", id: pack.schemaVersion },
+      { source: "incident_closeout", field: "incident_id", id: selectedIncident?.incidentId },
+      { source: "human_gate", field: "records", id: String(readiness.summary?.recordCount || "") },
+      { source: "artifact", field: "count", id: String(manifest.artifactCount || "") }
+    ])),
+    section("Raw Workspace", h("details", {}, [
+      h("summary", {}, "JSON"),
+      jsonBlock(data)
+    ]))
+  ]));
+}
+
 function renderEvidenceDesk(data) {
   const summary = data.summary || {};
   const missing = summary.missingEvidence || [];
@@ -2560,7 +2782,8 @@ function renderEvidenceDeskPreviewActions(data = {}) {
 
 function renderEvidencePack(data) {
   const manifest = data.manifest || {};
-  const filename = `${present(data.workflowId || state.selectedWorkflowId, "workflow")}-evidence-pack.json`;
+  const exportStamp = String(data.generatedAt || new Date().toISOString()).replace(/[^0-9TZ]/g, "");
+  const filename = `${present(data.workflowId || state.selectedWorkflowId, "workflow")}-evidence-pack-${exportStamp}.json`;
   const body = h("div", { className: "stack" }, [
     section("Evidence Pack Export", h("div", { className: "copy-block" }, [
       h("p", {}, `Schema: ${present(data.schemaVersion)}`),
