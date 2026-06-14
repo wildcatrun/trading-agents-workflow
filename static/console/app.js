@@ -80,6 +80,78 @@ const AGENT_ATTENTION_FILTERS = [
   { value: "warning", label: "Warning" },
   { value: "ok", label: "OK" }
 ];
+const PREVIEW_ACTION_PRIORITY = [
+  {
+    action: "workflow.supervise.preview",
+    priority: "P0",
+    label: "Supervise Preview",
+    firstWhen: "Any workflow needs a read-only next-step package.",
+    boundary: "Preview package only; no workflow state mutation."
+  },
+  {
+    action: "workflow.rerun.agent.preview",
+    priority: "P1",
+    label: "Rerun Agent/Dispatch Preview",
+    firstWhen: "Dispatch, runtime, or message_flow evidence points to retry planning.",
+    boundary: "Plans rerun input; does not drain runtime or rerun agents."
+  },
+  {
+    action: "telegram.outbox.delivery.preview",
+    priority: "P1",
+    label: "Telegram Delivery Preview",
+    firstWhen: "Queued, delivering, or failed outbox rows need delivery inspection.",
+    boundary: "Delivery preview/audit only; no Telegram send."
+  },
+  {
+    action: "telegram.outbox.requeue.preview",
+    priority: "P2",
+    label: "Telegram Requeue Preview",
+    firstWhen: "Outbox delivery is failed or stale and needs requeue planning.",
+    boundary: "Requeue preview only; no outbox status change."
+  },
+  {
+    action: "workflow.pause.preview",
+    priority: "P2",
+    label: "Pause Preview",
+    firstWhen: "Human Gate or operator review needs a reversible pause package.",
+    boundary: "Pause package only; no workflow pause mutation."
+  },
+  {
+    action: "workflow.stop.preview",
+    priority: "P2",
+    label: "Stop Preview",
+    firstWhen: "Human Gate or operator review needs a stop/terminate package.",
+    boundary: "Stop package only; no workflow termination."
+  },
+  {
+    action: "workflow.incident.closeout.cat_claw_report.preview",
+    priority: "P3",
+    label: "Cat Claw Closeout Preview",
+    firstWhen: "Incident evidence needs secretary review.",
+    boundary: "Closeout report preview only; no incident resolution or dispatch."
+  },
+  {
+    action: "workflow.incident.closeout.human_gate_package.preview",
+    priority: "P3",
+    label: "Human Gate Package Preview",
+    firstWhen: "Incident closeout is ready for Human Gate package inspection.",
+    boundary: "Human Gate package preview only; no Human Gate request creation."
+  },
+  {
+    action: "workflow.rerun.phase.preview",
+    priority: "P4",
+    label: "Rerun Phase Preview",
+    firstWhen: "A phase-scoped task has enough context for phase retry planning.",
+    boundary: "Phase retry preview only; no task reset or dispatch."
+  },
+  {
+    action: "telegram.outbox.requeue.execution_package.preview",
+    priority: "P4",
+    label: "Requeue Execution Package Preview",
+    firstWhen: "An operator needs the governed execution package before requeue.",
+    boundary: "Execution package preview only; no outbox write."
+  }
+];
 const SEVERITY_RANK = {
   critical: 4,
   warning: 3,
@@ -2632,9 +2704,11 @@ function renderKanban(data) {
   });
   const totalCards = columns.reduce((sum, column) => sum + ((column.cards || []).length), 0);
   const shownCards = filteredColumns.reduce((sum, column) => sum + ((column.cards || []).length), 0);
+  const visibleCards = filteredColumns.flatMap((column) => column.cards || []);
   setDetailBody(h("div", { className: "stack" }, [
     renderKanbanScopeControls(data),
     renderWorkbenchControls({ total: totalCards, shown: shownCards }),
+    section("Preview Action Priority", renderPreviewActionPriorityPanel(visibleCards), { "data-section": "preview-action-priority" }),
     section("Kanban Summary", h("div", { className: "quick-stats" }, [
       statCard("Cards", data.summary?.cards || 0),
       statCard("Shown", shownCards, state.workbenchFilter === "all" && state.severityFilter === "all" ? "unfiltered" : "filtered"),
@@ -2656,6 +2730,103 @@ function renderKanban(data) {
       jsonBlock(data)
     ]))
   ]));
+}
+
+function previewActionPriorityModel(cards = []) {
+  const observed = new Map();
+  for (const card of cards || []) {
+    for (const action of card.previewActions || []) {
+      const spec = kanbanPreviewActionSpec(card, action);
+      const advertisedAction = String(action || "").trim();
+      const key = spec.action || advertisedAction;
+      const item = observed.get(key) || {
+        action: key,
+        observed: 0,
+        ready: 0,
+        blocked: 0,
+        sources: new Set(),
+        observedActions: new Set(),
+        examples: []
+      };
+      item.observed += 1;
+      if (spec.enabled) item.ready += 1;
+      else item.blocked += 1;
+      if (card.source) item.sources.add(card.source);
+      if (advertisedAction) item.observedActions.add(advertisedAction);
+      if (item.examples.length < 3) item.examples.push(card.sourceId || card.title || key);
+      observed.set(key, item);
+    }
+  }
+  const catalogRows = PREVIEW_ACTION_PRIORITY.map((entry) => {
+    const item = observed.get(entry.action) || {
+      observed: 0,
+      ready: 0,
+      blocked: 0,
+      sources: new Set(),
+      observedActions: new Set(),
+      examples: []
+    };
+    return {
+      ...entry,
+      observed: item.observed || 0,
+      ready: item.ready || 0,
+      blocked: item.blocked || 0,
+      sources: Array.from(item.sources || []),
+      observedActions: Array.from(item.observedActions || []),
+      examples: item.examples || [],
+      status: item.ready ? "ready" : item.observed ? "blocked" : "not_observed"
+    };
+  });
+  const catalogActions = new Set(PREVIEW_ACTION_PRIORITY.map((entry) => entry.action));
+  const uncatalogedRows = Array.from(observed.values())
+    .filter((item) => !catalogActions.has(item.action))
+    .map((item) => ({
+      action: item.action,
+      priority: "Other",
+      label: "Uncataloged Preview Action",
+      firstWhen: "A card advertises this action, but it is not in the v1.0 priority catalog.",
+      boundary: "Blocked for operator priority planning until reviewed and added to the governed catalog.",
+      observed: item.observed || 0,
+      ready: item.ready || 0,
+      blocked: item.blocked || 0,
+      sources: Array.from(item.sources || []),
+      observedActions: Array.from(item.observedActions || []),
+      examples: item.examples || [],
+      status: "uncataloged"
+    }));
+  return [...catalogRows, ...uncatalogedRows];
+}
+
+function renderPreviewActionPriorityPanel(cards = []) {
+  const rows = previewActionPriorityModel(cards);
+  const observedCount = rows.filter((row) => row.observed > 0).length;
+  const readyCount = rows.filter((row) => row.ready > 0).length;
+  return h("div", { className: "preview-action-priority-panel" }, [
+    h("div", { className: "quick-stats compact-stats" }, [
+      statCard("Priority Actions", rows.length),
+      statCard("Observed", observedCount, `${readyCount} ready`),
+      statCard("Cards", cards.length),
+      statCard("Mode", "preview-only", "no mutation")
+    ]),
+    renderTable([
+      { label: "Priority", render: (row) => chip(row.priority, row.priority === "P0" || row.priority === "P1" ? "ok" : "neutral") },
+      { label: "Action", render: (row) => h("div", {}, [
+        h("strong", {}, row.label),
+        h("code", {}, row.action),
+        (row.observedActions || []).some((action) => action !== row.action)
+          ? h("p", { className: "muted" }, `Observed variants: ${row.observedActions.join(", ")}`)
+          : null
+      ]) },
+      { label: "Current Coverage", render: (row) => h("div", {}, [
+        chip(row.status, row.status === "ready" ? "ok" : ["blocked", "uncataloged"].includes(row.status) ? "warning" : "neutral"),
+        h("p", { className: "muted" }, `${row.observed || 0} observed / ${row.ready || 0} ready / ${row.blocked || 0} blocked`)
+      ]) },
+      { label: "First When", render: (row) => h("p", { className: "muted" }, row.firstWhen) },
+      { label: "Sources", render: (row) => copyableEvidenceList(row.sources.length ? row.sources : row.examples, "Preview source") },
+      { label: "Boundary", render: (row) => h("p", { className: "muted" }, row.boundary) }
+    ], rows, "No preview action priority catalog."),
+    h("p", { className: "muted" }, "Read-only priority matrix. It answers which v0.7 preview actions should surface first when real Kanban cards are sparse; uncataloged observed actions stay visible as warnings. It does not create actions, dispatch agents, send Telegram, or mutate workflow state.")
+  ]);
 }
 
 function renderKanbanCard(card) {

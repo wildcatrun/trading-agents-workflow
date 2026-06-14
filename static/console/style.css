@@ -517,6 +517,27 @@ code {
   flex-wrap: wrap;
 }
 
+.preview-action-priority-panel {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.preview-action-priority-panel code,
+.preview-action-priority-panel .data-table td,
+.preview-action-priority-panel .muted {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.preview-action-priority-panel .table-wrap {
+  overflow-x: auto;
+}
+
+.preview-action-priority-panel .data-table {
+  min-width: 980px;
+}
+
 .layout {
   height: calc(100vh - 76px);
   display: grid;

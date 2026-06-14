@@ -173,7 +173,9 @@ Current version map:
   status outside workflow readiness unless it is recorded as workflow evidence.
   Slice AA adds Evidence export provenance panels that make console-only
   browser download, redaction, manifest counts, and future workflow-artifact
-  write boundaries explicit.
+  write boundaries explicit. Slice AB adds a Kanban Preview Action Priority
+  matrix so sparse real boards still show which governed previews should
+  surface first and why inactive actions are not currently available.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 
@@ -237,6 +239,15 @@ The console must call:
 - `workflow.supervise.preview`
 
 It must not use `workflow.advance` or `workflow.supervise` for planning buttons. Those actions intentionally mutate workflow state and are used by the supervisor/control loop path.
+
+Workflow Kanban also renders a read-only Preview Action Priority matrix. It is
+the v1.0 answer for sparse real boards: P0 supervise preview; P1 rerun and
+delivery previews; P2 requeue, pause, and stop previews; P3 incident Cat Claw /
+Human Gate closeout previews; P4 phase rerun and requeue execution-package
+previews. The matrix is an operator catalog only. Actual buttons still come
+from card-level `previewActions` and existing `WorkflowActionGateway` preview
+handlers. When a card advertises an alias action, the matrix groups it under
+the governed catalog action and shows the original observed variant.
 
 ## First Endpoints
 

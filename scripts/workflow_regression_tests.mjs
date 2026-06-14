@@ -8613,10 +8613,11 @@ async function testWorkflowConsoleConfigOperatorPolicyModes() {
 }
 
 async function testWorkflowConsoleStaticContextTrailContract() {
-  const [html, app, css] = await Promise.all([
+  const [html, app, css, previewActions] = await Promise.all([
     fs.readFile(path.join(process.cwd(), "static/console/index.html"), "utf8"),
     fs.readFile(path.join(process.cwd(), "static/console/app.js"), "utf8"),
-    fs.readFile(path.join(process.cwd(), "static/console/style.css"), "utf8")
+    fs.readFile(path.join(process.cwd(), "static/console/style.css"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "static/console/preview-actions.js"), "utf8")
   ]);
   assert.equal(html.includes('id="contextTrail"'), true);
   assert.equal(html.includes('aria-label="Operator context"'), true);
@@ -8658,6 +8659,17 @@ async function testWorkflowConsoleStaticContextTrailContract() {
   assert.equal(exportRendererSource.includes("fetch("), false);
   assert.equal(exportRendererSource.includes("/api/actions"), false);
   assert.equal(exportRendererSource.includes("evidenceExportProvenancePayload(model)"), true);
+  assert.equal(app.includes("const PREVIEW_ACTION_PRIORITY"), true);
+  assert.equal(app.includes("function previewActionPriorityModel"), true);
+  assert.equal(app.includes("function renderPreviewActionPriorityPanel"), true);
+  assert.equal(app.includes('section("Preview Action Priority", renderPreviewActionPriorityPanel'), true);
+  assert.equal(app.includes("uncataloged observed actions stay visible as warnings"), true);
+  const previewPriorityRendererSource = extractFunctionSource(app, "renderPreviewActionPriorityPanel");
+  assert.equal(previewPriorityRendererSource.includes("fetch("), false);
+  assert.equal(previewPriorityRendererSource.includes("/api/actions"), false);
+  assert.equal(previewPriorityRendererSource.includes("previewIntervention"), false);
+  assert.equal(previewPriorityRendererSource.includes("previewSupervise"), false);
+  assert.equal(previewPriorityRendererSource.includes("previewTelegram"), false);
   assert.equal(app.includes("function renderKanbanScopeControls"), true);
   assert.equal(app.includes("function setKanbanScope"), true);
   assert.equal(app.includes("Board Scope"), true);
@@ -8677,6 +8689,9 @@ async function testWorkflowConsoleStaticContextTrailContract() {
   assert.equal(css.includes(".agent-board-filter-grid"), true);
   assert.equal(css.includes(".export-provenance-panel"), true);
   assert.equal(css.includes(".export-provenance-actions"), true);
+  assert.equal(css.includes(".preview-action-priority-panel"), true);
+  assert.equal(css.includes(".preview-action-priority-panel .table-wrap"), true);
+  assert.equal(css.includes("min-width: 980px"), true);
   assert.equal(css.includes("flex-wrap: wrap"), true);
   assert.equal(css.includes("flex: 1 1 260px"), true);
 
@@ -8736,6 +8751,48 @@ return { evidenceExportProvenancePayload };`);
   assert.equal(exportPayload.secretToken, undefined);
   assert.equal(exportPayload.exportMode, "console_only_browser_download");
   assert.equal(exportPayload.workflowArtifactPolicy, "deferred_to_governed_write_action");
+
+  const previewActionModelRuntime = new Function(`${extractFunctionSource(previewActions, "kanbanPreviewActionModel")}
+${extractFunctionSource(previewActions, "shortLabel")}
+return { kanbanPreviewActionModel };`)();
+  const previewPriorityRuntime = new Function("kanbanPreviewActionSpec", `${app.match(/const PREVIEW_ACTION_PRIORITY = \[[\s\S]*?\];/)[0]}
+${extractFunctionSource(app, "previewActionPriorityModel")}
+return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
+  const priorityRuntime = previewPriorityRuntime((card, action) => previewActionModelRuntime.kanbanPreviewActionModel(card, action));
+  const expectedPriorityActions = [
+    "workflow.supervise.preview",
+    "workflow.rerun.agent.preview",
+    "telegram.outbox.delivery.preview",
+    "telegram.outbox.requeue.preview",
+    "workflow.pause.preview",
+    "workflow.stop.preview",
+    "workflow.incident.closeout.cat_claw_report.preview",
+    "workflow.incident.closeout.human_gate_package.preview",
+    "workflow.rerun.phase.preview",
+    "telegram.outbox.requeue.execution_package.preview"
+  ];
+  assert.deepEqual(priorityRuntime.PREVIEW_ACTION_PRIORITY.map((row) => row.action), expectedPriorityActions);
+  const emptyPriority = priorityRuntime.previewActionPriorityModel([]);
+  assert.equal(emptyPriority.length, expectedPriorityActions.length);
+  assert.equal(emptyPriority.find((row) => row.action === "workflow.supervise.preview")?.priority, "P0");
+  assert.equal(emptyPriority.find((row) => row.action === "workflow.supervise.preview")?.status, "not_observed");
+  const observedPriority = priorityRuntime.previewActionPriorityModel([
+    { workflowId: "wf-priority", source: "workflow_tasks", sourceId: "task-priority", previewActions: ["workflow.supervise.preview"] },
+    { workflowId: "wf-priority", source: "mixed_meeting_dispatches", sourceId: "dispatch-priority", dispatchId: "dispatch-priority", previewActions: ["workflow.rerun.dispatch.preview"] },
+    { workflowId: "wf-priority", source: "telegram_outbox", sourceId: "outbox-priority", previewActions: ["telegram.outbox.delivery.preview"] },
+    { workflowId: "wf-priority", source: "message_flows", sourceId: "flow-without-outbox", previewActions: ["telegram.outbox.delivery.preview"] },
+    { workflowId: "wf-priority", source: "custom_source", sourceId: "custom-priority", previewActions: ["custom.preview.action"] }
+  ]);
+  assert.equal(observedPriority.find((row) => row.action === "workflow.supervise.preview")?.ready, 1);
+  assert.equal(observedPriority.find((row) => row.action === "telegram.outbox.delivery.preview")?.ready, 1);
+  assert.equal(observedPriority.find((row) => row.action === "telegram.outbox.delivery.preview")?.blocked, 1);
+  const rerunPriority = observedPriority.find((row) => row.action === "workflow.rerun.agent.preview");
+  assert.equal(rerunPriority?.ready, 1);
+  assert.deepEqual(rerunPriority?.observedActions, ["workflow.rerun.dispatch.preview"]);
+  const uncatalogedPriority = observedPriority.find((row) => row.action === "custom.preview.action");
+  assert.equal(uncatalogedPriority?.status, "uncataloged");
+  assert.equal(uncatalogedPriority?.priority, "Other");
+  assert.equal(uncatalogedPriority?.observed, 1);
 }
 
 async function testWorkflowConsoleStaticDiagnosticMatrixContract() {

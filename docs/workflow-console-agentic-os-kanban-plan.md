@@ -28,7 +28,7 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-AA: Operations workspace, activity feed, system status and
+- v1.0 slices A-AB: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
@@ -38,7 +38,7 @@ Implemented layers:
   readiness finding inspection, Kanban preview expansion, collapsible Evidence
   Desk, Cat Claw secretary handoff shortcuts, explicit Kanban board scope, and
   Agent Board runtime filter/boundary controls, plus Evidence export provenance
-  and artifact-boundary controls.
+  and artifact-boundary controls, plus Kanban preview-action priority coverage.
 
 Current target state:
 
@@ -1537,6 +1537,27 @@ Implemented Slice AA: Evidence Export Provenance And Artifact Boundary
   with policy, audit, and Human Gate evidence. It is not implicit in the current
   download button.
 
+Implemented Slice AB: Kanban Preview Action Priority Matrix
+
+- Added a read-only Preview Action Priority panel to Workflow Kanban.
+- The panel resolves sparse-real-card behavior by showing the v0.7 preview
+  action priority catalog even when no current card advertises a given action:
+  P0 supervise preview, P1 rerun/delivery previews, P2 requeue/pause/stop
+  previews, P3 incident Cat Claw/Human Gate closeout previews, and P4 phase or
+  execution-package previews.
+- The panel derives observed/ready/blocked counts from the currently visible
+  Kanban cards and source types, but it does not create preview actions,
+  dispatch agents, send Telegram, write workflow state, or bypass
+  `WorkflowActionGateway`.
+- Alias actions are grouped under the governed catalog action while preserving
+  the original observed variants in the row, so sparse boards do not hide which
+  card-level action name was advertised.
+- Observed preview actions that are not in the priority catalog remain visible
+  as `uncataloged` warnings instead of disappearing from the operator surface.
+- This closes the sparse Kanban open question conservatively: first-class
+  priority is visible as an operator catalog, while actual buttons remain bound
+  to card-level `previewActions` and existing allowlisted preview handlers.
+
 ## Test Plan
 
 Required checks:
@@ -1728,8 +1749,10 @@ Rollback:
 - Evidence package export is console-only by default. Workflow artifact
   persistence is a separate future governed write action and is not implicit in
   the current redacted browser download, as implemented in Slice AA.
-- Which v0.7 preview actions should be exposed first if the development server
-  shows sparse real Kanban cards?
+- Sparse real Kanban cards use the read-only Preview Action Priority Matrix
+  implemented in Slice AB. The prioritized catalog is visible even when a card
+  source is not currently observed; executable preview buttons remain bound to
+  card-level `previewActions`.
 - Which write actions, if any, should be considered after v1.0, and what Human
   Gate policy must be attached before they can be enabled?
 
