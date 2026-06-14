@@ -2495,6 +2495,9 @@ function renderKanbanPreviewActions(card = {}) {
 function kanbanPreviewActionSpec(card = {}, action = "") {
   const model = kanbanPreviewActionModel(card, action);
   if (model.action === "workflow.supervise.preview") return { ...model, onClick: () => previewSupervise(model.workflowId) };
+  if (["workflow.advance.preview", "workflow.pause.preview", "workflow.resume.preview", "workflow.stop.preview"].includes(model.action)) {
+    return { ...model, onClick: () => previewIntervention(model.action, {}, model.workflowId) };
+  }
   if (model.action === "workflow.rerun.agent.preview") {
     return {
       ...model,
@@ -2505,8 +2508,18 @@ function kanbanPreviewActionSpec(card = {}, action = "") {
       }, model.workflowId)
     };
   }
+  if (model.action === "workflow.rerun.phase.preview") {
+    return {
+      ...model,
+      onClick: () => previewIntervention("workflow.rerun.phase.preview", { phaseKey: model.payload.phaseKey || "" }, model.workflowId)
+    };
+  }
   if (model.action === "telegram.outbox.delivery.preview") return { ...model, onClick: () => previewTelegramOutboxDelivery(model.outboxId) };
   if (model.action === "telegram.outbox.requeue.preview") return { ...model, onClick: () => previewTelegramOutboxRequeue(model.outboxId) };
+  if (model.action === "telegram.outbox.requeue.execution_package.preview") return { ...model, onClick: () => previewTelegramOutboxRequeuePackage(model.outboxId) };
+  if (model.action && model.action.startsWith("workflow.incident.closeout.")) {
+    return { ...model, onClick: () => previewIncidentCloseout(model.action, model.incidentId || "", {}, model.workflowId) };
+  }
   return model;
 }
 

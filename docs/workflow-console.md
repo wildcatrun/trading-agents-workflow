@@ -546,6 +546,14 @@ whether Telegram was sent, whether the result was an idempotent replay, receipt
 count, actor, timestamps, and any redacted error. This is an audit surface, not
 a resend control.
 
+Kanban card preview controls are source-aware. Task cards can preview phase
+rerun when `phaseKey` is present; dispatch, runtime, and message_flow cards can
+preview governed agent rerun; outbox cards can preview delivery, requeue, and
+requeue execution packages; pending Human Gate cards can preview pause/stop;
+and incident cards can preview Cat Claw or Human Gate closeout packages. Missing
+workflow, phase, outbox, or incident identifiers disable the button with an
+explicit reason instead of guessing a target.
+
 These writes do not rerun agents or phases, drain runtime, submit Human Gate,
 reset tasks, cancel dispatches, write side-effect rows, or touch trading state.
 Only `telegram.outbox.delivery` may send Telegram, and only through the

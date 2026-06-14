@@ -815,11 +815,13 @@ function makeKanbanCard(column, source, id, values = {}) {
     column,
     workflowId: values.workflowId || "",
     taskId: values.taskId || "",
+    phaseKey: values.phaseKey || values.phase || "",
     dispatchId: values.dispatchId || "",
     flowId: values.flowId || "",
     runtimeRunId: values.runtimeRunId || "",
     outboxId: values.outboxId || "",
     humanGateId: values.humanGateId || "",
+    incidentId: values.incidentId || "",
     agentId: values.agentId || "",
     runtime: values.runtime || "",
     status: values.status || "",
@@ -4411,6 +4413,7 @@ LIMIT ${limit};`);
         cards.push(makeKanbanCard(column, "workflow_tasks", row.task_id, {
           workflowId: row.workflow_id,
           taskId: row.task_id,
+          phaseKey: row.phase,
           agentId: row.agent_id || row.owner_agent,
           runtime: row.runtime,
           status: row.status,
@@ -4422,7 +4425,7 @@ LIMIT ${limit};`);
             ...(Number(row.receipt_required || 0) > 0 && !row.actual_artifact_ref ? ["receipt_or_artifact"] : []),
             ...(Number(row.human_gate_required || 0) > 0 && !["done", "failed", "cancelled"].includes(String(row.status || "")) ? ["human_gate"] : [])
           ],
-          previewActions: ["workflow.supervise.preview"]
+          previewActions: ["workflow.supervise.preview", ...(row.phase ? ["workflow.rerun.phase.preview"] : [])]
         }));
       }
     }
@@ -4497,7 +4500,8 @@ LIMIT ${limit};`);
           summary: row.blocked_reason || row.stale_kind || row.stage_status || row.last_event_id,
           lastEventAt: row.last_event_at || row.updated_at,
           artifactRef: row.latest_artifact_ref,
-          missingEvidence: row.stale_kind ? [row.stale_kind] : []
+          missingEvidence: row.stale_kind ? [row.stale_kind] : [],
+          previewActions: ["workflow.rerun.agent.preview"]
         }));
       }
     }
@@ -4522,7 +4526,11 @@ LIMIT ${limit};`);
           title: `${row.target_runtime || ""}:${row.target_agent_id || ""} message flow`,
           summary: row.last_error || row.return_policy,
           lastEventAt: row.updated_at,
-          missingEvidence: kanbanColumnForMessageFlow(row) === "waiting_receipt" ? ["delivery_receipt"] : []
+          missingEvidence: kanbanColumnForMessageFlow(row) === "waiting_receipt" ? ["delivery_receipt"] : [],
+          previewActions: [
+            "workflow.rerun.agent.preview",
+            ...(row.outbox_id ? ["telegram.outbox.delivery.preview", "telegram.outbox.requeue.preview"] : [])
+          ]
         }));
       }
     }
@@ -4545,7 +4553,7 @@ LIMIT ${limit};`);
           summary: row.text,
           lastEventAt: row.updated_at || row.created_at,
           missingEvidence: row.status === "sent" ? [] : ["telegram_delivery_receipt"],
-          previewActions: ["telegram.outbox.delivery.preview", "telegram.outbox.requeue.preview"]
+          previewActions: ["telegram.outbox.delivery.preview", "telegram.outbox.requeue.preview", "telegram.outbox.requeue.execution_package.preview"]
         }));
       }
     }
@@ -4570,7 +4578,8 @@ LIMIT ${limit};`);
           title: `Human Gate ${row.object_id}`,
           summary: payload.summary || row.path || row.status,
           lastEventAt: row.updated_at || row.created_at,
-          missingEvidence: ["pending", "feedback_pending"].includes(String(row.status || "")) ? ["flashcat_feedback"] : []
+          missingEvidence: ["pending", "feedback_pending"].includes(String(row.status || "")) ? ["flashcat_feedback"] : [],
+          previewActions: ["pending", "feedback_pending"].includes(String(row.status || "")) ? ["workflow.pause.preview", "workflow.stop.preview"] : []
         }));
       }
     }
@@ -4588,12 +4597,14 @@ LIMIT ${limit};`);
         const cardWorkflowId = workflowId || payloadWorkflowId(payload);
         cards.push(makeKanbanCard(["resolved", "closed"].includes(String(row.status || "")) ? "done" : "blocked", "incident_states", row.incident_id, {
           workflowId: cardWorkflowId,
+          incidentId: row.incident_id,
           agentId: row.commander,
           status: row.status,
           title: `Incident ${row.incident_id}`,
           summary: row.summary || row.mode,
           lastEventAt: row.updated_at || row.declared_at,
-          missingEvidence: ["resolved", "closed"].includes(String(row.status || "")) ? [] : ["incident_exit_criteria"]
+          missingEvidence: ["resolved", "closed"].includes(String(row.status || "")) ? [] : ["incident_exit_criteria"],
+          previewActions: ["workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"]
         }));
       }
     }

@@ -1441,6 +1441,23 @@ Implemented Slice U: Readiness Finding Inspector
 - The inspector remains read-only. It does not run health checks, restart
   services, mutate workflow state, dispatch agents, or bypass Human Gate.
 
+Implemented Slice V: Kanban Preview Coverage
+
+- Expanded Kanban card-level preview coverage beyond supervise, dispatch rerun,
+  and Telegram delivery. Workflow task cards now expose phase rerun previews
+  when a phase key is present; runtime and message_flow cards expose governed
+  agent rerun previews; Telegram outbox cards expose the requeue execution
+  package preview; pending Human Gate cards expose pause/stop previews; and
+  incident cards expose Cat Claw and Human Gate closeout package previews.
+- Added card fields for `phaseKey` and `incidentId` so preview buttons can
+  decide readiness from explicit identifiers instead of guessing from titles or
+  raw text. Missing workflow, phase, incident, or outbox identifiers render
+  disabled preview controls with concrete reasons.
+- This slice only exposes existing allowlisted preview actions through
+  `WorkflowActionGateway -> workflow_operations`. It does not add semantic
+  continuation as a fake action, execute reruns, redeliver Telegram, close
+  incidents, create Human Gate records, or enable writes.
+
 ## Test Plan
 
 Required checks:
