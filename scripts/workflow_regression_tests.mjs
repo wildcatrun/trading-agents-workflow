@@ -7109,7 +7109,10 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   assert.equal(kanban.summary.syntheticCards > 0, true);
   assert.equal(kanban.summary.evidenceGaps, kanban.summary.syntheticCards);
   assert.equal(kanban.summary.cards, kanban.summary.baseCards + kanban.summary.syntheticCards);
-  assert.equal(kanban.columns.find((column) => column.id === "waiting_receipt")?.cards.some((card) => card.source === "message_flows" && card.sourceId === "flow-waiting-receipt"), true);
+  const waitingReceiptCard = kanban.columns.find((column) => column.id === "waiting_receipt")?.cards.find((card) => card.source === "message_flows" && card.sourceId === "flow-waiting-receipt");
+  assert.equal(Boolean(waitingReceiptCard), true);
+  assert.equal(waitingReceiptCard?.firstSeenAt, "2026-06-13T00:00:01.000Z");
+  assert.equal(waitingReceiptCard?.lastEventAt, "2026-06-13T00:00:10.000Z");
   assert.equal(kanban.columns.find((column) => column.id === "working")?.cards.some((card) => card.source === "runtime_current_state" && card.sourceId === "hermers:cat_body"), true);
   assert.equal(kanban.columns.find((column) => column.id === "queued")?.cards.some((card) => card.source === "control_loop_jobs" && card.sourceId === "job-console-queued"), true);
   assert.equal(kanban.columns.find((column) => column.id === "failed")?.cards.some((card) => card.source === "control_loop_jobs" && card.sourceId === "job-console-failed"), true);
@@ -7130,6 +7133,8 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   const messageFlowEvidenceGap = evidenceGapCards.find((card) => card.originSource === "message_flows" && card.originSourceId === "flow-waiting-receipt");
   assert.equal(messageFlowEvidenceGap?.column, "blocked");
   assert.equal(messageFlowEvidenceGap?.status, "blocked");
+  assert.equal(messageFlowEvidenceGap?.firstSeenAt, "2026-06-13T00:00:01.000Z");
+  assert.equal(messageFlowEvidenceGap?.lastEventAt, "2026-06-13T00:00:10.000Z");
   assert.equal(messageFlowEvidenceGap?.missingEvidence.includes("delivery_receipt"), true);
   assert.equal(messageFlowEvidenceGap?.previewActions.includes("workflow.supervise.preview"), true);
   const evidenceGapSuperviseAction = kanbanPreviewActionModel(messageFlowEvidenceGap, "workflow.supervise.preview");
@@ -9053,6 +9058,9 @@ async function testWorkflowConsoleStaticKanbanCardInspectorContract() {
   assert.equal(app.includes('Origin Source'), true);
   assert.equal(app.includes('origin_source_id'), true);
   assert.equal(app.includes('const originSources = new Set'), true);
+  assert.equal(app.includes('First Seen'), true);
+  assert.equal(app.includes('seen ${formatDate(card.firstSeenAt)}'), true);
+  assert.equal(app.includes('updated ${formatDate(card.lastEventAt)}'), true);
   assert.equal(app.includes("WorkflowActionGateway -> workflow_operations"), true);
   assert.equal(app.includes("Preview only; no business-state mutation"), true);
   assert.equal(app.includes("Focused Board"), true);

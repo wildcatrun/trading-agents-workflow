@@ -1581,6 +1581,31 @@ Implemented Slice AC: Kanban Control-Loop And Side-Effect Work Items
   mutation: requeue remains preview-only unless policy-enabled execution is
   separately invoked through `WorkflowActionGateway`.
 
+Implemented Slice AD: Kanban Evidence Gap Cards
+
+- Added read-only synthetic `evidence_gaps` cards to the Workflow Kanban
+  projection. They are derived from existing card `missingEvidence` fields and
+  always land in Blocked, so operators can work from missing proof instead of
+  visually hunting through raw source cards.
+- Each evidence gap card keeps its original workflow/task/dispatch/message
+  identifiers, `originSource`, `originSourceId`, required evidence chips, and
+  an Evidence Desk route. The Kanban summary separates `baseCards`,
+  `syntheticCards`, and `evidenceGaps` so derived cards do not masquerade as
+  raw database rows.
+- Evidence gap cards expose only `workflow.supervise.preview` when workflow
+  scope is known. They do not mutate workflow state, retry dispatches, create
+  incidents, write artifacts, or bypass `WorkflowActionGateway`.
+
+Implemented Slice AE: Kanban First-Seen And Last-Updated Timestamps
+
+- Added `firstSeenAt` to Kanban cards and preserved `lastEventAt` as the
+  last-updated/event timestamp.
+- Card bodies and Inspect drawers now show both first-seen and updated times,
+  matching the target requirement that operators can distinguish old stale
+  evidence from newly updated work.
+- Evidence gap cards inherit timing from their origin card, keeping synthetic
+  cards auditable without inventing a separate event timeline.
+
 ## Test Plan
 
 Required checks:

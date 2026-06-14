@@ -857,6 +857,7 @@ function makeKanbanCard(column, source, id, values = {}) {
     status: values.status || "",
     title: redactText(values.title || id),
     summary: redactText(compactText(values.summary || "", 220)),
+    firstSeenAt: values.firstSeenAt || "",
     lastEventAt: values.lastEventAt || "",
     missingEvidence: values.missingEvidence || [],
     artifactRef: redactText(values.artifactRef || ""),
@@ -900,6 +901,7 @@ function evidenceGapCardsFromKanbanCards(cards = [], limit = 200) {
       status: "blocked",
       title: `Evidence gap: ${missingEvidence.join(", ")}`,
       summary: `${card.source} ${sourceId} requires ${missingEvidence.join(", ")}`,
+      firstSeenAt: card.firstSeenAt,
       lastEventAt: card.lastEventAt,
       missingEvidence,
       artifactRef: card.artifactRef,
@@ -4301,7 +4303,7 @@ FROM runtime_current_state
 ORDER BY updated_at DESC
 LIMIT ${limit};`) : Promise.resolve([]),
       hasMessageFlows ? sqlite(this.paths.dbFile, `
-SELECT flow_id, workflow_id, meeting_id, target_runtime, target_agent_id, return_policy, status, final_output_present, delivery_receipt_present, dispatch_id, outbox_id, updated_at, last_error
+SELECT flow_id, workflow_id, meeting_id, target_runtime, target_agent_id, return_policy, status, final_output_present, delivery_receipt_present, dispatch_id, outbox_id, created_at, updated_at, last_error
 FROM message_flows
 ORDER BY updated_at DESC
 LIMIT ${limit};`) : Promise.resolve([]),
@@ -4495,6 +4497,7 @@ LIMIT ${limit};`);
           status: row.status,
           title: row.summary || row.task_id,
           summary: row.blocked_reason || row.task_type || row.phase,
+          firstSeenAt: row.created_at,
           lastEventAt: row.updated_at || row.created_at,
           artifactRef: row.actual_artifact_ref || row.expected_artifact,
           missingEvidence: [
@@ -4523,6 +4526,7 @@ LIMIT ${limit};`);
           status: row.status,
           title: `${row.runtime || ""}:${row.agent_id || ""} ${row.dispatch_type || "dispatch"}`,
           summary: row.last_error || row.failure_type || row.prompt,
+          firstSeenAt: row.created_at,
           lastEventAt: row.updated_at || row.created_at,
           missingEvidence: ["acked", "completed", "runtime_completed"].includes(String(row.status || "")) ? [] : ["runtime_receipt"],
           previewActions: ["workflow.rerun.agent.preview"]
@@ -4548,6 +4552,7 @@ LIMIT ${limit};`);
           status: row.status,
           title: `${row.runtime || ""}:${row.agent_id || ""} runtime run`,
           summary: row.error || row.failure_type || row.adapter || row.backend,
+          firstSeenAt: row.started_at,
           lastEventAt: row.completed_at || row.started_at,
           missingEvidence: ["completed", "acked"].includes(String(row.status || "")) ? ["artifact_or_receipt"] : []
         }));
@@ -4574,6 +4579,7 @@ LIMIT ${limit};`);
           status: row.status || row.stage_status,
           title: `${row.runtime || ""}:${row.agent_id || ""} ${row.current_stage || "current state"}`,
           summary: row.blocked_reason || row.stale_kind || row.stage_status || row.last_event_id,
+          firstSeenAt: row.semantic_ack_at || row.last_event_at || row.updated_at,
           lastEventAt: row.last_event_at || row.updated_at,
           artifactRef: row.latest_artifact_ref,
           missingEvidence: row.stale_kind ? [row.stale_kind] : [],
@@ -4585,7 +4591,7 @@ LIMIT ${limit};`);
       const filters = [workflowId ? `(workflow_id=${sqlValue(workflowId)} OR meeting_id=${sqlValue(workflowId)})` : "1=1"];
       if (agentId) filters.push(`target_agent_id=${sqlValue(agentId)}`);
       const rows = await sqlite(this.paths.dbFile, `
-SELECT flow_id, workflow_id, meeting_id, target_runtime, target_agent_id, return_policy, status, final_output_present, delivery_receipt_present, dispatch_id, outbox_id, updated_at, last_error
+SELECT flow_id, workflow_id, meeting_id, target_runtime, target_agent_id, return_policy, status, final_output_present, delivery_receipt_present, dispatch_id, outbox_id, created_at, updated_at, last_error
 FROM message_flows
 WHERE ${filters.join(" AND ")}
 ORDER BY updated_at DESC
@@ -4601,6 +4607,7 @@ LIMIT ${limit};`);
           status: row.status,
           title: `${row.target_runtime || ""}:${row.target_agent_id || ""} message flow`,
           summary: row.last_error || row.return_policy,
+          firstSeenAt: row.created_at || row.updated_at,
           lastEventAt: row.updated_at,
           missingEvidence: kanbanColumnForMessageFlow(row) === "waiting_receipt" ? ["delivery_receipt"] : [],
           previewActions: [
@@ -4632,6 +4639,7 @@ LIMIT ${limit};`);
           status: row.status,
           title: `${row.job_type || "control_loop_job"} ${row.status || ""}`,
           summary: row.last_error || row.dedupe_key || row.priority,
+          firstSeenAt: row.created_at,
           lastEventAt: row.updated_at || row.created_at,
           missingEvidence: terminalAttention ? ["operator_requeue_or_incident_decision"] : [],
           previewActions: terminalAttention ? ["workflow.control_loop.job.requeue.preview", "workflow.incident.from_dead_letter.preview"] : []
@@ -4660,6 +4668,7 @@ LIMIT ${limit};`);
           status: row.status,
           title: `Side effect ${row.status || ""}: ${row.side_effect_type || row.side_effect_id}`,
           summary: row.artifact_ref || row.side_effect_type || row.trace_id,
+          firstSeenAt: row.created_at,
           lastEventAt: row.updated_at || row.created_at,
           artifactRef: row.artifact_ref,
           missingEvidence: uncertain ? ["side_effect_resolution_evidence"] : [],
@@ -4684,6 +4693,7 @@ LIMIT ${limit};`);
           status: row.status,
           title: `${row.message_type || "telegram"} ${row.target_kind || ""}:${row.target_ref || ""}`,
           summary: row.text,
+          firstSeenAt: row.created_at,
           lastEventAt: row.updated_at || row.created_at,
           missingEvidence: row.status === "sent" ? [] : ["telegram_delivery_receipt"],
           previewActions: ["telegram.outbox.delivery.preview", "telegram.outbox.requeue.preview", "telegram.outbox.requeue.execution_package.preview"]
@@ -4710,6 +4720,7 @@ LIMIT ${limit};`);
           status: row.status,
           title: `Human Gate ${row.object_id}`,
           summary: payload.summary || row.path || row.status,
+          firstSeenAt: row.created_at,
           lastEventAt: row.updated_at || row.created_at,
           missingEvidence: ["pending", "feedback_pending"].includes(String(row.status || "")) ? ["flashcat_feedback"] : [],
           previewActions: ["pending", "feedback_pending"].includes(String(row.status || "")) ? ["workflow.pause.preview", "workflow.stop.preview"] : []
@@ -4735,6 +4746,7 @@ LIMIT ${limit};`);
           status: row.status,
           title: `Incident ${row.incident_id}`,
           summary: row.summary || row.mode,
+          firstSeenAt: row.declared_at,
           lastEventAt: row.updated_at || row.declared_at,
           missingEvidence: ["resolved", "closed"].includes(String(row.status || "")) ? [] : ["incident_exit_criteria"],
           previewActions: ["workflow.incident.closeout.cat_claw_report.preview", "workflow.incident.closeout.human_gate_package.preview"]

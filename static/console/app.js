@@ -1536,6 +1536,7 @@ function inspectKanbanCard(card = {}) {
         { label: "Workflow", value: card.workflowId || "-" },
         { label: "Agent", value: card.agentId || "-" },
         { label: "Runtime", value: card.runtime || "-" },
+        { label: "First Seen", value: formatDate(card.firstSeenAt) },
         { label: "Updated", value: formatDate(card.lastEventAt) }
       ])),
       card.summary ? section("Summary", h("div", { className: "copy-block" }, card.summary)) : null,
@@ -2876,7 +2877,8 @@ function renderKanbanCard(card) {
     ]),
     h("div", { className: "mini-counts" }, [
       h("span", {}, card.source),
-      h("span", {}, formatDate(card.lastEventAt)),
+      h("span", {}, `seen ${formatDate(card.firstSeenAt)}`),
+      h("span", {}, `updated ${formatDate(card.lastEventAt)}`),
       card.dispatchId ? h("span", {}, `dispatch ${card.dispatchId}`) : null,
       card.flowId ? h("span", {}, `flow ${card.flowId}`) : null
     ]),
