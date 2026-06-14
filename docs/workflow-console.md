@@ -166,7 +166,9 @@ Current version map:
   as source-ref-backed, copyable operator evidence instead of raw JSON only.
   Slice V expands Kanban preview coverage, Slice W makes Evidence Desk
   collapsible and copyable, and Slice X adds a read-only Cat Claw Secretary
-  Handoff checklist for Cat Claw / Flashcat review routing.
+  Handoff checklist for Cat Claw / Flashcat review routing. Slice Y adds an
+  explicit Kanban Board Scope switch so the board defaults global while
+  preserving workflow-scoped deep links.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 
@@ -178,6 +180,8 @@ v0.4 Slice A-D are implemented as read-only console surfaces:
 - Workflow Kanban: stable read-only columns derived from workflow tasks,
   dispatches, runtime runs, message flows, Telegram outbox, Human Gate records,
   and incidents. Cards are source-linked and do not support drag/drop mutation.
+  The Kanban surface defaults to a global board and exposes a read-only Board
+  Scope switch for workflow-scoped inspection.
 - Evidence Desk: workflow-scoped readiness, receipt chain, verification,
   artifact, outbox, message_flow, incident closeout, and missing-evidence view.
   The desk renders as collapsible checklist sections and keeps workflow,

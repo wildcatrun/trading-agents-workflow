@@ -8627,6 +8627,20 @@ async function testWorkflowConsoleStaticContextTrailContract() {
   assert.equal(app.includes("let shouldReplaceWorkflowUrl = false"), true);
   assert.equal(app.includes("if (shouldReplaceWorkflowUrl) writeUrlState({ replace: true })"), true);
   assert.equal(app.includes('state.consoleView === "search" && state.searchQuery'), true);
+  assert.equal(app.includes('kanbanScope: "global"'), true);
+  assert.equal(app.includes("const KANBAN_SCOPES"), true);
+  assert.equal(app.includes('state.kanbanScope = state.consoleView === "kanban"'), true);
+  assert.equal(app.includes('? normalizeChoice(params.get("scope"), KANBAN_SCOPES.map((item) => item.value), state.selectedWorkflowId ? "workflow" : "global")'), true);
+  assert.equal(app.includes('state.consoleView === "kanban" && state.kanbanScope === "workflow" && !state.selectedWorkflowId'), true);
+  assert.equal(app.includes('state.consoleView === "kanban" && state.kanbanScope === "global"'), true);
+  assert.equal(app.includes('params.set("scope", scope)'), true);
+  assert.equal(app.includes('const scope = state.kanbanScope === "workflow" && state.selectedWorkflowId ? "workflow" : "global"'), true);
+  assert.equal(app.includes('!(state.consoleView === "kanban" && state.kanbanScope === "global")'), true);
+  assert.equal(app.includes("function renderKanbanScopeControls"), true);
+  assert.equal(app.includes("function setKanbanScope"), true);
+  assert.equal(app.includes("Board Scope"), true);
+  assert.equal(app.includes("Read-only scope switch. It changes the board query and URL only; it does not move cards, mutate workflow state, dispatch agents, or retry work."), true);
+  assert.equal(app.includes('filtered to agent ${state.focusAgentId}'), true);
   assert.equal(app.includes('["agent-board", "kanban"].includes(state.consoleView) && state.focusAgentId'), true);
   assert.equal(app.includes('state.consoleView === "kanban" && state.focusCardId'), true);
   assert.equal(app.includes('state.consoleView === "operations" || (state.consoleView === "workflows" && state.tab === "operations")'), true);
@@ -8635,8 +8649,23 @@ async function testWorkflowConsoleStaticContextTrailContract() {
   assert.equal(app.includes("state.config?.actionMode"), true);
   assert.equal(css.includes(".context-trail"), true);
   assert.equal(css.includes(".context-crumb"), true);
+  assert.equal(css.includes(".kanban-scope-panel"), true);
+  assert.equal(css.includes(".kanban-scope-actions"), true);
   assert.equal(css.includes("flex-wrap: wrap"), true);
   assert.equal(css.includes("flex: 1 1 260px"), true);
+
+  const queryRuntime = new Function("state", `${extractFunctionSource(app, "kanbanQueryParams")}
+return { kanbanQueryParams };`);
+  const globalParams = queryRuntime({ kanbanScope: "global", selectedWorkflowId: "wf-hidden", focusAgentId: "" }).kanbanQueryParams();
+  assert.equal(globalParams.get("scope"), "global");
+  assert.equal(globalParams.has("workflowId"), false);
+  const workflowParams = queryRuntime({ kanbanScope: "workflow", selectedWorkflowId: "wf-a", focusAgentId: "cat_body" }).kanbanQueryParams();
+  assert.equal(workflowParams.get("scope"), "workflow");
+  assert.equal(workflowParams.get("workflowId"), "wf-a");
+  assert.equal(workflowParams.get("agentId"), "cat_body");
+  const missingWorkflowParams = queryRuntime({ kanbanScope: "workflow", selectedWorkflowId: "", focusAgentId: "" }).kanbanQueryParams();
+  assert.equal(missingWorkflowParams.get("scope"), "global");
+  assert.equal(missingWorkflowParams.has("workflowId"), false);
 }
 
 async function testWorkflowConsoleStaticDiagnosticMatrixContract() {

@@ -443,6 +443,24 @@ code {
   text-align: center;
 }
 
+.kanban-scope-panel {
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px;
+  background: #ffffff;
+  display: grid;
+  gap: 8px;
+}
+
+.kanban-scope-actions {
+  min-width: 0;
+}
+
+.kanban-scope-actions button {
+  min-width: 0;
+}
+
 .layout {
   height: calc(100vh - 76px);
   display: grid;

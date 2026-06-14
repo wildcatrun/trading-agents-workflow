@@ -15,6 +15,7 @@ const state = {
   sortMode: "age_desc",
   focusAgentId: "",
   focusCardId: "",
+  kanbanScope: "global",
   scopedActivity: false,
   commandPalette: null,
   commandPaletteQuery: "",
@@ -52,6 +53,10 @@ const SORT_MODES = [
   { value: "age_asc", label: "Oldest first" },
   { value: "severity_desc", label: "Severity high" },
   { value: "severity_asc", label: "Severity low" }
+];
+const KANBAN_SCOPES = [
+  { value: "global", label: "Global Board" },
+  { value: "workflow", label: "Workflow Board" }
 ];
 const SEVERITY_RANK = {
   critical: 4,
@@ -346,6 +351,7 @@ function updateContextTrail() {
     state.consoleView === "workflows" ? { label: "Queue", value: state.view } : null,
     canShowWorkflowContext ? { label: "Workflow", value: state.selectedWorkflowId } : null,
     state.tab && state.consoleView === "workflows" && state.tab !== "overview" ? { label: "Tab", value: state.tab } : null,
+    state.consoleView === "kanban" ? { label: "Board Scope", value: state.kanbanScope === "workflow" ? "workflow" : "global" } : null,
     canShowAgentContext ? { label: "Agent", value: state.focusAgentId } : null,
     canShowCardContext ? { label: "Card", value: state.focusCardId } : null,
     state.consoleView === "search" && state.searchQuery ? { label: "Search", value: state.searchQuery } : null,
@@ -407,6 +413,11 @@ function readUrlState() {
   state.selectedWorkflowId = params.get("workflow") || "";
   state.scopedActivity = state.consoleView === "activity" && params.get("scope") === "workflow" && Boolean(state.selectedWorkflowId);
   if (state.consoleView === "activity" && !state.scopedActivity) state.selectedWorkflowId = "";
+  state.kanbanScope = state.consoleView === "kanban"
+    ? normalizeChoice(params.get("scope"), KANBAN_SCOPES.map((item) => item.value), state.selectedWorkflowId ? "workflow" : "global")
+    : "global";
+  if (state.consoleView === "kanban" && state.kanbanScope === "workflow" && !state.selectedWorkflowId) state.kanbanScope = "global";
+  if (state.consoleView === "kanban" && state.kanbanScope === "global") state.selectedWorkflowId = "";
   state.tab = params.get("tab") || "overview";
   state.searchQuery = params.get("q") || "";
   state.workbenchFilter = normalizeChoice(params.get("filter"), WORKBENCH_FILTERS.map((item) => item.id), "all");
@@ -425,7 +436,11 @@ function writeUrlState({ replace = false } = {}) {
   const params = new URLSearchParams();
   if (state.consoleView !== "command-center") params.set("console", state.consoleView);
   if (state.view !== "active") params.set("wfView", state.view);
-  if (["workflows", "evidence-workspace", "operations", "kanban"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
+  if (["workflows", "evidence-workspace", "operations"].includes(state.consoleView) && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
+  if (state.consoleView === "kanban") {
+    if (state.kanbanScope !== "global") params.set("scope", state.kanbanScope);
+    if (state.kanbanScope === "workflow" && state.selectedWorkflowId) params.set("workflow", state.selectedWorkflowId);
+  }
   if (state.consoleView === "activity" && state.scopedActivity && state.selectedWorkflowId) {
     params.set("workflow", state.selectedWorkflowId);
     params.set("scope", "workflow");
@@ -1518,7 +1533,9 @@ async function loadWorkflows() {
   state.workflows = data.workflows || [];
   const urlWorkflowViews = ["workflows", "evidence-workspace", "operations", "kanban"];
   let shouldReplaceWorkflowUrl = false;
-  if (!state.selectedWorkflowId && !["activity", "operations"].includes(state.consoleView) && state.workflows[0]) {
+  const shouldAutoSelectWorkflow = !["activity", "operations"].includes(state.consoleView)
+    && !(state.consoleView === "kanban" && state.kanbanScope === "global");
+  if (!state.selectedWorkflowId && shouldAutoSelectWorkflow && state.workflows[0]) {
     state.selectedWorkflowId = state.workflows[0].workflowId;
     shouldReplaceWorkflowUrl = urlWorkflowViews.includes(state.consoleView);
   }
@@ -1707,7 +1724,9 @@ function operationsQueryParams(workflowId = "") {
 
 function kanbanQueryParams() {
   const params = new URLSearchParams();
-  if (state.selectedWorkflowId) params.set("workflowId", state.selectedWorkflowId);
+  const scope = state.kanbanScope === "workflow" && state.selectedWorkflowId ? "workflow" : "global";
+  params.set("scope", scope);
+  if (scope === "workflow") params.set("workflowId", state.selectedWorkflowId);
   if (state.focusAgentId) params.set("agentId", state.focusAgentId);
   return params;
 }
@@ -2453,6 +2472,53 @@ function renderAgentCard(agent = {}) {
   ]);
 }
 
+async function setKanbanScope(scope) {
+  state.kanbanScope = normalizeChoice(scope, KANBAN_SCOPES.map((item) => item.value), "global");
+  if (state.kanbanScope === "workflow" && !state.selectedWorkflowId && state.workflows[0]) {
+    state.selectedWorkflowId = state.workflows[0].workflowId;
+  }
+  if (state.kanbanScope === "workflow" && !state.selectedWorkflowId) state.kanbanScope = "global";
+  if (state.kanbanScope === "global") {
+    state.selectedWorkflowId = "";
+    state.focusCardId = "";
+  }
+  writeUrlState();
+  renderWorkflowList();
+  renderDetailHeader();
+  await loadGlobalView();
+}
+
+function renderKanbanScopeControls(data = {}) {
+  const workflowId = state.selectedWorkflowId || "";
+  const scope = data.query?.scope || state.kanbanScope || "global";
+  const workflowAvailable = Boolean(workflowId || state.workflows[0]);
+  return h("div", { className: "kanban-scope-panel" }, [
+    h("div", { className: "workflow-title" }, [
+      h("strong", {}, "Board Scope"),
+      chip(scope === "workflow" ? "workflow" : "global", scope === "workflow" ? "warning" : "neutral")
+    ]),
+    h("p", { className: "muted" }, scope === "workflow"
+      ? `Showing workflow-scoped board${workflowId ? ` for ${workflowId}` : ""}.`
+      : `Showing the global agent/workflow board across all workflows${state.focusAgentId ? `, filtered to agent ${state.focusAgentId}` : ""}.`),
+    h("div", { className: "actions kanban-scope-actions" }, [
+      h("button", {
+        type: "button",
+        className: state.kanbanScope === "global" ? "active" : "",
+        onClick: () => setKanbanScope("global")
+      }, "Global Board"),
+      h("button", {
+        type: "button",
+        className: state.kanbanScope === "workflow" ? "active" : "",
+        disabled: !workflowAvailable,
+        title: workflowAvailable ? "Use selected workflow scope" : "No workflow is available for workflow-scoped board.",
+        onClick: workflowAvailable ? () => setKanbanScope("workflow") : undefined
+      }, "Workflow Board"),
+      workflowId ? h("button", { type: "button", onClick: () => copyText(workflowId, "Kanban workflow") }, "Copy Workflow") : null
+    ]),
+    h("p", { className: "muted" }, "Read-only scope switch. It changes the board query and URL only; it does not move cards, mutate workflow state, dispatch agents, or retry work.")
+  ]);
+}
+
 function renderKanban(data) {
   const columns = data.columns || [];
   const filteredColumns = columns.map((column) => {
@@ -2462,6 +2528,7 @@ function renderKanban(data) {
   const totalCards = columns.reduce((sum, column) => sum + ((column.cards || []).length), 0);
   const shownCards = filteredColumns.reduce((sum, column) => sum + ((column.cards || []).length), 0);
   setDetailBody(h("div", { className: "stack" }, [
+    renderKanbanScopeControls(data),
     renderWorkbenchControls({ total: totalCards, shown: shownCards }),
     section("Kanban Summary", h("div", { className: "quick-stats" }, [
       statCard("Cards", data.summary?.cards || 0),
@@ -2662,6 +2729,7 @@ async function openCommandTarget(target = {}) {
     state.consoleView = "kanban";
     state.scopedActivity = false;
     state.selectedWorkflowId = target.workflowId || "";
+    state.kanbanScope = target.workflowId ? "workflow" : "global";
     state.detail = null;
     state.focusAgentId = target.agentId || "";
     state.focusCardId = target.cardId || "";

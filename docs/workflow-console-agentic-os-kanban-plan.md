@@ -28,7 +28,7 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-U: Operations workspace, activity feed, system status and
+- v1.0 slices A-Y: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
@@ -36,7 +36,7 @@ Implemented layers:
   release quality evidence artifact loading, plus read-only diagnostic
   runbooks, action-result inspection, persistent operation-row inspection, and
   readiness finding inspection, Kanban preview expansion, collapsible Evidence
-  Desk, and Cat Claw secretary handoff shortcuts.
+  Desk, Cat Claw secretary handoff shortcuts, and explicit Kanban board scope.
 
 Current target state:
 
@@ -1490,6 +1490,21 @@ Implemented Slice X: Cat Claw Secretary Handoff Shortcut
   Human Gate, send Telegram, approve continuation, mutate evidence, or expose
   executable writes.
 
+Implemented Slice Y: Kanban Scope Switcher
+
+- Added an explicit read-only Board Scope control to Workflow Kanban with
+  `Global Board` and `Workflow Board` modes. Kanban now defaults to a global
+  agent/workflow board instead of silently inheriting the first workflow from
+  the queue; existing deep links with `console=kanban&workflow=<id>` remain
+  workflow-scoped for compatibility.
+- The scope is reflected in URL state as `scope=workflow` when workflow-scoped;
+  global scope omits workflow id from the Kanban query. Cross-surface drilldowns
+  that include a workflow id still open the workflow-scoped board, while
+  agent-only board routes stay global with an agent focus.
+- This switch is observational only. It changes the read-model query and URL;
+  it does not move cards, mutate workflow state, dispatch agents, retry work, or
+  create a second scheduler.
+
 ## Test Plan
 
 Required checks:
@@ -1670,7 +1685,9 @@ Rollback:
 
 ## Open Questions
 
-- Should Kanban default to global agent work or current workflow work?
+- Kanban defaults to global agent/workflow work. Workflow-scoped board remains
+  available through the explicit Board Scope switch and workflow deep links
+  implemented in Slice Y.
 - Cat Claw secretary-specific Evidence Desk shortcut is implemented as a
   read-only handoff checklist in Slice X.
 - Should agent cards show profile-local memory/RAG status, or keep memory
