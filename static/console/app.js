@@ -912,35 +912,41 @@ function sourceRefDrilldownTargets(ref = {}, context = {}) {
     pushTarget({ label: "Board", consoleView: "kanban", workflowId, agentId });
   }
   if (source.includes("dispatch") || field === "dispatch_id") {
-    if (context.workflowId) pushTarget({ label: "Dispatches", consoleView: "workflows", workflowId: context.workflowId, tab: "dispatches" });
-    pushTarget({ label: "Board", consoleView: "kanban", workflowId: context.workflowId || workflowId, agentId: context.agentId || agentId, cardId: id });
-    pushTarget({ label: "Operations", consoleView: "operations", workflowId: context.workflowId || workflowId, operationsFilters: { kind: "failed_dispatch", severity: "", status: "" } });
+    if (workflowId) {
+      pushTarget({ label: "Dispatches", consoleView: "workflows", workflowId, tab: "dispatches" });
+      pushTarget({ label: "Board", consoleView: "kanban", workflowId, agentId: context.agentId || agentId, cardId: id });
+    }
+    pushTarget({ label: "Operations", consoleView: "operations", workflowId, operationsFilters: { kind: "failed_dispatch", severity: "", status: "" } });
   }
   if (source.includes("message_flow") || field === "flow_id") {
-    if (context.workflowId) pushTarget({ label: "Message Flow", consoleView: "workflows", workflowId: context.workflowId, tab: "message-flows" });
-    pushTarget({ label: "Board", consoleView: "kanban", workflowId: context.workflowId || workflowId, agentId: context.agentId || agentId, cardId: id });
+    if (workflowId) {
+      pushTarget({ label: "Message Flow", consoleView: "workflows", workflowId, tab: "message-flows" });
+      pushTarget({ label: "Board", consoleView: "kanban", workflowId, agentId: context.agentId || agentId, cardId: id });
+    }
   }
   if (source.includes("telegram_outbox") || field === "outbox_id") {
-    if (context.workflowId || workflowId) pushTarget({ label: "Outbox", consoleView: "workflows", workflowId: context.workflowId || workflowId, tab: "outbox" });
-    pushTarget({ label: "Operations", consoleView: "operations", workflowId: context.workflowId || workflowId, operationsFilters: { kind: "", severity: "critical", status: "failed" } });
+    if (workflowId) pushTarget({ label: "Outbox", consoleView: "workflows", workflowId, tab: "outbox" });
+    pushTarget({ label: "Operations", consoleView: "operations", workflowId, operationsFilters: { kind: "", severity: "critical", status: "failed" } });
   }
   if (source.includes("incident")) {
-    if (context.workflowId || workflowId) pushTarget({ label: "Incidents", consoleView: "workflows", workflowId: context.workflowId || workflowId, tab: "incident-closeout" });
-    pushTarget({ label: "Evidence", consoleView: "evidence-workspace", workflowId: context.workflowId || workflowId });
+    if (workflowId) {
+      pushTarget({ label: "Incidents", consoleView: "workflows", workflowId, tab: "incident-closeout" });
+      pushTarget({ label: "Evidence", consoleView: "evidence-workspace", workflowId });
+    }
   }
   if (source.includes("human_gate") || source.includes("protocol_objects") || source.includes("review_gates")) {
-    if (context.workflowId || workflowId) {
-      pushTarget({ label: "Human Gate", consoleView: "workflows", workflowId: context.workflowId || workflowId, tab: "human-gates" });
-      pushTarget({ label: "Gate Readiness", consoleView: "workflows", workflowId: context.workflowId || workflowId, tab: "human-gate-readiness" });
+    if (workflowId) {
+      pushTarget({ label: "Human Gate", consoleView: "workflows", workflowId, tab: "human-gates" });
+      pushTarget({ label: "Gate Readiness", consoleView: "workflows", workflowId, tab: "human-gate-readiness" });
     }
   }
   if (source.includes("workflow_operations") || source.includes("control_loop") || source.includes("dead_letters")) {
-    pushTarget({ label: "Operations", consoleView: "operations", workflowId: context.workflowId || workflowId });
+    pushTarget({ label: "Operations", consoleView: "operations", workflowId });
   }
   if (source.includes("side_effect") || source.includes("artifact") || source.includes("checkpoint") || source.includes("evidence")) {
-    if (context.workflowId || workflowId) {
-      pushTarget({ label: "Evidence", consoleView: "evidence-workspace", workflowId: context.workflowId || workflowId });
-      pushTarget({ label: "Evidence Desk", consoleView: "workflows", workflowId: context.workflowId || workflowId, tab: "evidence-desk" });
+    if (workflowId) {
+      pushTarget({ label: "Evidence", consoleView: "evidence-workspace", workflowId });
+      pushTarget({ label: "Evidence Desk", consoleView: "workflows", workflowId, tab: "evidence-desk" });
     }
   }
   return targets.slice(0, 6);
@@ -1812,12 +1818,92 @@ function diagnosticMatrixTargetLabel(target = {}) {
             : "Open");
 }
 
+function diagnosticMatrixRunbookSteps(row = {}) {
+  const common = [
+    "Start from the linked console surface, not raw database rows.",
+    "Inspect source refs and evidence gaps before preparing any governed preview.",
+    "Keep write actions disabled unless startup policy and Human Gate explicitly allow them."
+  ];
+  const stepsByKey = {
+    stale_dispatch: [
+      "Open Operations with the dispatch filters to confirm attempt count, failure type, and latest error.",
+      "Open the focused Kanban card to check whether the task is still active, stale, or already superseded.",
+      "Inspect Evidence for rollback boundaries before preparing a reconcile or rerun preview."
+    ],
+    missing_receipt: [
+      "Open the Message Flow or focused Kanban route to confirm ACK, delivery, runtime receipt, and timeout windows.",
+      "Compare dispatch, runtime run, and message_flow refs before treating the result as missing.",
+      "Prepare only a governed reconcile preview if terminal receipt evidence remains absent."
+    ],
+    failed_telegram: [
+      "Open Outbox or Operations to confirm delivery status, target, retry state, and receipt completeness.",
+      "Inspect Evidence to verify the Human Gate or report object before any redelivery preview.",
+      "Do not create a parallel Human Gate; preserve existing ids and delivery history."
+    ],
+    blocked_human_gate: [
+      "Open Gate Readiness to confirm buttons, Chinese summary, options, Telegram delivery, and resume boundary.",
+      "Inspect Evidence for Cat Claw review, rollback/stop conditions, and artifact references.",
+      "Return incomplete packages to the workflow before presenting a Human Gate."
+    ],
+    runtime_failure: [
+      "Open System and Agent Board to compare readiness findings with runtime registry ownership.",
+      "Check whether the affected runtime, agent, dispatch, and message_flow evidence agree.",
+      "Escalate to governed stability handling only after the failing plane and rollback path are clear."
+    ]
+  };
+  return stepsByKey[row.key] || common;
+}
+
+function diagnosticMatrixEvidenceSummary(row = {}) {
+  const refs = diagnosticMatrixSourceRefs(row);
+  if (refs.length) return refs.map(sourceRefKey).join("\n");
+  if (row.blockers?.length) return row.blockers.map((blocker) => blocker.id).filter(Boolean).join("\n");
+  return `${row.label || "Diagnostic"}: ${row.severity || "unknown"} / count ${row.count || 0}`;
+}
+
+function inspectDiagnosticRunbook(row = {}) {
+  const refs = diagnosticMatrixSourceRefs(row);
+  const targets = diagnosticMatrixRelatedTargets(row);
+  const steps = diagnosticMatrixRunbookSteps(row);
+  showDrawer({
+    title: `${row.label || "Diagnostic"} Runbook`,
+    subtitle: row.detail || "Read-only diagnostic guidance",
+    tone: row.severity || "neutral",
+    raw: { row, refs, targets, steps },
+    body: h("div", { className: "stack" }, [
+      section("Current Signal", renderKeyValues([
+        { label: "Status", value: row.severity === "ok" ? "clear" : row.severity || "unknown" },
+        { label: "Count", value: row.count || 0 },
+        { label: "Diagnostic", value: row.key || "-" },
+        { label: "Detail", value: row.detail || "-" }
+      ])),
+      section("Evidence To Inspect", refs.length ? sourceRefList(refs, {
+        workflowId: row.blockers?.find((blocker) => blocker.workflowId)?.workflowId || row.target?.workflowId || "",
+        agentId: row.blockers?.find((blocker) => blocker.agentId)?.agentId || row.target?.agentId || ""
+      }) : emptyState(row.count ? "Open the linked surface for row-level source refs." : "No active source refs.")),
+      section("Suggested Check Order", h("ol", { className: "compact-list" }, steps.map((step) => h("li", {}, step)))),
+      section("Governed Drilldowns", targets.length ? h("div", { className: "source-ref-actions" }, targets.map((target) => h("button", {
+        type: "button",
+        onClick: () => {
+          closeDrawer();
+          openCommandTarget(target);
+        }
+      }, diagnosticMatrixTargetLabel(target)))) : emptyState("No governed drilldown route is currently available.")),
+      section("Boundary", h("p", { className: "muted" }, "This runbook is read-only. It explains inspection order and routes to governed console surfaces; it does not retry jobs, redeliver messages, mutate workflow state, or bypass Human Gate.")),
+      h("div", { className: "actions drawer-actions" }, [
+        h("button", { type: "button", onClick: () => copyText(diagnosticMatrixEvidenceSummary(row), `${row.label || "Diagnostic"} evidence`) }, "Copy Evidence"),
+        h("button", { type: "button", onClick: () => copyText(steps.join("\n"), `${row.label || "Diagnostic"} runbook`) }, "Copy Runbook")
+      ])
+    ])
+  });
+}
+
 function renderDiagnosticMatrix(data = {}) {
   const rows = diagnosticMatrixRows(data);
   return h("div", { className: "triage-matrix" }, rows.map((row) => {
     const refs = diagnosticMatrixSourceRefs(row);
     const relatedTargets = diagnosticMatrixRelatedTargets(row);
-    const evidenceText = refs.map(sourceRefKey).join("\n") || row.blockers.map((blocker) => blocker.id).filter(Boolean).join("\n") || row.label;
+    const evidenceText = diagnosticMatrixEvidenceSummary(row);
     return h("article", { className: `triage-matrix-row ${row.severity}` }, [
       h("div", { className: "triage-matrix-main" }, [
         h("div", { className: "workflow-title" }, [
@@ -1844,6 +1930,7 @@ function renderDiagnosticMatrix(data = {}) {
       h("div", { className: "triage-matrix-actions" }, [
         h("strong", {}, String(row.count || 0)),
         h("button", { type: "button", onClick: () => openCommandTarget(row.target) }, "Inspect"),
+        h("button", { type: "button", onClick: () => inspectDiagnosticRunbook(row) }, "Runbook"),
         h("button", { type: "button", onClick: () => copyText(evidenceText, `${row.label} evidence`) }, "Copy Evidence")
       ])
     ]);

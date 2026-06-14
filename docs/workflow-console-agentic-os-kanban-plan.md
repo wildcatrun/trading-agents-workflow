@@ -28,12 +28,13 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-Q: Operations workspace, activity feed, system status and
+- v1.0 slices A-R: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
   source-ref drilldown inspection, Kanban card action/audit inspection, and
-  release quality evidence artifact loading.
+  release quality evidence artifact loading, plus read-only diagnostic
+  runbooks.
 
 Current target state:
 
@@ -1375,6 +1376,19 @@ Implemented Slice Q: Release Quality Evidence Artifact
   reading a raw file, while still avoiding any claim that the console can
   approve or certify a deployment by itself.
 
+Implemented Slice R: Command Center Diagnostic Runbooks
+
+- Added a `Runbook` drawer for every Command Center diagnostic matrix row.
+  Each drawer explains the current signal, source refs to inspect, suggested
+  check order, governed drilldown routes, and read-only boundary.
+- The runbooks are derived from existing diagnostic classes: stale dispatch,
+  missing receipt, failed Telegram delivery, blocked Human Gate, and runtime
+  failure. They guide the operator from global symptom to evidence and preview
+  package without requiring raw database inspection.
+- The drawer remains observational. It can copy evidence/runbook text and route
+  to existing console surfaces, but it does not retry jobs, redeliver messages,
+  mutate workflow state, or bypass Human Gate.
+
 ## Test Plan
 
 Required checks:
@@ -1451,6 +1465,9 @@ Frontend smoke:
 - verify Command Center diagnostic matrix shows stale dispatch, missing
   receipt, failed Telegram, blocked Human Gate, and runtime failure rows with
   Inspect/Copy Ref controls and mobile-readable wrapping;
+- verify Command Center diagnostic runbooks open from matrix rows, show source
+  refs, suggested check order, governed drilldowns, copyable runbook/evidence,
+  and read-only boundaries;
 - verify System Status Operator-Grade Release Gate renders read-only default,
   action policy, safety boundaries, integrated surfaces, redaction, runtime
   health, readiness evidence, and partial-failure status without exposing write
@@ -1516,7 +1533,10 @@ unless plugin runtime loading changes require it separately.
   the card Inspect drawer before operators open any governed preview. Slice Q
   loads release quality evidence from a governed in-root artifact so the
   operator-grade release gate can be backed by concrete Spark/regression/smoke
-  and deployment records instead of default `required` placeholders.
+  and deployment records instead of default `required` placeholders. Slice R
+  adds diagnostic runbooks so Command Center explains the inspection order and
+  governed next surfaces for each v1.0 failure class instead of leaving that
+  knowledge implicit.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

@@ -8377,10 +8377,19 @@ async function testWorkflowConsoleStaticDiagnosticMatrixContract() {
   assert.equal(app.includes("function diagnosticMatrixSourceRefs"), true);
   assert.equal(app.includes("function diagnosticMatrixTargetKey"), true);
   assert.equal(app.includes("function diagnosticMatrixRelatedTargets"), true);
+  assert.equal(app.includes("function diagnosticMatrixRunbookSteps"), true);
+  assert.equal(app.includes("function diagnosticMatrixEvidenceSummary"), true);
+  assert.equal(app.includes("function inspectDiagnosticRunbook"), true);
   assert.equal(app.includes("function inspectSourceRef"), true);
   assert.equal(app.includes("function sourceRefDrilldownTargets"), true);
   assert.equal(app.includes("function renderSourceRefChip"), true);
   assert.equal(app.includes("Source Inspector"), true);
+  assert.equal(app.includes('${row.label || "Diagnostic"} Runbook'), true);
+  assert.equal(app.includes("Suggested Check Order"), true);
+  assert.equal(app.includes("Governed Drilldowns"), true);
+  assert.equal(app.includes("This runbook is read-only."), true);
+  assert.equal(app.includes("Copy Runbook"), true);
+  assert.equal(app.includes("inspectDiagnosticRunbook(row)"), true);
   assert.equal(app.includes("Suggested Drilldowns"), true);
   assert.equal(app.includes("This inspector is read-only."), true);
   assert.equal(app.includes("closeDrawer();\n          openCommandTarget(target);"), true);
@@ -8390,6 +8399,7 @@ async function testWorkflowConsoleStaticDiagnosticMatrixContract() {
   assert.equal(app.includes("section: target.section"), true);
   assert.equal(app.includes("operationsFilters: target.operationsFilters"), true);
   assert.equal(app.includes("Evidence Preview"), true);
+  assert.equal(app.includes("Runbook"), true);
   assert.equal(app.includes("Copy Evidence"), true);
   assert.equal(app.includes("diagnosticMatrixTargetLabel"), true);
   assert.equal(app.includes("const readinessCritical"), true);
@@ -8422,16 +8432,102 @@ return { sourceRefDrilldownTargets };`)();
   assert.equal(targetLabels({ source: "human_gate_buttons", field: "button_id", id: "button-a" }, { workflowId: "wf-a" }).includes("Gate Readiness"), true);
   assert.equal(targetLabels({ source: "incident_states", field: "incident_id", id: "incident-a" }, { workflowId: "wf-a" }).includes("Incidents"), true);
   assert.equal(targetLabels({ source: "side_effect_ledger", field: "side_effect_id", id: "side-a" }, { workflowId: "wf-a" }).includes("Evidence Desk"), true);
+  assert.deepEqual(targetLabels({ source: "mixed_meeting_dispatches", field: "dispatch_id", id: "dispatch-a" }), ["Operations"]);
+  assert.deepEqual(targetLabels({ source: "message_flows", field: "flow_id", id: "flow-a" }), []);
+  assert.deepEqual(targetLabels({ source: "telegram_outbox", field: "outbox_id", id: "outbox-a" }), ["Operations"]);
+  assert.deepEqual(targetLabels({ source: "incident_states", field: "incident_id", id: "incident-a" }), []);
   assert.deepEqual(targetLabels({ source: "unknown_table", field: "opaque", id: "row-a" }), []);
+
+  const runbookRuntime = new Function(`${extractFunctionSource(app, "sourceRefKey")}
+${extractFunctionSource(app, "diagnosticMatrixSourceRefs")}
+${extractFunctionSource(app, "diagnosticMatrixRunbookSteps")}
+${extractFunctionSource(app, "diagnosticMatrixEvidenceSummary")}
+return { diagnosticMatrixRunbookSteps, diagnosticMatrixEvidenceSummary };`)();
+  assert.equal(runbookRuntime.diagnosticMatrixRunbookSteps({ key: "stale_dispatch" }).some((step) => step.includes("Open Operations")), true);
+  assert.equal(runbookRuntime.diagnosticMatrixRunbookSteps({ key: "missing_receipt" }).some((step) => step.includes("Message Flow")), true);
+  assert.equal(runbookRuntime.diagnosticMatrixRunbookSteps({ key: "failed_telegram" }).some((step) => step.includes("Outbox")), true);
+  assert.equal(runbookRuntime.diagnosticMatrixRunbookSteps({ key: "blocked_human_gate" }).some((step) => step.includes("Gate Readiness")), true);
+  assert.equal(runbookRuntime.diagnosticMatrixRunbookSteps({ key: "runtime_failure" }).some((step) => step.includes("System and Agent Board")), true);
+  assert.equal(runbookRuntime.diagnosticMatrixEvidenceSummary({
+    label: "Missing Receipt",
+    severity: "warning",
+    count: 1,
+    blockers: [{ id: "message_flow_delivery_missing:flow-a", sourceRefs: [{ source: "message_flows", field: "flow_id", id: "flow-a" }] }]
+  }), "message_flows.flow_id=flow-a");
 
   let drawerPayload = null;
   const calls = [];
+  const copyPayloads = [];
   const hStub = (tag, attrs = {}, children = []) => ({
     tag,
     attrs,
     children: Array.isArray(children) ? children : [children]
   });
   const sectionStub = (title, body) => hStub("section", { title }, [body]);
+  const findButton = (node, label) => {
+    if (!node || typeof node !== "object") return null;
+    if (node.tag === "button" && node.children.includes(label)) return node;
+    for (const child of node.children || []) {
+      const found = findButton(child, label);
+      if (found) return found;
+    }
+    return null;
+  };
+  const runbookDrawerRuntime = new Function("h", "section", "renderKeyValues", "sourceRefList", "emptyState", "closeDrawer", "openCommandTarget", "copyText", "showDrawer", `${extractFunctionSource(app, "sourceRefKey")}
+${extractFunctionSource(app, "diagnosticMatrixSourceRefs")}
+${extractFunctionSource(app, "sourceRefTargetKey")}
+${extractFunctionSource(app, "diagnosticMatrixTargetKey")}
+${extractFunctionSource(app, "diagnosticMatrixRelatedTargets")}
+${extractFunctionSource(app, "diagnosticMatrixTargetLabel")}
+${extractFunctionSource(app, "diagnosticMatrixRunbookSteps")}
+${extractFunctionSource(app, "diagnosticMatrixEvidenceSummary")}
+${extractFunctionSource(app, "inspectDiagnosticRunbook")}
+return { inspectDiagnosticRunbook };`)(
+    hStub,
+    sectionStub,
+    (rows) => hStub("key-values", {}, rows.map((row) => `${row.label}:${row.value}`)),
+    (refs) => hStub("source-refs", {}, refs.map((ref) => `${ref.source}.${ref.field}=${ref.id}`)),
+    (message) => hStub("empty", {}, [message]),
+    () => calls.push("close"),
+    (target) => calls.push(`open:${target.consoleView}:${target.tab || target.label || ""}`),
+    (value, label) => {
+      copyPayloads.push({ value, label });
+      calls.push(`copy:${String(value).slice(0, 20)}`);
+    },
+    (payload) => { drawerPayload = payload; }
+  );
+  runbookDrawerRuntime.inspectDiagnosticRunbook({
+    key: "missing_receipt",
+    label: "Missing Receipt",
+    severity: "warning",
+    count: 1,
+    detail: "Receipt gap needs evidence.",
+    target: { label: "Board", consoleView: "kanban", workflowId: "wf-a", cardId: "flow-a" },
+    blockers: [{
+      id: "message_flow_delivery_missing:flow-a",
+      workflowId: "wf-a",
+      agentId: "cat_body",
+      sourceRefs: [{ source: "message_flows", field: "flow_id", id: "flow-a" }],
+      relatedTargets: [{ label: "Operations", consoleView: "operations", workflowId: "wf-a" }]
+    }]
+  });
+  assert.equal(drawerPayload.title, "Missing Receipt Runbook");
+  assert.equal(Array.isArray(drawerPayload.raw.steps), true);
+  assert.equal(drawerPayload.raw.refs[0].source, "message_flows");
+  assert.equal(drawerPayload.raw.targets.some((target) => target.label === "Operations" && target.consoleView === "operations"), true);
+  assert.equal(JSON.stringify(drawerPayload.body).includes("This runbook is read-only"), true);
+  assert.equal(typeof findButton(drawerPayload.body, "Copy Runbook").attrs.onClick, "function");
+  findButton(drawerPayload.body, "Copy Runbook").attrs.onClick();
+  assert.equal(calls.some((call) => call.startsWith("copy:")), true);
+  assert.deepEqual(copyPayloads.at(-1), {
+    value: drawerPayload.raw.steps.join("\n"),
+    label: "Missing Receipt runbook"
+  });
+  calls.length = 0;
+  findButton(drawerPayload.body, "Operations").attrs.onClick();
+  assert.deepEqual(calls, ["close", "open:operations:Operations"]);
+  drawerPayload = null;
+  calls.length = 0;
   const inspectorRuntime = new Function("present", "h", "section", "copyText", "closeDrawer", "openCommandTarget", "emptyState", "showDrawer", `${extractFunctionSource(app, "sourceRefDisplay")}
 ${extractFunctionSource(app, "sourceRefTargetKey")}
 ${extractFunctionSource(app, "sourceRefDrilldownTargets")}
@@ -8449,15 +8545,6 @@ return { inspectSourceRef };`)(
   inspectorRuntime.inspectSourceRef({ source: "message_flows", field: "flow_id", id: "flow-a" }, { workflowId: "wf-a", agentId: "cat_body" });
   assert.equal(drawerPayload.title, "Source Inspector");
   assert.equal(drawerPayload.raw.targets.some((target) => target.label === "Message Flow" && target.consoleView === "workflows" && target.tab === "message-flows"), true);
-  const findButton = (node, label) => {
-    if (!node || typeof node !== "object") return null;
-    if (node.tag === "button" && node.children.includes(label)) return node;
-    for (const child of node.children || []) {
-      const found = findButton(child, label);
-      if (found) return found;
-    }
-    return null;
-  };
   const messageFlowButton = findButton(drawerPayload.body, "Message Flow");
   assert.equal(typeof messageFlowButton.attrs.onClick, "function");
   messageFlowButton.attrs.onClick();

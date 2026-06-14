@@ -152,7 +152,9 @@ Current version map:
   visible before operators open governed previews. Slice Q adds in-root release
   quality evidence loading so System Status can show recorded Spark review,
   regression, browser smoke, and deployment trace evidence when a governed
-  rollout artifact exists.
+  rollout artifact exists. Slice R adds Command Center diagnostic runbooks so
+  each v1.0 failure class has a read-only inspection order, evidence refs,
+  governed drilldowns, and copyable runbook text.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 
