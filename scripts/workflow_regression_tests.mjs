@@ -8193,6 +8193,16 @@ async function testWorkflowConsoleStaticSystemStatusContract() {
   assert.equal(html.includes('data-console-view="system"'), true);
   assert.equal(app.includes('"system", "workflows", "search"'), true);
   assert.equal(app.includes("function renderSystemStatus"), true);
+  assert.equal(app.includes("function renderReadinessFindings"), true);
+  assert.equal(app.includes("function inspectReadinessFinding"), true);
+  assert.equal(app.includes("function redactClientValue"), true);
+  assert.equal(app.includes("function scrollToConsoleSection"), true);
+  assert.equal(app.includes("Readiness Finding Inspector"), true);
+  assert.equal(app.includes("Copy Evidence"), true);
+  assert.equal(app.includes("readiness_snapshots"), true);
+  assert.equal(app.includes('data-section": "readiness"'), true);
+  assert.equal(app.includes('source.includes("runtime_runs")'), true);
+  assert.equal(app.includes("It does not run health checks, restart services, mutate workflow state, dispatch agents, or bypass Human Gate."), true);
   assert.equal(app.includes("workflow_console_system_status.v1"), true);
   assert.equal(app.includes('safeApi("/health")'), true);
   assert.equal(app.includes('safeApi("/api/readiness/latest")'), true);
@@ -8227,6 +8237,36 @@ async function testWorkflowConsoleStaticSystemStatusContract() {
     { key: "spark_code_review", status: "recorded", detail: "Spark reviewed.", evidenceRefs: ["review/spark-smoke.md"] }
   ]);
   assert.equal(JSON.stringify(qualityCells).includes("review/spark-smoke.md"), true);
+
+  const readinessHelpers = new Function("sourceRefDrilldownTargets", "sourceRefTargetKey", "toneFor", `${extractFunctionSource(app, "redactClientText")}
+${extractFunctionSource(app, "redactClientValue")}
+${extractFunctionSource(app, "readinessFindingKey")}
+${extractFunctionSource(app, "readinessFindingSeverity")}
+${extractFunctionSource(app, "readinessFindingTone")}
+${extractFunctionSource(app, "readinessFindingSourceRefs")}
+${extractFunctionSource(app, "readinessFindingContext")}
+${extractFunctionSource(app, "readinessFindingTargets")}
+${extractFunctionSource(app, "readinessFindingEvidenceText")}
+return { readinessFindingKey, readinessFindingSeverity, readinessFindingTone, readinessFindingSourceRefs, readinessFindingContext, readinessFindingTargets, readinessFindingEvidenceText };`)(
+    (ref, context) => ref.source === "runtime_agents" ? [{ label: "Agent", consoleView: "agent-board", agentId: context.agentId || "cat_heart" }] : [],
+    (target) => JSON.stringify(target),
+    (value) => value || "neutral"
+  );
+  const readiness = { snapshotId: "rs-a", status: "degraded", checkedAt: "2026-06-14T00:00:00.000Z" };
+  const finding = { key: "hermers_acp_check_failed", severity: "warning", plane: "runtime", agentId: "cat_heart", profile: "catheart", runtimeRunId: "rr-a", error: "timeout token=raw-secret", apiKey: "raw-api-key" };
+  assert.equal(readinessHelpers.readinessFindingTone(finding), "warning");
+  assert.equal(readinessHelpers.readinessFindingTone({ severity: "critical" }), "critical");
+  const refs = readinessHelpers.readinessFindingSourceRefs(finding, readiness, 0);
+  assert.equal(refs.some((ref) => ref.source === "readiness_snapshots" && ref.field === "snapshot_id" && ref.id === "rs-a"), true);
+  assert.equal(refs.some((ref) => ref.source === "runtime_agents" && ref.id === "cat_heart"), true);
+  assert.equal(refs.some((ref) => ref.source === "runtime_runs" && ref.id === "rr-a"), true);
+  assert.equal(readinessHelpers.readinessFindingContext(finding).includes("agent=cat_heart"), true);
+  assert.equal(readinessHelpers.readinessFindingTargets(finding, readiness, 0).some((target) => target.consoleView === "agent-board"), true);
+  const evidenceText = readinessHelpers.readinessFindingEvidenceText(finding, readiness, 0);
+  assert.equal(evidenceText.includes("hermers_acp_check_failed"), true);
+  assert.equal(evidenceText.includes("raw-secret"), false);
+  assert.equal(evidenceText.includes("raw-api-key"), false);
+  assert.equal(evidenceText.includes("[redacted]"), true);
 }
 
 async function testWorkflowConsoleStaticActionGateContract() {

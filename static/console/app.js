@@ -203,6 +203,27 @@ function jsonBlock(value) {
   return h("pre", { className: "json" }, JSON.stringify(value, null, 2));
 }
 
+function redactClientText(value) {
+  return String(value || "")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/tawhg:[A-Za-z0-9._=-]+/g, "tawhg:<redacted>")
+    .replace(/(callback|token|secret|password|api[_-]?key|access[_-]?key|refresh)(\s*[:=]\s*)([^\s,;]+)/gi, "$1$2[redacted]")
+    .replace(/\b(callback|token|secret|password|api[_-]?key|access[_-]?key|refresh)([-_])[A-Za-z0-9._~+/=-]+/gi, "$1$2[redacted]")
+    .replace(/\b(callback|token|secret|password|api[_-]?key|access[_-]?key|refresh)\s+([^\s,;]+)/gi, "$1 [redacted]");
+}
+
+function redactClientValue(value) {
+  if (typeof value === "string") return redactClientText(value);
+  if (Array.isArray(value)) return value.map((item) => redactClientValue(item));
+  if (!value || typeof value !== "object") return value;
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (/callback|token|secret|password|api[_-]?key|access[_-]?key|refresh|bot[_-]?token/i.test(key)) result[key] = "[redacted]";
+    else result[key] = redactClientValue(item);
+  }
+  return result;
+}
+
 function downloadJson(filename, value) {
   const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -233,11 +254,20 @@ function emptyState(text) {
   return h("div", { className: "empty" }, text);
 }
 
-function section(title, body) {
-  return h("section", { className: "content-section" }, [
+function section(title, body, attrs = {}) {
+  return h("section", { ...attrs, className: `content-section ${attrs.className || ""}`.trim() }, [
     h("div", { className: "section-head" }, h("h3", {}, title)),
     body
   ]);
+}
+
+function scrollToConsoleSection(sectionId = "") {
+  if (!sectionId) return;
+  requestAnimationFrame(() => {
+    const target = Array.from(document.querySelectorAll("[data-section]"))
+      .find((node) => node.getAttribute("data-section") === sectionId);
+    target?.scrollIntoView({ block: "start", behavior: "smooth" });
+  });
 }
 
 function renderTable(columns, rows, emptyText = "No records.") {
@@ -919,6 +949,13 @@ function sourceRefDrilldownTargets(ref = {}, context = {}) {
     }
     pushTarget({ label: "Operations", consoleView: "operations", workflowId, operationsFilters: { kind: "failed_dispatch", severity: "", status: "" } });
   }
+  if (source.includes("runtime_runs") || field === "runtime_run_id") {
+    if (workflowId) {
+      pushTarget({ label: "Runtime", consoleView: "workflows", workflowId, tab: "runtime-runs" });
+      pushTarget({ label: "Board", consoleView: "kanban", workflowId, agentId: context.agentId || agentId, cardId: id });
+    }
+    pushTarget({ label: "Operations", consoleView: "operations", workflowId });
+  }
   if (source.includes("message_flow") || field === "flow_id") {
     if (workflowId) {
       pushTarget({ label: "Message Flow", consoleView: "workflows", workflowId, tab: "message-flows" });
@@ -942,6 +979,10 @@ function sourceRefDrilldownTargets(ref = {}, context = {}) {
     }
   }
   if (source.includes("workflow_operations") || source.includes("control_loop") || source.includes("dead_letters")) {
+    pushTarget({ label: "Operations", consoleView: "operations", workflowId });
+  }
+  if (source.includes("readiness_snapshots")) {
+    pushTarget({ label: "System", consoleView: "system", section: "readiness" });
     pushTarget({ label: "Operations", consoleView: "operations", workflowId });
   }
   if (source.includes("side_effect") || source.includes("artifact") || source.includes("checkpoint") || source.includes("evidence")) {
@@ -998,6 +1039,146 @@ function sourceRefList(refs = [], context = {}) {
     h("button", { type: "button", onClick: () => inspectSourceRef(ref, context) }, "Inspect"),
     h("button", { type: "button", onClick: () => copyText(ref.id, "Ref") }, "Copy")
   ])));
+}
+
+function readinessFindingKey(finding = {}, index = 0) {
+  return finding.key || finding.code || finding.type || `readiness_finding_${index + 1}`;
+}
+
+function readinessFindingSeverity(finding = {}) {
+  return String(finding.severity || finding.status || "info").toLowerCase();
+}
+
+function readinessFindingTone(finding = {}) {
+  const severity = readinessFindingSeverity(finding);
+  if (severity === "critical" || severity === "error" || severity === "failed") return "critical";
+  if (severity === "warning" || severity === "warn") return "warning";
+  if (severity === "ok" || severity === "ready" || severity === "pass") return "ok";
+  return toneFor(severity);
+}
+
+function readinessFindingSourceRefs(finding = {}, readiness = {}, index = 0) {
+  const safeFinding = redactClientValue(finding);
+  const safeReadiness = redactClientValue(readiness);
+  return [
+    { source: "readiness_snapshots", field: "snapshot_id", id: safeReadiness.snapshotId },
+    { source: "readiness_snapshots", field: "finding_key", id: readinessFindingKey(safeFinding, index) },
+    { source: "runtime_agents", field: "agent_id", id: safeFinding.agentId || safeFinding.agent_id || safeFinding.agent },
+    { source: "workflow_runs", field: "workflow_id", id: safeFinding.workflowId || safeFinding.workflow_id },
+    { source: "mixed_meeting_dispatches", field: "dispatch_id", id: safeFinding.dispatchId || safeFinding.dispatch_id },
+    { source: "runtime_runs", field: "runtime_run_id", id: safeFinding.runtimeRunId || safeFinding.runtime_run_id },
+    { source: "message_flows", field: "flow_id", id: safeFinding.flowId || safeFinding.flow_id },
+    { source: "telegram_outbox", field: "outbox_id", id: safeFinding.outboxId || safeFinding.outbox_id }
+  ].filter((ref) => ref.id);
+}
+
+function readinessFindingContext(finding = {}) {
+  const safeFinding = redactClientValue(finding);
+  const parts = [
+    safeFinding.plane ? `plane=${safeFinding.plane}` : "",
+    safeFinding.agentId || safeFinding.agent_id ? `agent=${safeFinding.agentId || safeFinding.agent_id}` : "",
+    safeFinding.workflowId || safeFinding.workflow_id ? `workflow=${safeFinding.workflowId || safeFinding.workflow_id}` : "",
+    safeFinding.profile ? `profile=${safeFinding.profile}` : "",
+    safeFinding.backend || safeFinding.backendId ? `backend=${safeFinding.backend || safeFinding.backendId}` : "",
+    safeFinding.path ? `path=${safeFinding.path}` : ""
+  ].filter(Boolean);
+  return parts.join(" | ") || "-";
+}
+
+function readinessFindingTargets(finding = {}, readiness = {}, index = 0) {
+  const sourceTargets = readinessFindingSourceRefs(finding, readiness, index)
+    .flatMap((ref) => sourceRefDrilldownTargets(ref, {
+      workflowId: finding.workflowId || finding.workflow_id || "",
+      agentId: finding.agentId || finding.agent_id || finding.agent || ""
+    }));
+  const targets = [{ label: "System", consoleView: "system", section: "readiness" }, ...sourceTargets];
+  const seen = new Set();
+  return targets.filter((target) => {
+    const key = sourceRefTargetKey(target);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 6);
+}
+
+function readinessFindingEvidenceText(finding = {}, readiness = {}, index = 0) {
+  const safeFinding = redactClientValue(finding);
+  const safeReadiness = redactClientValue(readiness);
+  return JSON.stringify({
+    snapshotId: safeReadiness.snapshotId || "",
+    checkedAt: safeReadiness.checkedAt || "",
+    status: safeReadiness.status || "",
+    finding: readinessFindingKey(safeFinding, index),
+    severity: readinessFindingSeverity(safeFinding),
+    plane: safeFinding.plane || "",
+    context: readinessFindingContext(safeFinding),
+    count: safeFinding.count ?? "",
+    error: safeFinding.error || safeFinding.message || safeFinding.detail || "",
+    sourceRefs: readinessFindingSourceRefs(safeFinding, safeReadiness, index)
+  }, null, 2);
+}
+
+function inspectReadinessFinding(finding = {}, readiness = {}, index = 0) {
+  const safeFinding = redactClientValue(finding);
+  const safeReadiness = redactClientValue(readiness);
+  const refs = readinessFindingSourceRefs(safeFinding, safeReadiness, index);
+  const targets = readinessFindingTargets(safeFinding, safeReadiness, index);
+  const severity = readinessFindingSeverity(safeFinding);
+  showDrawer({
+    title: "Readiness Finding Inspector",
+    subtitle: readinessFindingKey(safeFinding, index),
+    tone: readinessFindingTone(safeFinding),
+    raw: { readiness: safeReadiness, finding: safeFinding, refs, targets },
+    body: h("div", { className: "stack" }, [
+      section("Finding", renderKeyValues([
+        { label: "Severity", value: severity },
+        { label: "Key", value: readinessFindingKey(safeFinding, index) },
+        { label: "Plane", value: safeFinding.plane || "-" },
+        { label: "Count", value: safeFinding.count ?? "-" },
+        { label: "Context", value: readinessFindingContext(safeFinding) },
+        { label: "Snapshot", value: safeReadiness.snapshotId || "-" },
+        { label: "Checked", value: formatDate(safeReadiness.checkedAt) },
+        { label: "Error / Detail", value: safeFinding.error || safeFinding.message || safeFinding.detail || "-" }
+      ])),
+      section("Source Refs", refs.length ? sourceRefList(refs, {
+        workflowId: safeFinding.workflowId || safeFinding.workflow_id || "",
+        agentId: safeFinding.agentId || safeFinding.agent_id || safeFinding.agent || ""
+      }) : emptyState("No source refs for this readiness finding.")),
+      section("Suggested Drilldowns", targets.length ? h("div", { className: "source-ref-actions" }, targets.map((target) => h("button", {
+        type: "button",
+        onClick: () => {
+          closeDrawer();
+          openCommandTarget(target);
+        }
+      }, target.label || "Open"))) : emptyState("No console drilldown is available for this finding.")),
+      section("Copy Evidence", h("div", { className: "actions" }, [
+        h("button", { type: "button", onClick: () => copyText(readinessFindingEvidenceText(safeFinding, safeReadiness, index), "Readiness evidence") }, "Copy Evidence"),
+        h("button", { type: "button", onClick: () => copyText(readinessFindingKey(safeFinding, index), "Readiness finding key") }, "Copy Key")
+      ])),
+      section("Audit Boundary", h("p", { className: "muted" }, "This inspector reads the latest readiness snapshot and redacted finding payload. It does not run health checks, restart services, mutate workflow state, dispatch agents, or bypass Human Gate."))
+    ])
+  });
+}
+
+function renderReadinessFindings(readiness = {}) {
+  const safeReadiness = redactClientValue(readiness || {});
+  const findings = safeReadiness?.findings || [];
+  if (!findings.length) return emptyState("No readiness findings in the latest snapshot.");
+  const rows = findings.map((finding, index) => ({ finding, index }));
+  return renderTable([
+    { label: "Severity", render: ({ finding }) => chip(readinessFindingSeverity(finding), readinessFindingTone(finding)) },
+    { label: "Finding", render: ({ finding, index }) => h("div", {}, [
+      h("strong", {}, readinessFindingKey(finding, index)),
+      h("p", { className: "muted" }, short(finding.error || finding.message || finding.detail || "", 120))
+    ]) },
+    { label: "Plane", render: ({ finding }) => finding.plane || "-" },
+    { label: "Count", render: ({ finding }) => finding.count ?? "-" },
+    { label: "Context", render: ({ finding }) => short(readinessFindingContext(finding), 160) },
+    { label: "Evidence", render: ({ finding, index }) => h("div", { className: "actions compact-actions" }, [
+      h("button", { type: "button", onClick: () => inspectReadinessFinding(finding, safeReadiness, index) }, "Inspect"),
+      h("button", { type: "button", onClick: () => copyText(readinessFindingEvidenceText(finding, safeReadiness, index), "Readiness evidence") }, "Copy")
+    ]) }
+  ], rows, "No readiness findings in the latest snapshot.");
 }
 
 function agentSourceRefs(agent = {}) {
@@ -1334,6 +1515,7 @@ async function selectWorkflow(workflowId) {
     renderWorkflowList();
     renderDetailHeader();
     await loadGlobalView();
+    scrollToConsoleSection(target.section);
     return;
   }
   state.consoleView = "workflows";
@@ -2043,7 +2225,7 @@ function renderSystemStatus(data) {
       { label: "Endpoint", key: "path" },
       { label: "Error", key: "message" }
     ], partialFailures, "No partial failures.")) : null,
-    section("Readiness Findings", readiness?.findings?.length ? jsonBlock(readiness.findings) : emptyState("No readiness findings in the latest snapshot.")),
+    section("Readiness Findings", renderReadinessFindings(readiness), { "data-section": "readiness" }),
     section("Routes And Queues", h("div", { className: "content-grid" }, [
       renderTable([
         { label: "Console View", key: "view" }
@@ -2426,6 +2608,7 @@ async function openCommandTarget(target = {}) {
     renderWorkflowList();
     renderDetailHeader();
     await loadGlobalView();
+    scrollToConsoleSection(target.section);
     return;
   }
   if (target.consoleView === "kanban") {
@@ -2440,6 +2623,7 @@ async function openCommandTarget(target = {}) {
     renderWorkflowList();
     renderDetailHeader();
     await loadGlobalView();
+    scrollToConsoleSection(target.section);
     return;
   }
   if (target.consoleView === "evidence-workspace") {
@@ -2453,6 +2637,7 @@ async function openCommandTarget(target = {}) {
     renderWorkflowList();
     renderDetailHeader();
     await loadGlobalView();
+    scrollToConsoleSection(target.section);
     return;
   }
   if (target.consoleView === "operations") {
@@ -2471,6 +2656,7 @@ async function openCommandTarget(target = {}) {
     renderWorkflowList();
     renderDetailHeader();
     await loadGlobalView();
+    scrollToConsoleSection(target.section);
     return;
   }
   if (target.consoleView === "activity") {
@@ -2497,6 +2683,7 @@ async function openCommandTarget(target = {}) {
     renderWorkflowList();
     renderDetailHeader();
     await loadGlobalView();
+    scrollToConsoleSection(target.section);
   }
 }
 
@@ -3258,8 +3445,8 @@ function renderOperations(data) {
     section("Readiness", readiness ? h("div", { className: "copy-block" }, [
       chip(readiness.status || "unknown"),
       h("p", {}, `Checked: ${formatDate(readiness.checkedAt)}`),
-      jsonBlock(readiness.findings || [])
-    ]) : emptyState("No readiness snapshot.")),
+      renderReadinessFindings(readiness)
+    ]) : emptyState("No readiness snapshot."), { "data-section": "readiness" }),
     section("Dead-Letter / Stuck Attention", h("div", { className: "stack" }, [
       h("div", { className: "actions" }, [
         optionSelect(state.operationsFilters.kind, kindOptions, async (value) => {

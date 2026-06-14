@@ -161,7 +161,9 @@ Current version map:
   evidence without raw database inspection. Slice T adds a persistent Workflow
   Operation Inspector so stored `workflow_operations` rows expose redacted
   preview/result JSON, idempotency, Human Gate, timestamps, source refs, and
-  failure evidence directly from Operations.
+  failure evidence directly from Operations. Slice U adds Readiness Finding
+  Inspector coverage so System Status and Operations expose readiness findings
+  as source-ref-backed, copyable operator evidence instead of raw JSON only.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 
@@ -333,7 +335,9 @@ Current behavior:
 - preview results are stored in `preview_result_json`;
 - token-like text and `tawhg:` strings are redacted before DB/JSONL storage;
 - the Operations tab shows recent operations, summary counts, and read-only
-  dead-letter / stuck attention rows.
+  dead-letter / stuck attention rows;
+- readiness findings are shown as inspectable operator evidence rows with
+  source refs, suggested drilldowns, copyable evidence, and read-only boundary.
 
 The Operations read model includes `deadLetters`, `deadLetterSummary`, and
 `deadLetterAvailableSummary` for:

@@ -28,13 +28,14 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-T: Operations workspace, activity feed, system status and
+- v1.0 slices A-U: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
   source-ref drilldown inspection, Kanban card action/audit inspection, and
   release quality evidence artifact loading, plus read-only diagnostic
-  runbooks, action-result inspection, and persistent operation-row inspection.
+  runbooks, action-result inspection, persistent operation-row inspection, and
+  readiness finding inspection.
 
 Current target state:
 
@@ -1427,6 +1428,19 @@ Implemented Slice T: Persistent Workflow Operation Inspector
   writes, mutate workflow state, redeliver Telegram, create Human Gate records,
   or bypass Human Gate.
 
+Implemented Slice U: Readiness Finding Inspector
+
+- Replaced raw readiness finding JSON as the primary System Status and
+  Operations readiness surface with an operator-readable findings table.
+  Findings now show severity, key, plane, count, context, and compact error
+  detail before an operator opens raw payloads.
+- Added a `Readiness Finding Inspector` drawer that anchors each finding to
+  the latest `readiness_snapshots.snapshot_id`, derives source refs and
+  suggested drilldowns for agent/workflow/dispatch/runtime/message/outbox
+  context, and provides copyable evidence.
+- The inspector remains read-only. It does not run health checks, restart
+  services, mutate workflow state, dispatch agents, or bypass Human Gate.
+
 ## Test Plan
 
 Required checks:
@@ -1514,6 +1528,10 @@ Frontend smoke:
   Action Audit Ledger failure rows, shows redacted preview/result JSON,
   idempotency, Human Gate, source refs, failure evidence, and read-only
   boundary without rerunning actions or mutating state;
+- verify Readiness Finding Inspector opens from System Status and Operations
+  readiness sections, shows source refs, suggested drilldowns, copyable
+  evidence, and read-only boundary without running health checks, restarting
+  services, dispatching agents, or mutating workflow state;
 - verify System Status Operator-Grade Release Gate renders read-only default,
   action policy, safety boundaries, integrated surfaces, redaction, runtime
   health, readiness evidence, and partial-failure status without exposing write
@@ -1588,6 +1606,8 @@ unless plugin runtime loading changes require it separately.
   JSON or database inspection first. Slice T extends that to persisted
   `workflow_operations` rows so historical operation audit details, redacted
   preview/result payloads, and failure evidence are inspectable from the GUI.
+  Slice U turns readiness findings into inspectable operator evidence with
+  source refs and drilldowns instead of leaving readiness proof as raw JSON.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 
