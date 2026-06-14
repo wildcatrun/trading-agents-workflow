@@ -144,6 +144,10 @@ Current version map:
   Slice M adds an Operations Action Audit Ledger derived from
   `workflow_operations`. Slice N adds Command Center diagnostic evidence
   previews with source refs, related drilldowns, and copyable evidence bundles.
+  Slice O adds a generic Source Inspector so redacted source refs on key
+  operator surfaces can open suggested Workflow, Evidence, Operations, Agent,
+  Kanban, Human Gate, Outbox, Incident, or Message Flow drilldowns without raw
+  database inspection.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

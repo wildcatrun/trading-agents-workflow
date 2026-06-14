@@ -870,12 +870,125 @@ function showDrawer({ title, subtitle = "", tone = "neutral", body, raw }) {
   setAppInert(true);
 }
 
-function sourceRefList(refs = []) {
+function sourceRefDisplay(ref = {}) {
+  return `${present(ref.source)}.${present(ref.field)}=${present(ref.id)}`;
+}
+
+function sourceRefTargetKey(target = {}) {
+  return JSON.stringify({
+    label: target.label || "",
+    consoleView: target.consoleView || "",
+    workflowId: target.workflowId || "",
+    tab: target.tab || "",
+    agentId: target.agentId || "",
+    cardId: target.cardId || "",
+    section: target.section || "",
+    operationsFilters: target.operationsFilters || {}
+  });
+}
+
+function sourceRefDrilldownTargets(ref = {}, context = {}) {
+  const source = String(ref.source || "").toLowerCase();
+  const field = String(ref.field || "").toLowerCase();
+  const id = String(ref.id || "").trim();
+  const workflowId = context.workflowId || (field === "workflow_id" || source === "workflow" ? id : "");
+  const agentId = context.agentId || (source === "runtime_agents" && id.includes(":") ? id.split(":").pop() : "");
+  const targets = [];
+  const seen = new Set();
+  const pushTarget = (target = {}) => {
+    if (!target.consoleView) return;
+    const key = sourceRefTargetKey(target);
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push(target);
+  };
+  if (workflowId) {
+    pushTarget({ label: "Workflow", consoleView: "workflows", workflowId, tab: "overview" });
+    pushTarget({ label: "Evidence", consoleView: "evidence-workspace", workflowId });
+    pushTarget({ label: "Operations", consoleView: "operations", workflowId });
+  }
+  if (agentId) {
+    pushTarget({ label: "Agent", consoleView: "agent-board", agentId });
+    pushTarget({ label: "Board", consoleView: "kanban", workflowId, agentId });
+  }
+  if (source.includes("dispatch") || field === "dispatch_id") {
+    if (context.workflowId) pushTarget({ label: "Dispatches", consoleView: "workflows", workflowId: context.workflowId, tab: "dispatches" });
+    pushTarget({ label: "Board", consoleView: "kanban", workflowId: context.workflowId || workflowId, agentId: context.agentId || agentId, cardId: id });
+    pushTarget({ label: "Operations", consoleView: "operations", workflowId: context.workflowId || workflowId, operationsFilters: { kind: "failed_dispatch", severity: "", status: "" } });
+  }
+  if (source.includes("message_flow") || field === "flow_id") {
+    if (context.workflowId) pushTarget({ label: "Message Flow", consoleView: "workflows", workflowId: context.workflowId, tab: "message-flows" });
+    pushTarget({ label: "Board", consoleView: "kanban", workflowId: context.workflowId || workflowId, agentId: context.agentId || agentId, cardId: id });
+  }
+  if (source.includes("telegram_outbox") || field === "outbox_id") {
+    if (context.workflowId || workflowId) pushTarget({ label: "Outbox", consoleView: "workflows", workflowId: context.workflowId || workflowId, tab: "outbox" });
+    pushTarget({ label: "Operations", consoleView: "operations", workflowId: context.workflowId || workflowId, operationsFilters: { kind: "", severity: "critical", status: "failed" } });
+  }
+  if (source.includes("incident")) {
+    if (context.workflowId || workflowId) pushTarget({ label: "Incidents", consoleView: "workflows", workflowId: context.workflowId || workflowId, tab: "incident-closeout" });
+    pushTarget({ label: "Evidence", consoleView: "evidence-workspace", workflowId: context.workflowId || workflowId });
+  }
+  if (source.includes("human_gate") || source.includes("protocol_objects") || source.includes("review_gates")) {
+    if (context.workflowId || workflowId) {
+      pushTarget({ label: "Human Gate", consoleView: "workflows", workflowId: context.workflowId || workflowId, tab: "human-gates" });
+      pushTarget({ label: "Gate Readiness", consoleView: "workflows", workflowId: context.workflowId || workflowId, tab: "human-gate-readiness" });
+    }
+  }
+  if (source.includes("workflow_operations") || source.includes("control_loop") || source.includes("dead_letters")) {
+    pushTarget({ label: "Operations", consoleView: "operations", workflowId: context.workflowId || workflowId });
+  }
+  if (source.includes("side_effect") || source.includes("artifact") || source.includes("checkpoint") || source.includes("evidence")) {
+    if (context.workflowId || workflowId) {
+      pushTarget({ label: "Evidence", consoleView: "evidence-workspace", workflowId: context.workflowId || workflowId });
+      pushTarget({ label: "Evidence Desk", consoleView: "workflows", workflowId: context.workflowId || workflowId, tab: "evidence-desk" });
+    }
+  }
+  return targets.slice(0, 6);
+}
+
+function inspectSourceRef(ref = {}, context = {}) {
+  const targets = sourceRefDrilldownTargets(ref, context);
+  showDrawer({
+    title: "Source Inspector",
+    subtitle: sourceRefDisplay(ref),
+    tone: targets.length ? "ok" : "neutral",
+    body: h("div", { className: "stack" }, [
+      section("Source Ref", h("div", { className: "copy-block" }, [
+        h("p", {}, sourceRefDisplay(ref)),
+        h("div", { className: "actions" }, [
+          h("button", { type: "button", onClick: () => copyText(ref.id, "Source ref id") }, "Copy Id"),
+          h("button", { type: "button", onClick: () => copyText(sourceRefDisplay(ref), "Source ref") }, "Copy Ref")
+        ])
+      ])),
+      section("Suggested Drilldowns", targets.length ? h("div", { className: "source-ref-actions" }, targets.map((target) => h("button", {
+        type: "button",
+        onClick: () => {
+          closeDrawer();
+          openCommandTarget(target);
+        }
+      }, target.label || "Open"))) : emptyState("No console drilldown can be inferred from this source ref.")),
+      section("Boundary", h("p", { className: "muted" }, "This inspector is read-only. It routes to existing console surfaces and does not query raw database rows, retry jobs, mutate workflow state, or execute write actions."))
+    ]),
+    raw: { ref, context, targets }
+  });
+}
+
+function renderSourceRefChip(ref = {}, context = {}) {
+  return h("button", {
+    type: "button",
+    className: "source-ref-chip",
+    title: `Inspect ${sourceRefDisplay(ref)}`,
+    onClick: () => inspectSourceRef(ref, context)
+  }, sourceRefDisplay(ref));
+}
+
+function sourceRefList(refs = [], context = {}) {
   const list = refs.filter((ref) => ref?.id);
   if (!list.length) return emptyState("No source refs.");
   return h("div", { className: "source-ref-list" }, list.map((ref) => h("div", { className: "source-ref-row" }, [
     h("span", {}, `${present(ref.source)}.${present(ref.field)}`),
     h("code", {}, present(ref.id)),
+    h("button", { type: "button", onClick: () => inspectSourceRef(ref, context) }, "Inspect"),
     h("button", { type: "button", onClick: () => copyText(ref.id, "Ref") }, "Copy")
   ])));
 }
@@ -952,7 +1065,10 @@ function inspectAgent(agent = {}) {
         { label: "At", value: formatDate(latest.lastEventAt) }
       ])),
       (agent.attentionFlags || []).length ? section("Attention Flags", h("div", { className: "chip-list padded" }, agent.attentionFlags.map((flag) => chip(flag.key, flag.severity)))) : null,
-      section("Source Refs", sourceRefList(agentSourceRefs(agent))),
+      section("Source Refs", sourceRefList(agentSourceRefs(agent), {
+        workflowId: current.activeWorkflowId || latest.workflowId || "",
+        agentId: agent.agentId || agent.agentKey || ""
+      })),
       h("div", { className: "actions drawer-actions" }, [
         h("button", { type: "button", onClick: () => copyText(agent.agentId || agent.agentKey, "Agent") }, "Copy Agent"),
         current.activeWorkflowId ? h("button", { type: "button", onClick: () => {
@@ -991,7 +1107,11 @@ function inspectKanbanCard(card = {}) {
         { label: "Receipt", value: card.receiptRef || "-" }
       ])),
       (card.missingEvidence || []).length ? section("Missing Evidence", h("div", { className: "chip-list padded" }, card.missingEvidence.map((item) => chip(item, "warning")))) : null,
-      section("Source Refs", sourceRefList(kanbanSourceRefs(card))),
+      section("Source Refs", sourceRefList(kanbanSourceRefs(card), {
+        workflowId: card.workflowId || "",
+        agentId: card.agentId || "",
+        cardId: card.sourceId || ""
+      })),
       h("div", { className: "actions drawer-actions" }, [
         h("button", { type: "button", onClick: () => copyText(card.sourceId || card.id, "Card") }, "Copy Card"),
         card.workflowId ? h("button", { type: "button", onClick: () => {
@@ -1643,8 +1763,11 @@ function renderDiagnosticMatrix(data = {}) {
         ))) : null,
         h("div", { className: "triage-matrix-evidence" }, [
           h("strong", {}, "Evidence Preview"),
-          refs.length ? h("div", { className: "mini-counts" }, refs.slice(0, 6).map((ref) => (
-            h("span", {}, `${present(ref.source)}.${present(ref.field)}=${short(ref.id, 90)}`)
+          refs.length ? h("div", { className: "source-ref-chips" }, refs.slice(0, 6).map((ref) => (
+            renderSourceRefChip(ref, {
+              workflowId: row.blockers.find((blocker) => blocker.workflowId)?.workflowId || row.target?.workflowId || "",
+              agentId: row.blockers.find((blocker) => blocker.agentId)?.agentId || row.target?.agentId || ""
+            })
           ))) : h("p", { className: "muted" }, row.count ? "Open the linked surface for row-level source refs." : "No active source refs."),
           relatedTargets.length ? h("div", { className: "triage-matrix-related" }, relatedTargets.slice(0, 4).map((target) => (
             h("button", { type: "button", onClick: () => openCommandTarget(target) }, diagnosticMatrixTargetLabel(target))
@@ -1701,7 +1824,10 @@ function renderActivityFeed(data) {
           h("span", {}, item.agentId || "-"),
           h("span", {}, item.runtime || "-")
         ]),
-        refs.length ? h("div", { className: "mini-counts" }, refs.slice(0, 6).map((ref) => h("span", {}, `${ref.source}.${ref.field}=${short(ref.id, 80)}`))) : null
+        refs.length ? h("div", { className: "source-ref-chips" }, refs.slice(0, 6).map((ref) => renderSourceRefChip(ref, {
+          workflowId: item.workflowId || "",
+          agentId: item.agentId || ""
+        }))) : null
       ])
     ]);
   };
@@ -2100,7 +2226,10 @@ function renderSearchResult(result) {
       h("span", {}, formatDate(result.lastEventAt))
     ]),
     matches.length ? h("div", { className: "chip-list" }, matches.map((field) => chip(field, "neutral"))) : null,
-    refs.length ? h("div", { className: "mini-counts" }, refs.slice(0, 6).map((ref) => h("span", {}, `${ref.source}.${ref.field}=${short(ref.id, 80)}`))) : null
+    refs.length ? h("div", { className: "source-ref-chips" }, refs.slice(0, 6).map((ref) => renderSourceRefChip(ref, {
+      workflowId: result.workflowId || result.target?.workflowId || "",
+      agentId: result.agentId || result.target?.agentId || ""
+    }))) : null
   ]);
 }
 
@@ -2246,7 +2375,10 @@ function renderTriageBlocker(blocker = {}) {
       h("span", {}, `count ${present(blocker.count, 1)}`),
       h("span", {}, formatDate(blocker.updatedAt))
     ]),
-    refs.length ? h("div", { className: "mini-counts" }, refs.slice(0, 6).map((ref) => h("span", {}, `${ref.source}.${ref.field}=${short(ref.id, 80)}`))) : null
+    refs.length ? h("div", { className: "source-ref-chips" }, refs.slice(0, 6).map((ref) => renderSourceRefChip(ref, {
+      workflowId: blocker.workflowId || blocker.target?.workflowId || "",
+      agentId: blocker.agentId || blocker.target?.agentId || ""
+    }))) : null
   ]);
 }
 
@@ -3662,7 +3794,7 @@ function renderEvidenceWorkspace(data = {}) {
         { source: "workflow_checkpoints", field: "workflow_id", id: manifest.checkpointCount ? workflowId : "" },
         { source: "workflow_side_effects", field: "workflow_id", id: manifest.sideEffectCount ? workflowId : "" },
         { source: "console_actions", field: "workflow_id", id: workflowId }
-      ])
+      ], { workflowId })
     ])),
     section("Human Gate And Review Gates", h("div", { className: "content-grid" }, [
       renderTable([
@@ -3708,7 +3840,7 @@ function renderEvidenceWorkspace(data = {}) {
       { source: "incident_closeout", field: "incident_id", id: selectedIncident?.incidentId },
       { source: "human_gate", field: "records", id: String(readiness.summary?.recordCount || "") },
       { source: "artifact", field: "count", id: String(manifest.artifactCount || "") }
-    ])),
+    ], { workflowId })),
     section("Raw Workspace", h("details", {}, [
       h("summary", {}, "JSON"),
       jsonBlock(data)

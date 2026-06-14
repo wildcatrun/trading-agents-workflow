@@ -954,7 +954,7 @@ code {
 
 .source-ref-row {
   display: grid;
-  grid-template-columns: minmax(110px, 0.5fr) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(110px, 0.5fr) minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -968,6 +968,21 @@ code {
 .source-ref-row code {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.source-ref-chips,
+.source-ref-actions {
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.source-ref-chip {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .padded {

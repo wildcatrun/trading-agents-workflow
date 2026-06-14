@@ -28,10 +28,11 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-N: Operations workspace, activity feed, system status and
+- v1.0 slices A-O: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
-  action audit visibility, plus Command Center diagnostic evidence previews.
+  action audit visibility, Command Center diagnostic evidence previews, and
+  source-ref drilldown inspection.
 
 Current target state:
 
@@ -1326,6 +1327,21 @@ Implemented Slice N: Diagnostic Matrix Evidence Preview
   change dispatch state, redeliver outbox rows, mutate Human Gate records, or
   bypass the existing governed preview actions.
 
+Implemented Slice O: Source Ref Inspector And Drilldown
+
+- Added a generic Source Inspector drawer for console `sourceRefs`. Source refs
+  now support `Inspect` in source-ref lists and clickable source-ref chips in
+  Command Center diagnostic evidence, Activity, Global Search, and triage
+  blocker cards.
+- The inspector derives suggested drilldowns from the source table/field and
+  current workflow/agent context: Workflow detail, Evidence Workspace,
+  Operations, Agent Board, Kanban, Message Flow, Outbox, Human Gate, Incident,
+  and Evidence Desk routes where applicable.
+- The inspector is read-only. It does not run SQL, fetch raw database rows,
+  create incidents, retry jobs, dispatch runtimes, change outbox/Human Gate
+  state, or expose executable write controls. It turns existing redacted
+  source refs into navigable operator context.
+
 ## Test Plan
 
 Required checks:
@@ -1453,7 +1469,9 @@ unless plugin runtime loading changes require it separately.
   requirements visible in System Status. Slice M makes workflow operation audit
   evidence operator-readable in Operations without replacing the durable
   `workflow_operations` source of truth. Slice N adds evidence previews and
-  related drilldowns directly to the Command Center diagnostic matrix.
+  related drilldowns directly to the Command Center diagnostic matrix. Slice O
+  adds a generic Source Inspector so source refs across key operator surfaces
+  become navigable evidence instead of copy-only text.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

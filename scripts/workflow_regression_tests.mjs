@@ -8285,6 +8285,16 @@ async function testWorkflowConsoleStaticDiagnosticMatrixContract() {
   assert.equal(app.includes("function diagnosticMatrixSourceRefs"), true);
   assert.equal(app.includes("function diagnosticMatrixTargetKey"), true);
   assert.equal(app.includes("function diagnosticMatrixRelatedTargets"), true);
+  assert.equal(app.includes("function inspectSourceRef"), true);
+  assert.equal(app.includes("function sourceRefDrilldownTargets"), true);
+  assert.equal(app.includes("function renderSourceRefChip"), true);
+  assert.equal(app.includes("Source Inspector"), true);
+  assert.equal(app.includes("Suggested Drilldowns"), true);
+  assert.equal(app.includes("This inspector is read-only."), true);
+  assert.equal(app.includes("closeDrawer();\n          openCommandTarget(target);"), true);
+  assert.equal(app.includes("sourceRefList(refs = [], context = {})"), true);
+  assert.equal(app.includes("sourceRefDrilldownTargets(ref, context)"), true);
+  assert.equal(app.includes("renderSourceRefChip(ref"), true);
   assert.equal(app.includes("section: target.section"), true);
   assert.equal(app.includes("operationsFilters: target.operationsFilters"), true);
   assert.equal(app.includes("Evidence Preview"), true);
@@ -8299,10 +8309,67 @@ async function testWorkflowConsoleStaticDiagnosticMatrixContract() {
   assert.equal(css.includes(".triage-matrix-actions"), true);
   assert.equal(css.includes(".triage-matrix-evidence"), true);
   assert.equal(css.includes(".triage-matrix-related"), true);
+  assert.equal(css.includes(".source-ref-chips"), true);
+  assert.equal(css.includes(".source-ref-chip"), true);
+  assert.equal(css.includes(".source-ref-actions"), true);
+  assert.equal(css.includes("grid-template-columns: minmax(110px, 0.5fr) minmax(0, 1fr) auto auto"), true);
   assert.equal(css.includes(".triage-matrix-evidence .mini-counts span"), true);
   assert.equal(css.includes("overflow-wrap: anywhere"), true);
   assert.equal(css.includes("word-break: break-word"), true);
   assert.equal(css.includes("grid-template-columns: repeat(auto-fit, minmax(240px, 1fr))"), true);
+
+  const sourceRefRuntime = new Function(`${extractFunctionSource(app, "sourceRefTargetKey")}
+${extractFunctionSource(app, "sourceRefDrilldownTargets")}
+return { sourceRefDrilldownTargets };`)();
+  const targetLabels = (ref, context = {}) => sourceRefRuntime.sourceRefDrilldownTargets(ref, context).map((target) => target.label);
+  assert.deepEqual(targetLabels({ source: "workflow_runs", field: "workflow_id", id: "wf-a" }), ["Workflow", "Evidence", "Operations"]);
+  assert.deepEqual(targetLabels({ source: "runtime_agents", field: "agent_key", id: "hermers:cat_body" }), ["Agent", "Board"]);
+  assert.deepEqual(targetLabels({ source: "mixed_meeting_dispatches", field: "dispatch_id", id: "dispatch-a" }, { workflowId: "wf-a", agentId: "cat_body" }), ["Workflow", "Evidence", "Operations", "Agent", "Board", "Dispatches"]);
+  assert.deepEqual(targetLabels({ source: "message_flows", field: "flow_id", id: "flow-a" }, { workflowId: "wf-a", agentId: "cat_body" }), ["Workflow", "Evidence", "Operations", "Agent", "Board", "Message Flow"]);
+  assert.equal(targetLabels({ source: "telegram_outbox", field: "outbox_id", id: "outbox-a" }, { workflowId: "wf-a" }).includes("Outbox"), true);
+  assert.equal(targetLabels({ source: "human_gate_buttons", field: "button_id", id: "button-a" }, { workflowId: "wf-a" }).includes("Gate Readiness"), true);
+  assert.equal(targetLabels({ source: "incident_states", field: "incident_id", id: "incident-a" }, { workflowId: "wf-a" }).includes("Incidents"), true);
+  assert.equal(targetLabels({ source: "side_effect_ledger", field: "side_effect_id", id: "side-a" }, { workflowId: "wf-a" }).includes("Evidence Desk"), true);
+  assert.deepEqual(targetLabels({ source: "unknown_table", field: "opaque", id: "row-a" }), []);
+
+  let drawerPayload = null;
+  const calls = [];
+  const hStub = (tag, attrs = {}, children = []) => ({
+    tag,
+    attrs,
+    children: Array.isArray(children) ? children : [children]
+  });
+  const sectionStub = (title, body) => hStub("section", { title }, [body]);
+  const inspectorRuntime = new Function("present", "h", "section", "copyText", "closeDrawer", "openCommandTarget", "emptyState", "showDrawer", `${extractFunctionSource(app, "sourceRefDisplay")}
+${extractFunctionSource(app, "sourceRefTargetKey")}
+${extractFunctionSource(app, "sourceRefDrilldownTargets")}
+${extractFunctionSource(app, "inspectSourceRef")}
+return { inspectSourceRef };`)(
+    (value, fallback = "-") => (value === undefined || value === null || value === "" ? fallback : String(value)),
+    hStub,
+    sectionStub,
+    () => {},
+    () => calls.push("close"),
+    (target) => calls.push(`open:${target.consoleView}:${target.tab || target.label || ""}`),
+    (message) => hStub("empty", {}, [message]),
+    (payload) => { drawerPayload = payload; }
+  );
+  inspectorRuntime.inspectSourceRef({ source: "message_flows", field: "flow_id", id: "flow-a" }, { workflowId: "wf-a", agentId: "cat_body" });
+  assert.equal(drawerPayload.title, "Source Inspector");
+  assert.equal(drawerPayload.raw.targets.some((target) => target.label === "Message Flow" && target.consoleView === "workflows" && target.tab === "message-flows"), true);
+  const findButton = (node, label) => {
+    if (!node || typeof node !== "object") return null;
+    if (node.tag === "button" && node.children.includes(label)) return node;
+    for (const child of node.children || []) {
+      const found = findButton(child, label);
+      if (found) return found;
+    }
+    return null;
+  };
+  const messageFlowButton = findButton(drawerPayload.body, "Message Flow");
+  assert.equal(typeof messageFlowButton.attrs.onClick, "function");
+  messageFlowButton.attrs.onClick();
+  assert.deepEqual(calls, ["close", "open:workflows:message-flows"]);
 }
 
 async function testWorkflowConsoleStaticOperatorGradeReleaseGateContract() {
