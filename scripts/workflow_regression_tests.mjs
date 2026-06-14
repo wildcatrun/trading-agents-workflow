@@ -7106,6 +7106,9 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   assert.equal(kanban.summary.byColumn.waiting_human > 0, true);
   assert.equal(kanban.summary.byColumn.done > 0, true);
   assert.equal(kanban.summary.byColumn.failed > 0, true);
+  assert.equal(kanban.summary.syntheticCards > 0, true);
+  assert.equal(kanban.summary.evidenceGaps, kanban.summary.syntheticCards);
+  assert.equal(kanban.summary.cards, kanban.summary.baseCards + kanban.summary.syntheticCards);
   assert.equal(kanban.columns.find((column) => column.id === "waiting_receipt")?.cards.some((card) => card.source === "message_flows" && card.sourceId === "flow-waiting-receipt"), true);
   assert.equal(kanban.columns.find((column) => column.id === "working")?.cards.some((card) => card.source === "runtime_current_state" && card.sourceId === "hermers:cat_body"), true);
   assert.equal(kanban.columns.find((column) => column.id === "queued")?.cards.some((card) => card.source === "control_loop_jobs" && card.sourceId === "job-console-queued"), true);
@@ -7122,6 +7125,16 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   assert.equal(sideEffectCard?.deadLetterKind, "side_effect_uncertain");
   assert.equal(sideEffectCard?.missingEvidence.includes("side_effect_resolution_evidence"), true);
   assert.equal(sideEffectCard?.previewActions.includes("workflow.incident.from_dead_letter.preview"), true);
+  const evidenceGapCards = kanban.columns.flatMap((column) => column.cards).filter((card) => card.source === "evidence_gaps");
+  assert.equal(evidenceGapCards.length > 0, true);
+  const messageFlowEvidenceGap = evidenceGapCards.find((card) => card.originSource === "message_flows" && card.originSourceId === "flow-waiting-receipt");
+  assert.equal(messageFlowEvidenceGap?.column, "blocked");
+  assert.equal(messageFlowEvidenceGap?.status, "blocked");
+  assert.equal(messageFlowEvidenceGap?.missingEvidence.includes("delivery_receipt"), true);
+  assert.equal(messageFlowEvidenceGap?.previewActions.includes("workflow.supervise.preview"), true);
+  const evidenceGapSuperviseAction = kanbanPreviewActionModel(messageFlowEvidenceGap, "workflow.supervise.preview");
+  assert.equal(evidenceGapSuperviseAction.enabled, true);
+  assert.equal(evidenceGapSuperviseAction.payload.workflowId, workflowId);
   const requeueJobAction = kanbanPreviewActionModel(controlLoopJobCard, "workflow.control_loop.job.requeue.preview");
   assert.equal(requeueJobAction.enabled, true);
   assert.equal(requeueJobAction.payload.jobId, "job-console-failed");
@@ -9037,6 +9050,9 @@ async function testWorkflowConsoleStaticKanbanCardInspectorContract() {
   assert.equal(app.includes("function previewControlLoopJobRequeue"), true);
   assert.equal(app.includes('action: "workflow.control_loop.job.requeue.preview"'), true);
   assert.equal(app.includes('action: "workflow.incident.from_dead_letter.preview"'), true);
+  assert.equal(app.includes('Origin Source'), true);
+  assert.equal(app.includes('origin_source_id'), true);
+  assert.equal(app.includes('const originSources = new Set'), true);
   assert.equal(app.includes("WorkflowActionGateway -> workflow_operations"), true);
   assert.equal(app.includes("Preview only; no business-state mutation"), true);
   assert.equal(app.includes("Focused Board"), true);

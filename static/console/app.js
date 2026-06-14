@@ -1434,7 +1434,7 @@ function agentSourceRefs(agent = {}) {
 }
 
 function kanbanSourceRefs(card = {}) {
-  return [
+  const refs = [
     { source: card.source || "kanban", field: "source_id", id: card.sourceId },
     { source: "workflow", field: "workflow_id", id: card.workflowId },
     { source: "workflow_tasks", field: "task_id", id: card.taskId },
@@ -1446,6 +1446,22 @@ function kanbanSourceRefs(card = {}) {
     { source: "artifact", field: "artifact_ref", id: card.artifactRef },
     { source: "receipt", field: "receipt_ref", id: card.receiptRef }
   ];
+  const originSources = new Set([
+    "workflow_tasks",
+    "mixed_meeting_dispatches",
+    "runtime_runs",
+    "runtime_current_state",
+    "message_flows",
+    "control_loop_jobs",
+    "side_effect_ledger",
+    "telegram_outbox",
+    "protocol_objects",
+    "incident_states"
+  ]);
+  if (originSources.has(card.originSource) && card.originSourceId) {
+    refs.push({ source: card.originSource, field: "origin_source_id", id: card.originSourceId });
+  }
+  return refs;
 }
 
 function inspectAgent(agent = {}) {
@@ -1530,6 +1546,8 @@ function inspectKanbanCard(card = {}) {
         { label: "Message Flow", value: card.flowId || "-" },
         { label: "Outbox", value: card.outboxId || "-" },
         { label: "Human Gate", value: card.humanGateId || "-" },
+        { label: "Origin Source", value: card.originSource || "-" },
+        { label: "Origin Source Id", value: card.originSourceId || "-" },
         { label: "Artifact", value: card.artifactRef || "-" },
         { label: "Receipt", value: card.receiptRef || "-" }
       ])),

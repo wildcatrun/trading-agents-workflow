@@ -848,6 +848,9 @@ function makeKanbanCard(column, source, id, values = {}) {
     incidentId: values.incidentId || "",
     jobId: values.jobId || "",
     sideEffectId: values.sideEffectId || "",
+    evidenceGapId: values.evidenceGapId || "",
+    originSource: values.originSource || "",
+    originSourceId: values.originSourceId || "",
     deadLetterKind: values.deadLetterKind || "",
     agentId: values.agentId || "",
     runtime: values.runtime || "",
@@ -860,6 +863,52 @@ function makeKanbanCard(column, source, id, values = {}) {
     receiptRef: redactText(values.receiptRef || ""),
     previewActions: values.previewActions || []
   };
+}
+
+function evidenceGapCardsFromKanbanCards(cards = [], limit = 200) {
+  const gapCards = [];
+  const seen = new Set();
+  for (const card of cards) {
+    if (card.source === "evidence_gaps") continue;
+    const missingEvidence = Array.isArray(card.missingEvidence)
+      ? card.missingEvidence.filter(Boolean)
+      : [];
+    if (!missingEvidence.length) continue;
+    const sourceId = String(card.sourceId || card.id || "").trim();
+    if (!sourceId) continue;
+    const gapKey = `${card.source}:${sourceId}:${[...missingEvidence].sort().join("+")}`;
+    if (seen.has(gapKey)) continue;
+    seen.add(gapKey);
+    const evidenceGapId = `gap:${card.source}:${sourceId}`;
+    gapCards.push(makeKanbanCard("blocked", "evidence_gaps", evidenceGapId, {
+      workflowId: card.workflowId,
+      taskId: card.taskId,
+      phaseKey: card.phaseKey,
+      dispatchId: card.dispatchId,
+      flowId: card.flowId,
+      runtimeRunId: card.runtimeRunId,
+      outboxId: card.outboxId,
+      humanGateId: card.humanGateId,
+      incidentId: card.incidentId,
+      jobId: card.jobId,
+      sideEffectId: card.sideEffectId,
+      evidenceGapId,
+      originSource: card.source,
+      originSourceId: sourceId,
+      agentId: card.agentId,
+      runtime: card.runtime,
+      status: "blocked",
+      title: `Evidence gap: ${missingEvidence.join(", ")}`,
+      summary: `${card.source} ${sourceId} requires ${missingEvidence.join(", ")}`,
+      lastEventAt: card.lastEventAt,
+      missingEvidence,
+      artifactRef: card.artifactRef,
+      receiptRef: card.receiptRef,
+      previewActions: card.workflowId ? ["workflow.supervise.preview"] : []
+    }));
+    if (gapCards.length >= limit) break;
+  }
+  return gapCards;
 }
 
 function runtimeCurrentStateFromRow(row = {}) {
@@ -4692,6 +4741,9 @@ LIMIT ${limit};`);
         }));
       }
     }
+    const baseCardCount = cards.length;
+    const evidenceGapCards = evidenceGapCardsFromKanbanCards(cards, limit);
+    cards.push(...evidenceGapCards);
     cards.sort((a, b) => String(b.lastEventAt || "").localeCompare(String(a.lastEventAt || "")));
     const grouped = Object.fromEntries(columns.map((column) => [column.id, []]));
     for (const card of cards) {
@@ -4706,6 +4758,9 @@ LIMIT ${limit};`);
       columns: columns.map((column) => ({ ...column, count: grouped[column.id]?.length || 0, cards: grouped[column.id] || [] })),
       summary: {
         cards: cards.length,
+        baseCards: baseCardCount,
+        syntheticCards: evidenceGapCards.length,
+        evidenceGaps: evidenceGapCards.length,
         byColumn: Object.fromEntries(columns.map((column) => [column.id, grouped[column.id]?.length || 0])),
         workflows: uniqueNonEmpty(cards.map((card) => card.workflowId)).length,
         agents: uniqueNonEmpty(cards.map((card) => card.agentId)).length
