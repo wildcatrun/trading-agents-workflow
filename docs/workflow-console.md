@@ -164,6 +164,9 @@ Current version map:
   failure evidence directly from Operations. Slice U adds Readiness Finding
   Inspector coverage so System Status and Operations expose readiness findings
   as source-ref-backed, copyable operator evidence instead of raw JSON only.
+  Slice V expands Kanban preview coverage, Slice W makes Evidence Desk
+  collapsible and copyable, and Slice X adds a read-only Cat Claw Secretary
+  Handoff checklist for Cat Claw / Flashcat review routing.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 
@@ -179,7 +182,10 @@ v0.4 Slice A-D are implemented as read-only console surfaces:
   artifact, outbox, message_flow, incident closeout, and missing-evidence view.
   The desk renders as collapsible checklist sections and keeps workflow,
   readiness, receipt, task, dispatch, runtime, outbox, and verification ids
-  copyable for mobile inspection.
+  copyable for mobile inspection. It also exposes a Cat Claw Secretary Handoff
+  checklist that combines secretary path, Human Gate readiness, receipt,
+  rollback/stop, delivery, and incident-package evidence without dispatching
+  Cat Claw, submitting Human Gate, sending Telegram, or mutating workflow state.
 
 The Agent Board is intentionally registry-first. `cat_claw` remains an
 OpenClaw secretary/Human Gate entry unless a real Hermers profile is explicitly

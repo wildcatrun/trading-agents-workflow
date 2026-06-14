@@ -8335,12 +8335,23 @@ async function testWorkflowConsoleStaticActionGateContract() {
   assert.equal(app.includes("function collapsibleSection"), true);
   assert.equal(app.includes("function copyableEvidenceId"), true);
   assert.equal(app.includes("function copyableEvidenceList"), true);
+  assert.equal(app.includes("function catClawSecretaryHandoffModel"), true);
+  assert.equal(app.includes("function renderCatClawSecretaryHandoff"), true);
+  assert.equal(app.includes("Cat Claw Secretary Handoff"), true);
+  assert.equal(app.includes("cat-claw-secretary-handoff"), true);
+  assert.equal(app.includes("Copy Handoff"), true);
+  assert.equal(app.includes("Read-only secretary shortcut. It does not dispatch Cat Claw, submit Human Gate, send Telegram, mutate evidence, or approve workflow continuation."), true);
   assert.equal(app.includes("collapsibleSection(\"Evidence Desk\""), true);
   assert.equal(app.includes("collapsibleSection(\"Receipt Chain\""), true);
   assert.equal(app.includes("collapsibleSection(\"Verification\""), true);
+  assert.equal(app.includes("collapsibleSection(\"Cat Claw Secretary Handoff\""), true);
+  assert.equal(app.includes('section("Cat Claw Secretary Handoff"'), true);
   assert.equal(app.includes("copyableEvidenceId(row.receiptId"), true);
   assert.equal(app.includes("copyableEvidenceId(row.verificationId"), true);
   assert.equal(app.includes("copyableEvidenceList(row.refs"), true);
+  assert.equal(app.includes("readinessCheckByKey(readiness, \"cat_claw_secretary_path\")"), true);
+  assert.equal(app.includes("openWorkflowTab(workflowId, \"human-gate-readiness\")"), true);
+  assert.equal(app.includes("catClawSecretaryHandoffEvidenceText(model)"), true);
   assert.equal(app.includes("target.open = true"), true);
   assert.equal(app.includes("parentDetails.open = true"), true);
   assert.equal(app.includes("copyable-evidence-more"), true);
@@ -8359,6 +8370,47 @@ async function testWorkflowConsoleStaticActionGateContract() {
   assert.equal(css.includes(".copyable-evidence-id"), true);
   assert.equal(css.includes(".copyable-evidence-list"), true);
   assert.equal(css.includes(".copyable-evidence-more"), true);
+  assert.equal(css.includes(".secretary-handoff"), true);
+  assert.equal(css.includes(".secretary-handoff-actions"), true);
+
+  const handoffHelpers = new Function("state", `${extractFunctionSource(app, "redactClientText")}
+${extractFunctionSource(app, "readinessCheckByKey")}
+${extractFunctionSource(app, "readinessCheckPassed")}
+${extractFunctionSource(app, "catClawSecretaryHandoffModel")}
+${extractFunctionSource(app, "catClawSecretaryHandoffEvidenceText")}
+return { catClawSecretaryHandoffModel, catClawSecretaryHandoffEvidenceText };`)({ selectedWorkflowId: "wf-fallback" });
+  const handoff = handoffHelpers.catClawSecretaryHandoffModel({
+    workflowId: "wf-handoff",
+    summary: {
+      humanGateReadyForCatClawAudit: true,
+      humanGateReadyForSubmission: false,
+      receiptPresent: 2,
+      receiptMissing: 1,
+      evidenceArtifacts: 3,
+      missingEvidence: ["human_gate_submission_readiness"]
+    },
+    readiness: {
+      summary: { checkpointCount: 1, artifactCount: 3, sentOutboxCount: 0 },
+      checklist: [
+        { key: "cat_claw_secretary_path", status: "pass", detail: "Sources: cat_claw", refs: ["cat_claw"] },
+        { key: "checkpoint_available", status: "pass", refs: ["checkpoint-a"] },
+        { key: "pause_control", status: "pass", refs: ["button-pause"] },
+        { key: "terminate_control", status: "pass", refs: ["button-stop"] },
+        { key: "telegram_delivery_observed", status: "warn", detail: "queued 1", refs: ["outbox-a-token-raw-secret"] },
+        { key: "receipt_coverage", status: "warn", refs: ["receipt-a"] }
+      ]
+    }
+  }, { workflowId: "wf-handoff", selectedIncident: { incidentId: "incident-a" } });
+  assert.equal(handoff.status, "not_ready");
+  assert.equal(handoff.rows.find((row) => row.key === "secretary_path")?.status, "pass");
+  assert.equal(handoff.rows.find((row) => row.key === "human_gate_submission")?.status, "fail");
+  assert.equal(handoff.rows.find((row) => row.key === "delivery_evidence")?.status, "warn");
+  assert.equal(handoff.rows.find((row) => row.key === "incident_package")?.status, "pass");
+  const handoffEvidenceText = handoffHelpers.catClawSecretaryHandoffEvidenceText(handoff);
+  assert.equal(handoffEvidenceText.includes("workflow=wf-handoff"), true);
+  assert.equal(handoffEvidenceText.includes("secretary_path:pass:cat_claw"), true);
+  assert.equal(handoffEvidenceText.includes("raw-secret"), false);
+  assert.equal(handoffEvidenceText.includes("[redacted]"), true);
 
   const calls = [];
   const stateStub = { selectedWorkflowId: "wf-state", recentActionResults: [] };

@@ -642,6 +642,24 @@ code {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.secretary-handoff {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.secretary-handoff-actions {
+  min-width: 0;
+}
+
+.secretary-handoff-actions button {
+  min-width: 0;
+}
+
 .content-section {
   border: 1px solid var(--line-soft);
   border-radius: 8px;

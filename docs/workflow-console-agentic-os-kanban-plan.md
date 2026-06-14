@@ -35,7 +35,8 @@ Implemented layers:
   source-ref drilldown inspection, Kanban card action/audit inspection, and
   release quality evidence artifact loading, plus read-only diagnostic
   runbooks, action-result inspection, persistent operation-row inspection, and
-  readiness finding inspection.
+  readiness finding inspection, Kanban preview expansion, collapsible Evidence
+  Desk, and Cat Claw secretary handoff shortcuts.
 
 Current target state:
 
@@ -1473,6 +1474,22 @@ Implemented Slice W: Collapsible Evidence Desk
   export writes, mutate evidence, change preview policy, or create new runtime
   actions.
 
+Implemented Slice X: Cat Claw Secretary Handoff Shortcut
+
+- Added a read-only Cat Claw Secretary Handoff section to the top-level
+  Evidence Workspace and workflow Evidence Desk. It combines the existing
+  `cat_claw_secretary_path`, Cat Claw audit readiness, Human Gate submission
+  readiness, receipt chain, rollback/stop boundary, Telegram delivery evidence,
+  and incident package signals into a single secretary checklist.
+- The handoff section provides direct governed navigation to Evidence Desk,
+  Human Gate Readiness, Evidence Pack, and Incident Closeout, plus a copyable
+  handoff evidence bundle for Cat Claw / Flashcat review. It uses existing
+  readiness, pack, incident, receipt, and manifest read models instead of adding
+  new database tables or workflow state.
+- This shortcut is observational only. It does not dispatch Cat Claw, submit a
+  Human Gate, send Telegram, approve continuation, mutate evidence, or expose
+  executable writes.
+
 ## Test Plan
 
 Required checks:
@@ -1654,7 +1671,8 @@ Rollback:
 ## Open Questions
 
 - Should Kanban default to global agent work or current workflow work?
-- Should Cat Claw have a secretary-specific Evidence Desk shortcut?
+- Cat Claw secretary-specific Evidence Desk shortcut is implemented as a
+  read-only handoff checklist in Slice X.
 - Should agent cards show profile-local memory/RAG status, or keep memory
   status in the Hermers platform surface and only show workflow-relevant
   readiness here?

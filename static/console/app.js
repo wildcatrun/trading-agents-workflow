@@ -4181,6 +4181,11 @@ function renderEvidenceWorkspace(data = {}) {
         ])
       ])
     ])),
+    section("Cat Claw Secretary Handoff", renderCatClawSecretaryHandoff(data, {
+      workflowId,
+      selectedIncident,
+      compact: false
+    }), { "data-section": "cat-claw-secretary-handoff" }),
     section("Export Gate", actionGatePanel("Evidence Export Gate", exportGateRows)),
     section("Missing Evidence First", missing.length
       ? h("div", { className: "chip-list padded" }, missing.map((item) => chip(item, "warning")))
@@ -4259,6 +4264,153 @@ function renderEvidenceWorkspace(data = {}) {
   ]));
 }
 
+function readinessCheckByKey(readiness = {}, key = "") {
+  return (readiness.checklist || []).find((item) => item.key === key) || null;
+}
+
+function readinessCheckPassed(readiness = {}, key = "") {
+  return readinessCheckByKey(readiness, key)?.status === "pass";
+}
+
+function catClawSecretaryHandoffModel(data = {}, options = {}) {
+  const workflowId = options.workflowId || data.workflowId || state.selectedWorkflowId || "";
+  const desk = data.evidenceDesk || data;
+  const summary = desk.summary || {};
+  const readiness = desk.readiness || {};
+  const pack = data.evidencePack || {};
+  const manifest = pack.manifest || {};
+  const incident = data.incidentCloseout || desk.incidentCloseout || {};
+  const selectedIncident = options.selectedIncident || incident.selectedIncident || null;
+  const secretaryCheck = readinessCheckByKey(readiness, "cat_claw_secretary_path");
+  const checkpointCount = readiness.summary?.checkpointCount ?? manifest.checkpointCount ?? summary.checkpoints ?? 0;
+  const artifactCount = readiness.summary?.artifactCount ?? manifest.artifactCount ?? summary.evidenceArtifacts ?? 0;
+  const sentOutboxCount = readiness.summary?.sentOutboxCount ?? 0;
+  const receiptPresent = summary.receiptPresent ?? readiness.summary?.receiptPresentCount ?? manifest.receiptCount ?? 0;
+  const receiptMissing = summary.receiptMissing ?? 0;
+  const missing = summary.missingEvidence || [];
+  const readinessRefsByStatus = (status) => (readiness.checklist || [])
+    .filter((item) => item.status === status)
+    .flatMap((item) => item.refs || [])
+    .slice(0, 12);
+  const nonPassingReadinessRefs = (readiness.checklist || [])
+    .filter((item) => item.status !== "pass")
+    .flatMap((item) => item.refs || [])
+    .slice(0, 12);
+  const rows = [
+    {
+      key: "secretary_path",
+      label: "Cat Claw secretary path",
+      status: secretaryCheck?.status === "pass" ? "pass" : secretaryCheck?.status === "warn" ? "warn" : "fail",
+      detail: secretaryCheck?.detail || "No cat_claw source/creator is recorded.",
+      refs: secretaryCheck?.refs || []
+    },
+    {
+      key: "cat_claw_audit",
+      label: "Cat Claw audit readiness",
+      status: summary.humanGateReadyForCatClawAudit ? "pass" : "fail",
+      detail: summary.humanGateReadyForCatClawAudit ? "Evidence package is ready for Cat Claw audit." : "Cat Claw audit readiness is not yet satisfied.",
+      refs: [...(readinessCheckByKey(readiness, "cat_claw_secretary_path")?.refs || []), ...(readinessCheckByKey(readiness, "evidence_artifacts")?.refs || [])]
+    },
+    {
+      key: "human_gate_submission",
+      label: "Human Gate submission readiness",
+      status: summary.humanGateReadyForSubmission ? "pass" : "fail",
+      detail: summary.humanGateReadyForSubmission ? "Human Gate package has required button/report evidence." : "Human Gate submission readiness is incomplete.",
+      refs: summary.humanGateReadyForSubmission ? readinessRefsByStatus("pass") : nonPassingReadinessRefs
+    },
+    {
+      key: "receipt_chain",
+      label: "Receipt chain",
+      status: receiptPresent > 0 && receiptMissing === 0 ? "pass" : receiptPresent > 0 ? "warn" : "fail",
+      detail: `${receiptPresent} present receipt(s), ${receiptMissing} missing receipt(s).`,
+      refs: (readinessCheckByKey(readiness, "receipt_coverage")?.refs || [])
+    },
+    {
+      key: "rollback_boundary",
+      label: "Rollback / stop boundary",
+      status: checkpointCount > 0 && readinessCheckPassed(readiness, "pause_control") && readinessCheckPassed(readiness, "terminate_control") ? "pass" : "fail",
+      detail: `checkpoint ${checkpointCount || 0}, pause ${readinessCheckPassed(readiness, "pause_control") ? "pass" : "missing"}, terminate ${readinessCheckPassed(readiness, "terminate_control") ? "pass" : "missing"}.`,
+      refs: [
+        ...(readinessCheckByKey(readiness, "checkpoint_available")?.refs || []),
+        ...(readinessCheckByKey(readiness, "pause_control")?.refs || []),
+        ...(readinessCheckByKey(readiness, "terminate_control")?.refs || [])
+      ]
+    },
+    {
+      key: "delivery_evidence",
+      label: "Delivery evidence",
+      status: sentOutboxCount > 0 ? "pass" : readinessCheckByKey(readiness, "telegram_delivery_observed")?.status === "warn" ? "warn" : "fail",
+      detail: readinessCheckByKey(readiness, "telegram_delivery_observed")?.detail || `${sentOutboxCount} sent outbox message(s).`,
+      refs: readinessCheckByKey(readiness, "telegram_delivery_observed")?.refs || []
+    },
+    {
+      key: "incident_package",
+      label: "Incident closeout package",
+      status: selectedIncident ? "pass" : "warn",
+      detail: selectedIncident ? `Incident ${selectedIncident.incidentId} is available for closeout preview.` : "No selected incident package; this may be fine for non-incident workflows.",
+      refs: selectedIncident?.incidentId ? [selectedIncident.incidentId] : []
+    }
+  ];
+  const failed = rows.filter((row) => row.status === "fail").length;
+  const warnings = rows.filter((row) => row.status === "warn").length;
+  return {
+    workflowId,
+    status: failed ? "not_ready" : warnings || missing.length ? "needs_attention" : "ready",
+    rows,
+    missing,
+    summary: {
+      failed,
+      warnings,
+      passed: rows.filter((row) => row.status === "pass").length,
+      checkpointCount,
+      artifactCount,
+      receiptPresent,
+      receiptMissing,
+      sentOutboxCount
+    }
+  };
+}
+
+function catClawSecretaryHandoffEvidenceText(model = {}) {
+  return [
+    `workflow=${redactClientText(model.workflowId || "-")}`,
+    `status=${redactClientText(model.status || "unknown")}`,
+    ...(model.rows || []).map((row) => redactClientText(`${row.key}:${row.status}:${(row.refs || []).join(",") || row.detail || "-"}`))
+  ].join("\n");
+}
+
+function renderCatClawSecretaryHandoff(data = {}, options = {}) {
+  const model = catClawSecretaryHandoffModel(data, options);
+  const workflowId = model.workflowId || "";
+  const selectedIncident = options.selectedIncident || data.incidentCloseout?.selectedIncident || data.evidenceDesk?.incidentCloseout?.selectedIncident || null;
+  return h("div", { className: "secretary-handoff" }, [
+    h("div", { className: "quick-stats compact-stats" }, [
+      statCard("Secretary Status", model.status || "unknown", "cat_claw handoff"),
+      statCard("Passed", model.summary.passed || 0),
+      statCard("Warnings", model.summary.warnings || 0),
+      statCard("Failed", model.summary.failed || 0),
+      statCard("Receipts", model.summary.receiptPresent || 0, `${model.summary.receiptMissing || 0} missing`),
+      statCard("Artifacts", model.summary.artifactCount || 0)
+    ]),
+    renderTable([
+      { label: "Status", render: (row) => chip(row.status, row.status === "pass" ? "ok" : row.status === "warn" ? "warning" : "critical") },
+      { label: "Secretary Check", render: (row) => h("div", {}, [
+        h("strong", {}, row.label),
+        h("p", { className: "muted" }, short(row.detail, 180))
+      ]) },
+      { label: "Refs", render: (row) => copyableEvidenceList(row.refs || [], "Secretary handoff ref") }
+    ], model.rows, "No Cat Claw handoff checks."),
+    h("div", { className: "actions secretary-handoff-actions" }, [
+      h("button", { type: "button", disabled: !workflowId, onClick: workflowId ? () => openWorkflowTab(workflowId, "evidence-desk") : undefined }, "Open Evidence Desk"),
+      h("button", { type: "button", disabled: !workflowId, onClick: workflowId ? () => openWorkflowTab(workflowId, "human-gate-readiness") : undefined }, "Open Gate Readiness"),
+      h("button", { type: "button", disabled: !workflowId, onClick: workflowId ? () => openWorkflowTab(workflowId, "evidence-pack") : undefined }, "Open Evidence Pack"),
+      h("button", { type: "button", disabled: !selectedIncident, onClick: selectedIncident ? () => openWorkflowTab(workflowId, "incident-closeout") : undefined }, "Open Incident"),
+      h("button", { type: "button", onClick: () => copyText(catClawSecretaryHandoffEvidenceText(model), "Cat Claw handoff evidence") }, "Copy Handoff")
+    ]),
+    h("p", { className: "muted" }, "Read-only secretary shortcut. It does not dispatch Cat Claw, submit Human Gate, send Telegram, mutate evidence, or approve workflow continuation.")
+  ]);
+}
+
 function renderEvidenceDesk(data) {
   const summary = data.summary || {};
   const missing = summary.missingEvidence || [];
@@ -4287,6 +4439,10 @@ function renderEvidenceDesk(data) {
       ? h("div", { className: "chip-list" }, missing.map((item) => chip(item, "warning")))
       : emptyState("No missing evidence detected by the derived desk."), { open: Boolean(missing.length), "data-section": "evidence-desk-missing" }),
     collapsibleSection("Governed Preview Actions", renderEvidenceDeskPreviewActions(data), { open: true, "data-section": "evidence-desk-preview-actions" }),
+    collapsibleSection("Cat Claw Secretary Handoff", renderCatClawSecretaryHandoff(data, {
+      workflowId: data.workflowId || state.selectedWorkflowId,
+      compact: true
+    }), { open: true, "data-section": "cat-claw-secretary-handoff" }),
     collapsibleSection("Human Gate Readiness", h("div", { className: "content-grid" }, [
       renderTable([
         { label: "Status", render: (row) => chip(row.status) },
