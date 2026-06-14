@@ -154,7 +154,11 @@ Current version map:
   regression, browser smoke, and deployment trace evidence when a governed
   rollout artifact exists. Slice R adds Command Center diagnostic runbooks so
   each v1.0 failure class has a read-only inspection order, evidence refs,
-  governed drilldowns, and copyable runbook text.
+  governed drilldowns, and copyable runbook text. Slice S adds Action Result
+  Inspector coverage so governed preview/action responses show operation audit
+  anchors, authoritative workflow context when available, dry-run/risk/input-
+  hash evidence, failure text, Operations audit routing, and copyable result
+  evidence without raw database inspection.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

@@ -23,6 +23,7 @@ const state = {
   liveRefreshIntervalMs: 15000,
   liveRefreshInFlight: false,
   liveRefreshLastAt: "",
+  recentActionResults: [],
   operationsFilters: {
     kind: "",
     severity: "",
@@ -3006,6 +3007,7 @@ function renderIncidentCloseoutPreview(response) {
         { label: "Operation", value: response?.operationId || "-" },
         { label: "Message", value: response?.message || response?.error || "-" }
       ])),
+      renderActionResultInspector(response || {}, { action: response?.action || "workflow.incident.closeout.preview", workflowId: state.selectedWorkflowId }),
       section("Raw Preview", h("details", {}, [
         h("summary", {}, "JSON"),
         jsonBlock(response || {})
@@ -3040,6 +3042,7 @@ function renderIncidentCloseoutPreview(response) {
     operatorReason: reasonInput
   };
   setDetailBody(h("div", { className: "stack" }, [
+    renderActionResultInspector(response, { action: response.action || preview.action || "workflow.incident.closeout.preview", workflowId: preview.workflowId || state.selectedWorkflowId }),
     section("Closeout Package Preview", renderKeyValues([
       { label: "Workflow", value: preview.workflowId || state.selectedWorkflowId },
       { label: "Incident", value: preview.incidentId || "-" },
@@ -3242,6 +3245,7 @@ function renderOperations(data) {
     ])),
     section("Action Gate", actionGatePanel("Workflow Intervention Gate", actionGateRows)),
     section("Action Audit Ledger", renderActionAuditLedger(data.actionAuditSummary || {})),
+    section("Recent Action Results", renderRecentActionResults()),
     section("Controlled Intervention Previews", h("div", { className: "copy-block" }, [
       h("div", { className: "actions" }, [
         h("button", { disabled: !scoped, title: scoped ? `Workflow ${workflowId}` : "Select or deep-link a workflow to preview workflow-scoped actions.", onClick: scoped ? () => previewIntervention("workflow.pause.preview", {}, workflowId) : undefined }, "Preview Pause"),
@@ -3499,13 +3503,18 @@ async function previewDeadLetterIncident(data) {
         }
       })
     });
+    recordActionResult(result, { action: "workflow.incident.from_dead_letter.preview", workflowId: data.workflowId, label: "Dead-Letter Incident Preview" });
     const options = await loadIncidentEvidenceOptions(data);
     state.lastPayload = { preview: result, evidenceOptions: options };
     renderDeadLetterIncidentPreview(result, data, options);
     setActionStatus(result.ok === false ? "Incident preview failed" : "Incident preview OK", result.ok === false ? "critical" : "ok");
   } catch (error) {
+    const result = actionRequestFailure(error, { action: "workflow.incident.from_dead_letter.preview", workflowId: data.workflowId, label: "Dead-Letter Incident Preview" });
     setActionStatus("Incident preview failed", "critical");
-    setDetailBody(h("div", { className: "error" }, error.message));
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "workflow.incident.from_dead_letter.preview", workflowId: data.workflowId }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
   }
 }
 
@@ -3548,8 +3557,10 @@ async function executeDeadLetterIncident(sourceData, fields) {
         }
       })
     });
+    recordActionResult(result, { action: "workflow.incident.from_dead_letter", workflowId: sourceData.workflowId, label: "Create Linked Incident" });
     state.lastPayload = result;
     setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "workflow.incident.from_dead_letter", workflowId: sourceData.workflowId }),
       section("Dead-Letter Incident Result", renderKeyValues([
         { label: "Status", value: result.ok === false ? "failed" : "ok" },
         { label: "Operation", value: result.operationId || "-" },
@@ -3564,8 +3575,12 @@ async function executeDeadLetterIncident(sourceData, fields) {
     ]));
     setActionStatus(result.ok === false ? "Incident create failed" : "Incident linked", result.ok === false ? "critical" : "ok");
   } catch (error) {
+    const result = actionRequestFailure(error, { action: "workflow.incident.from_dead_letter", workflowId: sourceData.workflowId, label: "Create Linked Incident" });
     setActionStatus("Incident create failed", "critical");
-    setDetailBody(h("div", { className: "error" }, error.message));
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "workflow.incident.from_dead_letter", workflowId: sourceData.workflowId }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
   }
 }
 
@@ -3616,6 +3631,7 @@ function renderDeadLetterIncidentPreview(response, sourceData, evidenceOptions =
     operatorReason: reasonInput
   };
   setDetailBody(h("div", { className: "stack" }, [
+    renderActionResultInspector(response, { action: "workflow.incident.from_dead_letter.preview", workflowId: sourceData.workflowId }),
     section("Dead-Letter Incident Preview", renderKeyValues([
       { label: "Status", value: response.ok === false ? "failed" : "ok" },
       { label: "Operation", value: response.operationId || "-" },
@@ -3740,6 +3756,7 @@ function renderInterventionPreview(response) {
         { label: "Operation", value: response?.operationId || "-" },
         { label: "Message", value: response?.message || response?.error || "-" }
       ])),
+      renderActionResultInspector(response || {}, { action: response?.action || "workflow.intervention.preview", workflowId: state.selectedWorkflowId }),
       section("Raw Preview", h("details", {}, [
         h("summary", {}, "JSON"),
         jsonBlock(response || {})
@@ -3749,6 +3766,7 @@ function renderInterventionPreview(response) {
   }
   const wouldUpdate = preview.wouldUpdateWorkflow || {};
   setDetailBody(h("div", { className: "stack" }, [
+    renderActionResultInspector(response, { action: response.action || preview.action || "workflow.intervention.preview", workflowId: preview.workflowId || state.selectedWorkflowId }),
     section("Intervention Preview", renderKeyValues([
       { label: "Workflow", value: preview.workflowId || state.selectedWorkflowId },
       { label: "Kind", value: preview.kind || "-" },
@@ -4217,6 +4235,130 @@ function previewPayload(response) {
   return null;
 }
 
+function actionResultWorkflowId(response = {}, context = {}) {
+  return context.workflowId
+    || response.workflowId
+    || response.result?.workflowId
+    || response.result?.workflow_id
+    || response.result?.preview?.workflowId
+    || "";
+}
+
+function actionResultStatus(response = {}) {
+  if (response.ok === false) return "failed";
+  if (response.operationId) return "completed";
+  return response.status || "unknown";
+}
+
+function actionResultFailureText(response = {}) {
+  return response.message || response.error || response.errorMessage || response.result?.error || "";
+}
+
+function actionResultEvidenceText(response = {}, context = {}) {
+  return [
+    `action=${response.action || context.action || "-"}`,
+    `operation=${response.operationId || "-"}`,
+    `status=${actionResultStatus(response)}`,
+    `workflow=${actionResultWorkflowId(response, context) || "-"}`,
+    `dryRun=${yesNoUnknown(response.dryRun)}`,
+    `inputHash=${response.inputHash || "-"}`,
+    actionResultFailureText(response) ? `failure=${actionResultFailureText(response)}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function recordActionResult(response = {}, context = {}) {
+  const record = {
+    recordedAt: new Date().toISOString(),
+    label: context.label || response.action || "Console action",
+    action: response.action || context.action || "",
+    workflowId: actionResultWorkflowId(response, context),
+    operationId: response.operationId || "",
+    status: actionResultStatus(response),
+    dryRun: response.dryRun,
+    riskTier: response.riskTier || "",
+    inputHash: response.inputHash || "",
+    failure: actionResultFailureText(response),
+    response
+  };
+  const key = record.operationId || `${record.action}:${record.recordedAt}`;
+  state.recentActionResults = [record, ...state.recentActionResults.filter((item) => (item.operationId || item.recordedAt) !== key)].slice(0, 6);
+  return record;
+}
+
+function actionRequestFailure(error, context = {}) {
+  const response = {
+    ok: false,
+    action: context.action || "",
+    dryRun: String(context.action || "").endsWith(".preview"),
+    errorCode: "request_failed",
+    message: error instanceof Error ? error.message : String(error)
+  };
+  recordActionResult(response, context);
+  return response;
+}
+
+function renderActionResultInspector(response = {}, context = {}) {
+  const workflowId = actionResultWorkflowId(response, context);
+  const operationId = response.operationId || "";
+  const failure = actionResultFailureText(response);
+  const sourceRefs = operationId ? [{ source: "workflow_operations", field: "operation_id", id: operationId }] : [];
+  return section("Action Result Inspector", h("div", { className: "stack" }, [
+    renderKeyValues([
+      { label: "Status", value: actionResultStatus(response) },
+      { label: "Action", value: response.action || context.action || "-" },
+      { label: "Operation", value: operationId || "-" },
+      { label: "Workflow", value: workflowId || "-" },
+      { label: "Dry Run", value: yesNoUnknown(response.dryRun) },
+      { label: "Risk", value: response.riskTier || "-" },
+      { label: "Input Hash", value: response.inputHash || "-" }
+    ]),
+    h("div", { className: "actions drawer-actions" }, [
+      h("button", {
+        type: "button",
+        disabled: !operationId,
+        title: operationId ? "Copy workflow_operations source ref" : "No operation row was recorded for this failed request.",
+        onClick: operationId ? () => copyText(`workflow_operations.operation_id=${operationId}`, "Operation ref") : undefined
+      }, "Copy Operation Ref"),
+      h("button", { type: "button", onClick: () => copyText(actionResultEvidenceText(response, context), "Action result evidence") }, "Copy Result Evidence"),
+      h("button", {
+        type: "button",
+        onClick: () => openCommandTarget({ consoleView: "operations", workflowId })
+      }, "Open Operations Audit")
+    ]),
+    sourceRefs.length ? sourceRefList(sourceRefs, { workflowId }) : emptyState("No workflow_operations row is available because the browser request failed before the action gateway returned an operation id."),
+    section("Audit Boundary", h("p", { className: "muted" }, "Action evidence is anchored in WorkflowActionGateway -> workflow_operations. This inspector does not retry, approve writes, mutate workflow state, redeliver messages, or bypass Human Gate.")),
+    failure ? section("Failure Evidence", h("div", { className: "error" }, failure)) : null
+  ]));
+}
+
+function renderRecentActionResults() {
+  return renderTable([
+    { label: "Status", render: (row) => chip(row.status || "unknown") },
+    { label: "Action", render: (row) => h("div", {}, [
+      h("strong", {}, row.action || "-"),
+      h("p", { className: "muted" }, row.label || "-")
+    ]) },
+    { label: "Operation", render: (row) => h("code", {}, present(row.operationId)) },
+    { label: "Workflow", key: "workflowId" },
+    { label: "Dry Run", render: (row) => yesNoUnknown(row.dryRun) },
+    { label: "Failure", render: (row) => short(row.failure, 120) },
+    { label: "Recorded", render: (row) => formatDate(row.recordedAt) },
+    { label: "Evidence", render: (row) => h("button", { type: "button", onClick: () => showDrawer({
+      title: "Action Result Inspector",
+      subtitle: row.operationId || row.action || "Console action",
+      tone: row.status === "failed" ? "critical" : toneFor(row.status),
+      raw: row.response,
+      body: h("div", { className: "stack" }, [
+        renderActionResultInspector(row.response, { action: row.action, workflowId: row.workflowId, label: row.label }),
+        section("Raw Result", h("details", { open: true }, [
+          h("summary", {}, "JSON"),
+          jsonBlock(row.response)
+        ]))
+      ])
+    }) }, "Inspect") }
+  ], state.recentActionResults, "No action results in this browser session.");
+}
+
 function renderSupervisePreview(response) {
   const preview = previewPayload(response);
   if (response?.ok === false || !preview) {
@@ -4230,6 +4372,7 @@ function renderSupervisePreview(response) {
         { label: "Risk Tier", value: response?.riskTier || "-" },
         { label: "Dry Run", value: yesNoUnknown(response?.dryRun) }
       ])),
+      renderActionResultInspector(response || {}, { action: "workflow.supervise.preview", workflowId: state.selectedWorkflowId }),
       section("Raw Preview", h("details", {}, [
         h("summary", {}, "JSON"),
         jsonBlock(response || {})
@@ -4249,6 +4392,7 @@ function renderSupervisePreview(response) {
   const limitations = asArray(preview.limitations);
   const wouldReport = preview.wouldCatClawReport || null;
   const body = h("div", { className: "stack" }, [
+    renderActionResultInspector(response, { action: "workflow.supervise.preview", workflowId: preview.workflowId || response.workflowId || state.selectedWorkflowId }),
     section("Supervise Preview", renderKeyValues([
       { label: "Workflow", value: preview.workflowId || response.workflowId || state.selectedWorkflowId },
       { label: "Decision", value: advance.decision || response.resultSummary || response.result_summary || "-" },
@@ -4328,12 +4472,17 @@ async function previewSupervise(workflowId = state.selectedWorkflowId) {
         }
       })
     });
+    recordActionResult(result, { action: "workflow.supervise.preview", workflowId, label: "Preview Supervise" });
     state.lastPayload = result;
     renderSupervisePreview(result);
     setActionStatus(result?.ok === false ? "Preview failed" : "Preview OK", result?.ok === false ? "critical" : "ok");
   } catch (error) {
+    const result = actionRequestFailure(error, { action: "workflow.supervise.preview", workflowId, label: "Preview Supervise" });
     setActionStatus("Preview failed", "critical");
-    setDetailBody(h("div", { className: "error" }, error.message));
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "workflow.supervise.preview", workflowId }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
   }
 }
 
@@ -4353,12 +4502,17 @@ async function previewIntervention(action, extraPayload = {}, workflowId = state
         }
       })
     });
+    recordActionResult(result, { action, workflowId, label: "Intervention Preview" });
     state.lastPayload = result;
     renderInterventionPreview(result);
     setActionStatus(result?.ok === false ? "Preview failed" : "Preview OK", result?.ok === false ? "critical" : "ok");
   } catch (error) {
+    const result = actionRequestFailure(error, { action, workflowId, label: "Intervention Preview" });
     setActionStatus("Preview failed", "critical");
-    setDetailBody(h("div", { className: "error" }, error.message));
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action, workflowId }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
   }
 }
 
@@ -4375,9 +4529,11 @@ async function previewTelegramOutboxDelivery(outboxId = "") {
         payload: { outboxId }
       })
     });
+    recordActionResult(result, { action: "telegram.outbox.delivery.preview", label: "Telegram Delivery Preview" });
     state.lastPayload = result;
     const preview = result.result || {};
     setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "telegram.outbox.delivery.preview" }),
       section("Telegram Delivery Preview", renderKeyValues([
         { label: "Status", value: result.ok === false ? "failed" : "ok" },
         { label: "Outbox", value: preview.outboxId || outboxId },
@@ -4404,8 +4560,12 @@ async function previewTelegramOutboxDelivery(outboxId = "") {
     ]));
     setActionStatus(result?.ok === false ? "Delivery preview failed" : "Delivery preview OK", result?.ok === false ? "critical" : "ok");
   } catch (error) {
+    const result = actionRequestFailure(error, { action: "telegram.outbox.delivery.preview", label: "Telegram Delivery Preview" });
     setActionStatus("Delivery preview failed", "critical");
-    setDetailBody(h("div", { className: "error" }, error.message));
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "telegram.outbox.delivery.preview" }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
   }
 }
 
@@ -4422,9 +4582,11 @@ async function previewTelegramOutboxRequeue(outboxId = "") {
         payload: { outboxId }
       })
     });
+    recordActionResult(result, { action: "telegram.outbox.requeue.preview", label: "Telegram Requeue Preview" });
     state.lastPayload = result;
     const preview = result.result || {};
     setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "telegram.outbox.requeue.preview" }),
       section("Telegram Requeue Preview", renderKeyValues([
         { label: "Status", value: result.ok === false ? "failed" : "ok" },
         { label: "Outbox", value: preview.outboxId || outboxId },
@@ -4455,8 +4617,12 @@ async function previewTelegramOutboxRequeue(outboxId = "") {
     ]));
     setActionStatus(result?.ok === false ? "Requeue preview failed" : "Requeue preview OK", result?.ok === false ? "critical" : "ok");
   } catch (error) {
+    const result = actionRequestFailure(error, { action: "telegram.outbox.requeue.preview", label: "Telegram Requeue Preview" });
     setActionStatus("Requeue preview failed", "critical");
-    setDetailBody(h("div", { className: "error" }, error.message));
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "telegram.outbox.requeue.preview" }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
   }
 }
 
@@ -4473,10 +4639,12 @@ async function previewTelegramOutboxRequeuePackage(outboxId = "") {
         payload: { outboxId }
       })
     });
+    recordActionResult(result, { action: "telegram.outbox.requeue.execution_package.preview", label: "Requeue Execution Package Preview" });
     state.lastPayload = result;
     const preview = result.result || {};
     const pkg = preview.package || {};
     setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "telegram.outbox.requeue.execution_package.preview" }),
       section("Requeue Execution Package", renderKeyValues([
         { label: "Status", value: result.ok === false ? "failed" : "ok" },
         { label: "Outbox", value: preview.outboxId || outboxId },
@@ -4514,8 +4682,12 @@ async function previewTelegramOutboxRequeuePackage(outboxId = "") {
     ]));
     setActionStatus(result?.ok === false ? "Execution package preview failed" : "Execution package preview OK", result?.ok === false ? "critical" : "ok");
   } catch (error) {
+    const result = actionRequestFailure(error, { action: "telegram.outbox.requeue.execution_package.preview", label: "Requeue Execution Package Preview" });
     setActionStatus("Execution package preview failed", "critical");
-    setDetailBody(h("div", { className: "error" }, error.message));
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "telegram.outbox.requeue.execution_package.preview" }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
   }
 }
 
@@ -4536,12 +4708,17 @@ async function previewIncidentCloseout(action, incidentId = "", extraPayload = {
         }
       })
     });
+    recordActionResult(result, { action, workflowId, label: "Incident Closeout Preview" });
     state.lastPayload = result;
     renderIncidentCloseoutPreview(result);
     setActionStatus(result?.ok === false ? "Closeout preview failed" : "Closeout preview OK", result?.ok === false ? "critical" : "ok");
   } catch (error) {
+    const result = actionRequestFailure(error, { action, workflowId, label: "Incident Closeout Preview" });
     setActionStatus("Closeout preview failed", "critical");
-    setDetailBody(h("div", { className: "error" }, error.message));
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action, workflowId }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
   }
 }
 
@@ -4571,8 +4748,10 @@ async function executeCloseoutHumanGateRequest(preview, fields) {
         }
       })
     });
+    recordActionResult(result, { action: "workflow.incident.closeout.human_gate_request", workflowId: preview.workflowId || state.selectedWorkflowId, label: "Create Human Gate Request" });
     state.lastPayload = result;
     setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "workflow.incident.closeout.human_gate_request", workflowId: preview.workflowId || state.selectedWorkflowId }),
       section("Human Gate Request Result", renderKeyValues([
         { label: "Status", value: result.ok === false ? "failed" : "ok" },
         { label: "Operation", value: result.operationId || "-" },
@@ -4588,8 +4767,12 @@ async function executeCloseoutHumanGateRequest(preview, fields) {
     ]));
     setActionStatus(result.ok === false ? "Human Gate request failed" : "Human Gate request created", result.ok === false ? "critical" : "ok");
   } catch (error) {
+    const result = actionRequestFailure(error, { action: "workflow.incident.closeout.human_gate_request", workflowId: preview.workflowId || state.selectedWorkflowId, label: "Create Human Gate Request" });
     setActionStatus("Human Gate request failed", "critical");
-    setDetailBody(h("div", { className: "error" }, error.message));
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "workflow.incident.closeout.human_gate_request", workflowId: preview.workflowId || state.selectedWorkflowId }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
   }
 }
 

@@ -28,13 +28,13 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-R: Operations workspace, activity feed, system status and
+- v1.0 slices A-S: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
   source-ref drilldown inspection, Kanban card action/audit inspection, and
   release quality evidence artifact loading, plus read-only diagnostic
-  runbooks.
+  runbooks and action-result inspection.
 
 Current target state:
 
@@ -1389,6 +1389,26 @@ Implemented Slice R: Command Center Diagnostic Runbooks
   to existing console surfaces, but it does not retry jobs, redeliver messages,
   mutate workflow state, or bypass Human Gate.
 
+Implemented Slice S: Action Result Inspector
+
+- Added a browser-session `Recent Action Results` panel to Operations and a
+  reusable `Action Result Inspector` section for governed `/api/actions`
+  responses. Preview and explicitly policy-enabled action results now show
+  status, action, operation id, authoritative workflow context when returned by
+  the gateway or supplied by the action caller, dry-run flag, risk tier, input
+  hash, failure text, copyable result evidence, and a `workflow_operations`
+  source ref where the action gateway returned one. The inspector does not
+  synthesize workflow attribution from the currently selected UI workflow.
+- Wired the inspector into supervise previews, controlled intervention
+  previews, dead-letter incident previews, Telegram delivery/requeue previews,
+  incident closeout previews, and Human Gate request creation results. Browser
+  request failures are also captured as local action-result evidence, clearly
+  marked as lacking a workflow operation row if the gateway did not return an
+  operation id.
+- The inspector is observational. It does not retry the failed action, approve
+  writes, mutate workflow state, redeliver messages, create Human Gate records,
+  or replace `workflow_operations` as the durable audit source of truth.
+
 ## Test Plan
 
 Required checks:
@@ -1468,6 +1488,10 @@ Frontend smoke:
 - verify Command Center diagnostic runbooks open from matrix rows, show source
   refs, suggested check order, governed drilldowns, copyable runbook/evidence,
   and read-only boundaries;
+- verify Action Result Inspector appears after governed preview/action
+  responses, exposes `workflow_operations` audit refs, copyable result evidence,
+  failure text, Operations audit routing, and browser-request failure evidence
+  without retrying or mutating state;
 - verify System Status Operator-Grade Release Gate renders read-only default,
   action policy, safety boundaries, integrated surfaces, redaction, runtime
   health, readiness evidence, and partial-failure status without exposing write
@@ -1536,7 +1560,10 @@ unless plugin runtime loading changes require it separately.
   and deployment records instead of default `required` placeholders. Slice R
   adds diagnostic runbooks so Command Center explains the inspection order and
   governed next surfaces for each v1.0 failure class instead of leaving that
-  knowledge implicit.
+  knowledge implicit. Slice S adds browser-session action result inspection so
+  previews and explicitly policy-enabled action responses expose operation
+  audit anchors, failure evidence, and copyable evidence without requiring raw
+  JSON or database inspection first.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

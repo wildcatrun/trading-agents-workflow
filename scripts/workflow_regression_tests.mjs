@@ -8226,6 +8226,15 @@ async function testWorkflowConsoleStaticActionGateContract() {
   assert.equal(app.includes("Evidence Export Gate"), true);
   assert.equal(app.includes("Action Audit Ledger"), true);
   assert.equal(app.includes("function renderActionAuditLedger"), true);
+  assert.equal(app.includes("Recent Action Results"), true);
+  assert.equal(app.includes("function renderActionResultInspector"), true);
+  assert.equal(app.includes("function renderRecentActionResults"), true);
+  assert.equal(app.includes("function recordActionResult"), true);
+  assert.equal(app.includes("function actionRequestFailure"), true);
+  assert.equal(app.includes("Action Result Inspector"), true);
+  assert.equal(app.includes("Copy Result Evidence"), true);
+  assert.equal(app.includes("Open Operations Audit"), true);
+  assert.equal(app.includes("WorkflowActionGateway -> workflow_operations"), true);
   assert.equal(app.includes("should stay 0 in read-only mode"), true);
   assert.equal(app.includes("Rejected / Failed+Denied"), true);
   assert.equal(app.includes("current result window"), true);
@@ -8234,6 +8243,72 @@ async function testWorkflowConsoleStaticActionGateContract() {
   assert.equal(app.includes("Preview actions append console operation audit rows."), true);
   assert.equal(app.includes("Browser download of the redacted read model"), true);
   assert.equal(css.includes(".action-gate-panel"), true);
+
+  const calls = [];
+  const stateStub = { selectedWorkflowId: "wf-state", recentActionResults: [] };
+  const runtime = new Function("state", "section", "h", "renderKeyValues", "sourceRefList", "emptyState", "copyText", "openCommandTarget", "renderTable", "chip", "present", "formatDate", "short", "toneFor", "showDrawer", "jsonBlock", "yesNoUnknown", `${extractFunctionSource(app, "actionResultWorkflowId")}
+${extractFunctionSource(app, "actionResultStatus")}
+${extractFunctionSource(app, "actionResultFailureText")}
+${extractFunctionSource(app, "actionResultEvidenceText")}
+${extractFunctionSource(app, "recordActionResult")}
+${extractFunctionSource(app, "actionRequestFailure")}
+${extractFunctionSource(app, "renderActionResultInspector")}
+${extractFunctionSource(app, "renderRecentActionResults")}
+return { actionResultWorkflowId, recordActionResult, actionRequestFailure, renderActionResultInspector, renderRecentActionResults, actionResultEvidenceText };`)(
+    stateStub,
+    (title, body) => ({ tag: "section", title, body }),
+    (tag, attrs = {}, children = []) => ({ tag, attrs, children: Array.isArray(children) ? children : [children] }),
+    (rows) => ({ tag: "kv", rows }),
+    (refs, context) => ({ tag: "refs", refs, context }),
+    (message) => ({ tag: "empty", message }),
+    (value, label) => calls.push(`copy:${label}:${String(value).slice(0, 24)}`),
+    (target) => calls.push(`open:${target.consoleView}:${target.workflowId || ""}`),
+    (columns, rows) => ({ tag: "table", rows: rows.map((row) => columns.map((column) => ({ label: column.label, node: column.render ? column.render(row) : row[column.key] }))) }),
+    (value, tone) => ({ tag: "chip", value, tone }),
+    (value) => value || "-",
+    (value) => value || "-",
+    (value, limit = 120) => String(value || "").slice(0, limit),
+    (value) => value || "neutral",
+    (payload) => calls.push(`drawer:${payload.title}`),
+    (value) => ({ tag: "json", value }),
+    (value) => value === true ? "yes" : value === false ? "no" : "unknown"
+  );
+  const result = {
+    ok: false,
+    action: "workflow.pause.preview",
+    operationId: "console_op.action_gate",
+    workflowId: "wf-a",
+    dryRun: true,
+    riskTier: "P2-preview",
+    inputHash: "sha256:abc",
+    message: "preview denied"
+  };
+  const record = runtime.recordActionResult(result, { workflowId: "wf-a", label: "Pause Preview" });
+  assert.equal(record.operationId, "console_op.action_gate");
+  assert.equal(stateStub.recentActionResults.length, 1);
+  const inspector = runtime.renderActionResultInspector(result, { workflowId: "wf-a" });
+  assert.equal(inspector.title, "Action Result Inspector");
+  assert.equal(JSON.stringify(inspector).includes("workflow_operations"), true);
+  assert.equal(runtime.actionResultEvidenceText(result, { workflowId: "wf-a" }).includes("failure=preview denied"), true);
+  const recent = runtime.renderRecentActionResults();
+  assert.equal(recent.rows.length, 1);
+  const inspectButton = recent.rows[0].find((cell) => cell.label === "Evidence").node;
+  inspectButton.attrs.onClick();
+  assert.equal(calls.includes("drawer:Action Result Inspector"), true);
+  const failure = runtime.actionRequestFailure(new Error("network down"), { action: "workflow.supervise.preview", workflowId: "wf-a" });
+  assert.equal(failure.errorCode, "request_failed");
+  assert.equal(stateStub.recentActionResults.length, 2);
+  const noWorkflowResult = {
+    ok: true,
+    action: "telegram.outbox.delivery.preview",
+    operationId: "console_op.telegram",
+    dryRun: true
+  };
+  assert.equal(runtime.actionResultWorkflowId(noWorkflowResult, {}), "");
+  assert.equal(runtime.actionResultEvidenceText(noWorkflowResult, {}).includes("workflow=-"), true);
+  const noWorkflowInspector = runtime.renderActionResultInspector(noWorkflowResult, {});
+  const noWorkflowText = JSON.stringify(noWorkflowInspector);
+  assert.equal(noWorkflowText.includes("wf-state"), false);
 }
 
 async function testWorkflowConsoleConfigOperatorPolicyModes() {
