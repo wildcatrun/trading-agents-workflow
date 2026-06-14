@@ -834,22 +834,41 @@ VALUES ('job-other-workflow-failed', 'runtime_drain', 'runtime_drain:other', 'hi
   assert.equal(Boolean(operations.actionAuditSummary.actorCounts.some((row) => row.actor === "flashcat" && row.count === 2)), true);
   assert.equal(operations.actionAuditSummary.latestFailures[0].operationId, rejected.operationId);
   assert.equal(operations.actionAuditSummary.latestFailures[0].sourceRefs[0].source, "workflow_operations");
+  assert.equal(operations.actionAuditSummary.latestFailures[0].riskTier, "P2");
+  assert.equal(operations.actionAuditSummary.latestFailures[0].dryRun, false);
+  assert.equal(operations.actionAuditSummary.latestFailures[0].inputHash.startsWith("sha256:"), true);
+  assert.deepEqual(operations.actionAuditSummary.latestFailures[0].previewResult, {});
+  assert.deepEqual(operations.actionAuditSummary.latestFailures[0].result, {});
   assert.equal(JSON.stringify(operations.actionAuditSummary).includes("rejected-secret"), false);
   sqliteExec(dbFile, `
 INSERT INTO workflow_operations(operation_id, action, scope_type, scope_id, workflow_id, requested_by, reason, risk_tier, status, dry_run, idempotency_key, human_gate_id, input_hash, preview_result_json, result_json, error, created_at, updated_at, completed_at)
 VALUES
-  ('op-denied-audit', 'workflow.denied.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_claw', 'denied reason token=denied-secret', 'high', 'denied', 1, 'idem-denied', '', '', '{}', '{}', '', '2026-05-31T00:00:20.000Z', '2026-05-31T00:00:20.000Z', ''),
+  ('op-denied-audit', 'workflow.denied.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_claw', 'denied reason token=denied-secret', 'high', 'denied', 1, 'idem-denied', 'hg-denied', 'sha256:denied', '{"token":"preview-secret","safe":"preview"}', '{"secret":"result-secret","safe":"result"}', '', '2026-05-31T00:00:20.000Z', '2026-05-31T00:00:20.000Z', ''),
   ('op-failed-audit', 'workflow.failed.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_claw', 'failed reason', 'medium', 'failed', 1, 'idem-failed', '', '', '{}', '{}', '', '2026-05-31T00:00:21.000Z', '2026-05-31T00:00:21.000Z', ''),
   ('op-error-only-audit', 'workflow.error_only.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_heart', 'error only reason', 'medium', 'completed', 1, 'idem-error-only', '', '', '{}', '{}', 'error token error-secret', '2026-05-31T00:00:22.000Z', '2026-05-31T00:00:22.000Z', ''),
-  ('op-rejected-error-audit', 'workflow.rejected_with_error.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_heart', 'rejected error reason', 'low', 'rejected', 1, 'idem-rejected-error', '', '', '{}', '{}', 'rejected error detail', '2026-05-31T00:00:23.000Z', '2026-05-31T00:00:23.000Z', '');`);
+  ('op-rejected-error-audit', 'workflow.rejected_with_error.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_heart', 'rejected error reason', 'low', 'rejected', 1, 'idem-rejected-error', '', '', '{}', '{}', 'rejected error detail', '2026-05-31T00:00:23.000Z', '2026-05-31T00:00:23.000Z', ''),
+  ('op-runtime-failed-audit', 'workflow.runtime_failed.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_body', 'runtime failed reason', 'medium', 'runtime_failed', 1, 'idem-runtime-failed', '', 'sha256:runtime', '{}', '{}', '', '2026-05-31T00:00:24.000Z', '2026-05-31T00:00:24.000Z', ''),
+  ('op-telegram-failed-audit', 'workflow.telegram_failed.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_claw', 'telegram failed reason', 'medium', 'telegram_failed', 1, 'idem-telegram-failed', '', 'sha256:telegram', '{}', '{}', '', '2026-05-31T00:00:25.000Z', '2026-05-31T00:00:25.000Z', '');`);
   const expandedOperations = await new WorkflowReadModel({ dbFile }).operationsSummary({ workflowId });
-  assert.equal(expandedOperations.actionAuditSummary.total, 6);
+  assert.equal(expandedOperations.actionAuditSummary.total, 8);
   assert.equal(expandedOperations.actionAuditSummary.rejectedRows, 2);
-  assert.equal(expandedOperations.actionAuditSummary.failedRows, 3);
-  assert.equal(expandedOperations.actionAuditSummary.failureEvidenceRows, 5);
+  assert.equal(expandedOperations.actionAuditSummary.failedRows, 5);
+  assert.equal(expandedOperations.actionAuditSummary.failureEvidenceRows, 7);
   assert.equal(Boolean(expandedOperations.actionAuditSummary.statusCounts.some((row) => row.status === "denied" && row.count === 1)), true);
   assert.equal(Boolean(expandedOperations.actionAuditSummary.statusCounts.some((row) => row.status === "failed" && row.count === 1)), true);
+  assert.equal(Boolean(expandedOperations.actionAuditSummary.statusCounts.some((row) => row.status === "runtime_failed" && row.count === 1)), true);
+  assert.equal(Boolean(expandedOperations.actionAuditSummary.statusCounts.some((row) => row.status === "telegram_failed" && row.count === 1)), true);
   assert.equal(Boolean(expandedOperations.actionAuditSummary.latestFailures.some((row) => row.operationId === "op-denied-audit" && row.sourceRefs[0].id === "op-denied-audit")), true);
+  assert.equal(Boolean(expandedOperations.actionAuditSummary.latestFailures.some((row) => row.operationId === "op-runtime-failed-audit" && row.status === "runtime_failed")), true);
+  assert.equal(Boolean(expandedOperations.actionAuditSummary.latestFailures.some((row) => row.operationId === "op-telegram-failed-audit" && row.status === "telegram_failed")), true);
+  const deniedFailure = expandedOperations.actionAuditSummary.latestFailures.find((row) => row.operationId === "op-denied-audit");
+  assert.ok(deniedFailure);
+  assert.equal(deniedFailure.humanGateId, "hg-denied");
+  assert.equal(deniedFailure.inputHash, "sha256:denied");
+  assert.equal(deniedFailure.previewResult.safe, "preview");
+  assert.equal(deniedFailure.result.safe, "result");
+  assert.equal(JSON.stringify(deniedFailure).includes("preview-secret"), false);
+  assert.equal(JSON.stringify(deniedFailure).includes("result-secret"), false);
   assert.equal(JSON.stringify(expandedOperations.actionAuditSummary).includes("denied-secret"), false);
   assert.equal(JSON.stringify(expandedOperations.actionAuditSummary).includes("error-secret"), false);
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "control_loop_job" && row.refId === "job-dead-failed")), true);
@@ -8229,6 +8248,11 @@ async function testWorkflowConsoleStaticActionGateContract() {
   assert.equal(app.includes("Recent Action Results"), true);
   assert.equal(app.includes("function renderActionResultInspector"), true);
   assert.equal(app.includes("function renderRecentActionResults"), true);
+  assert.equal(app.includes("function workflowOperationToActionResponse"), true);
+  assert.equal(app.includes("function inspectWorkflowOperation"), true);
+  assert.equal(app.includes("Workflow Operation Inspector"), true);
+  assert.equal(app.includes("Operation Audit Row"), true);
+  assert.equal(app.includes("Preview Result"), true);
   assert.equal(app.includes("function recordActionResult"), true);
   assert.equal(app.includes("function actionRequestFailure"), true);
   assert.equal(app.includes("Action Result Inspector"), true);
@@ -8252,9 +8276,14 @@ ${extractFunctionSource(app, "actionResultFailureText")}
 ${extractFunctionSource(app, "actionResultEvidenceText")}
 ${extractFunctionSource(app, "recordActionResult")}
 ${extractFunctionSource(app, "actionRequestFailure")}
+${extractFunctionSource(app, "hasPayload")}
+${extractFunctionSource(app, "operationTerminalFailureStatus")}
+${extractFunctionSource(app, "operationRiskTone")}
+${extractFunctionSource(app, "workflowOperationToActionResponse")}
 ${extractFunctionSource(app, "renderActionResultInspector")}
+${extractFunctionSource(app, "inspectWorkflowOperation")}
 ${extractFunctionSource(app, "renderRecentActionResults")}
-return { actionResultWorkflowId, recordActionResult, actionRequestFailure, renderActionResultInspector, renderRecentActionResults, actionResultEvidenceText };`)(
+return { actionResultWorkflowId, actionResultStatus, recordActionResult, actionRequestFailure, operationTerminalFailureStatus, operationRiskTone, workflowOperationToActionResponse, renderActionResultInspector, inspectWorkflowOperation, renderRecentActionResults, actionResultEvidenceText };`)(
     stateStub,
     (title, body) => ({ tag: "section", title, body }),
     (tag, attrs = {}, children = []) => ({ tag, attrs, children: Array.isArray(children) ? children : [children] }),
@@ -8269,7 +8298,7 @@ return { actionResultWorkflowId, recordActionResult, actionRequestFailure, rende
     (value) => value || "-",
     (value, limit = 120) => String(value || "").slice(0, limit),
     (value) => value || "neutral",
-    (payload) => calls.push(`drawer:${payload.title}`),
+    (payload) => calls.push(`drawer:${payload.title}:${payload.tone || ""}`),
     (value) => ({ tag: "json", value }),
     (value) => value === true ? "yes" : value === false ? "no" : "unknown"
   );
@@ -8294,7 +8323,7 @@ return { actionResultWorkflowId, recordActionResult, actionRequestFailure, rende
   assert.equal(recent.rows.length, 1);
   const inspectButton = recent.rows[0].find((cell) => cell.label === "Evidence").node;
   inspectButton.attrs.onClick();
-  assert.equal(calls.includes("drawer:Action Result Inspector"), true);
+  assert.equal(calls.includes("drawer:Action Result Inspector:critical"), true);
   const failure = runtime.actionRequestFailure(new Error("network down"), { action: "workflow.supervise.preview", workflowId: "wf-a" });
   assert.equal(failure.errorCode, "request_failed");
   assert.equal(stateStub.recentActionResults.length, 2);
@@ -8309,6 +8338,37 @@ return { actionResultWorkflowId, recordActionResult, actionRequestFailure, rende
   const noWorkflowInspector = runtime.renderActionResultInspector(noWorkflowResult, {});
   const noWorkflowText = JSON.stringify(noWorkflowInspector);
   assert.equal(noWorkflowText.includes("wf-state"), false);
+  const operationRow = {
+    operationId: "console_op.persisted",
+    action: "workflow.pause.preview",
+    status: "rejected",
+    workflowId: "wf-a",
+    scopeType: "workflow",
+    scopeId: "wf-a",
+    requestedBy: "flashcat",
+    reason: "policy denied",
+    riskTier: "P2-preview",
+    dryRun: true,
+    idempotencyKey: "idem-a",
+    humanGateId: "hg-a",
+    inputHash: "sha256:def",
+    previewResult: { safe: "preview" },
+    result: { safe: "result" },
+    error: "denied by policy",
+    createdAt: "2026-06-14T00:00:00.000Z",
+    updatedAt: "2026-06-14T00:00:01.000Z",
+    completedAt: "2026-06-14T00:00:02.000Z"
+  };
+  assert.equal(runtime.actionResultStatus(runtime.workflowOperationToActionResponse(operationRow)), "rejected");
+  assert.equal(runtime.operationTerminalFailureStatus("runtime_failed"), true);
+  assert.equal(runtime.operationTerminalFailureStatus("telegram_failed"), true);
+  assert.equal(runtime.operationRiskTone({ status: "runtime_failed", riskTier: "P2-preview", dryRun: true }), "critical");
+  assert.equal(runtime.operationRiskTone({ status: "completed", riskTier: "P2-high", dryRun: true }), "critical");
+  assert.equal(runtime.operationRiskTone({ status: "completed", riskTier: "P2-preview", dryRun: true }), "neutral");
+  runtime.inspectWorkflowOperation(operationRow);
+  assert.equal(calls.includes("drawer:Workflow Operation Inspector:neutral"), true);
+  runtime.inspectWorkflowOperation({ ...operationRow, operationId: "console_op.runtime_failed", status: "runtime_failed" });
+  assert.equal(calls.includes("drawer:Workflow Operation Inspector:critical"), true);
 }
 
 async function testWorkflowConsoleConfigOperatorPolicyModes() {

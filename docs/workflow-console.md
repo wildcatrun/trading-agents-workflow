@@ -158,7 +158,10 @@ Current version map:
   Inspector coverage so governed preview/action responses show operation audit
   anchors, authoritative workflow context when available, dry-run/risk/input-
   hash evidence, failure text, Operations audit routing, and copyable result
-  evidence without raw database inspection.
+  evidence without raw database inspection. Slice T adds a persistent Workflow
+  Operation Inspector so stored `workflow_operations` rows expose redacted
+  preview/result JSON, idempotency, Human Gate, timestamps, source refs, and
+  failure evidence directly from Operations.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 
@@ -321,7 +324,10 @@ intervention previews should build on.
 
 Current behavior:
 
-- every console action receives an `operation_id`;
+- every console action that reaches the `WorkflowActionGateway` receives an
+  `operation_id`; browser transport failures before a gateway response are
+  shown as local request-failure evidence and may not have a durable
+  `workflow_operations` row;
 - allowed preview actions transition from `started` to `completed`;
 - rejected or disallowed actions write `rejected` rows;
 - preview results are stored in `preview_result_json`;

@@ -5451,13 +5451,15 @@ LIMIT ${deadLetterScanLimit};`) : [];
       acc[key].count += 1;
       return acc;
     }, {})).sort((a, b) => Number(b.count || 0) - Number(a.count || 0) || String(a[labelKey] || "").localeCompare(String(b[labelKey] || "")));
+    const operationTerminalFailureStatuses = new Set(["failed", "fail", "error", "denied", "runtime_failed", "telegram_failed", "delivery_failed", "action_failed"]);
+    const operationFailureEvidenceStatuses = new Set([...operationTerminalFailureStatuses, "rejected"]);
     const operationFailureRows = workflowOperationRows.filter((row) => {
       const status = String(row.status || "").toLowerCase();
-      return Boolean(row.error) || ["failed", "rejected", "error", "denied"].includes(status);
+      return Boolean(row.error) || operationFailureEvidenceStatuses.has(status);
     });
     const operationFailedRows = workflowOperationRows.filter((row) => {
       const status = String(row.status || "").toLowerCase();
-      return ["failed", "error", "denied"].includes(status) || (Boolean(row.error) && status !== "rejected");
+      return operationTerminalFailureStatuses.has(status) || (Boolean(row.error) && status !== "rejected");
     });
     const actionAuditSummary = {
       total: workflowOperationRows.length,
@@ -5473,12 +5475,24 @@ LIMIT ${deadLetterScanLimit};`) : [];
       latestFailures: operationFailureRows.slice(0, 10).map((row) => ({
         operationId: row.operationId,
         action: row.action,
+        scopeType: row.scopeType,
+        scopeId: row.scopeId,
         status: row.status,
         actor: row.requestedBy,
+        requestedBy: row.requestedBy,
         reason: row.reason,
+        riskTier: row.riskTier,
+        dryRun: row.dryRun,
+        idempotencyKey: row.idempotencyKey,
+        humanGateId: row.humanGateId,
+        inputHash: row.inputHash,
+        previewResult: row.previewResult,
+        result: row.result,
         error: row.error,
         workflowId: row.workflowId,
+        createdAt: row.createdAt,
         updatedAt: row.updatedAt,
+        completedAt: row.completedAt,
         sourceRefs: [{ source: "workflow_operations", field: "operation_id", id: row.operationId }]
       })),
       lastUpdatedAt: workflowOperationRows.map((row) => row.updatedAt || row.createdAt || "").filter(Boolean).sort().pop() || ""

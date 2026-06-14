@@ -28,13 +28,13 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-S: Operations workspace, activity feed, system status and
+- v1.0 slices A-T: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
   source-ref drilldown inspection, Kanban card action/audit inspection, and
   release quality evidence artifact loading, plus read-only diagnostic
-  runbooks and action-result inspection.
+  runbooks, action-result inspection, and persistent operation-row inspection.
 
 Current target state:
 
@@ -1409,6 +1409,24 @@ Implemented Slice S: Action Result Inspector
   writes, mutate workflow state, redeliver messages, create Human Gate records,
   or replace `workflow_operations` as the durable audit source of truth.
 
+Implemented Slice T: Persistent Workflow Operation Inspector
+
+- Added a `Workflow Operation Inspector` drawer for durable
+  `workflow_operations` rows in the Operations workspace and Action Audit
+  Ledger. Operators can now inspect historical preview/action audit rows even
+  after the browser-session `Recent Action Results` buffer is gone.
+- The drawer reuses Action Result Inspector semantics and adds the persisted
+  audit row fields: scope, actor, reason, idempotency key, Human Gate id,
+  timestamps, source ref, redacted `preview_result_json`, redacted
+  `result_json`, and failure evidence.
+- Expanded the Operations read model so failure ledger rows carry the same
+  redacted result payloads and audit fields as the main workflow operation
+  rows. This keeps `workflow_operations` as the durable source of truth while
+  avoiding raw database inspection for operation failure review.
+- The inspector remains read-only. It does not rerun the action, approve
+  writes, mutate workflow state, redeliver Telegram, create Human Gate records,
+  or bypass Human Gate.
+
 ## Test Plan
 
 Required checks:
@@ -1492,6 +1510,10 @@ Frontend smoke:
   responses, exposes `workflow_operations` audit refs, copyable result evidence,
   failure text, Operations audit routing, and browser-request failure evidence
   without retrying or mutating state;
+- verify Workflow Operation Inspector opens from persisted Operations rows and
+  Action Audit Ledger failure rows, shows redacted preview/result JSON,
+  idempotency, Human Gate, source refs, failure evidence, and read-only
+  boundary without rerunning actions or mutating state;
 - verify System Status Operator-Grade Release Gate renders read-only default,
   action policy, safety boundaries, integrated surfaces, redaction, runtime
   health, readiness evidence, and partial-failure status without exposing write
@@ -1563,7 +1585,9 @@ unless plugin runtime loading changes require it separately.
   knowledge implicit. Slice S adds browser-session action result inspection so
   previews and explicitly policy-enabled action responses expose operation
   audit anchors, failure evidence, and copyable evidence without requiring raw
-  JSON or database inspection first.
+  JSON or database inspection first. Slice T extends that to persisted
+  `workflow_operations` rows so historical operation audit details, redacted
+  preview/result payloads, and failure evidence are inspectable from the GUI.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

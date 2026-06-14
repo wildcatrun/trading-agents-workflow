@@ -3301,10 +3301,11 @@ function renderOperations(data) {
         h("p", { className: "muted" }, short(row.action, 120))
       ]) },
       { label: "Scope", render: (row) => `${present(row.scopeType)}:${present(row.scopeId || row.workflowId)}` },
-      { label: "Risk", render: (row) => chip(row.riskTier || "-", row.dryRun ? "neutral" : "warning") },
+      { label: "Risk", render: (row) => chip(row.riskTier || "-", operationRiskTone(row)) },
       { label: "Actor", key: "requestedBy" },
       { label: "Updated", render: (row) => formatDate(row.updatedAt) },
-      { label: "Error", render: (row) => short(row.error, 140) }
+      { label: "Error", render: (row) => short(row.error, 140) },
+      { label: "Evidence", render: (row) => h("button", { type: "button", onClick: () => inspectWorkflowOperation(row) }, "Inspect") }
     ], data.workflowOperations || [], "No workflow operations recorded.")),
     section("Workflow Operation Summary", renderTable([
       { label: "Status", render: (row) => chip(row.status) },
@@ -3426,7 +3427,8 @@ function renderActionAuditLedger(summary = {}) {
       { label: "Ref", render: (row) => {
         const refText = sourceRefSummary(row.sourceRefs) || row.operationId || "";
         return refText ? h("button", { type: "button", onClick: () => copyText(refText, "Operation ref") }, "Copy") : "-";
-      } }
+      } },
+      { label: "Evidence", render: (row) => h("button", { type: "button", onClick: () => inspectWorkflowOperation(row) }, "Inspect") }
     ], latestFailures, "No rejected, failed, denied, or error-bearing workflow operations.")
   ]);
 }
@@ -4245,9 +4247,10 @@ function actionResultWorkflowId(response = {}, context = {}) {
 }
 
 function actionResultStatus(response = {}) {
+  if (response.status) return response.status;
   if (response.ok === false) return "failed";
   if (response.operationId) return "completed";
-  return response.status || "unknown";
+  return "unknown";
 }
 
 function actionResultFailureText(response = {}) {
@@ -4297,6 +4300,44 @@ function actionRequestFailure(error, context = {}) {
   return response;
 }
 
+function hasPayload(value) {
+  if (!value) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return Boolean(String(value || "").trim());
+}
+
+function operationTerminalFailureStatus(status = "") {
+  return ["failed", "fail", "error", "denied", "runtime_failed", "telegram_failed", "delivery_failed", "action_failed"].includes(String(status || "").toLowerCase());
+}
+
+function operationRiskTone(row = {}) {
+  if (operationTerminalFailureStatus(row.status)) return "critical";
+  const statusTone = toneFor(row.status);
+  if (statusTone === "critical") return "critical";
+  const risk = String(row.riskTier || "").toLowerCase();
+  if (risk.includes("high")) return "critical";
+  if (risk.includes("medium")) return "warning";
+  if (row.dryRun) return "neutral";
+  return "warning";
+}
+
+function workflowOperationToActionResponse(row = {}) {
+  return {
+    ok: !operationTerminalFailureStatus(row.status) && String(row.status || "").toLowerCase() !== "rejected",
+    status: row.status || "",
+    action: row.action || "",
+    operationId: row.operationId || "",
+    workflowId: row.workflowId || "",
+    dryRun: row.dryRun,
+    riskTier: row.riskTier || "",
+    inputHash: row.inputHash || "",
+    error: row.error || "",
+    resultSummary: row.status || "",
+    result: row.dryRun ? (row.previewResult || {}) : (row.result || {})
+  };
+}
+
 function renderActionResultInspector(response = {}, context = {}) {
   const workflowId = actionResultWorkflowId(response, context);
   const operationId = response.operationId || "";
@@ -4329,6 +4370,45 @@ function renderActionResultInspector(response = {}, context = {}) {
     section("Audit Boundary", h("p", { className: "muted" }, "Action evidence is anchored in WorkflowActionGateway -> workflow_operations. This inspector does not retry, approve writes, mutate workflow state, redeliver messages, or bypass Human Gate.")),
     failure ? section("Failure Evidence", h("div", { className: "error" }, failure)) : null
   ]));
+}
+
+function inspectWorkflowOperation(row = {}) {
+  const response = workflowOperationToActionResponse(row);
+  const workflowId = row.workflowId || "";
+  const sourceRefs = row.operationId ? [{ source: "workflow_operations", field: "operation_id", id: row.operationId }] : [];
+  showDrawer({
+    title: "Workflow Operation Inspector",
+    subtitle: row.operationId || row.action || "workflow_operations row",
+    tone: operationRiskTone(row),
+    raw: row,
+    body: h("div", { className: "stack" }, [
+      renderActionResultInspector(response, { action: row.action || "", workflowId }),
+      section("Operation Audit Row", renderKeyValues([
+        { label: "Operation", value: row.operationId || "-" },
+        { label: "Action", value: row.action || "-" },
+        { label: "Status", value: row.status || "-" },
+        { label: "Scope", value: `${present(row.scopeType)}:${present(row.scopeId || row.workflowId)}` },
+        { label: "Actor", value: row.requestedBy || "-" },
+        { label: "Reason", value: row.reason || "-" },
+        { label: "Idempotency", value: row.idempotencyKey || "-" },
+        { label: "Human Gate", value: row.humanGateId || "-" },
+        { label: "Created", value: formatDate(row.createdAt) },
+        { label: "Updated", value: formatDate(row.updatedAt) },
+        { label: "Completed", value: formatDate(row.completedAt) }
+      ])),
+      sourceRefs.length ? section("Source Ref", sourceRefList(sourceRefs, { workflowId })) : null,
+      hasPayload(row.previewResult) ? section("Preview Result", h("details", { open: true }, [
+        h("summary", {}, "Redacted JSON"),
+        jsonBlock(row.previewResult)
+      ])) : emptyState("No preview_result_json payload recorded for this operation."),
+      hasPayload(row.result) ? section("Result", h("details", { open: !row.dryRun }, [
+        h("summary", {}, "Redacted JSON"),
+        jsonBlock(row.result)
+      ])) : null,
+      row.error ? section("Failure Evidence", h("div", { className: "error" }, row.error)) : null,
+      section("Audit Boundary", h("p", { className: "muted" }, "This inspector reads the durable workflow_operations row and redacted stored results. It does not rerun the action, approve writes, mutate workflow state, redeliver Telegram, or bypass Human Gate."))
+    ])
+  });
 }
 
 function renderRecentActionResults() {
