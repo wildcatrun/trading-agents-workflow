@@ -1,7 +1,7 @@
 # Workflow Console Agentic OS And Hermers Kanban Plan
 
 Date: 2026-06-12
-Status: development plan
+Status: development plan and implementation ledger
 Scope: `trading-agents-workflow` GUI / workflow console evolution
 
 This document defines the next GUI evolution path for `trading-agents-workflow`.
@@ -9,6 +9,38 @@ It adapts Agentic OS control-plane ideas and a Hermers-oriented Kanban work
 surface into the existing workflow console. It does not authorize a second
 console, a second scheduler, a runtime process manager, or browser-side direct
 mutation of workflow business tables.
+
+## Current Implementation Map
+
+This document is not limited to v0.4. The v0.4 section records the first
+read-only console baseline; later sections define and track the incremental
+path toward an operator-grade v1.0 console.
+
+Implemented layers:
+
+- v0.4: read-only Command Center, Agent Board, Workflow Kanban, and
+  workflow-scoped Evidence Desk.
+- v0.5: semantic runtime current-state projection.
+- v0.6: runtime bridge semantic event ingestion and current-state backfill.
+- v0.7: governed preview actions in Kanban and Evidence Desk.
+- v0.8: global search, detail drawers, mobile Agent Board cards, saved
+  filters, URL-reflected state, severity filters, and sorting controls.
+- v0.9: top-level Evidence Workspace with evidence package, incident closeout,
+  missing-evidence-first review, rollback/stop boundary, source refs, and
+  redacted export.
+- v1.0 slices A-M: Operations workspace, activity feed, system status and
+  diagnostic matrix, command execution/readiness panels, audit/event ledgers,
+  context trail, release and review quality gates, and workflow operation
+  action audit visibility.
+
+Current target state:
+
+- v1.0 is the active baseline target, not a future placeholder.
+- Remaining work should focus on closing operator-grade gaps that still force
+  raw database or log inspection, especially cross-surface drill-down,
+  failure-evidence clarity, release/readiness proof, and mobile inspection.
+- Real write controls remain disabled by default and are out of scope unless
+  explicitly enabled by startup policy and reviewed through Human Gate policy.
 
 ## Research Inputs
 
@@ -48,9 +80,9 @@ In this plan, "Hermers Kanban" means a task-board surface over Hermers/Hermes
 profile readiness, ACP reachability, runtime dispatch state, semantic progress
 evidence, message-flow closure, and receipt/Human Gate gaps.
 
-## Current Console Baseline
+## Initial Console Baseline On 2026-06-12
 
-The current console is a thin Human/Workflow Control Plane:
+At the start of this plan, the console was a thin Human/Workflow Control Plane:
 
 - static frontend in `static/console/`;
 - Node HTTP server in `src/console/server.js`;
@@ -70,7 +102,7 @@ Existing strengths:
 - console action audit through `workflow_operations`;
 - redaction for callback tokens, secrets, OAuth-ish fields, and payloads.
 
-Existing gaps:
+Initial gaps that drove the roadmap:
 
 - no first-class agent board showing every registered agent and its current
   work state;
