@@ -823,6 +823,35 @@ VALUES ('job-other-workflow-failed', 'runtime_drain', 'runtime_drain:other', 'hi
   assert.equal(Boolean(operations.workflowOperations.some((row) => row.operationId === rejected.operationId && row.status === "rejected")), true);
   assert.equal(Boolean(operations.workflowOperations.some((row) => row.operationId === other.operationId)), false);
   assert.equal(Boolean(operations.workflowOperationSummary.some((row) => row.action === "workflow.supervise.preview" && row.dryRun && row.count === 1)), true);
+  assert.equal(operations.actionAuditSummary.total, 2);
+  assert.equal(operations.actionAuditSummary.previewRows, 1);
+  assert.equal(operations.actionAuditSummary.executableRows, 1);
+  assert.equal(operations.actionAuditSummary.rejectedRows, 1);
+  assert.equal(operations.actionAuditSummary.failedRows, 0);
+  assert.equal(operations.actionAuditSummary.failureEvidenceRows, 1);
+  assert.equal(Boolean(operations.actionAuditSummary.statusCounts.some((row) => row.status === "completed" && row.count === 1)), true);
+  assert.equal(Boolean(operations.actionAuditSummary.statusCounts.some((row) => row.status === "rejected" && row.count === 1)), true);
+  assert.equal(Boolean(operations.actionAuditSummary.actorCounts.some((row) => row.actor === "flashcat" && row.count === 2)), true);
+  assert.equal(operations.actionAuditSummary.latestFailures[0].operationId, rejected.operationId);
+  assert.equal(operations.actionAuditSummary.latestFailures[0].sourceRefs[0].source, "workflow_operations");
+  assert.equal(JSON.stringify(operations.actionAuditSummary).includes("rejected-secret"), false);
+  sqliteExec(dbFile, `
+INSERT INTO workflow_operations(operation_id, action, scope_type, scope_id, workflow_id, requested_by, reason, risk_tier, status, dry_run, idempotency_key, human_gate_id, input_hash, preview_result_json, result_json, error, created_at, updated_at, completed_at)
+VALUES
+  ('op-denied-audit', 'workflow.denied.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_claw', 'denied reason token=denied-secret', 'high', 'denied', 1, 'idem-denied', '', '', '{}', '{}', '', '2026-05-31T00:00:20.000Z', '2026-05-31T00:00:20.000Z', ''),
+  ('op-failed-audit', 'workflow.failed.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_claw', 'failed reason', 'medium', 'failed', 1, 'idem-failed', '', '', '{}', '{}', '', '2026-05-31T00:00:21.000Z', '2026-05-31T00:00:21.000Z', ''),
+  ('op-error-only-audit', 'workflow.error_only.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_heart', 'error only reason', 'medium', 'completed', 1, 'idem-error-only', '', '', '{}', '{}', 'error token error-secret', '2026-05-31T00:00:22.000Z', '2026-05-31T00:00:22.000Z', ''),
+  ('op-rejected-error-audit', 'workflow.rejected_with_error.preview', 'workflow', '${workflowId}', '${workflowId}', 'cat_heart', 'rejected error reason', 'low', 'rejected', 1, 'idem-rejected-error', '', '', '{}', '{}', 'rejected error detail', '2026-05-31T00:00:23.000Z', '2026-05-31T00:00:23.000Z', '');`);
+  const expandedOperations = await new WorkflowReadModel({ dbFile }).operationsSummary({ workflowId });
+  assert.equal(expandedOperations.actionAuditSummary.total, 6);
+  assert.equal(expandedOperations.actionAuditSummary.rejectedRows, 2);
+  assert.equal(expandedOperations.actionAuditSummary.failedRows, 3);
+  assert.equal(expandedOperations.actionAuditSummary.failureEvidenceRows, 5);
+  assert.equal(Boolean(expandedOperations.actionAuditSummary.statusCounts.some((row) => row.status === "denied" && row.count === 1)), true);
+  assert.equal(Boolean(expandedOperations.actionAuditSummary.statusCounts.some((row) => row.status === "failed" && row.count === 1)), true);
+  assert.equal(Boolean(expandedOperations.actionAuditSummary.latestFailures.some((row) => row.operationId === "op-denied-audit" && row.sourceRefs[0].id === "op-denied-audit")), true);
+  assert.equal(JSON.stringify(expandedOperations.actionAuditSummary).includes("denied-secret"), false);
+  assert.equal(JSON.stringify(expandedOperations.actionAuditSummary).includes("error-secret"), false);
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "control_loop_job" && row.refId === "job-dead-failed")), true);
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "expired_lease" && row.refId === "job-dead-expired-lease")), true);
   assert.equal(Boolean(operations.deadLetters.some((row) => row.kind === "failed_dispatch" && row.refId === "dispatch-failed-not-max")), true);
@@ -8179,6 +8208,13 @@ async function testWorkflowConsoleStaticActionGateContract() {
   assert.equal(app.includes("function actionGatePanel"), true);
   assert.equal(app.includes("Workflow Intervention Gate"), true);
   assert.equal(app.includes("Evidence Export Gate"), true);
+  assert.equal(app.includes("Action Audit Ledger"), true);
+  assert.equal(app.includes("function renderActionAuditLedger"), true);
+  assert.equal(app.includes("should stay 0 in read-only mode"), true);
+  assert.equal(app.includes("Rejected / Failed+Denied"), true);
+  assert.equal(app.includes("current result window"), true);
+  assert.equal(app.includes("Source Ref"), true);
+  assert.equal(app.includes("No rejected, failed, denied, or error-bearing workflow operations."), true);
   assert.equal(app.includes("Preview actions append console operation audit rows."), true);
   assert.equal(app.includes("Browser download of the redacted read model"), true);
   assert.equal(css.includes(".action-gate-panel"), true);

@@ -1265,6 +1265,21 @@ Implemented Slice L: Release Quality Gates
   specific future commit has passed tests without the corresponding rollout
   record.
 
+Implemented Slice M: Operations Action Audit Ledger
+
+- Added a derived `actionAuditSummary` to the Operations read model, based on
+  `workflow_operations`. It summarizes total audit rows, preview/dry-run rows,
+  executable rows, completed/rejected/failed-or-denied rows, status counts,
+  risk counts, actor counts, latest rejected/failed/denied/error-bearing
+  evidence, and operation source refs for the current returned operation
+  window.
+- Added an Action Audit Ledger panel to Operations so an operator can inspect
+  who requested previews or rejected actions, when failures happened, and which
+  operation row anchors the evidence without reading raw database rows first.
+- The ledger is observational. It does not create a new audit table, mutate
+  workflow state, retry failed actions, approve writes, or replace the existing
+  `workflow_operations` record as the source of truth.
+
 ## Test Plan
 
 Required checks:
@@ -1312,6 +1327,9 @@ Frontend smoke:
 - verify top-level Operations renders global audit/dead-letter state, restores
   URL filters, scopes by workflow deep link, disables workflow preview controls
   when unscoped, and remains mobile-readable;
+- verify Operations Action Audit Ledger renders preview, executable, rejected
+  and failed audit counts, actor/risk/status summaries, redacted latest failure
+  evidence, and copyable operation refs;
 - verify command palette opens from the header and keyboard, filters workflow
   and agent commands, routes through shared target handling, closes on Escape,
   and remains mobile-readable without page-level horizontal overflow;
@@ -1386,7 +1404,9 @@ unless plugin runtime loading changes require it separately.
   Inspect routes. Slice K exposes an operator-grade release gate in System
   Status so the console's own safety and inspection prerequisites are visible.
   Slice L makes release quality gates and Spark/code-review evidence
-  requirements visible in System Status.
+  requirements visible in System Status. Slice M makes workflow operation audit
+  evidence operator-readable in Operations without replacing the durable
+  `workflow_operations` source of truth.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

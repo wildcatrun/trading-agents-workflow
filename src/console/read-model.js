@@ -5424,10 +5424,70 @@ LIMIT ${deadLetterScanLimit};`) : [];
       return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
     });
     const deadLetters = deadLettersFiltered.slice(0, deadLetterLimit);
+    const workflowOperationRows = workflowOperations.map((row) => ({
+      operationId: row.operation_id,
+      action: row.action,
+      scopeType: row.scope_type,
+      scopeId: row.scope_id || "",
+      workflowId: row.workflow_id || "",
+      requestedBy: row.requested_by || "",
+      reason: redactText(row.reason || ""),
+      riskTier: row.risk_tier || "",
+      status: row.status,
+      dryRun: Boolean(Number(row.dry_run || 0)),
+      idempotencyKey: row.idempotency_key || "",
+      humanGateId: row.human_gate_id || "",
+      inputHash: row.input_hash || "",
+      previewResult: redactConsoleValue(parseJson(row.preview_result_json, {})),
+      result: redactConsoleValue(parseJson(row.result_json, {})),
+      error: redactText(row.error || ""),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      completedAt: row.completed_at || ""
+    }));
+    const operationCountRows = (rows, keyFn, labelKey) => Object.values(rows.reduce((acc, row) => {
+      const key = keyFn(row) || "unknown";
+      acc[key] ||= { [labelKey]: key, count: 0 };
+      acc[key].count += 1;
+      return acc;
+    }, {})).sort((a, b) => Number(b.count || 0) - Number(a.count || 0) || String(a[labelKey] || "").localeCompare(String(b[labelKey] || "")));
+    const operationFailureRows = workflowOperationRows.filter((row) => {
+      const status = String(row.status || "").toLowerCase();
+      return Boolean(row.error) || ["failed", "rejected", "error", "denied"].includes(status);
+    });
+    const operationFailedRows = workflowOperationRows.filter((row) => {
+      const status = String(row.status || "").toLowerCase();
+      return ["failed", "error", "denied"].includes(status) || (Boolean(row.error) && status !== "rejected");
+    });
+    const actionAuditSummary = {
+      total: workflowOperationRows.length,
+      previewRows: workflowOperationRows.filter((row) => row.dryRun).length,
+      executableRows: workflowOperationRows.filter((row) => !row.dryRun).length,
+      completedRows: workflowOperationRows.filter((row) => String(row.status || "").toLowerCase() === "completed").length,
+      rejectedRows: workflowOperationRows.filter((row) => String(row.status || "").toLowerCase() === "rejected").length,
+      failedRows: operationFailedRows.length,
+      failureEvidenceRows: operationFailureRows.length,
+      statusCounts: operationCountRows(workflowOperationRows, (row) => row.status, "status"),
+      riskCounts: operationCountRows(workflowOperationRows, (row) => row.riskTier || (row.dryRun ? "dry_run" : "unknown"), "riskTier"),
+      actorCounts: operationCountRows(workflowOperationRows, (row) => row.requestedBy, "actor"),
+      latestFailures: operationFailureRows.slice(0, 10).map((row) => ({
+        operationId: row.operationId,
+        action: row.action,
+        status: row.status,
+        actor: row.requestedBy,
+        reason: row.reason,
+        error: row.error,
+        workflowId: row.workflowId,
+        updatedAt: row.updatedAt,
+        sourceRefs: [{ source: "workflow_operations", field: "operation_id", id: row.operationId }]
+      })),
+      lastUpdatedAt: workflowOperationRows.map((row) => row.updatedAt || row.createdAt || "").filter(Boolean).sort().pop() || ""
+    };
     const readiness = await this.readinessLatest();
     return {
       workflowId,
       source: workflowId ? "workflow_scoped" : "global",
+      actionAuditSummary,
       deadLetters,
       deadLetterTriageCandidates,
       deadLetterFilter: {
@@ -5467,27 +5527,7 @@ LIMIT ${deadLetterScanLimit};`) : [];
         dryRun: Boolean(Number(row.dry_run || 0)),
         count: toInt(row.count)
       })),
-      workflowOperations: workflowOperations.map((row) => ({
-        operationId: row.operation_id,
-        action: row.action,
-        scopeType: row.scope_type,
-        scopeId: row.scope_id || "",
-        workflowId: row.workflow_id || "",
-        requestedBy: row.requested_by || "",
-        reason: redactText(row.reason || ""),
-        riskTier: row.risk_tier || "",
-        status: row.status,
-        dryRun: Boolean(Number(row.dry_run || 0)),
-        idempotencyKey: row.idempotency_key || "",
-        humanGateId: row.human_gate_id || "",
-        inputHash: row.input_hash || "",
-        previewResult: redactConsoleValue(parseJson(row.preview_result_json, {})),
-        result: redactConsoleValue(parseJson(row.result_json, {})),
-        error: redactText(row.error || ""),
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        completedAt: row.completed_at || ""
-      })),
+      workflowOperations: workflowOperationRows,
       deliveryExecutions: workflowOperations
         .filter((row) => row.action === "telegram.outbox.delivery")
         .map((row) => {

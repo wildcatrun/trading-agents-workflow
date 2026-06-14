@@ -2880,6 +2880,7 @@ function renderOperations(data) {
       statCard("Action Mode", state.config?.actionMode || "preview-only", state.config?.operatorPolicy?.writeActions || "writes hidden unless server policy enables them")
     ])),
     section("Action Gate", actionGatePanel("Workflow Intervention Gate", actionGateRows)),
+    section("Action Audit Ledger", renderActionAuditLedger(data.actionAuditSummary || {})),
     section("Controlled Intervention Previews", h("div", { className: "copy-block" }, [
       h("div", { className: "actions" }, [
         h("button", { disabled: !scoped, title: scoped ? `Workflow ${workflowId}` : "Select or deep-link a workflow to preview workflow-scoped actions.", onClick: scoped ? () => previewIntervention("workflow.pause.preview", {}, workflowId) : undefined }, "Preview Pause"),
@@ -3017,6 +3018,52 @@ function renderOperations(data) {
     ], data.messageFlowAttention || [], "No delivery-required message_flow needs attention."))
   ]);
   setDetailBody(body);
+}
+
+function renderActionAuditLedger(summary = {}) {
+  const latestFailures = summary.latestFailures || [];
+  const sourceRefSummary = (refs = []) => (refs || [])
+    .map((ref) => `${ref.source || "source"}.${ref.field || "id"}=${ref.id || "-"}`)
+    .join(", ");
+  return h("div", { className: "stack" }, [
+    h("div", { className: "quick-stats" }, [
+      statCard("Audit Rows", summary.total || 0, `latest ${formatDate(summary.lastUpdatedAt)}; current result window`),
+      statCard("Previews", summary.previewRows || 0, "dry-run operation rows"),
+      statCard("Executable Rows", summary.executableRows || 0, "should stay 0 in read-only mode"),
+      statCard("Rejected / Failed+Denied", `${summary.rejectedRows || 0}/${summary.failedRows || 0}`, `${summary.failureEvidenceRows || 0} row(s) with visible failure evidence`)
+    ]),
+    h("div", { className: "content-grid" }, [
+      renderTable([
+        { label: "Status", render: (row) => chip(row.status || "unknown") },
+        { label: "Count", key: "count" }
+      ], summary.statusCounts || [], "No operation status counts."),
+      renderTable([
+        { label: "Risk", render: (row) => chip(row.riskTier || "unknown", row.riskTier === "high" ? "critical" : row.riskTier === "medium" ? "warning" : "neutral") },
+        { label: "Count", key: "count" }
+      ], summary.riskCounts || [], "No operation risk counts."),
+      renderTable([
+        { label: "Actor", key: "actor" },
+        { label: "Count", key: "count" }
+      ], summary.actorCounts || [], "No operation actors.")
+    ]),
+    renderTable([
+      { label: "Status", render: (row) => chip(row.status || "unknown") },
+      { label: "Operation", render: (row) => h("div", {}, [
+        h("strong", {}, row.operationId || "-"),
+        h("p", { className: "muted" }, short(row.action, 120))
+      ]) },
+      { label: "Actor", key: "actor" },
+      { label: "Workflow", key: "workflowId" },
+      { label: "Reason", render: (row) => short(row.reason, 120) },
+      { label: "Failure Evidence", render: (row) => short(row.error, 140) },
+      { label: "Source Ref", render: (row) => sourceRefSummary(row.sourceRefs) || "-" },
+      { label: "Updated", render: (row) => formatDate(row.updatedAt) },
+      { label: "Ref", render: (row) => {
+        const refText = sourceRefSummary(row.sourceRefs) || row.operationId || "";
+        return refText ? h("button", { type: "button", onClick: () => copyText(refText, "Operation ref") }, "Copy") : "-";
+      } }
+    ], latestFailures, "No rejected, failed, denied, or error-bearing workflow operations.")
+  ]);
 }
 
 async function loadDeadLetterEvidence(row = {}) {
