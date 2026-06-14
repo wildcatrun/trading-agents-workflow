@@ -28,10 +28,10 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-M: Operations workspace, activity feed, system status and
+- v1.0 slices A-N: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
-  action audit visibility.
+  action audit visibility, plus Command Center diagnostic evidence previews.
 
 Current target state:
 
@@ -1312,6 +1312,20 @@ Implemented Slice M: Operations Action Audit Ledger
   workflow state, retry failed actions, approve writes, or replace the existing
   `workflow_operations` record as the source of truth.
 
+Implemented Slice N: Diagnostic Matrix Evidence Preview
+
+- Upgraded the Command Center diagnostic matrix from count-plus-inspect cards
+  into evidence-preview cards for the five v1.0 diagnostic classes: stale
+  dispatch, missing receipt, failed Telegram, blocked Human Gate, and runtime
+  failure.
+- Each matrix row now aggregates blocker source refs, exposes related
+  Agent/Board/Evidence/Operations/System drilldowns where available, and
+  provides `Copy Evidence` for the source-ref bundle. This reduces the need to
+  open raw database rows just to understand why a diagnostic class is active.
+- The preview remains read-only. It does not create incidents, retry jobs,
+  change dispatch state, redeliver outbox rows, mutate Human Gate records, or
+  bypass the existing governed preview actions.
+
 ## Test Plan
 
 Required checks:
@@ -1438,7 +1452,8 @@ unless plugin runtime loading changes require it separately.
   Slice L makes release quality gates and Spark/code-review evidence
   requirements visible in System Status. Slice M makes workflow operation audit
   evidence operator-readable in Operations without replacing the durable
-  `workflow_operations` source of truth.
+  `workflow_operations` source of truth. Slice N adds evidence previews and
+  related drilldowns directly to the Command Center diagnostic matrix.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

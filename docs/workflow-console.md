@@ -139,7 +139,11 @@ Current version map:
   Command Center diagnostic matrix for stale dispatch, missing receipt, failed
   Telegram, blocked Human Gate, and runtime failure inspection paths. Slice K
   adds a System Status release gate for the console's operator-grade safety and
-  inspection prerequisites.
+  inspection prerequisites. Slice L adds visible release quality gates for
+  Spark/subagent review, regression, browser smoke, and deployment evidence.
+  Slice M adds an Operations Action Audit Ledger derived from
+  `workflow_operations`. Slice N adds Command Center diagnostic evidence
+  previews with source refs, related drilldowns, and copyable evidence bundles.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

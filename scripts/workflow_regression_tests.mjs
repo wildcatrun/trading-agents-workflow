@@ -8282,7 +8282,14 @@ async function testWorkflowConsoleStaticDiagnosticMatrixContract() {
   assert.equal(app.includes('key: "blocked_human_gate"'), true);
   assert.equal(app.includes('key: "runtime_failure"'), true);
   assert.equal(app.includes("openCommandTarget(row.target)"), true);
-  assert.equal(app.includes("Copy Ref"), true);
+  assert.equal(app.includes("function diagnosticMatrixSourceRefs"), true);
+  assert.equal(app.includes("function diagnosticMatrixTargetKey"), true);
+  assert.equal(app.includes("function diagnosticMatrixRelatedTargets"), true);
+  assert.equal(app.includes("section: target.section"), true);
+  assert.equal(app.includes("operationsFilters: target.operationsFilters"), true);
+  assert.equal(app.includes("Evidence Preview"), true);
+  assert.equal(app.includes("Copy Evidence"), true);
+  assert.equal(app.includes("diagnosticMatrixTargetLabel"), true);
   assert.equal(app.includes("const readinessCritical"), true);
   assert.equal(app.includes("const readinessWarning"), true);
   assert.equal(app.includes('["not_ready", "failed", "unavailable", "error", "critical"].includes(readinessStatus)'), true);
@@ -8290,6 +8297,11 @@ async function testWorkflowConsoleStaticDiagnosticMatrixContract() {
   assert.equal(css.includes(".triage-matrix"), true);
   assert.equal(css.includes(".triage-matrix-row"), true);
   assert.equal(css.includes(".triage-matrix-actions"), true);
+  assert.equal(css.includes(".triage-matrix-evidence"), true);
+  assert.equal(css.includes(".triage-matrix-related"), true);
+  assert.equal(css.includes(".triage-matrix-evidence .mini-counts span"), true);
+  assert.equal(css.includes("overflow-wrap: anywhere"), true);
+  assert.equal(css.includes("word-break: break-word"), true);
   assert.equal(css.includes("grid-template-columns: repeat(auto-fit, minmax(240px, 1fr))"), true);
 }
 

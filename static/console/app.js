@@ -1567,25 +1567,97 @@ function diagnosticMatrixRows(data = {}) {
   ];
 }
 
+function sourceRefKey(ref = {}) {
+  return `${ref.source || ""}.${ref.field || ""}=${ref.id || ""}`;
+}
+
+function diagnosticMatrixSourceRefs(row = {}) {
+  const seen = new Set();
+  const refs = [];
+  for (const blocker of row.blockers || []) {
+    for (const ref of blocker.sourceRefs || []) {
+      if (!ref?.id) continue;
+      const key = sourceRefKey(ref);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      refs.push(ref);
+    }
+  }
+  return refs;
+}
+
+function diagnosticMatrixTargetKey(target = {}) {
+  return JSON.stringify({
+    label: target.label || "",
+    consoleView: target.consoleView || "",
+    workflowId: target.workflowId || "",
+    tab: target.tab || "",
+    agentId: target.agentId || "",
+    cardId: target.cardId || "",
+    section: target.section || "",
+    operationsFilters: target.operationsFilters || {}
+  });
+}
+
+function diagnosticMatrixRelatedTargets(row = {}) {
+  const seen = new Set();
+  const targets = [];
+  const pushTarget = (target = {}) => {
+    if (!target?.consoleView) return;
+    const key = diagnosticMatrixTargetKey(target);
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push(target);
+  };
+  pushTarget({ label: "Inspect", ...(row.target || {}) });
+  for (const blocker of row.blockers || []) {
+    for (const target of blocker.relatedTargets || []) pushTarget(target);
+  }
+  return targets;
+}
+
+function diagnosticMatrixTargetLabel(target = {}) {
+  return target.label || (target.consoleView === "agent-board" ? "Agent"
+    : target.consoleView === "kanban" ? "Board"
+      : target.consoleView === "evidence-workspace" ? "Evidence"
+        : target.consoleView === "operations" ? "Operations"
+          : target.consoleView === "system" ? "System"
+            : "Open");
+}
+
 function renderDiagnosticMatrix(data = {}) {
   const rows = diagnosticMatrixRows(data);
-  return h("div", { className: "triage-matrix" }, rows.map((row) => h("article", { className: `triage-matrix-row ${row.severity}` }, [
-    h("div", { className: "triage-matrix-main" }, [
-      h("div", { className: "workflow-title" }, [
-        h("strong", {}, row.label),
-        chip(row.severity === "ok" ? "clear" : row.severity, row.severity)
+  return h("div", { className: "triage-matrix" }, rows.map((row) => {
+    const refs = diagnosticMatrixSourceRefs(row);
+    const relatedTargets = diagnosticMatrixRelatedTargets(row);
+    const evidenceText = refs.map(sourceRefKey).join("\n") || row.blockers.map((blocker) => blocker.id).filter(Boolean).join("\n") || row.label;
+    return h("article", { className: `triage-matrix-row ${row.severity}` }, [
+      h("div", { className: "triage-matrix-main" }, [
+        h("div", { className: "workflow-title" }, [
+          h("strong", {}, row.label),
+          chip(row.severity === "ok" ? "clear" : row.severity, row.severity)
+        ]),
+        h("p", { className: "workflow-summary" }, row.detail),
+        row.blockers.length ? h("div", { className: "mini-counts" }, row.blockers.slice(0, 4).map((blocker) => (
+          h("span", {}, short(blocker.id, 96))
+        ))) : null,
+        h("div", { className: "triage-matrix-evidence" }, [
+          h("strong", {}, "Evidence Preview"),
+          refs.length ? h("div", { className: "mini-counts" }, refs.slice(0, 6).map((ref) => (
+            h("span", {}, `${present(ref.source)}.${present(ref.field)}=${short(ref.id, 90)}`)
+          ))) : h("p", { className: "muted" }, row.count ? "Open the linked surface for row-level source refs." : "No active source refs."),
+          relatedTargets.length ? h("div", { className: "triage-matrix-related" }, relatedTargets.slice(0, 4).map((target) => (
+            h("button", { type: "button", onClick: () => openCommandTarget(target) }, diagnosticMatrixTargetLabel(target))
+          ))) : null
+        ])
       ]),
-      h("p", { className: "workflow-summary" }, row.detail),
-      row.blockers.length ? h("div", { className: "mini-counts" }, row.blockers.slice(0, 4).map((blocker) => (
-        h("span", {}, short(blocker.id, 96))
-      ))) : null
-    ]),
-    h("div", { className: "triage-matrix-actions" }, [
-      h("strong", {}, String(row.count || 0)),
-      h("button", { type: "button", onClick: () => openCommandTarget(row.target) }, "Inspect"),
-      row.blockers[0]?.id ? h("button", { type: "button", onClick: () => copyText(row.blockers[0].id, row.label) }, "Copy Ref") : null
-    ])
-  ])));
+      h("div", { className: "triage-matrix-actions" }, [
+        h("strong", {}, String(row.count || 0)),
+        h("button", { type: "button", onClick: () => openCommandTarget(row.target) }, "Inspect"),
+        h("button", { type: "button", onClick: () => copyText(evidenceText, `${row.label} evidence`) }, "Copy Evidence")
+      ])
+    ]);
+  }));
 }
 
 function renderActivityFeed(data) {

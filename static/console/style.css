@@ -357,6 +357,30 @@ code {
   justify-items: end;
 }
 
+.triage-matrix-evidence {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.triage-matrix-related {
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.triage-matrix-related button {
+  min-width: 0;
+}
+
+.triage-matrix-evidence .mini-counts span {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .workbench-controls {
   border: 1px solid var(--line-soft);
   border-radius: 8px;
