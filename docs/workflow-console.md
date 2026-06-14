@@ -177,6 +177,9 @@ v0.4 Slice A-D are implemented as read-only console surfaces:
   and incidents. Cards are source-linked and do not support drag/drop mutation.
 - Evidence Desk: workflow-scoped readiness, receipt chain, verification,
   artifact, outbox, message_flow, incident closeout, and missing-evidence view.
+  The desk renders as collapsible checklist sections and keeps workflow,
+  readiness, receipt, task, dispatch, runtime, outbox, and verification ids
+  copyable for mobile inspection.
 
 The Agent Board is intentionally registry-first. `cat_claw` remains an
 OpenClaw secretary/Human Gate entry unless a real Hermers profile is explicitly

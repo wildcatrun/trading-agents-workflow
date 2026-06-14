@@ -8332,6 +8332,21 @@ async function testWorkflowConsoleStaticActionGateContract() {
   assert.equal(app.includes("Copy Result Evidence"), true);
   assert.equal(app.includes("Open Operations Audit"), true);
   assert.equal(app.includes("WorkflowActionGateway -> workflow_operations"), true);
+  assert.equal(app.includes("function collapsibleSection"), true);
+  assert.equal(app.includes("function copyableEvidenceId"), true);
+  assert.equal(app.includes("function copyableEvidenceList"), true);
+  assert.equal(app.includes("collapsibleSection(\"Evidence Desk\""), true);
+  assert.equal(app.includes("collapsibleSection(\"Receipt Chain\""), true);
+  assert.equal(app.includes("collapsibleSection(\"Verification\""), true);
+  assert.equal(app.includes("copyableEvidenceId(row.receiptId"), true);
+  assert.equal(app.includes("copyableEvidenceId(row.verificationId"), true);
+  assert.equal(app.includes("copyableEvidenceList(row.refs"), true);
+  assert.equal(app.includes("target.open = true"), true);
+  assert.equal(app.includes("parentDetails.open = true"), true);
+  assert.equal(app.includes("copyable-evidence-more"), true);
+  assert.equal(app.includes("Copy All"), true);
+  assert.equal(app.includes("evidence-desk-receipts"), true);
+  assert.equal(app.includes("evidence-desk-verification"), true);
   assert.equal(app.includes("should stay 0 in read-only mode"), true);
   assert.equal(app.includes("Rejected / Failed+Denied"), true);
   assert.equal(app.includes("current result window"), true);
@@ -8340,6 +8355,10 @@ async function testWorkflowConsoleStaticActionGateContract() {
   assert.equal(app.includes("Preview actions append console operation audit rows."), true);
   assert.equal(app.includes("Browser download of the redacted read model"), true);
   assert.equal(css.includes(".action-gate-panel"), true);
+  assert.equal(css.includes(".collapsible-section"), true);
+  assert.equal(css.includes(".copyable-evidence-id"), true);
+  assert.equal(css.includes(".copyable-evidence-list"), true);
+  assert.equal(css.includes(".copyable-evidence-more"), true);
 
   const calls = [];
   const stateStub = { selectedWorkflowId: "wf-state", recentActionResults: [] };

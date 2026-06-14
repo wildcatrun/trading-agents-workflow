@@ -261,11 +261,45 @@ function section(title, body, attrs = {}) {
   ]);
 }
 
+function collapsibleSection(title, body, attrs = {}) {
+  const { open = false, className = "", ...rest } = attrs;
+  return h("details", { ...rest, className: `content-section collapsible-section ${className}`.trim(), open: open ? true : undefined }, [
+    h("summary", { className: "section-head collapsible-section-head" }, [
+      h("h3", {}, title),
+      h("span", { className: "muted" }, "toggle")
+    ]),
+    h("div", { className: "collapsible-section-body" }, body)
+  ]);
+}
+
+function copyableEvidenceId(value, label = "ID") {
+  const text = present(value, "");
+  if (!text) return h("span", {}, "-");
+  return h("span", { className: "copyable-evidence-id" }, [
+    h("code", {}, text),
+    h("button", { type: "button", onClick: () => copyText(text, label) }, "Copy")
+  ]);
+}
+
+function copyableEvidenceList(values = [], label = "Refs") {
+  const refs = (values || []).filter(Boolean);
+  if (!refs.length) return h("span", {}, "-");
+  const shown = refs.slice(0, 8).map((value, index) => copyableEvidenceId(value, `${label} ${index + 1}`));
+  if (refs.length > 8) {
+    shown.push(h("span", { className: "copyable-evidence-more", title: refs.slice(8).join("\n") }, `+${refs.length - 8} more`));
+    shown.push(h("button", { type: "button", onClick: () => copyText(refs.join("\n"), `${label} all`) }, "Copy All"));
+  }
+  return h("div", { className: "copyable-evidence-list" }, shown);
+}
+
 function scrollToConsoleSection(sectionId = "") {
   if (!sectionId) return;
   requestAnimationFrame(() => {
     const target = Array.from(document.querySelectorAll("[data-section]"))
       .find((node) => node.getAttribute("data-section") === sectionId);
+    if (target?.tagName === "DETAILS") target.open = true;
+    const parentDetails = target?.closest?.("details");
+    if (parentDetails) parentDetails.open = true;
     target?.scrollIntoView({ block: "start", behavior: "smooth" });
   });
 }
@@ -4232,21 +4266,28 @@ function renderEvidenceDesk(data) {
   const incident = data.incidentCloseout || {};
   const verification = data.verification || {};
   setDetailBody(h("div", { className: "stack" }, [
-    section("Evidence Desk", h("div", { className: "quick-stats" }, [
-      statCard("Status", data.status || "unknown", data.schemaVersion || ""),
-      statCard("Missing", missing.length),
-      statCard("Cat Claw Audit", summary.humanGateReadyForCatClawAudit ? "ready" : "not ready"),
-      statCard("Human Gate", summary.humanGateReadyForSubmission ? "ready" : "not ready"),
-      statCard("Receipts", summary.receiptPresent || 0, `${summary.receiptMissing || 0} missing`),
-      statCard("Verification", summary.verificationResults || 0),
-      statCard("Artifacts", summary.evidenceArtifacts || 0),
-      statCard("Incidents", summary.incidents || 0)
-    ])),
-    section("Missing Evidence", missing.length
+    collapsibleSection("Evidence Desk", h("div", { className: "copy-block" }, [
+      h("div", { className: "quick-stats" }, [
+        statCard("Status", data.status || "unknown", data.schemaVersion || ""),
+        statCard("Missing", missing.length),
+        statCard("Cat Claw Audit", summary.humanGateReadyForCatClawAudit ? "ready" : "not ready"),
+        statCard("Human Gate", summary.humanGateReadyForSubmission ? "ready" : "not ready"),
+        statCard("Receipts", summary.receiptPresent || 0, `${summary.receiptMissing || 0} missing`),
+        statCard("Verification", summary.verificationResults || 0),
+        statCard("Artifacts", summary.evidenceArtifacts || 0),
+        statCard("Incidents", summary.incidents || 0)
+      ]),
+      h("div", { className: "workflow-meta" }, [
+        h("span", {}, "Workflow"),
+        copyableEvidenceId(data.workflowId || state.selectedWorkflowId, "Workflow"),
+        h("span", {}, `Generated ${formatDate(data.generatedAt)}`)
+      ])
+    ]), { open: true, "data-section": "evidence-desk-summary" }),
+    collapsibleSection("Missing Evidence", missing.length
       ? h("div", { className: "chip-list" }, missing.map((item) => chip(item, "warning")))
-      : emptyState("No missing evidence detected by the derived desk.")),
-    section("Governed Preview Actions", renderEvidenceDeskPreviewActions(data)),
-    section("Human Gate Readiness", h("div", { className: "content-grid" }, [
+      : emptyState("No missing evidence detected by the derived desk."), { open: Boolean(missing.length), "data-section": "evidence-desk-missing" }),
+    collapsibleSection("Governed Preview Actions", renderEvidenceDeskPreviewActions(data), { open: true, "data-section": "evidence-desk-preview-actions" }),
+    collapsibleSection("Human Gate Readiness", h("div", { className: "content-grid" }, [
       renderTable([
         { label: "Status", render: (row) => chip(row.status) },
         { label: "Check", render: (row) => h("div", {}, [
@@ -4254,7 +4295,7 @@ function renderEvidenceDesk(data) {
           h("p", { className: "muted" }, short(row.detail, 180))
         ]) },
         { label: "Severity", render: (row) => chip(row.severity, row.severity === "required" ? "critical" : "warning") },
-        { label: "Refs", render: (row) => h("code", {}, present((row.refs || []).join(", "))) }
+        { label: "Refs", render: (row) => copyableEvidenceList(row.refs || [], "Readiness ref") }
       ], readiness.checklist || [], "No readiness checklist."),
       h("div", { className: "quick-stats" }, [
         statCard("Records", readiness.summary?.recordCount || 0),
@@ -4264,47 +4305,49 @@ function renderEvidenceDesk(data) {
         statCard("Sent Outbox", readiness.summary?.sentOutboxCount || 0),
         statCard("Receipts", readiness.summary?.receiptPresentCount || 0)
       ])
-    ])),
-    section("Receipt Chain", renderTable([
+    ]), { open: true, "data-section": "evidence-desk-human-gate" }),
+    collapsibleSection("Receipt Chain", renderTable([
       { label: "Status", render: (row) => chip(row.status) },
       { label: "Kind", key: "kind" },
       { label: "Receipt", render: (row) => h("div", {}, [
-        h("strong", {}, row.receiptId),
+        copyableEvidenceId(row.receiptId, "Receipt"),
         h("p", { className: "muted" }, short(row.title || row.summary, 120))
       ]) },
       { label: "Present", render: (row) => row.present ? chip("present", "ok") : chip("missing", "warning") },
       { label: "Chain", render: (row) => h("div", {}, [
-        h("p", {}, `task ${present(row.taskId)} / dispatch ${present(row.dispatchId)}`),
-        h("p", { className: "muted" }, `runtime ${present(row.runtimeRunId)} / outbox ${present(row.outboxId)}`)
+        h("p", {}, "Task / Dispatch"),
+        copyableEvidenceList([row.taskId, row.dispatchId], "Receipt chain"),
+        h("p", { className: "muted" }, "Runtime / Outbox"),
+        copyableEvidenceList([row.runtimeRunId, row.outboxId], "Receipt chain")
       ]) },
       { label: "Updated", render: (row) => formatDate(row.updatedAt || row.createdAt) }
-    ], (data.receipts?.receipts || []).slice(0, 80), "No receipt chain records.")),
-    section("Verification", renderTable([
+    ], (data.receipts?.receipts || []).slice(0, 80), "No receipt chain records."), { open: (data.receipts?.receipts || []).length > 0, "data-section": "evidence-desk-receipts" }),
+    collapsibleSection("Verification", renderTable([
       { label: "Decision", render: (row) => chip(row.decision) },
       { label: "Type", key: "resultType" },
       { label: "Result", render: (row) => h("div", {}, [
-        h("strong", {}, row.verificationId),
+        copyableEvidenceId(row.verificationId, "Verification"),
         h("p", { className: "muted" }, short(row.summary, 140))
       ]) },
       { label: "Reviewer", render: (row) => present(row.verifierAgent || row.refuterAgent || row.sourceAgent) },
       { label: "Created", render: (row) => formatDate(row.createdAt) }
-    ], verification.results || [], "No verification results.")),
-    section("Incidents / Closeout", h("div", { className: "content-grid" }, [
+    ], verification.results || [], "No verification results."), { open: (verification.results || []).length > 0, "data-section": "evidence-desk-verification" }),
+    collapsibleSection("Incidents / Closeout", h("div", { className: "content-grid" }, [
       renderTable([
         { label: "Status", render: (row) => chip(row.status) },
         { label: "Check", key: "label" },
         { label: "Detail", render: (row) => short(row.detail, 180) }
       ], incident.checklist || [], "No incident closeout checklist."),
       renderIncidentTimeline((incident.timeline || []).slice(0, 20))
-    ])),
-    section("Export", h("div", { className: "actions" }, [
+    ]), { open: (incident.checklist || []).some((row) => row.status === "fail"), "data-section": "evidence-desk-closeout" }),
+    collapsibleSection("Export", h("div", { className: "actions" }, [
       h("button", { onClick: () => downloadJson(`${data.workflowId || state.selectedWorkflowId}-evidence-desk.json`, data) }, "Download Desk JSON"),
       h("button", { onClick: () => loadWorkflowEvidencePack(data.workflowId || state.selectedWorkflowId) }, "Open Evidence Pack")
-    ])),
-    section("Raw", h("details", {}, [
-      h("summary", {}, "JSON"),
+    ]), { "data-section": "evidence-desk-export" }),
+    collapsibleSection("Raw", h("details", {}, [
+      h("summary", {}, "JSON Payload"),
       jsonBlock(data)
-    ]))
+    ]), { "data-section": "evidence-desk-raw" })
   ]));
 }
 

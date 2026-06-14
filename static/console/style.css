@@ -1020,6 +1020,67 @@ code {
   background: #fafbfc;
 }
 
+.collapsible-section {
+  padding: 0;
+}
+
+.collapsible-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  cursor: pointer;
+  color: var(--ink);
+  list-style-position: inside;
+}
+
+.collapsible-section-head h3 {
+  display: inline;
+}
+
+.collapsible-section-head .muted {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.collapsible-section-body {
+  min-width: 0;
+}
+
+.copyable-evidence-id,
+.copyable-evidence-list {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.copyable-evidence-id code {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.copyable-evidence-id button {
+  padding: 3px 6px;
+  font-size: 11px;
+}
+
+.copyable-evidence-list {
+  display: flex;
+}
+
+.copyable-evidence-more {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .copy-block {
   display: grid;
   gap: 8px;

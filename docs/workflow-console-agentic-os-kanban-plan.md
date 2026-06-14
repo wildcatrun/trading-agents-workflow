@@ -1458,6 +1458,21 @@ Implemented Slice V: Kanban Preview Coverage
   continuation as a fake action, execute reruns, redeliver Telegram, close
   incidents, create Human Gate records, or enable writes.
 
+Implemented Slice W: Collapsible Evidence Desk
+
+- Converted the workflow Evidence Desk from a long fixed page into collapsible
+  operator checklist sections for summary, missing evidence, governed previews,
+  Human Gate readiness, receipt chain, verification, incident closeout, export,
+  and raw payload. Summary and action-critical sections open by default; lower
+  evidence sections stay available without forcing mobile operators through a
+  full-page scroll.
+- Added copyable evidence ids inside the desk for workflow id, readiness refs,
+  receipt ids, task/dispatch/runtime/outbox chain ids, and verification ids.
+  Long ids wrap safely and remain copyable from both table and mobile layouts.
+- This slice is presentation-only over the existing read model. It does not add
+  export writes, mutate evidence, change preview policy, or create new runtime
+  actions.
+
 ## Test Plan
 
 Required checks:
