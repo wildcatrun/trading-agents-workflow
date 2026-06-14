@@ -807,6 +807,30 @@ function kanbanColumnForHumanGate(row = {}) {
   return "waiting_human";
 }
 
+function kanbanColumnForControlLoopJob(row = {}) {
+  const status = String(row.status || "").toLowerCase();
+  const leaseUntil = String(row.lease_until || "").trim();
+  const attempt = Number(row.attempt || 0);
+  const maxAttempts = Number(row.max_attempts || 0);
+  const terminalMaxAttempts = maxAttempts > 0 && attempt >= maxAttempts && !["completed", "succeeded", "success", "done", "cancelled"].includes(status);
+  if (["completed", "succeeded", "success", "done"].includes(status)) return "done";
+  if (terminalMaxAttempts) return "failed";
+  if (["failed", "dead_letter", "cancelled"].includes(status)) return "failed";
+  if (status === "running" && leaseUntil && leaseUntil <= new Date().toISOString()) return "blocked";
+  if (["running", "leased"].includes(status)) return "working";
+  if (["retry_scheduled", "queued", "pending"].includes(status)) return "queued";
+  return "queued";
+}
+
+function kanbanColumnForSideEffect(row = {}) {
+  const status = String(row.status || "").toLowerCase();
+  if (["committed", "rolled_back", "resolved", "done", "success"].includes(status)) return "done";
+  if (status === "failed") return "failed";
+  if (["uncertain", "side_effect_uncertain", "unknown"].includes(status)) return "blocked";
+  if (["started", "running"].includes(status)) return "working";
+  return "queued";
+}
+
 function makeKanbanCard(column, source, id, values = {}) {
   return {
     id: `${source}:${id}`,
@@ -822,6 +846,9 @@ function makeKanbanCard(column, source, id, values = {}) {
     outboxId: values.outboxId || "",
     humanGateId: values.humanGateId || "",
     incidentId: values.incidentId || "",
+    jobId: values.jobId || "",
+    sideEffectId: values.sideEffectId || "",
+    deadLetterKind: values.deadLetterKind || "",
     agentId: values.agentId || "",
     runtime: values.runtime || "",
     status: values.status || "",
@@ -4531,6 +4558,63 @@ LIMIT ${limit};`);
             "workflow.rerun.agent.preview",
             ...(row.outbox_id ? ["telegram.outbox.delivery.preview", "telegram.outbox.requeue.preview"] : [])
           ]
+        }));
+      }
+    }
+    if (await tableExists(this.paths.dbFile, "control_loop_jobs")) {
+      const filters = [workflowId ? `workflow_id=${sqlValue(workflowId)}` : "1=1"];
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at
+FROM control_loop_jobs
+WHERE ${filters.join(" AND ")}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+      for (const row of rows) {
+        const payload = parseJson(row.payload_json, {});
+        const result = parseJson(row.result_json, {});
+        if (agentId && !payloadAgentMatches(payload, agentId) && !payloadAgentMatches(result, agentId)) continue;
+        const column = kanbanColumnForControlLoopJob(row);
+        const terminalAttention = ["failed", "dead_letter", "blocked"].includes(column);
+        cards.push(makeKanbanCard(column, "control_loop_jobs", row.job_id, {
+          workflowId: row.workflow_id || payloadWorkflowId(payload),
+          jobId: row.job_id,
+          deadLetterKind: column === "blocked" ? "expired_lease" : "control_loop_job",
+          runtime: row.runtime,
+          status: row.status,
+          title: `${row.job_type || "control_loop_job"} ${row.status || ""}`,
+          summary: row.last_error || row.dedupe_key || row.priority,
+          lastEventAt: row.updated_at || row.created_at,
+          missingEvidence: terminalAttention ? ["operator_requeue_or_incident_decision"] : [],
+          previewActions: terminalAttention ? ["workflow.control_loop.job.requeue.preview", "workflow.incident.from_dead_letter.preview"] : []
+        }));
+      }
+    }
+    if (await tableExists(this.paths.dbFile, "side_effect_ledger")) {
+      const filters = [workflowId ? `workflow_id=${sqlValue(workflowId)}` : "1=1"];
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT side_effect_id, trace_id, workflow_id, dispatch_id, idempotency_key, owner_agent, side_effect_type, status, artifact_ref, payload_json, created_at, updated_at
+FROM side_effect_ledger
+WHERE ${filters.join(" AND ")}
+ORDER BY updated_at DESC
+LIMIT ${limit};`);
+      for (const row of rows) {
+        const payload = parseJson(row.payload_json, {});
+        if (agentId && row.owner_agent !== agentId && !payloadAgentMatches(payload, agentId)) continue;
+        const column = kanbanColumnForSideEffect(row);
+        const uncertain = ["blocked", "failed"].includes(column);
+        cards.push(makeKanbanCard(column, "side_effect_ledger", row.side_effect_id, {
+          workflowId: row.workflow_id || payloadWorkflowId(payload),
+          dispatchId: row.dispatch_id,
+          sideEffectId: row.side_effect_id,
+          deadLetterKind: "side_effect_uncertain",
+          agentId: row.owner_agent,
+          status: row.status,
+          title: `Side effect ${row.status || ""}: ${row.side_effect_type || row.side_effect_id}`,
+          summary: row.artifact_ref || row.side_effect_type || row.trace_id,
+          lastEventAt: row.updated_at || row.created_at,
+          artifactRef: row.artifact_ref,
+          missingEvidence: uncertain ? ["side_effect_resolution_evidence"] : [],
+          previewActions: uncertain ? ["workflow.incident.from_dead_letter.preview"] : []
         }));
       }
     }

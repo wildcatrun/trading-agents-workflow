@@ -6797,7 +6797,10 @@ VALUES ('incident-other-agent', 'investigating', 'workflow', '["workflow"]', 'Ot
 INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at)
 VALUES
   ('job-console-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-queued', 'normal', 'queued', 'wf-console-agentic', 'hermers', '{"agentId":"cat_body"}', '{}', 0, 20, '2026-06-13T00:01:00.000Z', '', '', '', '2026-06-13T00:00:01.000Z', '2026-06-13T00:00:01.000Z', ''),
-  ('job-console-failed', 'runtime_drain', 'runtime_drain:hermers:dispatch-failed', 'high', 'failed', 'wf-console-agentic', 'hermers', '{"agentId":"cat_body"}', '{}', 3, 3, '', '', '', 'failed control loop job', '2026-06-13T00:00:02.000Z', '2026-06-13T00:00:17.000Z', '');
+  ('job-console-failed', 'runtime_drain', 'runtime_drain:hermers:dispatch-failed', 'high', 'failed', 'wf-console-agentic', 'hermers', '{"agentId":"cat_body"}', '{}', 3, 3, '', '', '', 'failed control loop job', '2026-06-13T00:00:02.000Z', '2026-06-13T00:00:17.000Z', ''),
+  ('job-console-maxed-queued', 'runtime_drain', 'runtime_drain:hermers:dispatch-maxed', 'high', 'queued', 'wf-console-agentic', 'hermers', '{"agentId":"cat_body"}', '{}', 3, 3, '', '', '', 'maxed queued control loop job', '2026-06-13T00:00:02.000Z', '2026-06-13T00:00:19.000Z', '');
+INSERT INTO side_effect_ledger(side_effect_id, trace_id, workflow_id, dispatch_id, idempotency_key, owner_agent, side_effect_type, status, input_hash, output_hash, artifact_ref, payload_json, created_at, updated_at)
+VALUES ('side-effect-console-uncertain', 'trace-side-effect-console', 'wf-console-agentic', 'dispatch-failed', 'idem-side-effect-console', 'cat_body', 'telegram_delivery', 'uncertain', '', '', 'artifact://console-side-effect', '{}', '2026-06-13T00:00:02.000Z', '2026-06-13T00:00:18.000Z');
 `);
 
   const semanticAck = await runAction(root, {
@@ -7105,6 +7108,38 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   assert.equal(kanban.summary.byColumn.failed > 0, true);
   assert.equal(kanban.columns.find((column) => column.id === "waiting_receipt")?.cards.some((card) => card.source === "message_flows" && card.sourceId === "flow-waiting-receipt"), true);
   assert.equal(kanban.columns.find((column) => column.id === "working")?.cards.some((card) => card.source === "runtime_current_state" && card.sourceId === "hermers:cat_body"), true);
+  assert.equal(kanban.columns.find((column) => column.id === "queued")?.cards.some((card) => card.source === "control_loop_jobs" && card.sourceId === "job-console-queued"), true);
+  assert.equal(kanban.columns.find((column) => column.id === "failed")?.cards.some((card) => card.source === "control_loop_jobs" && card.sourceId === "job-console-failed"), true);
+  assert.equal(kanban.columns.find((column) => column.id === "failed")?.cards.some((card) => card.source === "control_loop_jobs" && card.sourceId === "job-console-maxed-queued"), true);
+  assert.equal(kanban.columns.find((column) => column.id === "blocked")?.cards.some((card) => card.source === "side_effect_ledger" && card.sourceId === "side-effect-console-uncertain"), true);
+  const controlLoopJobCard = kanban.columns.flatMap((column) => column.cards).find((card) => card.source === "control_loop_jobs" && card.sourceId === "job-console-failed");
+  assert.equal(controlLoopJobCard?.jobId, "job-console-failed");
+  assert.equal(controlLoopJobCard?.deadLetterKind, "control_loop_job");
+  assert.equal(controlLoopJobCard?.previewActions.includes("workflow.control_loop.job.requeue.preview"), true);
+  assert.equal(controlLoopJobCard?.previewActions.includes("workflow.incident.from_dead_letter.preview"), true);
+  const sideEffectCard = kanban.columns.flatMap((column) => column.cards).find((card) => card.source === "side_effect_ledger" && card.sourceId === "side-effect-console-uncertain");
+  assert.equal(sideEffectCard?.sideEffectId, "side-effect-console-uncertain");
+  assert.equal(sideEffectCard?.deadLetterKind, "side_effect_uncertain");
+  assert.equal(sideEffectCard?.missingEvidence.includes("side_effect_resolution_evidence"), true);
+  assert.equal(sideEffectCard?.previewActions.includes("workflow.incident.from_dead_letter.preview"), true);
+  const requeueJobAction = kanbanPreviewActionModel(controlLoopJobCard, "workflow.control_loop.job.requeue.preview");
+  assert.equal(requeueJobAction.enabled, true);
+  assert.equal(requeueJobAction.payload.jobId, "job-console-failed");
+  const controlLoopIncidentAction = kanbanPreviewActionModel(controlLoopJobCard, "workflow.incident.from_dead_letter.preview");
+  assert.equal(controlLoopIncidentAction.enabled, true);
+  assert.equal(controlLoopIncidentAction.payload.kind, "control_loop_job");
+  assert.equal(controlLoopIncidentAction.payload.refId, "job-console-failed");
+  const missingDeadLetterKindAction = kanbanPreviewActionModel({ ...controlLoopJobCard, deadLetterKind: "" }, "workflow.incident.from_dead_letter.preview");
+  assert.equal(missingDeadLetterKindAction.enabled, false);
+  assert.equal(missingDeadLetterKindAction.reason, "deadLetterKind is required");
+  const mismatchedDeadLetterKindAction = kanbanPreviewActionModel({ ...controlLoopJobCard, deadLetterKind: "side_effect_uncertain" }, "workflow.incident.from_dead_letter.preview");
+  assert.equal(mismatchedDeadLetterKindAction.enabled, false);
+  assert.equal(mismatchedDeadLetterKindAction.reason, "deadLetterKind does not match card source");
+  const sideEffectIncidentAction = kanbanPreviewActionModel(sideEffectCard, "workflow.incident.from_dead_letter.preview");
+  assert.equal(sideEffectIncidentAction.enabled, true);
+  assert.equal(sideEffectIncidentAction.payload.kind, "side_effect_uncertain");
+  assert.equal(sideEffectIncidentAction.payload.refId, "side-effect-console-uncertain");
+  assert.equal(kanbanPreviewActionModel({ ...controlLoopJobCard, jobId: "", sourceId: "" }, "workflow.control_loop.job.requeue.preview").reason, "jobId is required");
   const dispatchPreviewCard = kanban.columns.flatMap((column) => column.cards).find((card) => card.source === "mixed_meeting_dispatches" && card.dispatchId);
   assert.equal(dispatchPreviewCard?.previewActions.includes("workflow.rerun.agent.preview"), true);
   assert.equal(dispatchPreviewCard?.previewActions.includes("workflow.rerun.dispatch.preview"), false);
@@ -8766,6 +8801,8 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
     "telegram.outbox.requeue.preview",
     "workflow.pause.preview",
     "workflow.stop.preview",
+    "workflow.control_loop.job.requeue.preview",
+    "workflow.incident.from_dead_letter.preview",
     "workflow.incident.closeout.cat_claw_report.preview",
     "workflow.incident.closeout.human_gate_package.preview",
     "workflow.rerun.phase.preview",
@@ -8779,6 +8816,7 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   const observedPriority = priorityRuntime.previewActionPriorityModel([
     { workflowId: "wf-priority", source: "workflow_tasks", sourceId: "task-priority", previewActions: ["workflow.supervise.preview"] },
     { workflowId: "wf-priority", source: "mixed_meeting_dispatches", sourceId: "dispatch-priority", dispatchId: "dispatch-priority", previewActions: ["workflow.rerun.dispatch.preview"] },
+    { workflowId: "wf-priority", source: "control_loop_jobs", sourceId: "job-priority", jobId: "job-priority", previewActions: ["workflow.control_loop.job.requeue.preview"] },
     { workflowId: "wf-priority", source: "telegram_outbox", sourceId: "outbox-priority", previewActions: ["telegram.outbox.delivery.preview"] },
     { workflowId: "wf-priority", source: "message_flows", sourceId: "flow-without-outbox", previewActions: ["telegram.outbox.delivery.preview"] },
     { workflowId: "wf-priority", source: "custom_source", sourceId: "custom-priority", previewActions: ["custom.preview.action"] }
@@ -8789,6 +8827,7 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   const rerunPriority = observedPriority.find((row) => row.action === "workflow.rerun.agent.preview");
   assert.equal(rerunPriority?.ready, 1);
   assert.deepEqual(rerunPriority?.observedActions, ["workflow.rerun.dispatch.preview"]);
+  assert.equal(observedPriority.find((row) => row.action === "workflow.control_loop.job.requeue.preview")?.ready, 1);
   const uncatalogedPriority = observedPriority.find((row) => row.action === "custom.preview.action");
   assert.equal(uncatalogedPriority?.status, "uncataloged");
   assert.equal(uncatalogedPriority?.priority, "Other");
@@ -8995,6 +9034,9 @@ async function testWorkflowConsoleStaticKanbanCardInspectorContract() {
   assert.equal(app.includes('section("Raw Detail And Audit Trail", renderKanbanCardDetailTargets(card))'), true);
   assert.equal(app.includes("function renderKanbanCardDetailTargets"), true);
   assert.equal(app.includes("function renderKanbanCardPreviewAudit"), true);
+  assert.equal(app.includes("function previewControlLoopJobRequeue"), true);
+  assert.equal(app.includes('action: "workflow.control_loop.job.requeue.preview"'), true);
+  assert.equal(app.includes('action: "workflow.incident.from_dead_letter.preview"'), true);
   assert.equal(app.includes("WorkflowActionGateway -> workflow_operations"), true);
   assert.equal(app.includes("Preview only; no business-state mutation"), true);
   assert.equal(app.includes("Focused Board"), true);
@@ -9029,6 +9071,9 @@ return { renderKanbanCardDetailTargets };`)(
   assert.equal(labelsFor({ source: "runtime_current_state", sourceId: "hermers:cat_body", workflowId: "wf-a", runtimeRunId: "run-current" }).includes("Runtime Runs"), true);
   assert.equal(labelsFor({ source: "message_flows", sourceId: "flow-a", workflowId: "wf-a", flowId: "flow-a" }).includes("Message Flow"), true);
   assert.equal(labelsFor({ source: "telegram_outbox", sourceId: "outbox-a", workflowId: "wf-a", outboxId: "outbox-a" }).includes("Outbox"), true);
+  assert.equal(labelsFor({ source: "control_loop_jobs", sourceId: "job-a", workflowId: "wf-a", jobId: "job-a" }).includes("Operations"), true);
+  assert.equal(labelsFor({ source: "side_effect_ledger", sourceId: "side-effect-a", workflowId: "wf-a", sideEffectId: "side-effect-a", status: "uncertain" }).includes("Evidence Desk"), true);
+  assert.equal(labelsFor({ source: "side_effect_ledger", sourceId: "side-effect-done", workflowId: "wf-a", sideEffectId: "side-effect-done", status: "committed" }).includes("Evidence Desk"), false);
   assert.deepEqual(
     labelsFor({ source: "protocol_objects", sourceId: "hg-a", workflowId: "wf-a", humanGateId: "hg-a" }).filter((label) => label.includes("Gate")),
     ["Human Gate", "Gate Readiness"]
@@ -9059,6 +9104,25 @@ return { renderKanbanCardPreviewAudit };`)(
   assert.equal(previewButton.attrs.onClick, undefined);
   const auditCell = previewNode.rows[0].find((cell) => cell.label === "Audit Boundary").node;
   assert.equal(JSON.stringify(auditCell).includes("WorkflowActionGateway -> workflow_operations"), true);
+  const requeuePreviewNode = previewRuntime.renderKanbanCardPreviewAudit({
+    workflowId: "wf-a",
+    source: "control_loop_jobs",
+    sourceId: "job-a",
+    jobId: "job-a",
+    previewActions: ["workflow.control_loop.job.requeue.preview"]
+  });
+  const requeuePreviewButton = requeuePreviewNode.rows[0].find((cell) => cell.label === "Preview").node;
+  assert.equal(requeuePreviewButton.attrs.disabled, false);
+  const incidentPreviewNode = previewRuntime.renderKanbanCardPreviewAudit({
+    workflowId: "wf-a",
+    source: "side_effect_ledger",
+    sourceId: "side-effect-a",
+    sideEffectId: "side-effect-a",
+    deadLetterKind: "side_effect_uncertain",
+    previewActions: ["workflow.incident.from_dead_letter.preview"]
+  });
+  const incidentPreviewButton = incidentPreviewNode.rows[0].find((cell) => cell.label === "Preview").node;
+  assert.equal(incidentPreviewButton.attrs.disabled, false);
 }
 
 async function testWorkflowConsoleStaticOperatorGradeReleaseGateContract() {

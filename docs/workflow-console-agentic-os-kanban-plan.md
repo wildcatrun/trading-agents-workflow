@@ -28,7 +28,7 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-AB: Operations workspace, activity feed, system status and
+- v1.0 slices A-AC: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
@@ -38,7 +38,8 @@ Implemented layers:
   readiness finding inspection, Kanban preview expansion, collapsible Evidence
   Desk, Cat Claw secretary handoff shortcuts, explicit Kanban board scope, and
   Agent Board runtime filter/boundary controls, plus Evidence export provenance
-  and artifact-boundary controls, plus Kanban preview-action priority coverage.
+  and artifact-boundary controls, Kanban preview-action priority coverage, and
+  control-loop/side-effect Kanban work-item coverage.
 
 Current target state:
 
@@ -1557,6 +1558,28 @@ Implemented Slice AB: Kanban Preview Action Priority Matrix
 - This closes the sparse Kanban open question conservatively: first-class
   priority is visible as an operator catalog, while actual buttons remain bound
   to card-level `previewActions` and existing allowlisted preview handlers.
+
+Implemented Slice AC: Kanban Control-Loop And Side-Effect Work Items
+
+- Added `control_loop_jobs` and `side_effect_ledger` to the Workflow Kanban
+  read-model projection.
+- Control-loop jobs now appear as queue/working/blocked/failed/done cards based
+  on job status, expired leases, and max-attempt terminal conditions.
+  Failed/dead-letter/max-attempt jobs expose read-only requeue and
+  incident-package preview actions.
+- Side-effect records now appear as queue/working/blocked/failed/done cards.
+  Uncertain/unknown side effects surface as blocked work items with
+  side-effect resolution evidence required and a dead-letter incident preview.
+- Dead-letter incident previews require the card to carry an explicit
+  `deadLetterKind` that matches its source table; the UI does not infer a
+  previewable incident kind from arbitrary source names.
+- Added `workflow.control_loop.job.requeue.preview` and
+  `workflow.incident.from_dead_letter.preview` to the Kanban preview-action
+  priority catalog so they are governed first-class actions rather than
+  uncataloged warnings.
+- This closes another v1.0 Kanban target gap without adding browser-side
+  mutation: requeue remains preview-only unless policy-enabled execution is
+  separately invoked through `WorkflowActionGateway`.
 
 ## Test Plan
 

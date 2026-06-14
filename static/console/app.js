@@ -124,6 +124,20 @@ const PREVIEW_ACTION_PRIORITY = [
     boundary: "Stop package only; no workflow termination."
   },
   {
+    action: "workflow.control_loop.job.requeue.preview",
+    priority: "P2",
+    label: "Control-Loop Job Requeue Preview",
+    firstWhen: "A failed/dead-letter job or expired lease needs retry planning.",
+    boundary: "Requeue preview only; no queue state change or job execution."
+  },
+  {
+    action: "workflow.incident.from_dead_letter.preview",
+    priority: "P3",
+    label: "Dead-Letter Incident Preview",
+    firstWhen: "Dead-letter or side-effect uncertainty evidence needs incident packaging.",
+    boundary: "Incident package preview only; no incident creation."
+  },
+  {
     action: "workflow.incident.closeout.cat_claw_report.preview",
     priority: "P3",
     label: "Cat Claw Closeout Preview",
@@ -1570,7 +1584,8 @@ function renderKanbanCardDetailTargets(card = {}) {
     pushTarget({ label: "Gate Readiness", consoleView: "workflows", workflowId, tab: "human-gate-readiness" });
   }
   if (workflowId && card.source === "incident_states") pushTarget({ label: "Incidents", consoleView: "workflows", workflowId, tab: "incident-closeout" });
-  if (workflowId && (card.artifactRef || card.receiptRef || (card.missingEvidence || []).length)) pushTarget({ label: "Evidence Desk", consoleView: "workflows", workflowId, tab: "evidence-desk" });
+  const sideEffectNeedsEvidence = card.source === "side_effect_ledger" && ["uncertain", "side_effect_uncertain", "unknown", "failed"].includes(String(card.status || "").toLowerCase());
+  if (workflowId && (card.artifactRef || card.receiptRef || sideEffectNeedsEvidence || (card.missingEvidence || []).length)) pushTarget({ label: "Evidence Desk", consoleView: "workflows", workflowId, tab: "evidence-desk" });
   if (!targets.length) return emptyState("No raw detail route can be inferred for this card.");
   return h("div", { className: "source-ref-actions" }, targets.map((target) => h("button", {
     type: "button",
@@ -2894,6 +2909,10 @@ function kanbanPreviewActionSpec(card = {}, action = "") {
   if (model.action === "telegram.outbox.delivery.preview") return { ...model, onClick: () => previewTelegramOutboxDelivery(model.outboxId) };
   if (model.action === "telegram.outbox.requeue.preview") return { ...model, onClick: () => previewTelegramOutboxRequeue(model.outboxId) };
   if (model.action === "telegram.outbox.requeue.execution_package.preview") return { ...model, onClick: () => previewTelegramOutboxRequeuePackage(model.outboxId) };
+  if (model.action === "workflow.control_loop.job.requeue.preview") return { ...model, onClick: () => previewControlLoopJobRequeue(model.workflowId, model.jobId) };
+  if (model.action === "workflow.incident.from_dead_letter.preview") {
+    return { ...model, onClick: () => previewDeadLetterIncident({ workflowId: model.workflowId, kind: model.deadLetterKind, refId: model.refId }) };
+  }
   if (model.action && model.action.startsWith("workflow.incident.closeout.")) {
     return { ...model, onClick: () => previewIncidentCloseout(model.action, model.incidentId || "", {}, model.workflowId) };
   }
@@ -4094,6 +4113,43 @@ async function previewDeadLetterIncident(data) {
     setActionStatus("Incident preview failed", "critical");
     setDetailBody(h("div", { className: "stack" }, [
       renderActionResultInspector(result, { action: "workflow.incident.from_dead_letter.preview", workflowId: data.workflowId }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
+  }
+}
+
+async function previewControlLoopJobRequeue(workflowId, jobId) {
+  if (!workflowId || !jobId) {
+    setActionStatus("Job requeue preview requires workflow and job id", "warning");
+    return;
+  }
+  setActionStatus("Job requeue preview running...", "neutral");
+  try {
+    const result = await api("/api/actions", {
+      method: "POST",
+      body: JSON.stringify({
+        action: "workflow.control_loop.job.requeue.preview",
+        actor: "workflow-console",
+        reason: "console control-loop job requeue preview",
+        payload: {
+          workflowId,
+          jobId,
+          operatorReason: "console preview only"
+        }
+      })
+    });
+    recordActionResult(result, { action: "workflow.control_loop.job.requeue.preview", workflowId, label: "Job Requeue Preview" });
+    state.lastPayload = result;
+    setDetailBody(h("div", { className: "stack" }, [
+      section("Job Requeue Preview", renderActionResultInspector(result, { action: "workflow.control_loop.job.requeue.preview", workflowId })),
+      section("Read-Only Boundary", h("p", { className: "muted" }, "This preview does not requeue the job, drain runtime, dispatch agents, send Telegram, resume Human Gate, or mutate workflow state."))
+    ]));
+    setActionStatus(result.ok === false ? "Job requeue preview failed" : "Job requeue preview OK", result.ok === false ? "critical" : "ok");
+  } catch (error) {
+    const result = actionRequestFailure(error, { action: "workflow.control_loop.job.requeue.preview", workflowId, label: "Job Requeue Preview" });
+    setActionStatus("Job requeue preview failed", "critical");
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "workflow.control_loop.job.requeue.preview", workflowId }),
       section("Request Error", h("div", { className: "error" }, error.message))
     ]));
   }

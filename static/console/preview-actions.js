@@ -2,6 +2,9 @@ export function kanbanPreviewActionModel(card = {}, action = "") {
   const workflowId = String(card.workflowId || "").trim();
   const outboxId = String(card.outboxId || (card.source === "telegram_outbox" ? card.sourceId : "") || "").trim();
   const incidentId = String(card.incidentId || (card.source === "incident_states" ? card.sourceId : "") || "").trim();
+  const jobId = String(card.jobId || (card.source === "control_loop_jobs" ? card.sourceId : "") || "").trim();
+  const refId = String(card.sourceId || card.jobId || card.sideEffectId || "").trim();
+  const deadLetterKind = String(card.deadLetterKind || "").trim();
   const phaseKey = String(card.phaseKey || card.phase || "").trim();
   if (action === "workflow.supervise.preview") {
     return {
@@ -71,6 +74,31 @@ export function kanbanPreviewActionModel(card = {}, action = "") {
       reason: outboxId ? "" : "outboxId is required",
       outboxId,
       payload: { outboxId }
+    };
+  }
+  if (action === "workflow.control_loop.job.requeue.preview") {
+    return {
+      action,
+      label: "Preview Job Requeue",
+      enabled: Boolean(workflowId && jobId),
+      reason: !workflowId ? "workflowId is required" : !jobId ? "jobId is required" : "",
+      workflowId,
+      jobId,
+      payload: { workflowId, jobId }
+    };
+  }
+  if (action === "workflow.incident.from_dead_letter.preview") {
+    const allowedKind = (deadLetterKind === "side_effect_uncertain" && card.source === "side_effect_ledger")
+      || (["control_loop_job", "expired_lease"].includes(deadLetterKind) && card.source === "control_loop_jobs");
+    return {
+      action,
+      label: "Preview Incident",
+      enabled: Boolean(workflowId && allowedKind && refId),
+      reason: !workflowId ? "workflowId is required" : !deadLetterKind ? "deadLetterKind is required" : !allowedKind ? "deadLetterKind does not match card source" : !refId ? "refId is required" : "",
+      workflowId,
+      deadLetterKind,
+      refId,
+      payload: { workflowId, kind: deadLetterKind, refId }
     };
   }
   if ([

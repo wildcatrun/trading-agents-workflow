@@ -175,7 +175,8 @@ Current version map:
   browser download, redaction, manifest counts, and future workflow-artifact
   write boundaries explicit. Slice AB adds a Kanban Preview Action Priority
   matrix so sparse real boards still show which governed previews should
-  surface first and why inactive actions are not currently available.
+  surface first and why inactive actions are not currently available. Slice AC
+  adds control-loop job and side-effect ledger work items to Workflow Kanban.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 
@@ -187,8 +188,11 @@ v0.4 Slice A-D are implemented as read-only console surfaces:
   filters, and an explicit workflow-readiness boundary for profile-local
   memory/RAG state.
 - Workflow Kanban: stable read-only columns derived from workflow tasks,
-  dispatches, runtime runs, message flows, Telegram outbox, Human Gate records,
-  and incidents. Cards are source-linked and do not support drag/drop mutation.
+  dispatches, runtime runs, message flows, control-loop jobs, Telegram outbox,
+  Human Gate records, side-effect ledger rows, and incidents. Cards are
+  source-linked and do not support drag/drop mutation. Control-loop job cards
+  treat expired leases and max-attempt terminal rows as attention states;
+  dead-letter incident previews require an explicit card `deadLetterKind`.
   The Kanban surface defaults to a global board and exposes a read-only Board
   Scope switch for workflow-scoped inspection.
 - Evidence Desk: workflow-scoped readiness, receipt chain, verification,
@@ -242,12 +246,13 @@ It must not use `workflow.advance` or `workflow.supervise` for planning buttons.
 
 Workflow Kanban also renders a read-only Preview Action Priority matrix. It is
 the v1.0 answer for sparse real boards: P0 supervise preview; P1 rerun and
-delivery previews; P2 requeue, pause, and stop previews; P3 incident Cat Claw /
-Human Gate closeout previews; P4 phase rerun and requeue execution-package
-previews. The matrix is an operator catalog only. Actual buttons still come
-from card-level `previewActions` and existing `WorkflowActionGateway` preview
-handlers. When a card advertises an alias action, the matrix groups it under
-the governed catalog action and shows the original observed variant.
+delivery previews; P2 Telegram requeue, control-loop job requeue, pause, and
+stop previews; P3 dead-letter incident and incident Cat Claw / Human Gate
+closeout previews; P4 phase rerun and requeue execution-package previews. The
+matrix is an operator catalog only. Actual buttons still come from card-level
+`previewActions` and existing `WorkflowActionGateway` preview handlers. When a
+card advertises an alias action, the matrix groups it under the governed
+catalog action and shows the original observed variant.
 
 ## First Endpoints
 
