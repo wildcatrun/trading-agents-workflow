@@ -8644,6 +8644,20 @@ async function testWorkflowConsoleStaticContextTrailContract() {
   assert.equal(app.includes("function matchesAgentBoardFilters"), true);
   assert.equal(app.includes("function agentBoardFilterControls"), true);
   assert.equal(app.includes("Profile-local memory/RAG status remains in the runtime platform surface unless it is recorded as workflow readiness evidence."), true);
+  assert.equal(app.includes("function evidenceExportProvenanceModel"), true);
+  assert.equal(app.includes("function evidenceExportProvenancePayload"), true);
+  assert.equal(app.includes("function renderEvidenceExportProvenance"), true);
+  assert.equal(app.includes("workflow_console_export_provenance.v1"), true);
+  assert.equal(app.includes("console_only_browser_download"), true);
+  assert.equal(app.includes("deferred_to_governed_write_action"), true);
+  assert.equal(app.includes("Copy Manifest"), true);
+  assert.equal(app.includes("Download Manifest"), true);
+  assert.equal(app.includes("Resolved v1.0 boundary: evidence export is console-only by default."), true);
+  assert.equal(app.includes('section("Export Provenance", renderEvidenceExportProvenance'), true);
+  const exportRendererSource = extractFunctionSource(app, "renderEvidenceExportProvenance");
+  assert.equal(exportRendererSource.includes("fetch("), false);
+  assert.equal(exportRendererSource.includes("/api/actions"), false);
+  assert.equal(exportRendererSource.includes("evidenceExportProvenancePayload(model)"), true);
   assert.equal(app.includes("function renderKanbanScopeControls"), true);
   assert.equal(app.includes("function setKanbanScope"), true);
   assert.equal(app.includes("Board Scope"), true);
@@ -8661,6 +8675,8 @@ async function testWorkflowConsoleStaticContextTrailContract() {
   assert.equal(css.includes(".kanban-scope-actions"), true);
   assert.equal(css.includes(".agent-board-scope-panel"), true);
   assert.equal(css.includes(".agent-board-filter-grid"), true);
+  assert.equal(css.includes(".export-provenance-panel"), true);
+  assert.equal(css.includes(".export-provenance-actions"), true);
   assert.equal(css.includes("flex-wrap: wrap"), true);
   assert.equal(css.includes("flex: 1 1 260px"), true);
 
@@ -8685,6 +8701,41 @@ return { matchesAgentBoardFilters };`);
   assert.equal(agentFilterRuntime({ consoleView: "agent-board", agentRuntimeFilter: "all", agentDispatchFilter: "enabled", agentAttentionFilter: "critical" }).matchesAgentBoardFilters({ runtime: "openclaw", platform: "openclaw", canReceiveDispatch: true, attentionLevel: "critical", attentionFlags: [] }), true);
   assert.equal(agentFilterRuntime({ consoleView: "agent-board", agentRuntimeFilter: "all", agentDispatchFilter: "enabled", agentAttentionFilter: "critical" }).matchesAgentBoardFilters({ runtime: "openclaw", platform: "openclaw", canReceiveDispatch: true, attentionLevel: "Critical", attentionFlags: [] }), true);
   assert.equal(agentFilterRuntime({ consoleView: "agent-board", agentRuntimeFilter: "all", agentDispatchFilter: "enabled", agentAttentionFilter: "ok" }).matchesAgentBoardFilters({ runtime: "openclaw", platform: "openclaw", canReceiveDispatch: true, attentionLevel: "critical", attentionFlags: [] }), false);
+
+  const exportProvenanceRuntime = new Function("state", "present", `${extractFunctionSource(app, "evidenceExportProvenanceModel")}
+return { evidenceExportProvenanceModel };`);
+  const exportProvenance = exportProvenanceRuntime({ selectedWorkflowId: "wf-export" }, (value, fallback = "-") => value || fallback).evidenceExportProvenanceModel({
+    workflowId: "wf-export",
+    schemaVersion: "workflow_evidence_pack.v1",
+    generatedAt: "2026-06-14T00:00:00.000Z",
+    redactionPolicyVersion: "workflow_console_redaction_v1",
+    writeMode: "read_only_derived_export",
+    manifest: {
+      artifactCount: 2,
+      operationCount: 3,
+      receiptCount: 4
+    }
+  }, {
+    surface: "evidence-pack",
+    filename: "wf-export-evidence-pack.json"
+  });
+  assert.equal(exportProvenance.schemaVersion, "workflow_console_export_provenance.v1");
+  assert.equal(exportProvenance.exportMode, "console_only_browser_download");
+  assert.equal(exportProvenance.serverArtifactStatus, "not_written");
+  assert.equal(exportProvenance.workflowArtifactPolicy, "deferred_to_governed_write_action");
+  assert.equal(exportProvenance.manifest.artifactCount, 2);
+  assert.equal(exportProvenance.manifest.operationCount, 3);
+  assert.equal(exportProvenance.manifest.receiptCount, 4);
+  const exportPayloadRuntime = new Function("redactClientValue", `${extractFunctionSource(app, "evidenceExportProvenancePayload")}
+return { evidenceExportProvenancePayload };`);
+  const exportPayload = exportPayloadRuntime((value) => {
+    const result = {};
+    for (const [key, item] of Object.entries(value || {})) result[key] = /secret|token/i.test(key) ? "[redacted]" : item;
+    return result;
+  }).evidenceExportProvenancePayload({ ...exportProvenance, secretToken: "must-not-export" });
+  assert.equal(exportPayload.secretToken, undefined);
+  assert.equal(exportPayload.exportMode, "console_only_browser_download");
+  assert.equal(exportPayload.workflowArtifactPolicy, "deferred_to_governed_write_action");
 }
 
 async function testWorkflowConsoleStaticDiagnosticMatrixContract() {

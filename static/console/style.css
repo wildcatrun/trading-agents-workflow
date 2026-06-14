@@ -499,6 +499,24 @@ code {
   word-break: break-word;
 }
 
+.export-provenance-panel {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.export-provenance-panel .stat-card,
+.export-provenance-panel .data-table td,
+.export-provenance-panel .muted {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.export-provenance-actions {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .layout {
   height: calc(100vh - 76px);
   display: grid;

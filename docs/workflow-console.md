@@ -171,6 +171,9 @@ Current version map:
   preserving workflow-scoped deep links. Slice Z adds Agent Board runtime,
   dispatchability, and attention filters while keeping profile-local memory/RAG
   status outside workflow readiness unless it is recorded as workflow evidence.
+  Slice AA adds Evidence export provenance panels that make console-only
+  browser download, redaction, manifest counts, and future workflow-artifact
+  write boundaries explicit.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 
@@ -582,6 +585,11 @@ and Human Gate package execution remain disabled.
 `GET /api/workflows/:workflowId/evidence-pack` returns a read-only JSON bundle
 for operator audit and handoff. It does not write an export artifact on the
 server. The console `Export` tab downloads the returned JSON in the browser.
+The top-level Evidence Workspace and the workflow `Export` tab also show an
+Export Provenance panel and downloadable manifest. The v1.0 boundary is
+explicit: evidence export is console-only by default. Persisting the same
+material as a workflow artifact is a separate future governed write action and
+must carry policy, audit, and Human Gate evidence before it is enabled.
 
 The bundle includes:
 

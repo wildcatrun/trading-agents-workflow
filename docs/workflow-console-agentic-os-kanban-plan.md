@@ -28,7 +28,7 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-Z: Operations workspace, activity feed, system status and
+- v1.0 slices A-AA: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
@@ -37,7 +37,8 @@ Implemented layers:
   runbooks, action-result inspection, persistent operation-row inspection, and
   readiness finding inspection, Kanban preview expansion, collapsible Evidence
   Desk, Cat Claw secretary handoff shortcuts, explicit Kanban board scope, and
-  Agent Board runtime filter/boundary controls.
+  Agent Board runtime filter/boundary controls, plus Evidence export provenance
+  and artifact-boundary controls.
 
 Current target state:
 
@@ -1520,6 +1521,22 @@ Implemented Slice Z: Agent Board Runtime Filters And Memory Boundary
   invent a profile-local memory observability contract or treat local RAG state
   as workflow dispatch readiness.
 
+Implemented Slice AA: Evidence Export Provenance And Artifact Boundary
+
+- Added read-only Export Provenance panels to the top-level Evidence Workspace
+  and the workflow Evidence Pack tab.
+- The panels make the export ownership explicit: current v1.0 evidence export
+  is a console-only browser download over the redacted read model. It does not
+  create server files, `artifact_index` rows, workflow business writes, runtime
+  dispatches, Telegram sends, or Human Gate state.
+- Added copy/download controls for the export provenance manifest, including
+  schema, workflow id, filename, redaction policy, read mode, section counts,
+  source refs, and the future workflow-artifact boundary.
+- This closes the Evidence package export open question conservatively:
+  workflow artifact persistence is deferred to a separate governed write action
+  with policy, audit, and Human Gate evidence. It is not implicit in the current
+  download button.
+
 ## Test Plan
 
 Required checks:
@@ -1708,10 +1725,11 @@ Rollback:
 - Agent Board keeps profile-local memory/RAG status in the runtime platform
   surface and shows it only when recorded as workflow readiness evidence, as
   implemented in Slice Z.
+- Evidence package export is console-only by default. Workflow artifact
+  persistence is a separate future governed write action and is not implicit in
+  the current redacted browser download, as implemented in Slice AA.
 - Which v0.7 preview actions should be exposed first if the development server
   shows sparse real Kanban cards?
-- Should Evidence package export be a console-only artifact, a workflow
-  artifact, or both?
 - Which write actions, if any, should be considered after v1.0, and what Human
   Gate policy must be attached before they can be enabled?
 

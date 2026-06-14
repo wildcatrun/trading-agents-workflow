@@ -4290,6 +4290,10 @@ function renderEvidenceWorkspace(data = {}) {
   const manifest = pack.manifest || {};
   const selectedIncident = incident.selectedIncident || null;
   const exportStamp = String(data.generatedAt || pack.generatedAt || new Date().toISOString()).replace(/[^0-9TZ]/g, "");
+  const workspaceExportProvenance = evidenceExportProvenanceModel(data, {
+    surface: "evidence-workspace",
+    filename: `${workflowId || "workflow"}-evidence-workspace-${exportStamp}.json`
+  });
   const readinessChecklist = readiness.checklist || [];
   const readinessStatus = (key) => readinessChecklist.find((item) => item.key === key)?.status || "";
   const pauseControlReady = readinessStatus("pause_control") === "pass";
@@ -4361,6 +4365,7 @@ function renderEvidenceWorkspace(data = {}) {
       compact: false
     }), { "data-section": "cat-claw-secretary-handoff" }),
     section("Export Gate", actionGatePanel("Evidence Export Gate", exportGateRows)),
+    section("Export Provenance", renderEvidenceExportProvenance(workspaceExportProvenance), { "data-section": "evidence-export-provenance" }),
     section("Missing Evidence First", missing.length
       ? h("div", { className: "chip-list padded" }, missing.map((item) => chip(item, "warning")))
       : emptyState("No missing evidence detected by the derived desk.")),
@@ -4436,6 +4441,135 @@ function renderEvidenceWorkspace(data = {}) {
       jsonBlock(data)
     ]))
   ]));
+}
+
+function evidenceExportProvenanceModel(data = {}, options = {}) {
+  const pack = data.evidencePack || data;
+  const manifest = pack.manifest || {};
+  const workflowId = options.workflowId || data.workflowId || pack.workflowId || state.selectedWorkflowId || "";
+  const filename = options.filename || `${present(workflowId, "workflow")}-evidence-export.json`;
+  const redactionPolicyVersion = data.redactionPolicyVersion || pack.redactionPolicyVersion || "workflow_console_redaction_v1";
+  const writeMode = pack.writeMode || data.writeMode || "read_only_derived_export";
+  return {
+    schemaVersion: "workflow_console_export_provenance.v1",
+    generatedAt: data.generatedAt || pack.generatedAt || new Date().toISOString(),
+    workflowId,
+    surface: options.surface || "evidence-pack",
+    filename,
+    exportMode: "console_only_browser_download",
+    serverArtifactStatus: "not_written",
+    workflowArtifactPolicy: "deferred_to_governed_write_action",
+    redactionPolicyVersion,
+    writeMode,
+    auditBoundary: "Browser download is local to the operator. Workflow artifact persistence must use a separate governed action with policy, audit, and Human Gate evidence.",
+    manifest: {
+      workflowPresent: manifest.workflowPresent ?? pack.found ?? Boolean(pack.workflow),
+      phaseCount: manifest.phaseCount || 0,
+      taskCount: manifest.taskCount || 0,
+      dispatchCount: manifest.dispatchCount || 0,
+      runtimeRunCount: manifest.runtimeRunCount || 0,
+      agentRunCount: manifest.agentRunCount || 0,
+      messageFlowCount: manifest.messageFlowCount || 0,
+      humanGateRecordCount: manifest.humanGateRecordCount || 0,
+      humanGateButtonCount: manifest.humanGateButtonCount || 0,
+      outboxCount: manifest.outboxCount || 0,
+      checkpointCount: manifest.checkpointCount || 0,
+      artifactCount: manifest.artifactCount || 0,
+      sideEffectCount: manifest.sideEffectCount || 0,
+      receiptCount: manifest.receiptCount || 0,
+      operationCount: manifest.operationCount || 0,
+      deliveryExecutionCount: manifest.deliveryExecutionCount || 0,
+      timelineEventCount: manifest.timelineEventCount || 0,
+      limit: manifest.limit || ""
+    },
+    sourceRefs: [
+      { source: "workflow", field: "workflow_id", id: workflowId },
+      { source: "evidence_pack", field: "schema", id: pack.schemaVersion || data.schemaVersion || "" },
+      { source: "artifact_index", field: "workflow_id", id: manifest.artifactCount ? workflowId : "" },
+      { source: "workflow_operations", field: "workflow_id", id: manifest.operationCount ? workflowId : "" }
+    ]
+  };
+}
+
+function renderEvidenceExportProvenance(model = {}) {
+  const manifest = model.manifest || {};
+  const manifestPayload = evidenceExportProvenancePayload(model);
+  const gateRows = [
+    { label: "Export Ownership", status: model.exportMode || "console_only_browser_download", tone: "ok", evidence: "The current export is a browser-local operator download." },
+    { label: "Server Artifact", status: model.serverArtifactStatus || "not_written", tone: "neutral", evidence: "No artifact_index row or server file is created by this download control." },
+    { label: "Workflow Artifact", status: model.workflowArtifactPolicy || "deferred_to_governed_write_action", tone: "warning", evidence: "Persisting a workflow artifact requires a separate governed write action and Human Gate policy." },
+    { label: "Redaction", status: model.redactionPolicyVersion || "workflow_console_redaction_v1", tone: "ok", evidence: "The export uses the redacted console read model." },
+    { label: "Audit Boundary", status: model.writeMode || "read_only_derived_export", tone: "neutral", evidence: model.auditBoundary || "Read-only export boundary." }
+  ];
+  return h("div", { className: "export-provenance-panel" }, [
+    h("div", { className: "quick-stats compact-stats" }, [
+      statCard("Mode", model.exportMode || "console_only_browser_download", model.surface || "evidence"),
+      statCard("Server Artifact", model.serverArtifactStatus || "not_written"),
+      statCard("Workflow Artifact", model.workflowArtifactPolicy || "deferred"),
+      statCard("Receipts", manifest.receiptCount || 0),
+      statCard("Artifacts", manifest.artifactCount || 0, `${manifest.sideEffectCount || 0} side effects`),
+      statCard("Operations", manifest.operationCount || 0)
+    ]),
+    actionGatePanel("Export Provenance Boundary", gateRows),
+    renderTable([
+      { label: "Section", key: "section" },
+      { label: "Count", key: "count" }
+    ], [
+      { section: "workflow", count: manifest.workflowPresent ? 1 : 0 },
+      { section: "phases/tasks", count: `${manifest.phaseCount || 0}/${manifest.taskCount || 0}` },
+      { section: "dispatch/runtime", count: `${manifest.dispatchCount || 0}/${manifest.runtimeRunCount || 0}` },
+      { section: "message/outbox", count: `${manifest.messageFlowCount || 0}/${manifest.outboxCount || 0}` },
+      { section: "humanGate", count: `${manifest.humanGateRecordCount || 0}/${manifest.humanGateButtonCount || 0}` },
+      { section: "evidence", count: `${manifest.artifactCount || 0}/${manifest.sideEffectCount || 0}` },
+      { section: "receipts", count: manifest.receiptCount || 0 },
+      { section: "operations/timeline", count: `${manifest.operationCount || 0}/${manifest.timelineEventCount || 0}` }
+    ], "No export manifest counts."),
+    h("div", { className: "actions export-provenance-actions" }, [
+      h("button", { type: "button", onClick: () => copyText(JSON.stringify(manifestPayload, null, 2), "Export provenance manifest") }, "Copy Manifest"),
+      h("button", { type: "button", onClick: () => downloadJson(String(model.filename || "evidence-export.json").replace(/\.json$/i, "-manifest.json"), manifestPayload) }, "Download Manifest"),
+      h("button", { type: "button", disabled: !model.workflowId, onClick: model.workflowId ? () => copyText(model.workflowId, "Workflow") : undefined }, "Copy Workflow")
+    ]),
+    h("p", { className: "muted" }, "Resolved v1.0 boundary: evidence export is console-only by default. A workflow artifact export is not implicit; it must be a separately reviewed governed action."),
+    sourceRefList(model.sourceRefs || [], { workflowId: model.workflowId || "" })
+  ]);
+}
+
+function evidenceExportProvenancePayload(model = {}) {
+  const manifest = model.manifest || {};
+  return redactClientValue({
+    schemaVersion: model.schemaVersion || "workflow_console_export_provenance.v1",
+    generatedAt: model.generatedAt || "",
+    workflowId: model.workflowId || "",
+    surface: model.surface || "",
+    filename: model.filename || "",
+    exportMode: model.exportMode || "console_only_browser_download",
+    serverArtifactStatus: model.serverArtifactStatus || "not_written",
+    workflowArtifactPolicy: model.workflowArtifactPolicy || "deferred_to_governed_write_action",
+    redactionPolicyVersion: model.redactionPolicyVersion || "workflow_console_redaction_v1",
+    writeMode: model.writeMode || "read_only_derived_export",
+    auditBoundary: model.auditBoundary || "",
+    manifest: {
+      workflowPresent: Boolean(manifest.workflowPresent),
+      phaseCount: manifest.phaseCount || 0,
+      taskCount: manifest.taskCount || 0,
+      dispatchCount: manifest.dispatchCount || 0,
+      runtimeRunCount: manifest.runtimeRunCount || 0,
+      agentRunCount: manifest.agentRunCount || 0,
+      messageFlowCount: manifest.messageFlowCount || 0,
+      humanGateRecordCount: manifest.humanGateRecordCount || 0,
+      humanGateButtonCount: manifest.humanGateButtonCount || 0,
+      outboxCount: manifest.outboxCount || 0,
+      checkpointCount: manifest.checkpointCount || 0,
+      artifactCount: manifest.artifactCount || 0,
+      sideEffectCount: manifest.sideEffectCount || 0,
+      receiptCount: manifest.receiptCount || 0,
+      operationCount: manifest.operationCount || 0,
+      deliveryExecutionCount: manifest.deliveryExecutionCount || 0,
+      timelineEventCount: manifest.timelineEventCount || 0,
+      limit: manifest.limit || ""
+    },
+    sourceRefs: model.sourceRefs || []
+  });
 }
 
 function readinessCheckByKey(readiness = {}, key = "") {
@@ -4744,6 +4878,10 @@ function renderEvidencePack(data) {
   const manifest = data.manifest || {};
   const exportStamp = String(data.generatedAt || new Date().toISOString()).replace(/[^0-9TZ]/g, "");
   const filename = `${present(data.workflowId || state.selectedWorkflowId, "workflow")}-evidence-pack-${exportStamp}.json`;
+  const exportProvenance = evidenceExportProvenanceModel(data, {
+    surface: "evidence-pack",
+    filename
+  });
   const body = h("div", { className: "stack" }, [
     section("Evidence Pack Export", h("div", { className: "copy-block" }, [
       h("p", {}, `Schema: ${present(data.schemaVersion)}`),
@@ -4751,6 +4889,7 @@ function renderEvidencePack(data) {
       h("p", {}, `Mode: ${present(data.writeMode)}`),
       h("button", { onClick: () => downloadJson(filename, data) }, "Download JSON")
     ])),
+    section("Export Provenance", renderEvidenceExportProvenance(exportProvenance), { "data-section": "evidence-pack-export-provenance" }),
     section("Manifest", h("div", { className: "quick-stats" }, [
       statCard("Workflow", data.found ? "present" : "missing"),
       statCard("Phases", manifest.phaseCount || 0),
