@@ -8636,6 +8636,14 @@ async function testWorkflowConsoleStaticContextTrailContract() {
   assert.equal(app.includes('params.set("scope", scope)'), true);
   assert.equal(app.includes('const scope = state.kanbanScope === "workflow" && state.selectedWorkflowId ? "workflow" : "global"'), true);
   assert.equal(app.includes('!(state.consoleView === "kanban" && state.kanbanScope === "global")'), true);
+  assert.equal(app.includes('agentRuntimeFilter: "all"'), true);
+  assert.equal(app.includes("const AGENT_RUNTIME_FILTERS"), true);
+  assert.equal(app.includes('params.get("agentRuntime")'), true);
+  assert.equal(app.includes('params.set("agentRuntime", state.agentRuntimeFilter)'), true);
+  assert.equal(app.includes("function clearAgentBoardFilters"), true);
+  assert.equal(app.includes("function matchesAgentBoardFilters"), true);
+  assert.equal(app.includes("function agentBoardFilterControls"), true);
+  assert.equal(app.includes("Profile-local memory/RAG status remains in the runtime platform surface unless it is recorded as workflow readiness evidence."), true);
   assert.equal(app.includes("function renderKanbanScopeControls"), true);
   assert.equal(app.includes("function setKanbanScope"), true);
   assert.equal(app.includes("Board Scope"), true);
@@ -8651,6 +8659,8 @@ async function testWorkflowConsoleStaticContextTrailContract() {
   assert.equal(css.includes(".context-crumb"), true);
   assert.equal(css.includes(".kanban-scope-panel"), true);
   assert.equal(css.includes(".kanban-scope-actions"), true);
+  assert.equal(css.includes(".agent-board-scope-panel"), true);
+  assert.equal(css.includes(".agent-board-filter-grid"), true);
   assert.equal(css.includes("flex-wrap: wrap"), true);
   assert.equal(css.includes("flex: 1 1 260px"), true);
 
@@ -8666,6 +8676,15 @@ return { kanbanQueryParams };`);
   const missingWorkflowParams = queryRuntime({ kanbanScope: "workflow", selectedWorkflowId: "", focusAgentId: "" }).kanbanQueryParams();
   assert.equal(missingWorkflowParams.get("scope"), "global");
   assert.equal(missingWorkflowParams.has("workflowId"), false);
+
+  const agentFilterRuntime = new Function("state", `${extractFunctionSource(app, "matchesAgentBoardFilters")}
+return { matchesAgentBoardFilters };`);
+  assert.equal(agentFilterRuntime({ consoleView: "agent-board", agentRuntimeFilter: "hermers", agentDispatchFilter: "all", agentAttentionFilter: "all" }).matchesAgentBoardFilters({ runtime: "hermers", platform: "hermers", canReceiveDispatch: true, attentionLevel: "ok", attentionFlags: [] }), true);
+  assert.equal(agentFilterRuntime({ consoleView: "agent-board", agentRuntimeFilter: "openclaw", agentDispatchFilter: "all", agentAttentionFilter: "all" }).matchesAgentBoardFilters({ runtime: "hermers", platform: "hermers", canReceiveDispatch: true, attentionLevel: "ok", attentionFlags: [] }), false);
+  assert.equal(agentFilterRuntime({ consoleView: "agent-board", agentRuntimeFilter: "all", agentDispatchFilter: "disabled", agentAttentionFilter: "all" }).matchesAgentBoardFilters({ runtime: "openclaw", platform: "openclaw", canReceiveDispatch: false, attentionLevel: "warning", attentionFlags: [{ severity: "warning" }] }), true);
+  assert.equal(agentFilterRuntime({ consoleView: "agent-board", agentRuntimeFilter: "all", agentDispatchFilter: "enabled", agentAttentionFilter: "critical" }).matchesAgentBoardFilters({ runtime: "openclaw", platform: "openclaw", canReceiveDispatch: true, attentionLevel: "critical", attentionFlags: [] }), true);
+  assert.equal(agentFilterRuntime({ consoleView: "agent-board", agentRuntimeFilter: "all", agentDispatchFilter: "enabled", agentAttentionFilter: "critical" }).matchesAgentBoardFilters({ runtime: "openclaw", platform: "openclaw", canReceiveDispatch: true, attentionLevel: "Critical", attentionFlags: [] }), true);
+  assert.equal(agentFilterRuntime({ consoleView: "agent-board", agentRuntimeFilter: "all", agentDispatchFilter: "enabled", agentAttentionFilter: "ok" }).matchesAgentBoardFilters({ runtime: "openclaw", platform: "openclaw", canReceiveDispatch: true, attentionLevel: "critical", attentionFlags: [] }), false);
 }
 
 async function testWorkflowConsoleStaticDiagnosticMatrixContract() {

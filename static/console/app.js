@@ -16,6 +16,9 @@ const state = {
   focusAgentId: "",
   focusCardId: "",
   kanbanScope: "global",
+  agentRuntimeFilter: "all",
+  agentDispatchFilter: "all",
+  agentAttentionFilter: "all",
   scopedActivity: false,
   commandPalette: null,
   commandPaletteQuery: "",
@@ -57,6 +60,25 @@ const SORT_MODES = [
 const KANBAN_SCOPES = [
   { value: "global", label: "Global Board" },
   { value: "workflow", label: "Workflow Board" }
+];
+const AGENT_RUNTIME_FILTERS = [
+  { value: "all", label: "All runtimes" },
+  { value: "hermers", label: "Hermers" },
+  { value: "openclaw", label: "OpenClaw" },
+  { value: "local_codex", label: "Local Codex" },
+  { value: "codex", label: "Codex" }
+];
+const AGENT_DISPATCH_FILTERS = [
+  { value: "all", label: "All dispatch" },
+  { value: "enabled", label: "Dispatch enabled" },
+  { value: "disabled", label: "Dispatch disabled" }
+];
+const AGENT_ATTENTION_FILTERS = [
+  { value: "all", label: "All attention" },
+  { value: "attention", label: "Has attention" },
+  { value: "critical", label: "Critical" },
+  { value: "warning", label: "Warning" },
+  { value: "ok", label: "OK" }
 ];
 const SEVERITY_RANK = {
   critical: 4,
@@ -354,6 +376,9 @@ function updateContextTrail() {
     state.consoleView === "kanban" ? { label: "Board Scope", value: state.kanbanScope === "workflow" ? "workflow" : "global" } : null,
     canShowAgentContext ? { label: "Agent", value: state.focusAgentId } : null,
     canShowCardContext ? { label: "Card", value: state.focusCardId } : null,
+    state.consoleView === "agent-board" && state.agentRuntimeFilter !== "all" ? { label: "Runtime", value: state.agentRuntimeFilter } : null,
+    state.consoleView === "agent-board" && state.agentDispatchFilter !== "all" ? { label: "Dispatch", value: state.agentDispatchFilter } : null,
+    state.consoleView === "agent-board" && state.agentAttentionFilter !== "all" ? { label: "Attention", value: state.agentAttentionFilter } : null,
     state.consoleView === "search" && state.searchQuery ? { label: "Search", value: state.searchQuery } : null,
     isWorkbenchView() && state.workbenchFilter !== "all" ? { label: "Filter", value: state.workbenchFilter } : null,
     isWorkbenchView() && state.severityFilter !== "all" ? { label: "Severity", value: state.severityFilter } : null,
@@ -425,6 +450,15 @@ function readUrlState() {
   state.sortMode = normalizeChoice(params.get("sort"), SORT_MODES.map((item) => item.value), "age_desc");
   state.focusAgentId = params.get("agent") || "";
   state.focusCardId = params.get("card") || "";
+  state.agentRuntimeFilter = state.consoleView === "agent-board"
+    ? normalizeChoice(params.get("agentRuntime"), AGENT_RUNTIME_FILTERS.map((item) => item.value), "all")
+    : "all";
+  state.agentDispatchFilter = state.consoleView === "agent-board"
+    ? normalizeChoice(params.get("agentDispatch"), AGENT_DISPATCH_FILTERS.map((item) => item.value), "all")
+    : "all";
+  state.agentAttentionFilter = state.consoleView === "agent-board"
+    ? normalizeChoice(params.get("agentAttention"), AGENT_ATTENTION_FILTERS.map((item) => item.value), "all")
+    : "all";
   state.operationsFilters.kind = params.get("opKind") || "";
   state.operationsFilters.severity = params.get("opSeverity") || "";
   state.operationsFilters.status = params.get("opStatus") || "";
@@ -452,6 +486,9 @@ function writeUrlState({ replace = false } = {}) {
   if (isWorkbenchView() && state.sortMode !== "age_desc") params.set("sort", state.sortMode);
   if (["agent-board", "kanban"].includes(state.consoleView) && state.focusAgentId) params.set("agent", state.focusAgentId);
   if (state.consoleView === "kanban" && state.focusCardId) params.set("card", state.focusCardId);
+  if (state.consoleView === "agent-board" && state.agentRuntimeFilter !== "all") params.set("agentRuntime", state.agentRuntimeFilter);
+  if (state.consoleView === "agent-board" && state.agentDispatchFilter !== "all") params.set("agentDispatch", state.agentDispatchFilter);
+  if (state.consoleView === "agent-board" && state.agentAttentionFilter !== "all") params.set("agentAttention", state.agentAttentionFilter);
   const operationsFilterUrl = state.consoleView === "operations" || (state.consoleView === "workflows" && state.tab === "operations");
   if (operationsFilterUrl && state.operationsFilters.kind) params.set("opKind", state.operationsFilters.kind);
   if (operationsFilterUrl && state.operationsFilters.severity) params.set("opSeverity", state.operationsFilters.severity);
@@ -590,6 +627,72 @@ function applyWorkbench(records = []) {
   return sortWorkbenchRecords(records.filter((record) => matchesFocusFilter(record) && matchesWorkbenchFilter(record) && matchesSeverityFilter(record)));
 }
 
+function clearAgentBoardFilters() {
+  state.agentRuntimeFilter = "all";
+  state.agentDispatchFilter = "all";
+  state.agentAttentionFilter = "all";
+}
+
+function matchesAgentBoardFilters(agent = {}) {
+  if (state.consoleView !== "agent-board") return true;
+  if (state.agentRuntimeFilter !== "all" && ![agent.runtime, agent.platform].some((value) => String(value || "") === state.agentRuntimeFilter)) return false;
+  if (state.agentDispatchFilter === "enabled" && !agent.canReceiveDispatch) return false;
+  if (state.agentDispatchFilter === "disabled" && agent.canReceiveDispatch) return false;
+  const flags = agent.attentionFlags || [];
+  const attentionLevel = String(agent.attentionLevel || "").toLowerCase();
+  const hasAttention = flags.length > 0 || !["ok", "neutral", ""].includes(attentionLevel);
+  if (state.agentAttentionFilter === "attention" && !hasAttention) return false;
+  if (state.agentAttentionFilter === "critical" && attentionLevel !== "critical" && !flags.some((flag) => String(flag.severity || "").toLowerCase() === "critical")) return false;
+  if (state.agentAttentionFilter === "warning" && attentionLevel !== "warning" && !flags.some((flag) => String(flag.severity || "").toLowerCase() === "warning")) return false;
+  if (state.agentAttentionFilter === "ok" && hasAttention) return false;
+  return true;
+}
+
+function agentBoardFilterControls(data = {}) {
+  const agents = data.agents || [];
+  const runtimeCounts = agents.reduce((acc, agent) => {
+    const runtime = String(agent.runtime || agent.platform || "unknown");
+    acc[runtime] = (acc[runtime] || 0) + 1;
+    return acc;
+  }, {});
+  const setAgentFilter = (key, value) => {
+    state[key] = value;
+    writeUrlState();
+    renderGlobalPayload(state.lastPayload);
+  };
+  return h("div", { className: "agent-board-scope-panel" }, [
+    h("div", { className: "workflow-title" }, [
+      h("strong", {}, "Agent Board Filters"),
+      chip("read-only", "neutral")
+    ]),
+    h("p", { className: "muted" }, "Shows workflow-relevant runtime, dispatchability, work, and readiness signals only. Profile-local memory/RAG status remains in the runtime platform surface unless it is recorded as workflow readiness evidence."),
+    h("div", { className: "agent-board-filter-grid" }, [
+      h("label", {}, [
+        h("span", {}, "Runtime"),
+        optionSelect(state.agentRuntimeFilter, AGENT_RUNTIME_FILTERS, (value) => setAgentFilter("agentRuntimeFilter", value))
+      ]),
+      h("label", {}, [
+        h("span", {}, "Dispatch"),
+        optionSelect(state.agentDispatchFilter, AGENT_DISPATCH_FILTERS, (value) => setAgentFilter("agentDispatchFilter", value))
+      ]),
+      h("label", {}, [
+        h("span", {}, "Attention"),
+        optionSelect(state.agentAttentionFilter, AGENT_ATTENTION_FILTERS, (value) => setAgentFilter("agentAttentionFilter", value))
+      ]),
+      h("button", { type: "button", onClick: () => {
+        clearAgentBoardFilters();
+        writeUrlState();
+        renderGlobalPayload(state.lastPayload);
+      } }, "Reset Agent Filters")
+    ]),
+    h("div", { className: "mini-counts" }, [
+      h("span", {}, `runtimes ${Object.entries(runtimeCounts).map(([key, value]) => `${key}:${value}`).join(" / ") || "none"}`),
+      h("span", {}, `dispatch enabled ${agents.filter((agent) => agent.canReceiveDispatch).length}`),
+      h("span", {}, `attention ${agents.filter((agent) => (agent.attentionFlags || []).length).length}`)
+    ])
+  ]);
+}
+
 function renderWorkbenchControls({ total = 0, shown = 0 } = {}) {
   if (!isWorkbenchView()) return null;
   const focusChips = [
@@ -632,6 +735,7 @@ function renderWorkbenchControls({ total = 0, shown = 0 } = {}) {
         state.sortMode = "age_desc";
         state.focusAgentId = "";
         state.focusCardId = "";
+        clearAgentBoardFilters();
         writeUrlState();
         loadGlobalView();
       } }, "Reset")
@@ -2387,7 +2491,7 @@ function renderReleaseQualityRecords(rows = []) {
 
 function renderAgentBoard(data) {
   const agents = data.agents || [];
-  const visibleAgents = applyWorkbench(agents);
+  const visibleAgents = applyWorkbench(agents).filter(matchesAgentBoardFilters);
   const summary = data.summary || {};
   const agentTable = renderTable([
     { label: "Attention", render: (row) => chip(row.attentionLevel || "ok") },
@@ -2423,6 +2527,7 @@ function renderAgentBoard(data) {
     { label: "Inspect", render: (row) => h("button", { type: "button", onClick: () => inspectAgent(row) }, "Inspect") }
   ], visibleAgents, "No runtime agents match the current filters.");
   setDetailBody(h("div", { className: "stack" }, [
+    agentBoardFilterControls(data),
     renderWorkbenchControls({ total: agents.length, shown: visibleAgents.length }),
     section("Agent Board Summary", h("div", { className: "quick-stats" }, [
       statCard("Agents", summary.agents || agents.length),
@@ -2715,6 +2820,7 @@ async function openCommandTarget(target = {}) {
     state.scopedActivity = false;
     state.selectedWorkflowId = "";
     state.detail = null;
+    clearAgentBoardFilters();
     state.focusAgentId = target.agentId || "";
     state.focusCardId = "";
     setViewButtons();
@@ -5325,7 +5431,10 @@ async function executeCloseoutHumanGateRequest(preview, fields) {
 
 document.querySelectorAll(".view-tabs button[data-console-view]").forEach((button) => {
   button.addEventListener("click", async () => {
+    const previousConsoleView = state.consoleView;
     state.consoleView = button.dataset.consoleView;
+    if (previousConsoleView === "agent-board" && state.consoleView !== "agent-board") clearAgentBoardFilters();
+    if (state.consoleView === "agent-board" && previousConsoleView !== "agent-board") clearAgentBoardFilters();
     if (!["agent-board", "kanban"].includes(state.consoleView)) clearFocusState();
     if (["activity", "operations"].includes(state.consoleView)) {
       state.selectedWorkflowId = "";

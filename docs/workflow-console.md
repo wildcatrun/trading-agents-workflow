@@ -168,7 +168,9 @@ Current version map:
   collapsible and copyable, and Slice X adds a read-only Cat Claw Secretary
   Handoff checklist for Cat Claw / Flashcat review routing. Slice Y adds an
   explicit Kanban Board Scope switch so the board defaults global while
-  preserving workflow-scoped deep links.
+  preserving workflow-scoped deep links. Slice Z adds Agent Board runtime,
+  dispatchability, and attention filters while keeping profile-local memory/RAG
+  status outside workflow readiness unless it is recorded as workflow evidence.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 
@@ -176,7 +178,9 @@ v0.4 Slice A-D are implemented as read-only console surfaces:
   Human Gate, evidence, and attention summary.
 - Agent Board: registry-first runtime agent table with platform, endpoint,
   dispatchability, Hermers profile-mode evidence when available, current work,
-  latest activity, and attention flags.
+  latest activity, attention flags, URL-reflected runtime/dispatch/attention
+  filters, and an explicit workflow-readiness boundary for profile-local
+  memory/RAG state.
 - Workflow Kanban: stable read-only columns derived from workflow tasks,
   dispatches, runtime runs, message flows, Telegram outbox, Human Gate records,
   and incidents. Cards are source-linked and do not support drag/drop mutation.

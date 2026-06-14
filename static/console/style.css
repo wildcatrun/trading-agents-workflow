@@ -461,6 +461,44 @@ code {
   min-width: 0;
 }
 
+.agent-board-scope-panel {
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px;
+  background: #ffffff;
+  display: grid;
+  gap: 8px;
+}
+
+.agent-board-filter-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+
+.agent-board-filter-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agent-board-filter-grid select,
+.agent-board-filter-grid button {
+  min-width: 0;
+  width: 100%;
+}
+
+.agent-board-scope-panel .muted,
+.agent-board-scope-panel .mini-counts span {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .layout {
   height: calc(100vh - 76px);
   display: grid;
@@ -1219,6 +1257,10 @@ code {
 
   .filter-count {
     justify-self: flex-start;
+  }
+
+  .agent-board-filter-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .agent-table-view {

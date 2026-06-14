@@ -28,7 +28,7 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-Y: Operations workspace, activity feed, system status and
+- v1.0 slices A-Z: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
@@ -36,7 +36,8 @@ Implemented layers:
   release quality evidence artifact loading, plus read-only diagnostic
   runbooks, action-result inspection, persistent operation-row inspection, and
   readiness finding inspection, Kanban preview expansion, collapsible Evidence
-  Desk, Cat Claw secretary handoff shortcuts, and explicit Kanban board scope.
+  Desk, Cat Claw secretary handoff shortcuts, explicit Kanban board scope, and
+  Agent Board runtime filter/boundary controls.
 
 Current target state:
 
@@ -1505,6 +1506,20 @@ Implemented Slice Y: Kanban Scope Switcher
   it does not move cards, mutate workflow state, dispatch agents, retry work, or
   create a second scheduler.
 
+Implemented Slice Z: Agent Board Runtime Filters And Memory Boundary
+
+- Added Agent Board-only URL-reflected filters for runtime, dispatchability,
+  and attention. These filters operate on the existing `/api/agent-board` read
+  payload and do not change registry rows, dispatch state, profile mode, or
+  runtime sessions.
+- Added an explicit Agent Board boundary note: this surface shows
+  workflow-relevant runtime, dispatchability, work, and readiness signals only.
+  Profile-local memory/RAG status remains in the runtime platform surface unless
+  it is recorded as workflow readiness evidence.
+- This closes the memory/RAG open question conservatively: Agent Board does not
+  invent a profile-local memory observability contract or treat local RAG state
+  as workflow dispatch readiness.
+
 ## Test Plan
 
 Required checks:
@@ -1690,9 +1705,9 @@ Rollback:
   implemented in Slice Y.
 - Cat Claw secretary-specific Evidence Desk shortcut is implemented as a
   read-only handoff checklist in Slice X.
-- Should agent cards show profile-local memory/RAG status, or keep memory
-  status in the Hermers platform surface and only show workflow-relevant
-  readiness here?
+- Agent Board keeps profile-local memory/RAG status in the runtime platform
+  surface and shows it only when recorded as workflow readiness evidence, as
+  implemented in Slice Z.
 - Which v0.7 preview actions should be exposed first if the development server
   shows sparse real Kanban cards?
 - Should Evidence package export be a console-only artifact, a workflow
