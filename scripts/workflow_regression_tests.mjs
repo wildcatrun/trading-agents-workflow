@@ -8181,7 +8181,13 @@ async function testWorkflowConsoleStaticSystemStatusContract() {
   assert.equal(app.includes("config.allowedConsoleViews"), true);
   assert.equal(app.includes("Release Quality Gates"), true);
   assert.equal(app.includes("function renderReleaseQualityRecords"), true);
+  assert.equal(app.includes("Quality Evidence"), true);
+  assert.equal(app.includes("config.releaseQualityEvidence"), true);
+  assert.equal(app.includes("qualityEvidence.reason"), true);
+  assert.equal(app.includes("row.evidenceRefs"), true);
   assert.equal(server.includes("securityBoundaries"), true);
+  assert.equal(server.includes("releaseQualityEvidence"), true);
+  assert.equal(server.includes("WORKFLOW_CONSOLE_RELEASE_QUALITY_EVIDENCE"), true);
   assert.equal(server.includes("releaseQualityGates"), true);
   assert.equal(server.includes("allowedWorkflowQueues"), true);
   assert.equal(server.includes("allowedConsoleViews"), true);
@@ -8192,6 +8198,16 @@ async function testWorkflowConsoleStaticSystemStatusContract() {
   assert.equal(server.includes("spark_code_review"), true);
   assert.equal(server.includes("browser_smoke"), true);
   assert.equal(readModel.includes('["nav.system", "views", "System Status"'), true);
+
+  const renderReleaseQualityRecords = new Function("renderTable", "h", "chip", `${extractFunctionSource(app, "renderReleaseQualityRecords")}; return renderReleaseQualityRecords;`)(
+    (columns, rows) => columns.map((column) => rows.map((row) => (column.render ? column.render(row) : row[column.key]))),
+    (tag, attrs = {}, children = []) => ({ tag, attrs, children }),
+    (value, tone = "neutral") => ({ value, tone })
+  );
+  const qualityCells = renderReleaseQualityRecords([
+    { key: "spark_code_review", status: "recorded", detail: "Spark reviewed.", evidenceRefs: ["review/spark-smoke.md"] }
+  ]);
+  assert.equal(JSON.stringify(qualityCells).includes("review/spark-smoke.md"), true);
 }
 
 async function testWorkflowConsoleStaticActionGateContract() {
@@ -8227,6 +8243,8 @@ async function testWorkflowConsoleConfigOperatorPolicyModes() {
   assert.equal(readOnlyConfig.operatorPolicy.writeActions, "hidden_read_only");
   assert.equal(readOnlyConfig.releaseQualityGates.some((row) => row.key === "spark_code_review" && row.status === "required"), true);
   assert.equal(readOnlyConfig.releaseQualityGates.some((row) => row.key === "deployment_trace"), true);
+  assert.equal(readOnlyConfig.releaseQualityEvidence.status, "missing");
+  assert.equal(readOnlyConfig.releaseQualityEvidence.path, "artifacts/console-release-quality/latest.json");
 
   const noAllowWritesConfig = buildConsoleConfig(paths, { readOnly: false, allowWrites: false, serverTime: "2026-01-01T00:00:00.000Z" });
   assert.equal(noAllowWritesConfig.actionMode, "preview-only");
@@ -8239,6 +8257,80 @@ async function testWorkflowConsoleConfigOperatorPolicyModes() {
   assert.equal(allowWritesConfig.operatorPolicy.writeActions, "allowlisted_by_gateway");
   assert.equal(allowWritesConfig.allowedViews.includes("active"), true);
   assert.equal(allowWritesConfig.allowedConsoleViews.includes("operations"), true);
+
+  const evidenceRoot = await tempRoot("console-release-quality-evidence");
+  const evidenceDir = path.join(evidenceRoot, "artifacts", "console-release-quality");
+  await fs.mkdir(evidenceDir, { recursive: true });
+  await fs.writeFile(path.join(evidenceDir, "latest.json"), JSON.stringify({
+    schemaVersion: "workflow_console_release_quality_evidence.v1",
+    releaseId: "slice-q-smoke",
+    commit: "abc123",
+    generatedAt: "2026-06-14T00:00:00.000Z",
+    gates: {
+      spark_code_review: { status: "recorded", detail: "Spark reviewed.", evidenceRefs: ["review/spark.md"] },
+      regression_suite: { status: "pass", detail: "Regression passed.", command: "node scripts/workflow_regression_tests.mjs" },
+      browser_smoke: { status: "recorded", detail: "Desktop and mobile smoke passed." },
+      deployment_trace: { status: "recorded", detail: "Dev checkout fast-forwarded." }
+    }
+  }, null, 2));
+  const evidenceConfig = buildConsoleConfig({ root: evidenceRoot }, { readOnly: true, serverTime: "2026-01-01T00:00:00.000Z" });
+  assert.equal(evidenceConfig.releaseQualityEvidence.status, "loaded");
+  assert.equal(evidenceConfig.releaseQualityEvidence.path, "artifacts/console-release-quality/latest.json");
+  assert.equal(evidenceConfig.releaseQualityEvidence.releaseId, "slice-q-smoke");
+  assert.equal(evidenceConfig.releaseQualityEvidence.commit, "abc123");
+  assert.equal(evidenceConfig.releaseQualityGates.find((row) => row.key === "spark_code_review")?.status, "recorded");
+  assert.equal(evidenceConfig.releaseQualityGates.find((row) => row.key === "regression_suite")?.status, "pass");
+  assert.deepEqual(evidenceConfig.releaseQualityGates.find((row) => row.key === "spark_code_review")?.evidenceRefs, ["review/spark.md"]);
+
+  await fs.writeFile(path.join(evidenceDir, "latest.json"), JSON.stringify({
+    schemaVersion: "workflow_console_release_quality_evidence.v1",
+    releaseId: "slice-q-missing-gate",
+    gates: {
+      spark_code_review: { status: "recorded", detail: "Spark reviewed." },
+      regression_suite: { status: "pass", detail: "Regression passed." },
+      browser_smoke: { status: "recorded", detail: "Browser smoke passed." }
+    }
+  }, null, 2));
+  const missingGateConfig = buildConsoleConfig({ root: evidenceRoot }, { readOnly: true });
+  assert.equal(missingGateConfig.releaseQualityEvidence.status, "loaded");
+  assert.equal(missingGateConfig.releaseQualityGates.find((row) => row.key === "deployment_trace")?.status, "required");
+
+  await fs.writeFile(path.join(evidenceDir, "latest.json"), JSON.stringify({
+    schemaVersion: "wrong_schema.v1",
+    gates: {
+      spark_code_review: { status: "recorded", detail: "This must fail closed." }
+    }
+  }, null, 2));
+  const invalidSchemaConfig = buildConsoleConfig({ root: evidenceRoot }, { readOnly: true });
+  assert.equal(invalidSchemaConfig.releaseQualityEvidence.status, "missing");
+  assert.equal(invalidSchemaConfig.releaseQualityEvidence.reason, "invalid_schema");
+  assert.equal(invalidSchemaConfig.releaseQualityGates.find((row) => row.key === "spark_code_review")?.status, "required");
+
+  const outsideConfig = buildConsoleConfig({ root: evidenceRoot }, {
+    readOnly: true,
+    releaseQualityEvidencePath: "/tmp/workflow-console-quality-outside.json"
+  });
+  assert.equal(outsideConfig.releaseQualityEvidence.status, "ignored");
+  assert.equal(outsideConfig.releaseQualityEvidence.reason, "outside_root");
+  assert.equal(outsideConfig.releaseQualityGates.some((row) => row.key === "spark_code_review" && row.status === "required"), true);
+
+  const outsideRoot = await tempRoot("console-release-quality-outside");
+  const outsideEvidence = path.join(outsideRoot, "latest.json");
+  await fs.writeFile(outsideEvidence, JSON.stringify({
+    schemaVersion: "workflow_console_release_quality_evidence.v1",
+    gates: {
+      spark_code_review: { status: "recorded", detail: "Symlinked outside root." },
+      regression_suite: { status: "recorded", detail: "Symlinked outside root." },
+      browser_smoke: { status: "recorded", detail: "Symlinked outside root." },
+      deployment_trace: { status: "recorded", detail: "Symlinked outside root." }
+    }
+  }, null, 2));
+  await fs.rm(path.join(evidenceDir, "latest.json"));
+  await fs.symlink(outsideEvidence, path.join(evidenceDir, "latest.json"));
+  const symlinkConfig = buildConsoleConfig({ root: evidenceRoot }, { readOnly: true });
+  assert.equal(symlinkConfig.releaseQualityEvidence.status, "ignored");
+  assert.equal(symlinkConfig.releaseQualityEvidence.reason, "outside_root_realpath");
+  assert.equal(symlinkConfig.releaseQualityGates.find((row) => row.key === "spark_code_review")?.status, "required");
 }
 
 async function testWorkflowConsoleStaticContextTrailContract() {

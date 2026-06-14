@@ -28,11 +28,12 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-P: Operations workspace, activity feed, system status and
+- v1.0 slices A-Q: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
-  source-ref drilldown inspection, plus Kanban card action/audit inspection.
+  source-ref drilldown inspection, Kanban card action/audit inspection, and
+  release quality evidence artifact loading.
 
 Current target state:
 
@@ -1358,6 +1359,22 @@ Implemented Slice P: Kanban Card Action And Audit Inspector
   in `workflow_operations`; the new drawer panels do not create incidents,
   mutate cards, retry dispatches, redeliver outbox rows, or bypass Human Gate.
 
+Implemented Slice Q: Release Quality Evidence Artifact
+
+- Added a read-only release quality evidence source for System Status. The
+  console now looks for
+  `artifacts/console-release-quality/latest.json` under the workflow root, or
+  an explicitly configured in-root evidence path, and merges recorded evidence
+  into `releaseQualityGates`.
+- The default remains conservative: if the artifact is missing, invalid, or
+  outside the workflow root, Spark review, regression, browser smoke, and
+  deployment trace gates stay `required` and the Operator-Grade Release Gate
+  continues to fail `Review gates recorded`.
+- The System Status page now shows the quality evidence source and per-gate
+  evidence refs. This makes release readiness auditable from the GUI without
+  reading a raw file, while still avoiding any claim that the console can
+  approve or certify a deployment by itself.
+
 ## Test Plan
 
 Required checks:
@@ -1442,6 +1459,9 @@ Frontend smoke:
   regression, browser smoke, and deployment trace gates, and the Operator-Grade
   Release Gate fails `Review gates recorded` if required quality metadata is
   missing or still only marked `required`;
+- verify System Status loads an in-root release quality evidence artifact,
+  displays source path/release id/evidence refs, and ignores paths outside the
+  workflow root without turning quality gates green;
 - verify cards and tables remain scrollable;
 - verify empty-state rendering.
 
@@ -1493,7 +1513,10 @@ unless plugin runtime loading changes require it separately.
   adds a generic Source Inspector so source refs across key operator surfaces
   become navigable evidence instead of copy-only text. Slice P makes Kanban
   card preview actions, audit boundaries, and raw detail routes visible inside
-  the card Inspect drawer before operators open any governed preview.
+  the card Inspect drawer before operators open any governed preview. Slice Q
+  loads release quality evidence from a governed in-root artifact so the
+  operator-grade release gate can be backed by concrete Spark/regression/smoke
+  and deployment records instead of default `required` placeholders.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

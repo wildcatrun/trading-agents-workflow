@@ -149,7 +149,10 @@ Current version map:
   Kanban, Human Gate, Outbox, Incident, or Message Flow drilldowns without raw
   database inspection. Slice P adds Kanban card action/audit inspection so
   card-level preview actions, audit boundaries, and raw detail routes are
-  visible before operators open governed previews.
+  visible before operators open governed previews. Slice Q adds in-root release
+  quality evidence loading so System Status can show recorded Spark review,
+  regression, browser smoke, and deployment trace evidence when a governed
+  rollout artifact exists.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

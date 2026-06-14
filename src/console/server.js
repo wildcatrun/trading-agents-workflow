@@ -1,3 +1,4 @@
+import { readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -8,6 +9,30 @@ import { WorkflowReadModel } from "./read-model.js";
 
 const CONSOLE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "static", "console");
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const RELEASE_QUALITY_GATE_DEFAULTS = [
+  {
+    key: "spark_code_review",
+    status: "required",
+    detail: "Medium or higher GUI changes require independent Spark/subagent review, findings, fixes, and residual risks recorded in the rollout note."
+  },
+  {
+    key: "regression_suite",
+    status: "required",
+    detail: "Rollout evidence must record npm run check, workflow regression, syntax checks, and git diff whitespace checks."
+  },
+  {
+    key: "browser_smoke",
+    status: "required",
+    detail: "Rollout evidence must record desktop and mobile console smoke coverage for changed surfaces, redaction, routing, and overflow behavior."
+  },
+  {
+    key: "deployment_trace",
+    status: "required",
+    detail: "Rollout evidence must record Git commit, development checkout HEAD, console process, health probes, and Gateway restart boundary."
+  }
+];
+const RELEASE_QUALITY_GATE_STATUSES = new Set(["required", "recorded", "pass", "warn", "fail"]);
+const RELEASE_QUALITY_EVIDENCE_SCHEMA_VERSION = "workflow_console_release_quality_evidence.v1";
 
 function boolEnv(name, fallback = false) {
   const value = process.env[name];
@@ -48,6 +73,121 @@ function contentType(file) {
   if (file.endsWith(".css")) return "text/css; charset=utf-8";
   if (file.endsWith(".json")) return "application/json; charset=utf-8";
   return "application/octet-stream";
+}
+
+function safeRelativePath(root, filePath) {
+  const resolvedRoot = path.resolve(root || ".");
+  const resolvedFile = path.resolve(filePath || "");
+  const relative = path.relative(resolvedRoot, resolvedFile);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return "";
+  return relative;
+}
+
+function pathInsideRoot(root, filePath) {
+  const resolvedRoot = path.resolve(root || ".");
+  const resolvedFile = path.resolve(filePath || "");
+  const relative = path.relative(resolvedRoot, resolvedFile);
+  return Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function normalizeReleaseQualityGate(row = {}, fallback = {}) {
+  const key = String(row.key || fallback.key || "").trim();
+  if (!key) return undefined;
+  const status = RELEASE_QUALITY_GATE_STATUSES.has(String(row.status || "")) ? String(row.status) : (fallback.status || "required");
+  const detail = String(row.detail || row.summary || fallback.detail || "").trim();
+  const normalized = { ...fallback, ...row, key, status, detail };
+  if (Array.isArray(row.evidenceRefs)) normalized.evidenceRefs = row.evidenceRefs.map((item) => String(item)).filter(Boolean);
+  if (row.checkedAt) normalized.checkedAt = String(row.checkedAt);
+  if (row.command) normalized.command = String(row.command);
+  return normalized;
+}
+
+function releaseQualityEvidencePath(paths, options = {}) {
+  const configured = options.releaseQualityEvidencePath || process.env.WORKFLOW_CONSOLE_RELEASE_QUALITY_EVIDENCE || "";
+  const candidate = configured || path.join(paths.root, "artifacts", "console-release-quality", "latest.json");
+  return path.resolve(paths.root, candidate);
+}
+
+function releaseQualityEvidenceTarget(paths, options = {}) {
+  const filePath = releaseQualityEvidencePath(paths, options);
+  const relativePath = safeRelativePath(paths.root, filePath);
+  if (!pathInsideRoot(paths.root, filePath)) {
+    return { ok: false, status: "ignored", path: relativePath, reason: "outside_root" };
+  }
+  try {
+    const rootReal = realpathSync(paths.root);
+    const fileReal = realpathSync(filePath);
+    if (!pathInsideRoot(rootReal, fileReal)) {
+      return { ok: false, status: "ignored", path: relativePath, reason: "outside_root_realpath" };
+    }
+  } catch (error) {
+    if (error?.code === "ENOENT") return { ok: true, status: "missing", path: relativePath, filePath };
+    return { ok: false, status: "ignored", path: relativePath, reason: "invalid_path", error: error instanceof Error ? error.message : String(error) };
+  }
+  return { ok: true, status: "ready", path: relativePath, filePath };
+}
+
+function readReleaseQualityEvidence(paths, options = {}) {
+  const target = releaseQualityEvidenceTarget(paths, options);
+  if (!target.ok) {
+    return {
+      status: target.status,
+      path: target.path || "",
+      reason: target.reason || "invalid_path",
+      error: target.error || target.reason || "release quality evidence path is not allowed"
+    };
+  }
+  if (target.status === "missing") return { status: "missing", path: target.path, error: "" };
+  try {
+    const parsed = JSON.parse(readFileSync(target.filePath, "utf8"));
+    if (parsed.schemaVersion !== RELEASE_QUALITY_EVIDENCE_SCHEMA_VERSION) {
+      return { status: "missing", path: target.path, reason: "invalid_schema", error: "invalid_schema_version" };
+    }
+    const gatesInput = Array.isArray(parsed.gates)
+      ? parsed.gates
+      : Object.entries(parsed.gates || {}).map(([key, value]) => ({ key, ...(value && typeof value === "object" ? value : { detail: String(value || "") }) }));
+    const gateByKey = new Map(gatesInput.map((row) => {
+      const normalized = normalizeReleaseQualityGate(row);
+      return normalized ? [normalized.key, normalized] : undefined;
+    }).filter(Boolean));
+    return {
+      status: "loaded",
+      path: target.path,
+      schemaVersion: parsed.schemaVersion,
+      releaseId: parsed.releaseId || "",
+      commit: parsed.commit || "",
+      generatedAt: parsed.generatedAt || "",
+      gateByKey
+    };
+  } catch (error) {
+    return {
+      status: "missing",
+      path: target.path,
+      reason: error && error.code === "ENOENT" ? "" : "invalid_json",
+      error: error && error.code === "ENOENT" ? "" : error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+function releaseQualityGatesFromEvidence(paths, options = {}) {
+  const evidence = readReleaseQualityEvidence(paths, options);
+  const gates = RELEASE_QUALITY_GATE_DEFAULTS.map((gate) => {
+    const recorded = evidence.gateByKey?.get(gate.key);
+    return normalizeReleaseQualityGate(recorded, gate);
+  });
+  return {
+    evidence: {
+      status: evidence.status,
+      path: evidence.path,
+      schemaVersion: evidence.schemaVersion || "workflow_console_release_quality_evidence.v1",
+      releaseId: evidence.releaseId || "",
+      commit: evidence.commit || "",
+      generatedAt: evidence.generatedAt || "",
+      reason: evidence.reason || "",
+      error: evidence.error || ""
+    },
+    gates
+  };
 }
 
 function json(res, status, value) {
@@ -111,6 +251,7 @@ export async function workflowChildPayload(readModel, workflowId, child = "", qu
 export function buildConsoleConfig(paths, options = {}) {
   const readOnly = Boolean(options.readOnly);
   const allowWrites = Boolean(options.allowWrites);
+  const releaseQuality = releaseQualityGatesFromEvidence(paths, options);
   return {
     service: "workflow-console",
     rootDir: paths.root,
@@ -124,28 +265,8 @@ export function buildConsoleConfig(paths, options = {}) {
       evidenceExport: "redacted_browser_download",
       auditSurface: "workflow_operations"
     },
-    releaseQualityGates: [
-      {
-        key: "spark_code_review",
-        status: "required",
-        detail: "Medium or higher GUI changes require independent Spark/subagent review, findings, fixes, and residual risks recorded in the rollout note."
-      },
-      {
-        key: "regression_suite",
-        status: "required",
-        detail: "Rollout evidence must record npm run check, workflow regression, syntax checks, and git diff whitespace checks."
-      },
-      {
-        key: "browser_smoke",
-        status: "required",
-        detail: "Rollout evidence must record desktop and mobile console smoke coverage for changed surfaces, redaction, routing, and overflow behavior."
-      },
-      {
-        key: "deployment_trace",
-        status: "required",
-        detail: "Rollout evidence must record Git commit, development checkout HEAD, console process, health probes, and Gateway restart boundary."
-      }
-    ],
+    releaseQualityEvidence: releaseQuality.evidence,
+    releaseQualityGates: releaseQuality.gates,
     serverTime: options.serverTime || new Date().toISOString(),
     allowedViews: ["active", "waiting_human", "blocked", "paused", "updated_24h"],
     allowedWorkflowQueues: ["active", "waiting_human", "blocked", "paused", "updated_24h"],

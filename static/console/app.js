@@ -1930,6 +1930,7 @@ function renderSystemStatus(data) {
   const readiness = data.readiness || {};
   const boundaryRows = config.securityBoundaries || [];
   const qualityRows = config.releaseQualityGates || [];
+  const qualityEvidence = config.releaseQualityEvidence || {};
   const queueRows = (config.allowedWorkflowQueues || config.allowedViews || []).map((queue) => ({ queue }));
   const viewRows = (config.allowedConsoleViews || []).map((view) => ({ view }));
   const partialFailures = data.partialFailures || [];
@@ -1940,6 +1941,7 @@ function renderSystemStatus(data) {
       statCard("Action Mode", config.actionMode || "-", config.readOnlyMode ? "read-only" : "writes allowlisted"),
       statCard("Readiness", readiness?.status || "unknown", formatDate(readiness?.checkedAt)),
       statCard("Redaction", config.redactionPolicyVersion || "-"),
+      statCard("Quality Evidence", qualityEvidence.status || "missing", qualityEvidence.releaseId || qualityEvidence.path || qualityEvidence.reason || "-"),
       statCard("Generated", formatDate(data.generatedAt))
     ])),
     section("Operator-Grade Release Gate", renderOperatorGradeReleaseGate(data)),
@@ -2055,7 +2057,8 @@ function renderReleaseQualityRecords(rows = []) {
   return renderTable([
     { label: "Gate", render: (row) => h("code", {}, row.key || "-") },
     { label: "Status", render: (row) => chip(row.status || "unknown", ["recorded", "pass"].includes(row.status) ? "ok" : row.status === "required" ? "warning" : "critical") },
-    { label: "Evidence", key: "detail" }
+    { label: "Evidence", key: "detail" },
+    { label: "Refs", render: (row) => (row.evidenceRefs || []).length ? h("div", { className: "chip-list" }, row.evidenceRefs.map((item) => chip(item, "neutral"))) : "-" }
   ], rows, "No release quality gates.");
 }
 
