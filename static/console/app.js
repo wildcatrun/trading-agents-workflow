@@ -1107,6 +1107,8 @@ function inspectKanbanCard(card = {}) {
         { label: "Receipt", value: card.receiptRef || "-" }
       ])),
       (card.missingEvidence || []).length ? section("Missing Evidence", h("div", { className: "chip-list padded" }, card.missingEvidence.map((item) => chip(item, "warning")))) : null,
+      section("Next Safe Preview Actions", renderKanbanCardPreviewAudit(card)),
+      section("Raw Detail And Audit Trail", renderKanbanCardDetailTargets(card)),
       section("Source Refs", sourceRefList(kanbanSourceRefs(card), {
         workflowId: card.workflowId || "",
         agentId: card.agentId || "",
@@ -1123,6 +1125,71 @@ function inspectKanbanCard(card = {}) {
       ])
     ])
   });
+}
+
+function renderKanbanCardDetailTargets(card = {}) {
+  const targets = [];
+  const seen = new Set();
+  const pushTarget = (target = {}) => {
+    if (!target.consoleView) return;
+    const key = sourceRefTargetKey(target);
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push(target);
+  };
+  const workflowId = card.workflowId || "";
+  if (workflowId) {
+    pushTarget({ label: "Workflow", consoleView: "workflows", workflowId, tab: "overview" });
+    pushTarget({ label: "Evidence", consoleView: "evidence-workspace", workflowId });
+    pushTarget({ label: "Operations", consoleView: "operations", workflowId });
+  }
+  if (card.agentId) {
+    pushTarget({ label: "Agent", consoleView: "agent-board", agentId: card.agentId });
+    pushTarget({ label: "Focused Board", consoleView: "kanban", workflowId, agentId: card.agentId, cardId: card.sourceId || "" });
+  }
+  if (workflowId && (card.taskId || card.source === "workflow_tasks")) pushTarget({ label: "Tasks", consoleView: "workflows", workflowId, tab: "tasks" });
+  if (workflowId && (card.dispatchId || card.source === "mixed_meeting_dispatches")) pushTarget({ label: "Dispatches", consoleView: "workflows", workflowId, tab: "dispatches" });
+  if (workflowId && (card.runtimeRunId || card.source === "runtime_runs" || card.source === "runtime_current_state")) pushTarget({ label: "Runtime Runs", consoleView: "workflows", workflowId, tab: "runtime-runs" });
+  if (workflowId && (card.flowId || card.source === "message_flows")) pushTarget({ label: "Message Flow", consoleView: "workflows", workflowId, tab: "message-flows" });
+  if (workflowId && (card.outboxId || card.source === "telegram_outbox")) pushTarget({ label: "Outbox", consoleView: "workflows", workflowId, tab: "outbox" });
+  if (workflowId && (card.humanGateId || card.source === "protocol_objects")) {
+    pushTarget({ label: "Human Gate", consoleView: "workflows", workflowId, tab: "human-gates" });
+    pushTarget({ label: "Gate Readiness", consoleView: "workflows", workflowId, tab: "human-gate-readiness" });
+  }
+  if (workflowId && card.source === "incident_states") pushTarget({ label: "Incidents", consoleView: "workflows", workflowId, tab: "incident-closeout" });
+  if (workflowId && (card.artifactRef || card.receiptRef || (card.missingEvidence || []).length)) pushTarget({ label: "Evidence Desk", consoleView: "workflows", workflowId, tab: "evidence-desk" });
+  if (!targets.length) return emptyState("No raw detail route can be inferred for this card.");
+  return h("div", { className: "source-ref-actions" }, targets.map((target) => h("button", {
+    type: "button",
+    onClick: () => {
+      closeDrawer();
+      openCommandTarget(target);
+    }
+  }, target.label || "Open")));
+}
+
+function renderKanbanCardPreviewAudit(card = {}) {
+  const specs = (card.previewActions || [])
+    .map((action) => kanbanPreviewActionSpec(card, action))
+    .filter(Boolean);
+  if (!specs.length) return emptyState("No card-level preview action is advertised for this source.");
+  return renderTable([
+    { label: "Preview", render: (row) => h("button", {
+      type: "button",
+      disabled: !row.enabled,
+      title: row.reason || row.label,
+      onClick: row.enabled && row.onClick ? () => {
+        closeDrawer();
+        row.onClick();
+      } : undefined
+    }, row.label || row.action || "Preview") },
+    { label: "Allowlist Action", render: (row) => h("code", {}, row.action || "-") },
+    { label: "Status", render: (row) => chip(row.enabled ? "ready" : "blocked", row.enabled ? "ok" : "warning") },
+    { label: "Audit Boundary", render: (row) => h("div", {}, [
+      h("p", {}, "WorkflowActionGateway -> workflow_operations"),
+      h("p", { className: "muted" }, row.reason || "Preview only; no business-state mutation until an explicitly enabled action passes policy.")
+    ]) }
+  ], specs, "No preview actions.");
 }
 
 function renderMetrics(workflows) {

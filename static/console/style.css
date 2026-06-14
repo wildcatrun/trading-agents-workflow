@@ -787,20 +787,22 @@ code {
 }
 
 .kanban-cards {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   padding: 8px;
   overflow: auto;
 }
 
 .kanban-card {
+  flex: 0 0 auto;
   min-height: 142px;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   padding: 9px;
   background: #ffffff;
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
 }
 

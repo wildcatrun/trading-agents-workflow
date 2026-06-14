@@ -28,11 +28,11 @@ Implemented layers:
 - v0.9: top-level Evidence Workspace with evidence package, incident closeout,
   missing-evidence-first review, rollback/stop boundary, source refs, and
   redacted export.
-- v1.0 slices A-O: Operations workspace, activity feed, system status and
+- v1.0 slices A-P: Operations workspace, activity feed, system status and
   diagnostic matrix, command execution/readiness panels, audit/event ledgers,
   context trail, release and review quality gates, and workflow operation
   action audit visibility, Command Center diagnostic evidence previews, and
-  source-ref drilldown inspection.
+  source-ref drilldown inspection, plus Kanban card action/audit inspection.
 
 Current target state:
 
@@ -1342,6 +1342,22 @@ Implemented Slice O: Source Ref Inspector And Drilldown
   state, or expose executable write controls. It turns existing redacted
   source refs into navigable operator context.
 
+Implemented Slice P: Kanban Card Action And Audit Inspector
+
+- Extended Workflow Kanban card Inspect drawers with `Next Safe Preview
+  Actions` and `Raw Detail And Audit Trail` panels. Operators can see which
+  preview actions a card advertises, why each action is ready or blocked, and
+  the audit boundary before clicking a preview control.
+- Raw detail routing is inferred from the card's workflow, agent, source type,
+  and known row identifiers. The drawer can route to Workflow overview,
+  Evidence, Operations, Agent Board, focused Kanban, Tasks, Dispatches, Runtime
+  Runs, Message Flow, Outbox, Human Gate, Gate Readiness, Incidents, or
+  Evidence Desk where the card has enough context.
+- The inspector stays read-only. Preview buttons still call the existing
+  allowlisted `WorkflowActionGateway` path, and audit evidence remains anchored
+  in `workflow_operations`; the new drawer panels do not create incidents,
+  mutate cards, retry dispatches, redeliver outbox rows, or bypass Human Gate.
+
 ## Test Plan
 
 Required checks:
@@ -1379,6 +1395,10 @@ Frontend smoke:
   navigation on desktop and mobile;
 - verify Agent Board and Kanban Inspect drawers render source refs, copy
   controls, raw JSON, and workflow navigation without mutation;
+- verify Kanban Inspect drawers render card-level preview action status, the
+  `WorkflowActionGateway -> workflow_operations` audit boundary, and raw detail
+  drilldowns for dispatch, message_flow, outbox, Human Gate, and incident
+  cards without exposing executable writes;
 - verify mobile Agent Board uses cards instead of requiring horizontal table
   reading, and drawers do not create page-level horizontal overflow;
 - verify saved filters, severity filters, age/severity sorting, URL refresh
@@ -1471,7 +1491,9 @@ unless plugin runtime loading changes require it separately.
   `workflow_operations` source of truth. Slice N adds evidence previews and
   related drilldowns directly to the Command Center diagnostic matrix. Slice O
   adds a generic Source Inspector so source refs across key operator surfaces
-  become navigable evidence instead of copy-only text.
+  become navigable evidence instead of copy-only text. Slice P makes Kanban
+  card preview actions, audit boundaries, and raw detail routes visible inside
+  the card Inspect drawer before operators open any governed preview.
 - Real write controls remain disabled unless explicitly enabled by startup
   config and reviewed through Human Gate policy.
 

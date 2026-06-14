@@ -147,7 +147,9 @@ Current version map:
   Slice O adds a generic Source Inspector so redacted source refs on key
   operator surfaces can open suggested Workflow, Evidence, Operations, Agent,
   Kanban, Human Gate, Outbox, Incident, or Message Flow drilldowns without raw
-  database inspection.
+  database inspection. Slice P adds Kanban card action/audit inspection so
+  card-level preview actions, audit boundaries, and raw detail routes are
+  visible before operators open governed previews.
 
 v0.4 Slice A-D are implemented as read-only console surfaces:
 

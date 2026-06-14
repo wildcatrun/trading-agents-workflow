@@ -8372,6 +8372,81 @@ return { inspectSourceRef };`)(
   assert.deepEqual(calls, ["close", "open:workflows:message-flows"]);
 }
 
+async function testWorkflowConsoleStaticKanbanCardInspectorContract() {
+  const [app, css] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), "static/console/app.js"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "static/console/style.css"), "utf8")
+  ]);
+  assert.equal(app.includes('section("Next Safe Preview Actions", renderKanbanCardPreviewAudit(card))'), true);
+  assert.equal(app.includes('section("Raw Detail And Audit Trail", renderKanbanCardDetailTargets(card))'), true);
+  assert.equal(app.includes("function renderKanbanCardDetailTargets"), true);
+  assert.equal(app.includes("function renderKanbanCardPreviewAudit"), true);
+  assert.equal(app.includes("WorkflowActionGateway -> workflow_operations"), true);
+  assert.equal(app.includes("Preview only; no business-state mutation"), true);
+  assert.equal(app.includes("Focused Board"), true);
+  assert.equal(app.includes("closeDrawer();\n        row.onClick();"), true);
+  assert.equal(/\.kanban-cards\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s.test(css), true);
+  assert.equal(/\.kanban-card\s*\{[^}]*flex:\s*0 0 auto;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s.test(css), true);
+
+  const runtime = new Function("sourceRefTargetKey", "emptyState", "h", `${extractFunctionSource(app, "renderKanbanCardDetailTargets")}
+return { renderKanbanCardDetailTargets };`)(
+    (target = {}) => JSON.stringify(target),
+    (message) => ({ tag: "empty", children: [message] }),
+    (tag, attrs = {}, children = []) => ({ tag, attrs, children: Array.isArray(children) ? children : [children] })
+  );
+  const collectButtons = (node) => {
+    if (!node || typeof node !== "object") return [];
+    const here = node.tag === "button" ? [node] : [];
+    return here.concat((node.children || []).flatMap(collectButtons));
+  };
+  const detailNode = runtime.renderKanbanCardDetailTargets({
+    source: "mixed_meeting_dispatches",
+    sourceId: "dispatch-a",
+    workflowId: "wf-a",
+    agentId: "cat_body",
+    dispatchId: "dispatch-a",
+    missingEvidence: ["runtime_receipt"]
+  });
+  const labels = collectButtons(detailNode).map((button) => button.children.join(""));
+  assert.deepEqual(labels, ["Workflow", "Evidence", "Operations", "Agent", "Focused Board", "Dispatches", "Evidence Desk"]);
+  const labelsFor = (card) => collectButtons(runtime.renderKanbanCardDetailTargets(card)).map((button) => button.children.join(""));
+  assert.equal(labelsFor({ source: "workflow_tasks", sourceId: "task-a", workflowId: "wf-a", taskId: "task-a" }).includes("Tasks"), true);
+  assert.equal(labelsFor({ source: "runtime_runs", sourceId: "run-a", workflowId: "wf-a", runtimeRunId: "run-a" }).includes("Runtime Runs"), true);
+  assert.equal(labelsFor({ source: "runtime_current_state", sourceId: "hermers:cat_body", workflowId: "wf-a", runtimeRunId: "run-current" }).includes("Runtime Runs"), true);
+  assert.equal(labelsFor({ source: "message_flows", sourceId: "flow-a", workflowId: "wf-a", flowId: "flow-a" }).includes("Message Flow"), true);
+  assert.equal(labelsFor({ source: "telegram_outbox", sourceId: "outbox-a", workflowId: "wf-a", outboxId: "outbox-a" }).includes("Outbox"), true);
+  assert.deepEqual(
+    labelsFor({ source: "protocol_objects", sourceId: "hg-a", workflowId: "wf-a", humanGateId: "hg-a" }).filter((label) => label.includes("Gate")),
+    ["Human Gate", "Gate Readiness"]
+  );
+  assert.equal(labelsFor({ source: "incident_states", sourceId: "incident-a", workflowId: "wf-a" }).includes("Incidents"), true);
+  const emptyNode = runtime.renderKanbanCardDetailTargets({ source: "unknown_source", sourceId: "row-a" });
+  assert.equal(emptyNode.tag, "empty");
+
+  const previewRuntime = new Function("kanbanPreviewActionSpec", "renderTable", "h", "chip", "emptyState", "closeDrawer", `${extractFunctionSource(app, "renderKanbanCardPreviewAudit")}
+return { renderKanbanCardPreviewAudit };`)(
+    (card = {}, action = "") => kanbanPreviewActionModel(card, action),
+    (columns, rows) => ({ tag: "table", rows: rows.map((row) => columns.map((column) => ({ label: column.label, node: column.render(row) }))) }),
+    (tag, attrs = {}, children = []) => ({ tag, attrs, children: Array.isArray(children) ? children : [children] }),
+    (value, tone) => ({ tag: "chip", value, tone }),
+    (message) => ({ tag: "empty", children: [message] }),
+    () => {
+      throw new Error("disabled preview actions should not close the drawer");
+    }
+  );
+  const previewNode = previewRuntime.renderKanbanCardPreviewAudit({
+    workflowId: "wf-a",
+    source: "mixed_meeting_dispatches",
+    sourceId: "dispatch-a",
+    previewActions: ["unknown.preview.action"]
+  });
+  const previewButton = previewNode.rows[0].find((cell) => cell.label === "Preview").node;
+  assert.equal(previewButton.attrs.disabled, true);
+  assert.equal(previewButton.attrs.onClick, undefined);
+  const auditCell = previewNode.rows[0].find((cell) => cell.label === "Audit Boundary").node;
+  assert.equal(JSON.stringify(auditCell).includes("WorkflowActionGateway -> workflow_operations"), true);
+}
+
 async function testWorkflowConsoleStaticOperatorGradeReleaseGateContract() {
   const app = await fs.readFile(path.join(process.cwd(), "static/console/app.js"), "utf8");
   assert.equal(app.includes('section("Operator-Grade Release Gate", renderOperatorGradeReleaseGate(data))'), true);
@@ -8516,6 +8591,7 @@ try {
     ["workflow console config operator policy modes", testWorkflowConsoleConfigOperatorPolicyModes],
     ["workflow console static context trail contract", testWorkflowConsoleStaticContextTrailContract],
     ["workflow console static diagnostic matrix contract", testWorkflowConsoleStaticDiagnosticMatrixContract],
+    ["workflow console static kanban card inspector contract", testWorkflowConsoleStaticKanbanCardInspectorContract],
     ["workflow console static operator-grade release gate contract", testWorkflowConsoleStaticOperatorGradeReleaseGateContract],
     ["workflow console agentic surfaces", testWorkflowConsoleAgenticSurfaces],
     ["workflow health terminal failed dispatch degraded", testWorkflowHealthTerminalFailedDispatchIsDegraded],
