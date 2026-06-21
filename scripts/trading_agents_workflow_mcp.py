@@ -21,7 +21,8 @@ DEFAULT_LOCAL_REPO = str(Path(__file__).resolve().parents[1])
 DEFAULT_REMOTE_STATE_ROOT = "/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow"
 DEFAULT_REMOTE_CODE_PATH = "/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout"
 DEFAULT_REMOTE_PATH = DEFAULT_REMOTE_STATE_ROOT
-DEFAULT_REMOTE_HOST = "106.54.53.146"
+DEFAULT_REMOTE_HOST = "dev-server"
+DEFAULT_REMOTE_FALLBACK_HOSTS = ("106.54.53.146",)
 DEFAULT_REMOTE_USER = "flashcat"
 DEFAULT_REMOTE_KEY = "/Users/Flashcat/.ssh/openclaw_server"
 DEFAULT_AUDIT_LOG = "/Users/Flashcat/.trading-agents-workflow-mcp/audit.jsonl"
@@ -163,25 +164,67 @@ def run(cmd: list[str], cwd: Path | None = None, timeout: int = 30) -> dict[str,
         "stderr": (proc.stderr or "").strip(),
     }
 
-def run_remote(script: str, timeout: int = 30) -> dict[str, Any]:
-    host = os.environ.get("TRADING_WORKFLOW_REMOTE_HOST", DEFAULT_REMOTE_HOST)
+
+def split_hosts(value: str | None) -> list[str]:
+    if not value:
+        return []
+    hosts: list[str] = []
+    for item in value.replace(",", " ").split():
+        host = item.strip()
+        if host:
+            hosts.append(host)
+    return hosts
+
+
+def remote_hosts() -> list[str]:
+    primary = os.environ.get("TRADING_WORKFLOW_REMOTE_HOST", DEFAULT_REMOTE_HOST)
+    fallback_env = os.environ.get("TRADING_WORKFLOW_REMOTE_FALLBACK_HOSTS")
+    fallback_hosts = split_hosts(fallback_env) if fallback_env is not None else list(DEFAULT_REMOTE_FALLBACK_HOSTS)
+    hosts: list[str] = []
+    for host in [primary, *fallback_hosts]:
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def run_remote(script: str, timeout: int = 30, allow_fallback: bool = True) -> dict[str, Any]:
     user = os.environ.get("TRADING_WORKFLOW_REMOTE_USER", DEFAULT_REMOTE_USER)
     key = os.environ.get("TRADING_WORKFLOW_REMOTE_KEY", DEFAULT_REMOTE_KEY)
-    cmd = [
-        "ssh",
-        "-tt",
-        "-i",
-        key,
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ServerAliveInterval=15",
-        "-o",
-        "ServerAliveCountMax=2",
-        f"{user}@{host}",
-        script,
-    ]
-    return run(cmd, timeout=max(timeout, 30))
+    hosts = remote_hosts()
+    if not allow_fallback:
+        hosts = hosts[:1]
+    attempts = []
+    last_result: dict[str, Any] | None = None
+    for host in hosts:
+        cmd = [
+            "ssh",
+            "-tt",
+            "-i",
+            key,
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=2",
+            f"{user}@{host}",
+            script,
+        ]
+        result = run(cmd, timeout=max(timeout, 30))
+        result["remote_host"] = host
+        attempts.append(
+            {
+                "host": host,
+                "ok": result.get("ok"),
+                "returncode": result.get("returncode"),
+                "stderr": str(result.get("stderr") or "")[:500],
+            }
+        )
+        result["attempts"] = attempts
+        if result.get("ok") or result.get("returncode") != 255:
+            return result
+        last_result = result
+    return last_result or {"ok": False, "returncode": 255, "stdout": "", "stderr": "no remote hosts configured", "attempts": attempts}
 
 
 def as_str_list(value: Any) -> list[str]:
@@ -761,7 +804,7 @@ def message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
         result = run(cli_args, cwd=cwd, timeout=60)
     elif source == "remote":
         quoted = " ".join(shlex.quote(part) for part in cli_args)
-        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90)
+        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90, allow_fallback=False)
     try:
         payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
     except json.JSONDecodeError:
@@ -906,7 +949,7 @@ def workflow_task_launch_prepare(args: dict[str, Any]) -> dict[str, Any]:
         result = run(cli_args, cwd=cwd, timeout=60)
     else:
         quoted = " ".join(shlex.quote(part) for part in cli_args)
-        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90)
+        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90, allow_fallback=False)
     try:
         payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
     except json.JSONDecodeError:
@@ -980,7 +1023,7 @@ def workflow_task_launch_approve(args: dict[str, Any]) -> dict[str, Any]:
         result = run(cli_args, cwd=cwd, timeout=60)
     else:
         quoted = " ".join(shlex.quote(part) for part in cli_args)
-        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90)
+        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90, allow_fallback=False)
     payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
     response = {"source": source, "ok": result.get("ok"), "codePath": str(cwd), "workflowRoot": workflow_root, "result": payload, "command": cli_args[:3] + ["..."], "runner": result}
     audit({"event": "workflow_task_launch_approve", "source": source, "ok": result.get("ok"), "draft_id": draft_id})
@@ -1015,7 +1058,7 @@ def workflow_task_launch_review(args: dict[str, Any]) -> dict[str, Any]:
         result = run(cli_args, cwd=cwd, timeout=60)
     else:
         quoted = " ".join(shlex.quote(part) for part in cli_args)
-        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90)
+        result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90, allow_fallback=False)
     payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
     response = {"source": source, "ok": result.get("ok"), "codePath": str(cwd), "workflowRoot": workflow_root, "result": payload, "command": cli_args[:3] + ["..."], "runner": result}
     audit({"event": "workflow_task_launch_review", "source": source, "ok": result.get("ok"), "draft_id": draft_id})

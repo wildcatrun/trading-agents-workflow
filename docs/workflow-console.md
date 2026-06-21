@@ -67,7 +67,9 @@ Environment variables:
 - Data source:
   `/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow/workflow_control_plane.db`
 - Local access tunnel:
-  `127.0.0.1:18791 -> 106.54.53.146:127.0.0.1:8791`
+  `ssh -L 18791:127.0.0.1:8791 dev-server`
+  (`106.54.53.146` is retained only as a public-IP fallback when the Tailscale
+  node name is unavailable)
 - Runtime log target:
   `/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow/governance-logs/workflow-console-dev.log`
 - Mode: read-only / preview-only

@@ -70,6 +70,23 @@ tool_timeout_sec = 240
 enabled = true
 ```
 
+For local Codex operations against the development server, prefer the fixed
+Tailscale node name and keep the public IP only as a transport fallback:
+
+```toml
+env = {
+  TRADING_WORKFLOW_REMOTE_HOST = "dev-server",
+  TRADING_WORKFLOW_REMOTE_FALLBACK_HOSTS = "106.54.53.146",
+  TRADING_WORKFLOW_REMOTE_CODE_PATH = "/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout",
+  TRADING_WORKFLOW_REMOTE_STATE_ROOT = "/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow"
+}
+```
+
+Remote read-only checks may fall back from `dev-server` to the public IP on SSH
+transport failure. Remote mutating tools do not use fallback retries, to avoid
+duplicating workflow writes if a connection drops after the server has already
+applied a side effect.
+
 `trading-agents-workflow` keeps behavior in the Node core/CLI/OpenClaw plugin. MCP is only a thin control-plane wrapper for model-accessible, capability-scoped operations.
 
 The local Codex MCP server is intentionally ops-oriented. It can inspect local Git state, read governance JSONL logs, query `runtime_agents`, read receipt surfaces, and take development-server snapshots. Its mutating surface is limited to governed `message_flow` creation and still routes through the CLI/core path.
