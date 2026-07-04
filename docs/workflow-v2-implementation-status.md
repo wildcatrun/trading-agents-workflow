@@ -698,6 +698,27 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
   - `git diff --check`
 
+2026-07-05 V2.2 backend-preflight preview extraction follow-up:
+
+- Added `src/workflow-v2/backend-preflight.js` for v2 worker backend preflight
+  preview logic.
+- Kept `workflow.v2.worker_backend_preflight.record` in `src/workflow.js`, so
+  SQLite persistence and preflight evidence writes remain colocated while only
+  the preview body moves out.
+- The module receives `workflowPaths`, `firstText`, `boolOption`, and `safeId`
+  by dependency injection to avoid circular imports and avoid duplicating
+  workflow root/id policy.
+- Focused verification passed:
+  - `node --check src/workflow.js`
+  - `node --check src/workflow-v2/backend-preflight.js`
+  - `node --check src/workflow-v2/index.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 permission and console gate"`
+- Grouped verification passed:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
+  - `git diff --check`
+
 2026-07-04 advisory-plan correction verification:
 
 - Passed `node --check src/workflow.js`.
