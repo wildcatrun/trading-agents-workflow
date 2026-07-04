@@ -1,0 +1,434 @@
+# Workflow v2 Worker Runtime Backends
+
+Status: requirements plus authorized WSL testbed smoke, not runtime code
+Created: 2026-07-03
+Updated: 2026-07-04
+Scope: worker runtime assumptions for the v2 orchestration kernel
+
+## Purpose
+
+This document records Flashcat's current worker runtime direction and the first
+authorized `wsl-agents` Docker smoke testbed. It does not connect any worker to
+production workflow state, change OpenClaw, or make Docker a cat-member runtime.
+
+No instruction in this document is standing execution authorization. Further
+container, network, model, secret, server, production, or workflow-queue actions
+require explicit Flashcat approval for that round.
+
+The key decision is that worker execution should not be centered on the
+development server or OpenClaw. The development server remains the control
+plane. Heavy or sandboxed worker execution can later run on the local
+workstation, especially inside `wsl-agents` Docker sandboxes, after explicit
+authorization.
+
+## Captured Requirements
+
+- OpenClaw is not a worker runtime backend.
+- OpenClaw remains Gateway, IM ingress, OpenClaw-native cat member runtime, Cat
+  Claw/Cat Brain path, Human Gate delivery path, and legacy route/governance
+  surface.
+- Worker runtime should prefer Hermers and Claude Code.
+- `wsl-agents` can provide Docker sandbox workspaces for worker testbeds.
+- Docker is the sandbox and capability packaging layer, not the default agent
+  brain.
+- The current worker backend classes are only Hermers Docker worker and Claude
+  Code Docker worker.
+- The orchestration design target is 200 concurrent worker runs across the
+  worker pool. This is a queue/capacity/lease target, not a requirement that one
+  prompt, one session, one container, or one host perform 200 heavy tasks at
+  once.
+- Each worker context window is capped at 64k tokens. Task allocation must fit
+  inside that window with margin for tool output and receipts.
+- Do not assign heavy monolithic tasks to a worker. Split large jobs into
+  bounded nodes, use information-stack pointers, and pass artifact refs instead
+  of long inline context.
+- `wsl-models` provides GPU/model API capability when needed.
+- Do not plan specialized tool containers in the current round.
+- Do not plan GPU worker containers in the current round.
+- Tooling can be installed inside Hermers worker containers, Claude Code worker
+  containers, or their base Docker images.
+- Worker containers must not become durable cat members.
+- Worker containers must not write the central workflow SQLite database
+  directly.
+- Worker output must return through governed receipts, artifacts, information
+  stack refs, and manager review.
+
+## Target Control/Data Plane Split
+
+```text
+dev-server
+  OpenClaw Gateway
+  trading-agents-workflow control plane
+  workflow DB / registry / receipt / Human Gate
+  Cat Brain and Cat Claw governance path
+
+local-workstation wsl-agents
+  Docker sandbox environment
+  flashcat/hermes-worker:20260704
+  flashcat/claude-code-worker:20260704
+  claude-code-worker-001 smoke container
+
+wsl-models
+  GPU/model API provider
+  not a workflow worker runtime in this round
+```
+
+The control plane remains on the development server. The worker pool may later
+run on the workstation because the development server has limited compute, while
+the workstation has significantly larger CPU, memory, and GPU capacity.
+
+## Current Workflow Interface
+
+The local v2 control plane now exposes the adapter-job bridge, but not real
+runner execution:
+
+- `workflow.v2.control_loop.tick` can lease a non-local worker into `running`
+  with status `leased_waiting_adapter`.
+- `workflow.v2.worker_adapter_job.preview` validates the active lease, session
+  run, backend preflight, and supported Docker worker backend, then builds a
+  runner manifest.
+- `workflow.v2.worker_adapter_job.record` writes the manifest as a JSON
+  artifact, records an information-stack pointer for the future runner, and
+  creates a durable `workflow_v2_worker_adapter_jobs` queue row.
+- `workflow.v2.worker_adapter_job.list` lets operators inspect queued, running,
+  retry, terminal, or backend-filtered adapter jobs without mutating state.
+- `workflow.v2.worker_adapter_job.claim` is the pull-runner entry point. It
+  only leases queued/retry adapter jobs whose underlying worker is still
+  `running`, still on the same worker attempt, and still under an unexpired
+  worker lease.
+- `workflow.v2.worker_adapter_job.heartbeat` extends a runner lease;
+  `workflow.v2.worker_adapter_job.release` returns the job to
+  `retry_scheduled`; `workflow.v2.worker_adapter_job.fail` records runner
+  failure and either schedules a runner retry or marks the adapter job failed.
+  Terminal adapter-job failure also marks the worker/session failed through the
+  governed worker fail path, so the worker does not wait for lease expiry.
+- The manifest includes `workflow_session_runs.workerInput`, task input info
+  id, backend image/profile, lease proof, 64k context cap, and the required
+  `workflow.v2.worker_result.submit` / `workflow.v2.worker_result.fail` return
+  path.
+- Recording a manifest leaves the worker row in `running`. The worker is not
+  complete until a later adapter-facing submit/fail action returns governed
+  output or failure evidence.
+- Runner actions never grant direct database-write authority to the worker
+  container. A real runner should treat the manifest as input, write artifacts
+  through governed return paths, and submit/fail through workflow actions.
+  Submit/fail calls that bind an `adapterJobId` must include both worker lease
+  proof and the current adapter-job runner lease proof.
+- `workflow.v2.adapter_runner.preview` and `workflow.v2.adapter_runner.drain`
+  are now available as a local `mock` runner bridge. The drain action claims
+  due adapter jobs, reads the manifest artifact, writes a mock output artifact,
+  and returns through the governed submit/fail actions. It is a protocol smoke,
+  not a Docker, Hermers, Claude Code, WSL, Gateway, or model invocation. The
+  runner requires a stored manifest hash and fails closed on missing or
+  mismatched manifest hashes. Structural runner errors default to terminal
+  adapter/worker failure unless retry is explicitly enabled.
+- The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
+  logical queue/fan-out target, while `backendMaxActiveJobs` and
+  `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical
+  execution slots. `workflow.v2.adapter_runner.preview` and `drain` return a
+  `capacity` object with `requestedLimit`, `effectiveLimit`, active job counts,
+  due backlog, and throttling state. A workflow may enqueue 200 logical workers
+  while a low-concurrency model provider such as iflytek/xunfei is drained
+  through a much smaller active slot count.
+
+These actions still do not start Docker, Hermers, Claude Code, WSL, Gateway, or
+any model call.
+
+## Authorized WSL Testbed State
+
+As of 2026-07-04, the first out-of-band worker image smoke exists on
+`wsl-agents` (`trading-agents-ubuntu`). This is infrastructure validation only;
+it is not wired to v2 worker queues.
+
+Removed legacy sandbox:
+
+- container/image family: `agent-sandbox-ubuntu`;
+- removed image tag: `flashcat/agent-sandbox-ubuntu:24.04`;
+- post-check image list no longer contains `agent-sandbox-ubuntu`.
+
+Current worker images:
+
+```text
+flashcat/hermes-worker:20260704       image id d9c3aadc3647   size 2.01GB
+flashcat/claude-code-worker:20260704  image id 970d9e63f5b2   size 1.58GB
+```
+
+Current long-running smoke container:
+
+```text
+container=claude-code-worker-001
+image=flashcat/claude-code-worker:20260704
+status=running
+user=ubuntu
+home=/home/ubuntu
+workspace=/home/flashcat/multi-agent-hedge-fund-framework/ops-artifacts/wsl-agents-worker-smoke-20260704/workspace
+```
+
+The Claude Code container mounts WSL host Claude config read-only:
+
+```text
+/home/flashcat/.claude      -> /home/ubuntu/.claude:ro
+/home/flashcat/.claude.json -> /home/ubuntu/.claude.json:ro
+```
+
+Do not loosen host credential permissions to make containers read them. The
+container runs as UID 1000 (`ubuntu`) because the host config file is `0600` and
+owned by UID 1000.
+
+Smoke results:
+
+- `claude --version`: `2.1.195 (Claude Code)`;
+- `hermes --version`: `Hermes Agent v0.17.0 (2026.6.19)`;
+- Hermers source commit in image: `2bd1977d8fad185c9b4be47884f7e87f1add0ce3`;
+- `WORKER_CONTEXT_LIMIT_TOKENS=64000`;
+- `WORKER_MAX_CONCURRENCY_HINT=200`;
+- no real LLM task was submitted during smoke.
+
+Build context and local artifact path:
+
+```text
+/Users/Flashcat/multi-agent-hedge-fund-framework/ops-artifacts/wsl-agents-worker-images-20260704/
+E:\CodexOps\wsl-agents-worker-images-20260704\
+```
+
+## Backend Classes
+
+### Hermers Docker Worker
+
+Backend id: `hermers_docker_worker`
+
+Purpose:
+
+- research worker
+- analysis worker
+- manager-assistant worker
+- report synthesis worker
+- non-coding structured agentic work
+
+Expected environment:
+
+- runs inside `wsl-agents` Docker;
+- references the current development-server Hermers profile shape as a config
+  template;
+- temporarily uses the development-server Hermers fallback route structure:
+  `custom:xfyun-qwen` / `astron-code-latest` /
+  `https://maas-coding-api.cn-huabei-1.xf-yun.com/v2`;
+- receives the Xunfei API key only through a runtime secret/env injection such
+  as `XFYUN_QWEN_API_KEY`, never through the image layer;
+- reads task content through the v2 information stack;
+- returns output as artifacts, receipts, and structured result refs.
+
+Non-goals:
+
+- does not become `runtime_agents` cat member identity;
+- does not reuse production Hermers sessions;
+- does not receive production secrets baked into the image;
+- does not write central SQLite directly.
+
+### Claude Code Docker Worker
+
+Backend id: `claude_code_docker_worker`
+
+Purpose:
+
+- code exploration
+- patch generation
+- code review
+- test verification
+- repo-local implementation tasks
+
+Expected environment:
+
+- runs inside `wsl-agents` Docker;
+- uses the WSL host Claude Code config as reference through read-only mounts
+  when an authorized real LLM test is needed;
+- uses isolated worktrees or copied test workspaces;
+- reports diff, command output, test evidence, risk notes, and rollback refs;
+- reads task content through the information stack;
+- returns results through worker receipt and manager review.
+
+Non-goals:
+
+- does not own final merge/deploy decisions;
+- does not directly mutate central workflow state;
+- does not touch production credentials;
+- does not replace manager review.
+
+### Docker Tool Containers
+
+Status: explicitly out of scope for the current round.
+
+Specialized tool containers may be useful later for browser automation, OCR,
+compilers, data processing, or other narrow capabilities. They should not be
+planned or implemented in this round. If a tool is needed for the initial
+testbed, install it inside the Hermers or Claude Code worker image instead of
+creating a new backend class.
+
+### GPU Worker Containers
+
+Status: explicitly out of scope for the current round.
+
+GPU/model capability should be consumed through `wsl-models` APIs. The worker
+containers should call those APIs when authorized. Do not attach GPU execution
+directly to `wsl-agents` worker containers in the current round.
+
+## Runtime Registry Position
+
+`runtime_agents` remains the durable cat-member registry. Worker containers are
+ephemeral worker runs, not cat members.
+
+The future worker backend registry, if added, should be separate from
+`runtime_agents`. It can describe backend capacity and connection policy, such
+as:
+
+```text
+backend_id=hermers_docker_worker
+host=wsl-agents
+sandbox=docker
+capabilities=agentic_analysis,report_synthesis
+status=available
+
+backend_id=claude_code_docker_worker
+host=wsl-agents
+sandbox=docker
+capabilities=code_edit,code_review,test_verify
+status=available
+```
+
+Manager identity continues to come from cat members. Worker run identity comes
+from `workflow_v2_worker_runs`, `workflow_v2_session_instances`, and backend run
+receipts.
+
+## Communication Pattern
+
+Preferred pattern for workstation workers:
+
+```text
+manager decision
+  -> workflow_v2_worker_run queued
+  -> workflow information stack item + inbox/grant
+  -> worker backend receives or polls command
+  -> Docker sandbox starts worker
+  -> worker reads info item through governed read action
+  -> worker writes artifact/result in controlled workspace
+  -> runner posts receipt/result refs
+  -> manager review accepts/rejects
+```
+
+The first testbed should prefer a pull model: a worker runner on `wsl-agents`
+polls or receives a bounded test task from the control plane. This avoids
+requiring the development server to reach directly into WSL/Docker before the
+network exposure model is reviewed.
+
+## Network Assumptions
+
+Current workstation networking uses host-only Tailscale on Windows. WSL distros
+should not start their own `tailscaled` TUN. If a future worker runner needs a
+network service, expose it through a reviewed host-level path such as Windows
+tailnet IP plus port forwarding, reverse proxy, or a controlled pull model.
+
+Do not assume that a container can be addressed directly from the development
+server.
+
+## Secrets And Model Configuration
+
+Current Hermers Docker worker temporary model route:
+
+```text
+provider=custom:xfyun-qwen
+model=astron-code-latest
+base_url=https://maas-coding-api.cn-huabei-1.xf-yun.com/v2
+api_mode=chat_completions
+api_key_env=XFYUN_QWEN_API_KEY
+```
+
+Claude Code Docker worker uses the existing `wsl-agents` Claude Code
+configuration through read-only mounts for authorized tests. The image itself
+contains the Claude Code CLI only, not OAuth state or API secrets.
+
+Older notes may mention `openai-codex/gpt-5.5` as a candidate test route. That
+is not the current Hermers Docker worker test route unless Flashcat explicitly
+switches it back.
+
+Secret handling rules:
+
+- Do not bake OAuth tokens, API keys, refresh tokens, private keys, or broker
+  credentials into Docker images.
+- Do not write secrets into Git, documentation, artifacts, workflow payloads,
+  logs, or Telegram text.
+- Use host-side `0600` env files, Docker secrets, or a reviewed secret mount for
+  test credentials.
+- Testbed secrets must be scoped to the testbed and revocable.
+- If the test worker uses existing development-server Hermers config as a
+  reference, copy only non-secret structure unless Flashcat explicitly
+  authorizes secret injection.
+
+## Testbed Scope After Authorization
+
+The first authorized testbed should be deliberately narrow:
+
+1. Keep `flashcat/hermes-worker:20260704` and
+   `flashcat/claude-code-worker:20260704` as the only current worker image
+   classes.
+2. Keep `claude-code-worker-001` as a single smoke container until a governed
+   worker runner exists.
+3. Run only synthetic, bounded test tasks that fit the 64k context limit.
+4. Produce structured result artifacts and receipts.
+5. Keep workflow DB writes disabled or routed through a test-only governed
+   adapter.
+6. Do not connect the worker to production workflow queues.
+
+Claude Code testbed status:
+
+1. `flashcat/claude-code-worker:20260704` has been built.
+2. `claude-code-worker-001` runs against a disposable smoke workspace.
+3. Future real code-worker tasks must use isolated worktrees or copied
+   workspaces.
+4. Code-worker outputs must produce diff/test evidence and require responsible
+   owner or manager review before acceptance.
+
+## Explicit Non-Current Scope
+
+Do not do these without a separate authorization gate:
+
+- start production worker queues;
+- expose new workstation network ports to the development server;
+- move cat members into Docker;
+- register Docker workers as cat members;
+- create specialized tool container families;
+- create GPU worker containers;
+- connect workers to real trading workflows;
+- let workers write central SQLite directly;
+- copy production secrets into worker images;
+- restart OpenClaw Gateway or Hermers Gateway.
+
+## Authorization Gate
+
+Before starting the next worker-runtime implementation round, Flashcat should
+approve at least:
+
+- whether to keep Hermers on the Xunfei fallback route or switch to a Codex
+  provider route;
+- whether to keep the current Claude Code container as smoke-only or allow a
+  real synthetic LLM task;
+- which non-secret Hermers config source can be used as a reference for the
+  runner adapter;
+- how secrets will be injected and later revoked;
+- whether the first task is fully synthetic or reads a real workflow info item;
+- whether network communication is pull-only for the first smoke;
+- where test artifacts and logs should be stored on `wsl-agents`;
+- rollback/cleanup expectations for Docker images, containers, volumes, and
+  credentials.
+
+The gate template and implementation preflight checklist are maintained in
+`docs/workflow-v2-p1-readiness-plan.md`.
+
+## Relationship To V2 Kernel
+
+The worker runtime backend plan supports the v2 kernel but is not required to
+land P0 design docs. The v2 kernel can define managers, worker runs,
+information-stack reads, artifacts, and manager review before any Docker worker
+exists.
+
+Implementation should start only after the v2 design docs are reviewed and
+Flashcat explicitly authorizes the worker testbed round.

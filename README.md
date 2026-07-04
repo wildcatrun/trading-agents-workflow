@@ -22,6 +22,16 @@ Platform-local lists such as Hermers profiles, OpenClaw agent config, Codex sess
 
 `workflow.session_pack.*` and `workflow.session_run.*` provide the first workflow-native session store. They let the workflow prepare compact, task-specific worker input from stored context, tool policy, evidence refs, checkpoint refs, and per-run input. This is for repeatable worker execution and retry safety; it does not replace workflows, checkpoints, receipts, artifacts, or Human Gate records. Development notes are in `docs/workflow-session-store.md`.
 
+`workflow-v2-orchestration-kernel` is the design and initial implementation track for turning this plugin from a collection of workflow parts into a manager/worker orchestration kernel. It defines cat members as durable manager identities, workers as spawned tool-agent instances, a session repository as the context/template source, adaptive prepare-task planning, complexity-triggered managers/task groups, and Human Gate as the final governed human interaction boundary. The local kernel slice adds `workflow_v2_*` schema, preview/record actions, information-stack read/receipt actions, backend preflight evidence, worker lifecycle preview, governed worker handoff/retire/successor actions, worker handoff/lineage validation, a v2 Human Gate request bridge, and a consistency validator, but it does not start real worker runtimes or deploy to production.
+
+`workflow-v2-information-stack` defines the v2 communication substrate. Core message content, task payloads, context refs, artifact refs, ACLs, and read receipts belong in workflow-native information tables. `message_flow` should become an SMS-like notification layer that tells a target which governed inbox item to read; it should not carry the authoritative body for manager/worker work.
+
+`workflow-v2-worker-lifecycle-renewal` adds the Anthropic-informed worker lifecycle contract: workers are finite-context execution instances, not immortal conversations. When context pressure, repeated compaction, stale assumptions, or review failures appear, a manager should retire or supersede the worker, persist a handoff package, and spawn a same-class successor from curated refs and artifacts.
+
+`workflow-v2-worker-runtime-backends` records the worker runtime direction before implementation: OpenClaw is not a worker backend; Hermers and Claude Code are the preferred worker platforms; `wsl-agents` may provide Docker sandbox testbeds; `wsl-models` provides model/GPU APIs; specialized tool containers and GPU worker containers are out of scope for the current round.
+
+`workflow-v2-implementation-status` records what has landed in code, what remains only a design or future runtime slice, and which regression tests cover the current v2 kernel.
+
 `message_flow` is the governed delivery layer for agent-to-agent, route-shell, Telegram-return, and local Codex inbox traffic. `local_codex` / `codex` is now an allowed inbox target through the workflow plugin, but it records delivery evidence only; formal reports, Human Gate requests, and trading-related confirmations still require the governed IM/Human Gate path. Closure details are in `docs/message-flow-closure.md`.
 
 `human_gate.inbox` creates the secretary-facing approval table for complex workflows. It gathers pending Human Gate records, review gates, gated tasks, and Cat Claw delivery failures into `human_gate_batches`, `human_gate_batch_items`, and HTML/JSON artifacts under `human-gates/inbox/` so Flashcat can review multiple low-risk items together while P0/P1 items remain individual approvals.
@@ -146,6 +156,14 @@ Hermers ACP dispatch.
 - `docs/workflow-console-v0.3-message-flow-observability.md` - v0.3 console round record for message_flow visibility, attention rules, runtime drain job display, smoke evidence, and rollout notes.
 - `docs/workflow-session-store.md` - development notes for session packs, session runs, worker input, CLI, invariants, and roadmap.
 - `docs/workflow-task-drafting-initial-plan.md` - initial design reference for a higher-level workflow task drafting layer, default Cat Brain/Cat Claw governance roles, structured phases, quality gates, resume/idempotency, and Task Launch Package v1.
+- `docs/workflow-v2-information-stack.md` - design draft for the v2 information stack, governed inboxes, read grants, receipts, and the SMS-like role of `message_flow`.
+- `docs/workflow-v2-orchestration-kernel.md` - design and implementation guide for the v2 manager/worker orchestration kernel, session repository, worker spawn/review loop, Human Gate boundary, and implementation slices.
+- `docs/workflow-v2-worker-lifecycle-renewal.md` - Anthropic-informed design draft for worker context budgets, compaction signals, retirement, handoff packages, same-class successor spawning, lineage, and review hierarchy.
+- `docs/workflow-v2-implementation-status.md` - current implementation status for v2 actions, tables, safety boundaries, and regression coverage.
+- `docs/workflow-v2-unified-next-plan.md` - current v2.1+ development plan: split the long v2 regression first, then mechanically modularize `workflow.js`, add a v2 action registry, and only then resume real Hermers/Claude Code worker adapter work.
+- `docs/workflow-v2-p1-readiness-plan.md` - historical first-slice authorization gate, dry-run API contract, test matrix, worker testbed preflight, and execution-readiness checklist.
+- `docs/workflow-v2-orchestration-schema.sql` - schema design reference for v2 orchestration objects; the initial runtime implementation now creates an aligned minimal `workflow_v2_*` subset.
+- `docs/workflow-v2-worker-runtime-backends.md` - requirements draft for Hermers/Claude Code worker backends, `wsl-agents` Docker sandbox testbeds, `wsl-models` API usage, and authorization gates.
 - `docs/tracking-schema.sql` - schema export for `workflow_control_plane.db`.
 - `scripts/trading_agents_workflow_mcp.py` - local Codex MCP server.
 - `skills/trading-agents-workflow/` - Codex skill instructions for this integration.

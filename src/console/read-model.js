@@ -1,6 +1,8 @@
 import { dbReadable, parseJson, redact, sqlite, sqlValue, toInt } from "./sqlite.js";
 
 const DEFAULT_LIMIT = 100;
+const HUMAN_GATE_APPROVE_OPTION_MIN = 2;
+const HUMAN_GATE_APPROVE_OPTION_MAX = 5;
 
 function clampLimit(value, fallback = DEFAULT_LIMIT, max = 500) {
   const number = Number(value || fallback);
@@ -529,8 +531,29 @@ function dispatchJsonMatchSql(dispatchIds = [], column = "payload_json") {
     .join(" OR ");
 }
 
-function hasCjkText(value) {
-  return /[\u3400-\u9fff]/.test(String(value || ""));
+function countCjkChars(value) {
+  return (String(value || "").match(/[\u3400-\u9fff]/g) || []).length;
+}
+
+function countLatinWordTokens(value) {
+  return (String(value || "").match(/[A-Za-z][A-Za-z0-9_-]*/g) || [])
+    .filter((token) => token.length > 1)
+    .length;
+}
+
+function chineseFormatProfile(value) {
+  const text = String(value || "");
+  const cjkChars = countCjkChars(text);
+  const latinWordTokens = countLatinWordTokens(text);
+  const chineseShare = cjkChars / Math.max(1, cjkChars + latinWordTokens * 2);
+  return { cjkChars, latinWordTokens, chineseShare };
+}
+
+function hasChineseFormatText(value, options = {}) {
+  const minCjkChars = Number(options.minCjkChars || 8);
+  const minChineseShare = Number(options.minChineseShare || 0.25);
+  const profile = chineseFormatProfile(value);
+  return profile.cjkChars >= minCjkChars && profile.chineseShare >= minChineseShare;
 }
 
 function compactJsonText(value) {
@@ -710,7 +733,7 @@ function isApproveOptionButton(button = {}) {
   const roleText = buttonClassifierText(button);
   if (/(pause|暂停|terminate|终止|stop|停止|reject|驳回|cancel|取消)/i.test(roleText)) return false;
   return String(button.decision_status || "").toLowerCase() === "approved"
-    || /(^|\s)(option|approve|plan|alternative|批准|方案\s*[a-zabc一二三四])/i.test(roleText);
+    || /(^|\s)(option|approve|plan|alternative|批准|方案\s*[a-z0-9一二三四五])/i.test(roleText);
 }
 
 function hasControlButton(buttons = [], patterns = []) {
@@ -2267,10 +2290,10 @@ LIMIT 50;`) : [];
       records.slice(0, 3).map((row) => row.object_id)
     );
     add(
-      "three_approve_options",
-      "Three independent approve options",
-      approveButtons.length >= 3,
-      `${approveButtons.length} approve/option button(s) found; A/B/C or equivalent is required.`,
+      "approve_options_count",
+      "Approve options count",
+      approveButtons.length >= HUMAN_GATE_APPROVE_OPTION_MIN && approveButtons.length <= HUMAN_GATE_APPROVE_OPTION_MAX,
+      `${approveButtons.length} approve/option button(s) found; ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} is required.`,
       approveButtons.map((row) => row.button_id)
     );
     add(
@@ -2287,18 +2310,20 @@ LIMIT 50;`) : [];
       "A terminate/stop button must be present alongside approve options.",
       buttons.filter((row) => /terminate|终止|stop|停止/i.test(buttonClassifierText(row))).map((row) => row.button_id)
     );
-    add(
-      "chinese_primary_body",
-      "Chinese report body",
-      hasCjkText(allHumanGateText),
-      hasCjkText(allHumanGateText) ? "Chinese text is present in the record/buttons." : "No Chinese report text found in the Human Gate record/buttons.",
-      latestRecord ? [latestRecord.object_id] : []
-    );
+	    add(
+	      "chinese_primary_body",
+	      "Chinese-format report body",
+	      hasChineseFormatText(allHumanGateText),
+	      hasChineseFormatText(allHumanGateText)
+	        ? `Chinese-format text is present in the record/buttons (${chineseFormatProfile(allHumanGateText).cjkChars} CJK chars).`
+	        : "No Chinese-led report text found in the Human Gate record/buttons.",
+	      latestRecord ? [latestRecord.object_id] : []
+	    );
     const incompleteOptionButtons = approveButtons.filter((button) => !(button.label && button.summary && button.prompt));
     add(
       "option_detail_completeness",
       "Option details complete",
-      approveButtons.length >= 3 && incompleteOptionButtons.length === 0,
+      approveButtons.length >= HUMAN_GATE_APPROVE_OPTION_MIN && approveButtons.length <= HUMAN_GATE_APPROVE_OPTION_MAX && incompleteOptionButtons.length === 0,
       incompleteOptionButtons.length
         ? `${incompleteOptionButtons.length} approve option(s) lack label, summary, or prompt.`
         : "Approve options include label, summary, and prompt.",

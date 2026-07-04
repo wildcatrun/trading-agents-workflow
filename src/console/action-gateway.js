@@ -23,7 +23,30 @@ const DEFAULT_ALLOWED_ACTIONS = new Set([
   "telegram.outbox.requeue.preview",
   "telegram.outbox.requeue.execution_package.preview",
   "workflow.rerun.agent.preview",
-  "workflow.rerun.phase.preview"
+  "workflow.rerun.phase.preview",
+  "workflow.v2.plan.preview",
+  "workflow.v2.info_stack.preview",
+  "workflow.v2.info_stack.read",
+  "workflow.v2.notification.preview",
+  "workflow.v2.worker_backend.preflight",
+  "workflow.v2.worker_spawn.preview",
+  "workflow.v2.owner_review.preview",
+  "workflow.v2.task_group_package.preview",
+  "workflow.v2.cat_brain_audit.preview",
+  "workflow.v2.cat_claw_audit.preview",
+  "workflow.v2.human_gate_package.preview",
+  "workflow.v2.human_gate_request.preview",
+  "workflow.v2.control_loop.preview",
+  "workflow.v2.worker_lifecycle.preview",
+  "workflow.v2.worker_handoff.preview",
+  "workflow.v2.worker_retire.preview",
+  "workflow.v2.worker_successor.preview",
+  "workflow.v2.worker_adapter_job.preview",
+  "workflow.v2.worker_adapter_job.list",
+  "workflow.v2.adapter_runner.preview",
+  "workflow.v2.worker_result.submit.preview",
+  "workflow.v2.worker_result.fail.preview",
+  "workflow.v2.validate"
 ]);
 
 const OPTIONAL_WRITE_ACTIONS = new Set([
@@ -37,10 +60,36 @@ const OPTIONAL_WRITE_ACTIONS = new Set([
   "workflow.incident.closeout.evidence",
   "workflow.incident.closeout.artifact",
   "workflow.incident.closeout.human_gate_request",
+  "workflow.v2.plan.create",
+  "workflow.v2.info_stack.record",
+  "workflow.v2.read_receipt.record",
+  "workflow.v2.worker_backend_preflight.record",
+  "workflow.v2.worker_spawn.create",
+  "workflow.v2.worker_handoff.record",
+  "workflow.v2.worker_retire.record",
+  "workflow.v2.worker_successor.create",
+  "workflow.v2.control_loop.tick",
+  "workflow.v2.worker_adapter_job.record",
+  "workflow.v2.worker_adapter_job.claim",
+  "workflow.v2.worker_adapter_job.heartbeat",
+  "workflow.v2.worker_adapter_job.release",
+  "workflow.v2.worker_adapter_job.fail",
+  "workflow.v2.adapter_runner.drain",
+  "workflow.v2.worker_result.submit",
+  "workflow.v2.worker_result.fail",
+  "workflow.v2.manager_review.record",
+  "workflow.v2.owner_review.record",
+  "workflow.v2.task_group_package.record",
+  "workflow.v2.cat_brain_audit.record",
+  "workflow.v2.cat_claw_audit.record",
+  "workflow.v2.human_gate_package.record",
+  "workflow.v2.human_gate_request",
   "telegram.outbox.delivery",
   "human_gate.inbox",
   "human_gate.console"
 ]);
+
+const READ_ONLY_ACTIONS = new Set(DEFAULT_ALLOWED_ACTIONS);
 
 function nowIso() {
   return new Date().toISOString();
@@ -203,7 +252,7 @@ export class WorkflowActionGateway {
         message
       };
     }
-    if (this.readOnly && !action.endsWith(".preview")) {
+    if (this.readOnly && !READ_ONLY_ACTIONS.has(action)) {
       const message = "workflow console is running in read-only mode";
       await this.appendOperation({ ...record, status: "rejected", error: message, completedAt: startedAt });
       return {

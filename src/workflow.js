@@ -17,7 +17,7 @@ import { DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS } from "./control-loop-bu
 
 const execFileAsync = promisify(execFile);
 
-export const WORKFLOW_SCHEMA_VERSION = 14;
+export const WORKFLOW_SCHEMA_VERSION = 16;
 export const LEGACY_WORKFLOW_ROOT = "/home/flashcat/.openclaw/shared/trading-agents-workflow";
 export const WORKFLOW_CONTROL_PLANE_DB = "workflow_control_plane.db";
 export const LEGACY_TRACKING_DB = "tracking.db";
@@ -57,6 +57,51 @@ const WORKFLOW_TASK_STATUSES = new Set(["pending", "in_progress", "done", "block
 const WORKFLOW_TASK_PRIORITIES = new Set(["flash", "steer", "high", "normal", "low"]);
 const WORKFLOW_SESSION_PACK_STATUSES = new Set(["draft", "active", "disabled", "archived"]);
 const WORKFLOW_SESSION_RUN_STATUSES = new Set(["queued", "running", "completed", "failed", "cancelled"]);
+const WORKFLOW_V2_PLAN_STATUSES = new Set(["draft", "planned", "running", "reviewing", "waiting_human", "blocked", "completed", "cancelled"]);
+const WORKFLOW_V2_WORKFLOW_STATES = new Set(["draft", "planned", "active", "waiting_worker", "waiting_review", "waiting_manager", "waiting_group_discussion", "waiting_cat_brain_check", "waiting_cat_claw_audit", "human_gate_request_due", "waiting_human", "blocked", "completed", "terminated", "cancelled"]);
+const WORKFLOW_V2_NODE_STATUSES = new Set(["planned", "ready", "running", "reviewing", "blocked", "completed", "failed", "cancelled"]);
+const WORKFLOW_V2_WORKER_RUN_STATUSES = new Set(["queued", "retry_scheduled", "running", "submitted_for_review", "accepted", "rejected", "revise_required", "handoff_required", "retired", "successor_spawned", "blocked", "needs_human_gate", "failed", "timed_out", "cancelled"]);
+const WORKFLOW_V2_INFO_CLASSIFICATIONS = new Set(["public", "internal", "sensitive", "secret", "trading"]);
+const WORKFLOW_V2_SENSITIVE_CLASSIFICATIONS = new Set(["sensitive", "secret", "trading"]);
+const WORKFLOW_V2_CONTENT_STORAGES = new Set(["artifact_ref", "inline", "external_ref", "redacted"]);
+const WORKFLOW_V2_WORKER_BACKENDS = new Set(["hermers", "hermers_docker_worker", "claude_code", "claude_code_docker_worker", "codex", "mcp", "script", "local_deterministic"]);
+const WORKFLOW_V2_DISALLOWED_WORKER_BACKENDS = new Set(["openclaw", "openclaw_route_shell"]);
+const WORKFLOW_V2_ADAPTER_JOB_BACKENDS = new Set(["hermers_docker_worker", "claude_code_docker_worker"]);
+const WORKFLOW_V2_ADAPTER_JOB_IMAGES = {
+  hermers_docker_worker: "flashcat/hermes-worker:20260704",
+  claude_code_docker_worker: "flashcat/claude-code-worker:20260704"
+};
+const WORKFLOW_V2_ADAPTER_JOB_STATUSES = new Set(["queued", "retry_scheduled", "running", "completed", "failed", "cancelled"]);
+const WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS = 64_000;
+const WORKFLOW_V2_MAX_CONCURRENT_WORKERS = 200;
+const WORKFLOW_V2_ORCHESTRATION_PATTERNS = new Set([
+  "direct_owner_execution",
+  "owner_worker",
+  "owner_cto_review",
+  "manager_worker",
+  "parallel_manager_sections",
+  "evaluator_optimizer",
+  "autonomous_agent_loop"
+]);
+const WORKFLOW_V2_WORKER_PATTERNS = new Set([
+  "owner_worker",
+  "owner_cto_review",
+  "manager_worker",
+  "parallel_manager_sections",
+  "evaluator_optimizer",
+  "autonomous_agent_loop"
+]);
+const WORKFLOW_V2_NOTIFICATION_PAYLOAD_MODES = new Set(["pointer_only", "legacy_inline"]);
+const WORKFLOW_V2_NOTIFICATION_CHANNELS = new Set(["message_flow", "telegram", "openclaw_im", "local_codex", "workflow_inbox", "none"]);
+const WORKFLOW_V2_REVIEW_DECISIONS = new Set(["accepted", "revise_required", "rejected", "needs_human_gate"]);
+const WORKFLOW_V2_TASK_GROUP_PACKAGE_STATUSES = new Set(["draft", "ready", "revision_required", "cancelled"]);
+const WORKFLOW_V2_CAT_BRAIN_AUDIT_DECISIONS = new Set(["approved", "revision_required", "rejected", "needs_human_gate"]);
+const WORKFLOW_V2_CAT_CLAW_AUDIT_DECISIONS = new Set(["protocol_ready", "protocol_revision_required", "rejected"]);
+const WORKFLOW_V2_HUMAN_GATE_PACKAGE_STATUSES = new Set(["draft", "cat_claw_audited"]);
+const WORKFLOW_V2_HUMAN_GATE_SUBMISSION_KINDS = new Set(["plan_review", "task_output", "final_artifact", "release_gate", "incident_closeout", "scope_confirmation", "information_request"]);
+const WORKFLOW_V2_HUMAN_GATE_INTERACTION_TYPES = new Set(["approval", "artifact_acceptance", "review_feedback", "option_selection", "arbitration", "scope_confirmation", "release_gate", "information_request"]);
+const WORKFLOW_V2_HUMAN_GATE_OPTION_KEYS = ["A", "B", "C", "D", "E"];
+const WORKFLOW_V2_WORKER_HANDOFF_STATUSES = new Set(["draft", "recommended", "required", "accepted", "superseded", "cancelled"]);
 const WORKFLOW_SCHEDULE_STATUSES = new Set(["active", "paused", "disabled"]);
 const WORKFLOW_SCHEDULE_KINDS = new Set(["cron", "interval"]);
 const WORKFLOW_SCHEDULE_CONCURRENCY_POLICIES = new Set(["skip", "allow"]);
@@ -93,11 +138,13 @@ const HUMAN_GATE_CONTROL_STYLES = {
   terminated: "danger"
 };
 const HUMAN_GATE_REDACTED_DETAIL_KEY = /callback|token|secret|password|api[_-]?key|access[_-]?key|refresh/i;
+const HUMAN_GATE_APPROVE_OPTION_MIN = 2;
+const HUMAN_GATE_APPROVE_OPTION_MAX = 5;
 const TELEGRAM_OUTBOX_DELIVERY_LEASE_MS = 120_000;
 const HUMAN_GATE_ZH_TEXT = new Map([
   [
-    "Hermes cron/heartbeat migration Human Gate: choose A/B/C next path after cat_claw audit pass. Recommended path remains Plan C unless Flashcat selects otherwise.",
-    "Hermes cron/heartbeat 迁移 Human Gate：猫爪复核通过后，请在 A/B/C 中选择下一步路径。除非闪电猫另行选择，建议路径仍为方案 C。"
+    "Hermes cron/heartbeat migration Human Gate: choose an approved option after cat_claw audit pass. Recommended path remains the controlled pilot unless Flashcat selects otherwise.",
+    "Hermes cron/heartbeat 迁移 Human Gate：猫爪复核通过后，请在可批准方案中选择下一步路径。除非闪电猫另行选择，建议路径仍为受控试点。"
   ],
   ["Freeze-and-map only", "冻结现状并梳理边界"],
   ["Controlled pilot with dual-path verification", "受控试点并保留双路径验证"],
@@ -151,6 +198,29 @@ const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.verification.list",
   "workflow.session_pack.get",
   "workflow.session_pack.list",
+  "workflow.v2.plan.preview",
+  "workflow.v2.info_stack.preview",
+  "workflow.v2.info_stack.read",
+  "workflow.v2.worker_spawn.preview",
+  "workflow.v2.notification.preview",
+  "workflow.v2.worker_backend.preflight",
+  "workflow.v2.owner_review.preview",
+  "workflow.v2.task_group_package.preview",
+  "workflow.v2.cat_brain_audit.preview",
+  "workflow.v2.cat_claw_audit.preview",
+  "workflow.v2.human_gate_package.preview",
+  "workflow.v2.human_gate_request.preview",
+  "workflow.v2.control_loop.preview",
+  "workflow.v2.worker_lifecycle.preview",
+  "workflow.v2.worker_handoff.preview",
+  "workflow.v2.worker_retire.preview",
+  "workflow.v2.worker_successor.preview",
+  "workflow.v2.worker_adapter_job.preview",
+  "workflow.v2.worker_adapter_job.list",
+  "workflow.v2.adapter_runner.preview",
+  "workflow.v2.worker_result.submit.preview",
+  "workflow.v2.worker_result.fail.preview",
+  "workflow.v2.validate",
   "workflow.schedule.list",
   "human_gate.web_app_review",
   "human_gate.inbox",
@@ -176,7 +246,29 @@ const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
 ]);
 
 const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
-  "workflow.task.draft"
+  "workflow.task.draft",
+  "workflow.v2.plan.preview",
+  "workflow.v2.info_stack.preview",
+  "workflow.v2.info_stack.read",
+  "workflow.v2.worker_spawn.preview",
+  "workflow.v2.notification.preview",
+  "workflow.v2.worker_backend.preflight",
+  "workflow.v2.owner_review.preview",
+  "workflow.v2.task_group_package.preview",
+  "workflow.v2.cat_brain_audit.preview",
+  "workflow.v2.cat_claw_audit.preview",
+  "workflow.v2.human_gate_package.preview",
+  "workflow.v2.human_gate_request.preview",
+  "workflow.v2.control_loop.preview",
+  "workflow.v2.worker_lifecycle.preview",
+  "workflow.v2.worker_handoff.preview",
+  "workflow.v2.worker_retire.preview",
+  "workflow.v2.worker_successor.preview",
+  "workflow.v2.worker_adapter_job.preview",
+  "workflow.v2.adapter_runner.preview",
+  "workflow.v2.worker_result.submit.preview",
+  "workflow.v2.worker_result.fail.preview",
+  "workflow.v2.validate"
 ]);
 
 const WORKFLOW_ACTION_ALIASES = {
@@ -312,6 +404,136 @@ const WORKFLOW_ACTION_ALIASES = {
   "session_run.start": "workflow.session_run.start",
   "workflow.session.run.complete": "workflow.session_run.complete",
   "session_run.complete": "workflow.session_run.complete",
+  "workflow.v2.plan.draft": "workflow.v2.plan.preview",
+  "workflow.v2.plan.create.preview": "workflow.v2.plan.preview",
+  "workflow.v2.info-stack.preview": "workflow.v2.info_stack.preview",
+  "workflow.v2.info_stack.draft": "workflow.v2.info_stack.preview",
+  "workflow.v2.info-stack.record": "workflow.v2.info_stack.record",
+  "workflow.v2.info-stack.read": "workflow.v2.info_stack.read",
+  "workflow.v2.read-receipt.record": "workflow.v2.read_receipt.record",
+  "workflow.v2.info_stack.read_receipt.record": "workflow.v2.read_receipt.record",
+  "workflow.v2.worker-spawn.preview": "workflow.v2.worker_spawn.preview",
+  "workflow.v2.worker_spawn.draft": "workflow.v2.worker_spawn.preview",
+  "workflow.v2.worker-spawn.create": "workflow.v2.worker_spawn.create",
+  "workflow.v2.worker_backend.preview": "workflow.v2.worker_backend.preflight",
+  "workflow.v2.worker-backend.preflight": "workflow.v2.worker_backend.preflight",
+  "workflow.v2.worker_backend.preflight.record": "workflow.v2.worker_backend_preflight.record",
+  "workflow.v2.worker-backend.preflight.record": "workflow.v2.worker_backend_preflight.record",
+  "workflow.v2.backend.preflight.record": "workflow.v2.worker_backend_preflight.record",
+  "workflow.v2.backend.preflight": "workflow.v2.worker_backend.preflight",
+  "workflow.v2.owner-review.preview": "workflow.v2.owner_review.preview",
+  "workflow.v2.owner_review.record": "workflow.v2.owner_review.record",
+  "workflow.v2.owner-review.record": "workflow.v2.owner_review.record",
+  "workflow.v2.task-group-package.preview": "workflow.v2.task_group_package.preview",
+  "workflow.v2.task_group_package.record": "workflow.v2.task_group_package.record",
+  "workflow.v2.task-group-package.record": "workflow.v2.task_group_package.record",
+  "workflow.v2.group_package.preview": "workflow.v2.task_group_package.preview",
+  "workflow.v2.group-package.preview": "workflow.v2.task_group_package.preview",
+  "workflow.v2.group_package.record": "workflow.v2.task_group_package.record",
+  "workflow.v2.group-package.record": "workflow.v2.task_group_package.record",
+  "workflow.v2.cat-brain-audit.preview": "workflow.v2.cat_brain_audit.preview",
+  "workflow.v2.cat_brain_audit.record": "workflow.v2.cat_brain_audit.record",
+  "workflow.v2.cat-brain-audit.record": "workflow.v2.cat_brain_audit.record",
+  "workflow.v2.cat-claw-audit.preview": "workflow.v2.cat_claw_audit.preview",
+  "workflow.v2.cat_claw_audit.record": "workflow.v2.cat_claw_audit.record",
+  "workflow.v2.cat-claw-audit.record": "workflow.v2.cat_claw_audit.record",
+  "workflow.v2.human-gate-package.preview": "workflow.v2.human_gate_package.preview",
+  "workflow.v2.human-gate-package.record": "workflow.v2.human_gate_package.record",
+  "workflow.v2.human-gate-request.preview": "workflow.v2.human_gate_request.preview",
+  "workflow.v2.human_gate_request.submit.preview": "workflow.v2.human_gate_request.preview",
+  "workflow.v2.human-gate-request.submit.preview": "workflow.v2.human_gate_request.preview",
+  "workflow.v2.human-gate-request": "workflow.v2.human_gate_request",
+  "workflow.v2.human_gate_request.submit": "workflow.v2.human_gate_request",
+  "workflow.v2.human-gate-request.submit": "workflow.v2.human_gate_request",
+  "workflow.v2.control-loop.preview": "workflow.v2.control_loop.preview",
+  "workflow.v2.worker_queue.preview": "workflow.v2.control_loop.preview",
+  "workflow.v2.worker-queue.preview": "workflow.v2.control_loop.preview",
+  "workflow.v2.worker_lifecycle": "workflow.v2.worker_lifecycle.preview",
+  "workflow.v2.worker-lifecycle": "workflow.v2.worker_lifecycle.preview",
+  "workflow.v2.worker_lifecycle.preview": "workflow.v2.worker_lifecycle.preview",
+  "workflow.v2.worker-lifecycle.preview": "workflow.v2.worker_lifecycle.preview",
+  "workflow.v2.worker_renewal.preview": "workflow.v2.worker_lifecycle.preview",
+  "workflow.v2.worker-renewal.preview": "workflow.v2.worker_lifecycle.preview",
+  "workflow.v2.worker_handoff.preview": "workflow.v2.worker_handoff.preview",
+  "workflow.v2.worker-handoff.preview": "workflow.v2.worker_handoff.preview",
+  "workflow.v2.worker_handoff.record": "workflow.v2.worker_handoff.record",
+  "workflow.v2.worker-handoff.record": "workflow.v2.worker_handoff.record",
+  "workflow.v2.worker_retire.preview": "workflow.v2.worker_retire.preview",
+  "workflow.v2.worker-retire.preview": "workflow.v2.worker_retire.preview",
+  "workflow.v2.worker_retire.record": "workflow.v2.worker_retire.record",
+  "workflow.v2.worker-retire.record": "workflow.v2.worker_retire.record",
+  "workflow.v2.worker_successor.preview": "workflow.v2.worker_successor.preview",
+  "workflow.v2.worker-successor.preview": "workflow.v2.worker_successor.preview",
+  "workflow.v2.worker_successor.create": "workflow.v2.worker_successor.create",
+  "workflow.v2.worker-successor.create": "workflow.v2.worker_successor.create",
+  "workflow.v2.worker_renewal.create": "workflow.v2.worker_successor.create",
+  "workflow.v2.worker-renewal.create": "workflow.v2.worker_successor.create",
+  "workflow.v2.control-loop.tick": "workflow.v2.control_loop.tick",
+  "workflow.v2.worker_queue.tick": "workflow.v2.control_loop.tick",
+  "workflow.v2.worker-queue.tick": "workflow.v2.control_loop.tick",
+  "workflow.v2.worker-adapter-job.preview": "workflow.v2.worker_adapter_job.preview",
+  "workflow.v2.worker_runner_job.preview": "workflow.v2.worker_adapter_job.preview",
+  "workflow.v2.worker-runner-job.preview": "workflow.v2.worker_adapter_job.preview",
+  "workflow.v2.adapter_job.preview": "workflow.v2.worker_adapter_job.preview",
+  "workflow.v2.adapter-job.preview": "workflow.v2.worker_adapter_job.preview",
+  "workflow.v2.worker-adapter-job.record": "workflow.v2.worker_adapter_job.record",
+  "workflow.v2.worker_runner_job.record": "workflow.v2.worker_adapter_job.record",
+  "workflow.v2.worker-runner-job.record": "workflow.v2.worker_adapter_job.record",
+  "workflow.v2.adapter_job.record": "workflow.v2.worker_adapter_job.record",
+  "workflow.v2.adapter-job.record": "workflow.v2.worker_adapter_job.record",
+  "workflow.v2.worker-adapter-job.list": "workflow.v2.worker_adapter_job.list",
+  "workflow.v2.worker_runner_job.list": "workflow.v2.worker_adapter_job.list",
+  "workflow.v2.worker-runner-job.list": "workflow.v2.worker_adapter_job.list",
+  "workflow.v2.adapter_job.list": "workflow.v2.worker_adapter_job.list",
+  "workflow.v2.adapter-job.list": "workflow.v2.worker_adapter_job.list",
+  "workflow.v2.worker-adapter-job.claim": "workflow.v2.worker_adapter_job.claim",
+  "workflow.v2.worker_runner_job.claim": "workflow.v2.worker_adapter_job.claim",
+  "workflow.v2.worker-runner-job.claim": "workflow.v2.worker_adapter_job.claim",
+  "workflow.v2.adapter_job.claim": "workflow.v2.worker_adapter_job.claim",
+  "workflow.v2.adapter-job.claim": "workflow.v2.worker_adapter_job.claim",
+  "workflow.v2.worker-adapter-job.heartbeat": "workflow.v2.worker_adapter_job.heartbeat",
+  "workflow.v2.worker_runner_job.heartbeat": "workflow.v2.worker_adapter_job.heartbeat",
+  "workflow.v2.worker-runner-job.heartbeat": "workflow.v2.worker_adapter_job.heartbeat",
+  "workflow.v2.adapter_job.heartbeat": "workflow.v2.worker_adapter_job.heartbeat",
+  "workflow.v2.adapter-job.heartbeat": "workflow.v2.worker_adapter_job.heartbeat",
+  "workflow.v2.worker-adapter-job.release": "workflow.v2.worker_adapter_job.release",
+  "workflow.v2.worker_runner_job.release": "workflow.v2.worker_adapter_job.release",
+  "workflow.v2.worker-runner-job.release": "workflow.v2.worker_adapter_job.release",
+  "workflow.v2.adapter_job.release": "workflow.v2.worker_adapter_job.release",
+  "workflow.v2.adapter-job.release": "workflow.v2.worker_adapter_job.release",
+  "workflow.v2.worker-adapter-job.fail": "workflow.v2.worker_adapter_job.fail",
+  "workflow.v2.worker_runner_job.fail": "workflow.v2.worker_adapter_job.fail",
+  "workflow.v2.worker-runner-job.fail": "workflow.v2.worker_adapter_job.fail",
+  "workflow.v2.adapter_job.fail": "workflow.v2.worker_adapter_job.fail",
+  "workflow.v2.adapter-job.fail": "workflow.v2.worker_adapter_job.fail",
+  "workflow.v2.adapter_runner.preview": "workflow.v2.adapter_runner.preview",
+  "workflow.v2.adapter-runner.preview": "workflow.v2.adapter_runner.preview",
+  "workflow.v2.worker_adapter_runner.preview": "workflow.v2.adapter_runner.preview",
+  "workflow.v2.worker-adapter-runner.preview": "workflow.v2.adapter_runner.preview",
+  "workflow.v2.runner.drain.preview": "workflow.v2.adapter_runner.preview",
+  "workflow.v2.adapter_runner.drain": "workflow.v2.adapter_runner.drain",
+  "workflow.v2.adapter-runner.drain": "workflow.v2.adapter_runner.drain",
+  "workflow.v2.worker_adapter_runner.drain": "workflow.v2.adapter_runner.drain",
+  "workflow.v2.worker-adapter-runner.drain": "workflow.v2.adapter_runner.drain",
+  "workflow.v2.runner.drain": "workflow.v2.adapter_runner.drain",
+  "workflow.v2.worker-result.submit.preview": "workflow.v2.worker_result.submit.preview",
+  "workflow.v2.worker_result.complete.preview": "workflow.v2.worker_result.submit.preview",
+  "workflow.v2.worker-result.complete.preview": "workflow.v2.worker_result.submit.preview",
+  "workflow.v2.worker_queue.complete.preview": "workflow.v2.worker_result.submit.preview",
+  "workflow.v2.worker-queue.complete.preview": "workflow.v2.worker_result.submit.preview",
+  "workflow.v2.worker-result.submit": "workflow.v2.worker_result.submit",
+  "workflow.v2.worker_result.complete": "workflow.v2.worker_result.submit",
+  "workflow.v2.worker-result.complete": "workflow.v2.worker_result.submit",
+  "workflow.v2.worker_queue.complete": "workflow.v2.worker_result.submit",
+  "workflow.v2.worker-queue.complete": "workflow.v2.worker_result.submit",
+  "workflow.v2.worker-result.fail.preview": "workflow.v2.worker_result.fail.preview",
+  "workflow.v2.worker_queue.fail.preview": "workflow.v2.worker_result.fail.preview",
+  "workflow.v2.worker-queue.fail.preview": "workflow.v2.worker_result.fail.preview",
+  "workflow.v2.worker-result.fail": "workflow.v2.worker_result.fail",
+  "workflow.v2.worker_queue.fail": "workflow.v2.worker_result.fail",
+  "workflow.v2.worker-queue.fail": "workflow.v2.worker_result.fail",
+  "workflow.v2.consistency.validate": "workflow.v2.validate",
+  "workflow.v2.validator": "workflow.v2.validate",
   "runtime.agent": "runtime.agent.upsert",
   "route-shell.ingest": "route_shell.ingest",
   "route_shell.route": "route_shell.ingest",
@@ -371,6 +593,31 @@ const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.session_pack.upsert": { capability: "session.write", risk: "medium", mutating: true },
   "workflow.session_run.start": { capability: "session.run", risk: "medium", mutating: true },
   "workflow.session_run.complete": { capability: "session.run", risk: "medium", mutating: true },
+  "workflow.v2.plan.create": { capability: "workflow.write", risk: "medium", mutating: true },
+  "workflow.v2.info_stack.record": { capability: "workflow.info_stack.write", risk: "medium", mutating: true },
+  "workflow.v2.read_receipt.record": { capability: "workflow.info_stack.read_receipt", risk: "low", mutating: true },
+  "workflow.v2.worker_backend_preflight.record": { capability: "workflow.worker.preflight", risk: "medium", mutating: true },
+  "workflow.v2.worker_spawn.create": { capability: "workflow.worker.spawn", risk: "medium", mutating: true },
+  "workflow.v2.worker_lifecycle.preview": { capability: "workflow.worker.lifecycle", risk: "low", mutating: false },
+  "workflow.v2.worker_handoff.record": { capability: "workflow.worker.lifecycle", risk: "medium", mutating: true },
+  "workflow.v2.worker_retire.record": { capability: "workflow.worker.lifecycle", risk: "medium", mutating: true },
+  "workflow.v2.worker_successor.create": { capability: "workflow.worker.lifecycle", risk: "medium", mutating: true },
+  "workflow.v2.control_loop.tick": { capability: "workflow.worker.control_loop", risk: "medium", mutating: true },
+  "workflow.v2.worker_adapter_job.record": { capability: "workflow.worker.adapter_job", risk: "medium", mutating: true },
+  "workflow.v2.worker_adapter_job.claim": { capability: "workflow.worker.adapter_job", risk: "medium", mutating: true },
+  "workflow.v2.worker_adapter_job.heartbeat": { capability: "workflow.worker.adapter_job", risk: "medium", mutating: true },
+  "workflow.v2.worker_adapter_job.release": { capability: "workflow.worker.adapter_job", risk: "medium", mutating: true },
+  "workflow.v2.worker_adapter_job.fail": { capability: "workflow.worker.adapter_job", risk: "medium", mutating: true },
+  "workflow.v2.adapter_runner.drain": { capability: "workflow.worker.adapter_runner", risk: "medium", mutating: true },
+  "workflow.v2.worker_result.submit": { capability: "workflow.worker.result", risk: "medium", mutating: true },
+  "workflow.v2.worker_result.fail": { capability: "workflow.worker.result", risk: "medium", mutating: true },
+  "workflow.v2.manager_review.record": { capability: "workflow.verify", risk: "medium", mutating: true },
+  "workflow.v2.owner_review.record": { capability: "workflow.verify", risk: "medium", mutating: true },
+  "workflow.v2.task_group_package.record": { capability: "workflow.verify", risk: "medium", mutating: true },
+  "workflow.v2.cat_brain_audit.record": { capability: "workflow.verify", risk: "medium", mutating: true },
+  "workflow.v2.cat_claw_audit.record": { capability: "cat_claw.audit", risk: "medium", mutating: true },
+  "workflow.v2.human_gate_package.record": { capability: "human_gate.write", risk: "high", mutating: true },
+  "workflow.v2.human_gate_request": { capability: "human_gate.write", risk: "high", mutating: true },
   "runtime.agent.upsert": { capability: "registry.write", risk: "high", mutating: true, requiresCatClawAudit: true },
   "route_shell.ingest": { capability: "message_flow.send", risk: "low", mutating: true },
   "meeting.runtime_participant": { capability: "dispatch.write", risk: "medium", mutating: true },
@@ -2064,6 +2311,15 @@ async function writeJsonAtomic(filePath, payload) {
   await fs.rename(tmpPath, filePath);
 }
 
+async function pathExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isSqliteConstraintError(error) {
   const text = `${error?.message || ""}\n${error?.stderr || ""}`.toLowerCase();
   return text.includes("constraint failed") || text.includes("unique constraint failed");
@@ -2081,6 +2337,30 @@ async function ensureColumns(dbFile, tableName, columns) {
       await sqlite(dbFile, `ALTER TABLE ${tableName} ADD COLUMN ${name} ${definition};`);
     }
   }
+}
+
+async function ensureLegacyWorkflowV2PlanColumnsForInit(dbFile) {
+  const existing = await tableColumns(dbFile, "workflow_v2_plans");
+  if (!existing.size) return;
+  await ensureColumns(dbFile, "workflow_v2_plans", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_revision", "INTEGER NOT NULL DEFAULT 1"],
+    ["status", "TEXT NOT NULL DEFAULT 'draft'"],
+    ["workflow_state", "TEXT NOT NULL DEFAULT 'draft'"],
+    ["task_owner_agent", "TEXT NOT NULL DEFAULT ''"],
+    ["planner_agent", "TEXT NOT NULL DEFAULT 'main'"],
+    ["objective", "TEXT NOT NULL DEFAULT ''"],
+    ["participant_managers_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["acceptance_criteria_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["constraints_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["human_gate_policy_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["plan_spec_artifact_ref", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_spec_artifact_hash", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
 }
 
 async function ensureWorkflowLayout(rootDir, input = {}) {
@@ -2151,6 +2431,7 @@ async function ensureWorkflowTemplates(paths) {
 }
 
 async function initDatabase(dbFile) {
+  await ensureLegacyWorkflowV2PlanColumnsForInit(dbFile);
   const schema = `
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -3020,6 +3301,340 @@ CREATE TABLE IF NOT EXISTS control_loop_jobs (
 CREATE INDEX IF NOT EXISTS idx_control_loop_jobs_status ON control_loop_jobs(status, next_run_at, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_control_loop_jobs_workflow ON control_loop_jobs(workflow_id, status, updated_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_control_loop_jobs_active_dedupe ON control_loop_jobs(dedupe_key) WHERE status IN ('queued','running','retry_scheduled');
+CREATE TABLE IF NOT EXISTS workflow_v2_plans (
+  plan_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_revision INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'draft',
+  workflow_state TEXT NOT NULL DEFAULT 'draft',
+  task_owner_agent TEXT NOT NULL,
+  planner_agent TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  participant_managers_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+  constraints_json TEXT NOT NULL DEFAULT '{}',
+  human_gate_policy_json TEXT NOT NULL DEFAULT '{}',
+  plan_spec_artifact_ref TEXT NOT NULL DEFAULT '',
+  plan_spec_artifact_hash TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_v2_plans_workflow ON workflow_v2_plans(workflow_id, plan_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_plans_status ON workflow_v2_plans(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_plans_workflow_state ON workflow_v2_plans(workflow_state, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_plan_nodes (
+  node_id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL,
+  workflow_id TEXT NOT NULL,
+  parent_node_id TEXT,
+  node_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'planned',
+  owner_agent TEXT NOT NULL DEFAULT '',
+  runtime_backend TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL DEFAULT '',
+  depends_on_json TEXT NOT NULL DEFAULT '[]',
+  input_info_id TEXT NOT NULL DEFAULT '',
+  output_info_id TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_nodes_plan ON workflow_v2_plan_nodes(plan_id, status, node_type);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_nodes_workflow ON workflow_v2_plan_nodes(workflow_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_info_items (
+  info_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  node_id TEXT NOT NULL DEFAULT '',
+  worker_run_id TEXT NOT NULL DEFAULT '',
+  classification TEXT NOT NULL DEFAULT 'internal',
+  content_storage TEXT NOT NULL DEFAULT 'artifact_ref',
+  content_ref TEXT NOT NULL DEFAULT '',
+  content_hash TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (classification NOT IN ('sensitive','secret','trading') OR content_storage != 'inline')
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_info_workflow ON workflow_v2_info_items(workflow_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_info_plan_node ON workflow_v2_info_items(plan_id, node_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_inbox_items (
+  inbox_item_id TEXT PRIMARY KEY,
+  info_id TEXT NOT NULL,
+  workflow_id TEXT NOT NULL,
+  recipient_kind TEXT NOT NULL,
+  recipient_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  notification_id TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_inbox_recipient ON workflow_v2_inbox_items(recipient_kind, recipient_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_inbox_info ON workflow_v2_inbox_items(info_id);
+CREATE TABLE IF NOT EXISTS workflow_v2_access_grants (
+  grant_id TEXT PRIMARY KEY,
+  info_id TEXT NOT NULL,
+  inbox_item_id TEXT NOT NULL DEFAULT '',
+  principal_kind TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  access_mode TEXT NOT NULL DEFAULT 'read',
+  token_ref TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_grants_info ON workflow_v2_access_grants(info_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_grants_principal ON workflow_v2_access_grants(principal_kind, principal_id, status);
+CREATE TABLE IF NOT EXISTS workflow_v2_read_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  info_id TEXT NOT NULL,
+  inbox_item_id TEXT NOT NULL DEFAULT '',
+  grant_id TEXT NOT NULL DEFAULT '',
+  reader_kind TEXT NOT NULL DEFAULT '',
+  reader_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'read',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_read_receipts_info ON workflow_v2_read_receipts(info_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_read_receipts_reader ON workflow_v2_read_receipts(reader_kind, reader_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_worker_runs (
+  worker_run_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  parent_worker_run_id TEXT NOT NULL DEFAULT '',
+  supersedes_worker_run_id TEXT NOT NULL DEFAULT '',
+  successor_worker_run_id TEXT NOT NULL DEFAULT '',
+  worker_generation INTEGER NOT NULL DEFAULT 0,
+  manager_agent TEXT NOT NULL,
+  worker_agent_id TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL,
+  session_run_id TEXT NOT NULL DEFAULT '',
+  preflight_id TEXT NOT NULL DEFAULT '',
+  runtime_backend TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  attempt INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_until TEXT NOT NULL DEFAULT '',
+  next_retry_at TEXT NOT NULL DEFAULT '',
+  task_input_info_id TEXT NOT NULL DEFAULT '',
+  output_info_id TEXT NOT NULL DEFAULT '',
+  handoff_info_id TEXT NOT NULL DEFAULT '',
+  receipt_ref TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  context_budget_tokens INTEGER NOT NULL DEFAULT 0,
+  context_used_tokens INTEGER NOT NULL DEFAULT 0,
+  compaction_count INTEGER NOT NULL DEFAULT 0,
+  source_context_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT NOT NULL DEFAULT '',
+  completed_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_workflow ON workflow_v2_worker_runs(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_manager ON workflow_v2_worker_runs(manager_agent, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_session ON workflow_v2_worker_runs(session_id, session_run_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_preflight ON workflow_v2_worker_runs(preflight_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_lineage ON workflow_v2_worker_runs(parent_worker_run_id, supersedes_worker_run_id, successor_worker_run_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_queue ON workflow_v2_worker_runs(status, next_retry_at, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_lease ON workflow_v2_worker_runs(status, lease_until);
+CREATE TABLE IF NOT EXISTS workflow_v2_worker_adapter_jobs (
+  adapter_job_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  node_id TEXT NOT NULL DEFAULT '',
+  worker_run_id TEXT NOT NULL,
+  session_run_id TEXT NOT NULL DEFAULT '',
+  runtime_backend TEXT NOT NULL,
+  worker_attempt INTEGER NOT NULL DEFAULT 0,
+  runner_attempt INTEGER NOT NULL DEFAULT 0,
+  max_runner_attempts INTEGER NOT NULL DEFAULT 3,
+  status TEXT NOT NULL DEFAULT 'queued',
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_until TEXT NOT NULL DEFAULT '',
+  next_retry_at TEXT NOT NULL DEFAULT '',
+  runner_id TEXT NOT NULL DEFAULT '',
+  artifact_ref TEXT NOT NULL DEFAULT '',
+  artifact_id TEXT NOT NULL DEFAULT '',
+  info_id TEXT NOT NULL DEFAULT '',
+  manifest_hash TEXT NOT NULL DEFAULT '',
+  runner_receipt_ref TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_v2_adapter_jobs_worker_attempt ON workflow_v2_worker_adapter_jobs(worker_run_id, worker_attempt);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_adapter_jobs_queue ON workflow_v2_worker_adapter_jobs(status, runtime_backend, next_retry_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_adapter_jobs_lease ON workflow_v2_worker_adapter_jobs(status, lease_until);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_adapter_jobs_workflow ON workflow_v2_worker_adapter_jobs(workflow_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_worker_handoffs (
+  handoff_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  node_id TEXT NOT NULL DEFAULT '',
+  worker_run_id TEXT NOT NULL,
+  manager_agent TEXT NOT NULL,
+  successor_worker_run_id TEXT NOT NULL DEFAULT '',
+  handoff_info_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  reason TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  source_context_refs_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  receipt_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_handoffs_workflow ON workflow_v2_worker_handoffs(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_handoffs_worker ON workflow_v2_worker_handoffs(worker_run_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_manager_reviews (
+  review_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  node_id TEXT NOT NULL DEFAULT '',
+  worker_run_id TEXT NOT NULL DEFAULT '',
+  reviewer_agent TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  receipt_refs_json TEXT NOT NULL DEFAULT '[]',
+  blocker_json TEXT NOT NULL DEFAULT '{}',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_reviews_workflow ON workflow_v2_manager_reviews(workflow_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_reviews_worker ON workflow_v2_manager_reviews(worker_run_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_owner_reviews (
+  review_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  owner_agent TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  manager_review_refs_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  receipt_refs_json TEXT NOT NULL DEFAULT '[]',
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_owner_reviews_workflow ON workflow_v2_owner_reviews(workflow_id, decision, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_task_group_packages (
+  package_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  owner_review_id TEXT NOT NULL DEFAULT '',
+  task_owner_agent TEXT NOT NULL,
+  task_group_agents_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'draft',
+  summary TEXT NOT NULL DEFAULT '',
+  manager_review_refs_json TEXT NOT NULL DEFAULT '[]',
+  owner_review_refs_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_task_group_packages_workflow ON workflow_v2_task_group_packages(workflow_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_cat_brain_audits (
+  audit_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  task_group_package_id TEXT NOT NULL DEFAULT '',
+  cat_brain_agent TEXT NOT NULL DEFAULT 'main',
+  decision TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'governance_semantic',
+  summary TEXT NOT NULL DEFAULT '',
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_cat_brain_audits_workflow ON workflow_v2_cat_brain_audits(workflow_id, decision, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_cat_claw_audits (
+  audit_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  cat_brain_audit_id TEXT NOT NULL DEFAULT '',
+  cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
+  decision TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  checks_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_cat_claw_audits_workflow ON workflow_v2_cat_claw_audits(workflow_id, decision, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_notifications (
+  notification_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  info_id TEXT NOT NULL DEFAULT '',
+  inbox_item_id TEXT NOT NULL DEFAULT '',
+  message_flow_id TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT 'message_flow',
+  target_agent TEXT NOT NULL DEFAULT '',
+  payload_mode TEXT NOT NULL DEFAULT 'pointer_only',
+  status TEXT NOT NULL DEFAULT 'prepared',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_notifications_workflow ON workflow_v2_notifications(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_notifications_info ON workflow_v2_notifications(info_id, inbox_item_id);
+CREATE TABLE IF NOT EXISTS workflow_v2_human_gate_packages (
+  package_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  source_review_id TEXT NOT NULL DEFAULT '',
+  source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  cat_brain_agent TEXT NOT NULL DEFAULT 'main',
+  cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'cat_claw_audited')),
+  options_json TEXT NOT NULL DEFAULT '[]',
+  required_controls_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_hgate_workflow ON workflow_v2_human_gate_packages(workflow_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_backend_preflights (
+  preflight_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL DEFAULT '',
+  backend_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_backend_preflights_backend ON workflow_v2_backend_preflights(backend_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS workflow_operations (
   operation_id TEXT PRIMARY KEY,
   action TEXT NOT NULL,
@@ -3128,6 +3743,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_operations_operation_id ON workfl
 CREATE INDEX IF NOT EXISTS idx_workflow_operations_status ON workflow_operations(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_operations_scope ON workflow_operations(scope_type, scope_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_operations_workflow ON workflow_operations(workflow_id, updated_at DESC);`, { json: false });
+  await ensureWorkflowV2Schema(dbFile);
   await ensureColumns(dbFile, "runtime_agents", [
     ["platform", "TEXT NOT NULL DEFAULT ''"],
     ["execution_adapter", "TEXT NOT NULL DEFAULT ''"],
@@ -3661,6 +4277,625 @@ CREATE TABLE IF NOT EXISTS human_gate_batch_items (
 CREATE INDEX IF NOT EXISTS idx_human_gate_batch_items_batch ON human_gate_batch_items(batch_id, risk_tier, status);
 CREATE INDEX IF NOT EXISTS idx_human_gate_batch_items_source ON human_gate_batch_items(source_type, source_id);
 `);
+}
+
+async function ensureWorkflowV2Schema(dbFile) {
+  await sqlite(dbFile, `
+CREATE TABLE IF NOT EXISTS workflow_v2_plans (
+  plan_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_revision INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'draft',
+  workflow_state TEXT NOT NULL DEFAULT 'draft',
+  task_owner_agent TEXT NOT NULL,
+  planner_agent TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  participant_managers_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+  constraints_json TEXT NOT NULL DEFAULT '{}',
+  human_gate_policy_json TEXT NOT NULL DEFAULT '{}',
+  plan_spec_artifact_ref TEXT NOT NULL DEFAULT '',
+  plan_spec_artifact_hash TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_plan_nodes (
+  node_id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL,
+  workflow_id TEXT NOT NULL,
+  parent_node_id TEXT,
+  node_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'planned',
+  owner_agent TEXT NOT NULL DEFAULT '',
+  runtime_backend TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL DEFAULT '',
+  depends_on_json TEXT NOT NULL DEFAULT '[]',
+  input_info_id TEXT NOT NULL DEFAULT '',
+  output_info_id TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_info_items (
+  info_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  node_id TEXT NOT NULL DEFAULT '',
+  worker_run_id TEXT NOT NULL DEFAULT '',
+  classification TEXT NOT NULL DEFAULT 'internal',
+  content_storage TEXT NOT NULL DEFAULT 'artifact_ref',
+  content_ref TEXT NOT NULL DEFAULT '',
+  content_hash TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (classification NOT IN ('sensitive','secret','trading') OR content_storage != 'inline')
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_inbox_items (
+  inbox_item_id TEXT PRIMARY KEY,
+  info_id TEXT NOT NULL,
+  workflow_id TEXT NOT NULL,
+  recipient_kind TEXT NOT NULL,
+  recipient_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  notification_id TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_access_grants (
+  grant_id TEXT PRIMARY KEY,
+  info_id TEXT NOT NULL,
+  inbox_item_id TEXT NOT NULL DEFAULT '',
+  principal_kind TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  access_mode TEXT NOT NULL DEFAULT 'read',
+  token_ref TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_read_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  info_id TEXT NOT NULL,
+  inbox_item_id TEXT NOT NULL DEFAULT '',
+  grant_id TEXT NOT NULL DEFAULT '',
+  reader_kind TEXT NOT NULL DEFAULT '',
+  reader_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'read',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_worker_runs (
+  worker_run_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  parent_worker_run_id TEXT NOT NULL DEFAULT '',
+  supersedes_worker_run_id TEXT NOT NULL DEFAULT '',
+  successor_worker_run_id TEXT NOT NULL DEFAULT '',
+  worker_generation INTEGER NOT NULL DEFAULT 0,
+  manager_agent TEXT NOT NULL,
+  worker_agent_id TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL,
+  session_run_id TEXT NOT NULL DEFAULT '',
+  preflight_id TEXT NOT NULL DEFAULT '',
+  runtime_backend TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  attempt INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_until TEXT NOT NULL DEFAULT '',
+  next_retry_at TEXT NOT NULL DEFAULT '',
+  task_input_info_id TEXT NOT NULL DEFAULT '',
+  output_info_id TEXT NOT NULL DEFAULT '',
+  handoff_info_id TEXT NOT NULL DEFAULT '',
+  receipt_ref TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  context_budget_tokens INTEGER NOT NULL DEFAULT 0,
+  context_used_tokens INTEGER NOT NULL DEFAULT 0,
+  compaction_count INTEGER NOT NULL DEFAULT 0,
+  source_context_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT NOT NULL DEFAULT '',
+  completed_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_worker_adapter_jobs (
+  adapter_job_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  node_id TEXT NOT NULL DEFAULT '',
+  worker_run_id TEXT NOT NULL,
+  session_run_id TEXT NOT NULL DEFAULT '',
+  runtime_backend TEXT NOT NULL,
+  worker_attempt INTEGER NOT NULL DEFAULT 0,
+  runner_attempt INTEGER NOT NULL DEFAULT 0,
+  max_runner_attempts INTEGER NOT NULL DEFAULT 3,
+  status TEXT NOT NULL DEFAULT 'queued',
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_until TEXT NOT NULL DEFAULT '',
+  next_retry_at TEXT NOT NULL DEFAULT '',
+  runner_id TEXT NOT NULL DEFAULT '',
+  artifact_ref TEXT NOT NULL DEFAULT '',
+  artifact_id TEXT NOT NULL DEFAULT '',
+  info_id TEXT NOT NULL DEFAULT '',
+  manifest_hash TEXT NOT NULL DEFAULT '',
+  runner_receipt_ref TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_worker_handoffs (
+  handoff_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  node_id TEXT NOT NULL DEFAULT '',
+  worker_run_id TEXT NOT NULL,
+  manager_agent TEXT NOT NULL,
+  successor_worker_run_id TEXT NOT NULL DEFAULT '',
+  handoff_info_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  reason TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  source_context_refs_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  receipt_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_manager_reviews (
+  review_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  node_id TEXT NOT NULL DEFAULT '',
+  worker_run_id TEXT NOT NULL DEFAULT '',
+  reviewer_agent TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  receipt_refs_json TEXT NOT NULL DEFAULT '[]',
+  blocker_json TEXT NOT NULL DEFAULT '{}',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_owner_reviews (
+  review_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  owner_agent TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  manager_review_refs_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  receipt_refs_json TEXT NOT NULL DEFAULT '[]',
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_task_group_packages (
+  package_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  owner_review_id TEXT NOT NULL DEFAULT '',
+  task_owner_agent TEXT NOT NULL,
+  task_group_agents_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'draft',
+  summary TEXT NOT NULL DEFAULT '',
+  manager_review_refs_json TEXT NOT NULL DEFAULT '[]',
+  owner_review_refs_json TEXT NOT NULL DEFAULT '[]',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_cat_brain_audits (
+  audit_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  task_group_package_id TEXT NOT NULL DEFAULT '',
+  cat_brain_agent TEXT NOT NULL DEFAULT 'main',
+  decision TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'governance_semantic',
+  summary TEXT NOT NULL DEFAULT '',
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_cat_claw_audits (
+  audit_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  cat_brain_audit_id TEXT NOT NULL DEFAULT '',
+  cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
+  decision TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  checks_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_notifications (
+  notification_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  info_id TEXT NOT NULL DEFAULT '',
+  inbox_item_id TEXT NOT NULL DEFAULT '',
+  message_flow_id TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT 'message_flow',
+  target_agent TEXT NOT NULL DEFAULT '',
+  payload_mode TEXT NOT NULL DEFAULT 'pointer_only',
+  status TEXT NOT NULL DEFAULT 'prepared',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_human_gate_packages (
+  package_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  source_review_id TEXT NOT NULL DEFAULT '',
+  source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  cat_brain_agent TEXT NOT NULL DEFAULT 'main',
+  cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'cat_claw_audited')),
+  options_json TEXT NOT NULL DEFAULT '[]',
+  required_controls_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_v2_backend_preflights (
+  preflight_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL DEFAULT '',
+  backend_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);`, { json: false });
+  await ensureColumns(dbFile, "workflow_v2_plans", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_revision", "INTEGER NOT NULL DEFAULT 1"],
+    ["status", "TEXT NOT NULL DEFAULT 'draft'"],
+    ["workflow_state", "TEXT NOT NULL DEFAULT 'draft'"],
+    ["task_owner_agent", "TEXT NOT NULL DEFAULT ''"],
+    ["planner_agent", "TEXT NOT NULL DEFAULT 'main'"],
+    ["objective", "TEXT NOT NULL DEFAULT ''"],
+    ["participant_managers_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["acceptance_criteria_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["constraints_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["human_gate_policy_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["plan_spec_artifact_ref", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_spec_artifact_hash", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_plan_nodes", [
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["parent_node_id", "TEXT"],
+    ["node_type", "TEXT NOT NULL DEFAULT 'task'"],
+    ["status", "TEXT NOT NULL DEFAULT 'planned'"],
+    ["owner_agent", "TEXT NOT NULL DEFAULT ''"],
+    ["runtime_backend", "TEXT NOT NULL DEFAULT ''"],
+    ["session_id", "TEXT NOT NULL DEFAULT ''"],
+    ["depends_on_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["input_info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["output_info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_info_items", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["node_id", "TEXT NOT NULL DEFAULT ''"],
+    ["worker_run_id", "TEXT NOT NULL DEFAULT ''"],
+    ["classification", "TEXT NOT NULL DEFAULT 'internal'"],
+    ["content_storage", "TEXT NOT NULL DEFAULT 'artifact_ref'"],
+    ["content_ref", "TEXT NOT NULL DEFAULT ''"],
+    ["content_hash", "TEXT NOT NULL DEFAULT ''"],
+    ["summary", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_inbox_items", [
+    ["info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["recipient_kind", "TEXT NOT NULL DEFAULT 'agent'"],
+    ["recipient_id", "TEXT NOT NULL DEFAULT ''"],
+    ["status", "TEXT NOT NULL DEFAULT 'pending'"],
+    ["notification_id", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_access_grants", [
+    ["info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["inbox_item_id", "TEXT NOT NULL DEFAULT ''"],
+    ["principal_kind", "TEXT NOT NULL DEFAULT 'agent'"],
+    ["principal_id", "TEXT NOT NULL DEFAULT ''"],
+    ["access_mode", "TEXT NOT NULL DEFAULT 'read'"],
+    ["token_ref", "TEXT NOT NULL DEFAULT ''"],
+    ["expires_at", "TEXT NOT NULL DEFAULT ''"],
+    ["status", "TEXT NOT NULL DEFAULT 'active'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_read_receipts", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["inbox_item_id", "TEXT NOT NULL DEFAULT ''"],
+    ["grant_id", "TEXT NOT NULL DEFAULT ''"],
+    ["reader_kind", "TEXT NOT NULL DEFAULT ''"],
+    ["reader_id", "TEXT NOT NULL DEFAULT ''"],
+    ["status", "TEXT NOT NULL DEFAULT 'read'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_worker_runs", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["node_id", "TEXT NOT NULL DEFAULT ''"],
+    ["parent_worker_run_id", "TEXT NOT NULL DEFAULT ''"],
+    ["supersedes_worker_run_id", "TEXT NOT NULL DEFAULT ''"],
+    ["successor_worker_run_id", "TEXT NOT NULL DEFAULT ''"],
+    ["worker_generation", "INTEGER NOT NULL DEFAULT 0"],
+    ["manager_agent", "TEXT NOT NULL DEFAULT ''"],
+    ["worker_agent_id", "TEXT NOT NULL DEFAULT ''"],
+    ["session_id", "TEXT NOT NULL DEFAULT ''"],
+    ["session_run_id", "TEXT NOT NULL DEFAULT ''"],
+    ["preflight_id", "TEXT NOT NULL DEFAULT ''"],
+    ["runtime_backend", "TEXT NOT NULL DEFAULT ''"],
+    ["status", "TEXT NOT NULL DEFAULT 'queued'"],
+    ["attempt", "INTEGER NOT NULL DEFAULT 0"],
+    ["max_attempts", "INTEGER NOT NULL DEFAULT 1"],
+    ["lease_owner", "TEXT NOT NULL DEFAULT ''"],
+    ["lease_until", "TEXT NOT NULL DEFAULT ''"],
+    ["next_retry_at", "TEXT NOT NULL DEFAULT ''"],
+    ["task_input_info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["output_info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["handoff_info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["receipt_ref", "TEXT NOT NULL DEFAULT ''"],
+    ["last_error", "TEXT NOT NULL DEFAULT ''"],
+    ["context_budget_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["context_used_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["compaction_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["source_context_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["started_at", "TEXT NOT NULL DEFAULT ''"],
+    ["completed_at", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_worker_adapter_jobs", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["node_id", "TEXT NOT NULL DEFAULT ''"],
+    ["worker_run_id", "TEXT NOT NULL DEFAULT ''"],
+    ["session_run_id", "TEXT NOT NULL DEFAULT ''"],
+    ["runtime_backend", "TEXT NOT NULL DEFAULT ''"],
+    ["worker_attempt", "INTEGER NOT NULL DEFAULT 0"],
+    ["runner_attempt", "INTEGER NOT NULL DEFAULT 0"],
+    ["max_runner_attempts", "INTEGER NOT NULL DEFAULT 3"],
+    ["status", "TEXT NOT NULL DEFAULT 'queued'"],
+    ["lease_owner", "TEXT NOT NULL DEFAULT ''"],
+    ["lease_until", "TEXT NOT NULL DEFAULT ''"],
+    ["next_retry_at", "TEXT NOT NULL DEFAULT ''"],
+    ["runner_id", "TEXT NOT NULL DEFAULT ''"],
+    ["artifact_ref", "TEXT NOT NULL DEFAULT ''"],
+    ["artifact_id", "TEXT NOT NULL DEFAULT ''"],
+    ["info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["manifest_hash", "TEXT NOT NULL DEFAULT ''"],
+    ["runner_receipt_ref", "TEXT NOT NULL DEFAULT ''"],
+    ["last_error", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"],
+    ["completed_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_worker_handoffs", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["node_id", "TEXT NOT NULL DEFAULT ''"],
+    ["worker_run_id", "TEXT NOT NULL DEFAULT ''"],
+    ["manager_agent", "TEXT NOT NULL DEFAULT ''"],
+    ["successor_worker_run_id", "TEXT NOT NULL DEFAULT ''"],
+    ["handoff_info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["status", "TEXT NOT NULL DEFAULT 'draft'"],
+    ["reason", "TEXT NOT NULL DEFAULT ''"],
+    ["summary", "TEXT NOT NULL DEFAULT ''"],
+    ["source_context_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["artifact_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["receipt_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_manager_reviews", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["node_id", "TEXT NOT NULL DEFAULT ''"],
+    ["worker_run_id", "TEXT NOT NULL DEFAULT ''"],
+    ["reviewer_agent", "TEXT NOT NULL DEFAULT ''"],
+    ["decision", "TEXT NOT NULL DEFAULT ''"],
+    ["summary", "TEXT NOT NULL DEFAULT ''"],
+    ["findings_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["artifact_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["receipt_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["blocker_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_owner_reviews", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["owner_agent", "TEXT NOT NULL DEFAULT ''"],
+    ["decision", "TEXT NOT NULL DEFAULT ''"],
+    ["summary", "TEXT NOT NULL DEFAULT ''"],
+    ["manager_review_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["artifact_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["receipt_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["findings_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_task_group_packages", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["owner_review_id", "TEXT NOT NULL DEFAULT ''"],
+    ["task_owner_agent", "TEXT NOT NULL DEFAULT ''"],
+    ["task_group_agents_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["status", "TEXT NOT NULL DEFAULT 'draft'"],
+    ["summary", "TEXT NOT NULL DEFAULT ''"],
+    ["manager_review_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["owner_review_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["artifact_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["evidence_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_cat_brain_audits", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["task_group_package_id", "TEXT NOT NULL DEFAULT ''"],
+    ["cat_brain_agent", "TEXT NOT NULL DEFAULT 'main'"],
+    ["decision", "TEXT NOT NULL DEFAULT ''"],
+    ["scope", "TEXT NOT NULL DEFAULT 'governance_semantic'"],
+    ["summary", "TEXT NOT NULL DEFAULT ''"],
+    ["findings_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["evidence_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_cat_claw_audits", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["cat_brain_audit_id", "TEXT NOT NULL DEFAULT ''"],
+    ["cat_claw_agent", "TEXT NOT NULL DEFAULT 'cat_claw'"],
+    ["decision", "TEXT NOT NULL DEFAULT ''"],
+    ["summary", "TEXT NOT NULL DEFAULT ''"],
+    ["checks_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["evidence_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_notifications", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["info_id", "TEXT NOT NULL DEFAULT ''"],
+    ["inbox_item_id", "TEXT NOT NULL DEFAULT ''"],
+    ["message_flow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["channel", "TEXT NOT NULL DEFAULT 'message_flow'"],
+    ["target_agent", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_mode", "TEXT NOT NULL DEFAULT 'pointer_only'"],
+    ["status", "TEXT NOT NULL DEFAULT 'prepared'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_human_gate_packages", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["source_review_id", "TEXT NOT NULL DEFAULT ''"],
+    ["source_cat_claw_audit_id", "TEXT NOT NULL DEFAULT ''"],
+    ["cat_brain_agent", "TEXT NOT NULL DEFAULT 'main'"],
+    ["cat_claw_agent", "TEXT NOT NULL DEFAULT 'cat_claw'"],
+    ["status", "TEXT NOT NULL DEFAULT 'draft'"],
+    ["options_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["required_controls_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["evidence_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await ensureColumns(dbFile, "workflow_v2_backend_preflights", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["backend_id", "TEXT NOT NULL DEFAULT ''"],
+    ["status", "TEXT NOT NULL DEFAULT ''"],
+    ["findings_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
+  await sqlite(dbFile, `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_v2_plans_workflow ON workflow_v2_plans(workflow_id, plan_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_plans_status ON workflow_v2_plans(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_plans_workflow_state ON workflow_v2_plans(workflow_state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_nodes_plan ON workflow_v2_plan_nodes(plan_id, status, node_type);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_nodes_workflow ON workflow_v2_plan_nodes(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_info_workflow ON workflow_v2_info_items(workflow_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_info_plan_node ON workflow_v2_info_items(plan_id, node_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_inbox_recipient ON workflow_v2_inbox_items(recipient_kind, recipient_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_inbox_info ON workflow_v2_inbox_items(info_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_grants_info ON workflow_v2_access_grants(info_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_grants_principal ON workflow_v2_access_grants(principal_kind, principal_id, status);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_read_receipts_info ON workflow_v2_read_receipts(info_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_read_receipts_reader ON workflow_v2_read_receipts(reader_kind, reader_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_workflow ON workflow_v2_worker_runs(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_manager ON workflow_v2_worker_runs(manager_agent, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_session ON workflow_v2_worker_runs(session_id, session_run_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_preflight ON workflow_v2_worker_runs(preflight_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_lineage ON workflow_v2_worker_runs(parent_worker_run_id, supersedes_worker_run_id, successor_worker_run_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_queue ON workflow_v2_worker_runs(status, next_retry_at, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_runs_lease ON workflow_v2_worker_runs(status, lease_until);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_v2_adapter_jobs_worker_attempt ON workflow_v2_worker_adapter_jobs(worker_run_id, worker_attempt);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_adapter_jobs_queue ON workflow_v2_worker_adapter_jobs(status, runtime_backend, next_retry_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_adapter_jobs_lease ON workflow_v2_worker_adapter_jobs(status, lease_until);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_adapter_jobs_workflow ON workflow_v2_worker_adapter_jobs(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_handoffs_workflow ON workflow_v2_worker_handoffs(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_worker_handoffs_worker ON workflow_v2_worker_handoffs(worker_run_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_reviews_workflow ON workflow_v2_manager_reviews(workflow_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_reviews_worker ON workflow_v2_manager_reviews(worker_run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_owner_reviews_workflow ON workflow_v2_owner_reviews(workflow_id, decision, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_task_group_packages_workflow ON workflow_v2_task_group_packages(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_cat_brain_audits_workflow ON workflow_v2_cat_brain_audits(workflow_id, decision, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_cat_claw_audits_workflow ON workflow_v2_cat_claw_audits(workflow_id, decision, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_notifications_workflow ON workflow_v2_notifications(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_notifications_info ON workflow_v2_notifications(info_id, inbox_item_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_hgate_workflow ON workflow_v2_human_gate_packages(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_backend_preflights_backend ON workflow_v2_backend_preflights(backend_id, created_at DESC);`, { json: false });
 }
 
 async function upsertInstrumentRecord(paths, input) {
@@ -4672,7 +5907,8 @@ function buildWorkflowPlanSpecV2(spec = {}, input = {}) {
   const humanGatePolicy = {
     ...(governance.humanGatePolicy || {
       language: "zh-CN",
-      optionsMinimum: 3,
+      optionsMinimum: HUMAN_GATE_APPROVE_OPTION_MIN,
+      optionsMaximum: HUMAN_GATE_APPROVE_OPTION_MAX,
       requiredControls: ["pause_workflow", "terminate_workflow"]
     }),
     required: Boolean(governance.humanGateRequired),
@@ -4870,7 +6106,7 @@ function buildWorkflowPlanSpecV2(spec = {}, input = {}) {
       rubric: [
         "Task decomposition matches stated objective and agent responsibilities.",
         "Evidence and receipts are sufficient for each completed node.",
-        "Human Gate packages preserve A/B/C options, Chinese body, pause, terminate, and rollback boundaries."
+        `Human Gate packages preserve ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} approvable options, Chinese-format body, pause, terminate, and rollback boundaries.`
       ],
       minimumEvidence: ["runtime_receipt", "artifact_ref", "cat_claw_audit_before_human_gate"],
       failureHandling: "route_by_failureRoutes",
@@ -4997,18 +6233,18 @@ export async function workflowTaskDraft(rootDir, input = {}) {
         {
           id: "plan_synthesis",
           ownerAgent: chairAgent,
-          objective: "Cat Brain forms at least three mutually exclusive executable options with rollback and stop boundaries."
+          objective: `Cat Brain forms ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} mutually exclusive executable options with rollback and stop boundaries.`
         },
         ...(requiresHumanGate ? [
           {
             id: "secretary_audit",
             ownerAgent: secretaryAgent,
-            objective: "Cat Claw audits evidence completeness, receipt references, Chinese report quality, and button-first Human Gate structure."
+            objective: "Cat Claw audits evidence completeness, receipt references, Chinese-format report quality, and button-first Human Gate structure."
           },
           {
             id: "human_gate_package",
             ownerAgent: secretaryAgent,
-            objective: "Cat Claw submits the audited package to Flashcat with A/B/C approve options plus pause and terminate controls."
+            objective: `Cat Claw submits the audited package to Flashcat with ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} approve options plus pause and terminate controls.`
           }
         ] : [])
       ]
@@ -5022,7 +6258,7 @@ export async function workflowTaskDraft(rootDir, input = {}) {
 	          {
 	            id: "secretary_audit",
 	            ownerAgent: secretaryAgent,
-	            objective: "Cat Claw audits evidence completeness, receipt references, Chinese report quality, and button-first Human Gate structure."
+	            objective: "Cat Claw audits evidence completeness, receipt references, Chinese-format report quality, and button-first Human Gate structure."
 	          },
 	          {
 	            id: "human_gate_package",
@@ -5031,29 +6267,22 @@ export async function workflowTaskDraft(rootDir, input = {}) {
 	          }
 	        ] : [])
 	      ];
-  const humanGateDraft = requiresHumanGate ? {
-    options: [
-      {
-        id: "A",
-        title: "Option A",
-        required: true,
-        ownerAgent: chairAgent,
-        acceptance: "Executable, mutually exclusive, evidence-backed plan option with rollback and stop boundaries."
-      },
-      {
-        id: "B",
-        title: "Option B",
-        required: true,
-        ownerAgent: chairAgent,
-        acceptance: "Executable, mutually exclusive, evidence-backed plan option with rollback and stop boundaries."
-      },
-      {
-        id: "C",
-        title: "Option C",
-        required: true,
-        ownerAgent: chairAgent,
-        acceptance: "Executable, mutually exclusive, evidence-backed plan option with rollback and stop boundaries."
-      }
+	  const humanGateDraft = requiresHumanGate ? {
+	    options: [
+	      {
+	        id: "option_1",
+	        title: "Option 1",
+	        required: true,
+	        ownerAgent: chairAgent,
+	        acceptance: "Executable, mutually exclusive, evidence-backed plan option with rollback and stop boundaries."
+	      },
+	      {
+	        id: "option_2",
+	        title: "Option 2",
+	        required: true,
+	        ownerAgent: chairAgent,
+	        acceptance: "Executable, mutually exclusive, evidence-backed plan option with rollback and stop boundaries."
+	      }
     ],
     controls: [
       { id: "pause_workflow", required: true, ownerAgent: secretaryAgent },
@@ -5074,8 +6303,8 @@ export async function workflowTaskDraft(rootDir, input = {}) {
       return owners.every((owner) => participantIds.has(owner));
     }), "Every phase owner is listed in participants and covered by registry resolution."),
     requiresHumanGate
-      ? draftGate("three_options_required", (humanGateDraft?.options || []).length >= 3, "Human Gate package requires at least A/B/C executable options.")
-      : { name: "three_options_required", status: "not_applicable", message: "Human Gate is not required for this draft." },
+      ? draftGate("approve_options_count_required", (humanGateDraft?.options || []).length >= HUMAN_GATE_APPROVE_OPTION_MIN && (humanGateDraft?.options || []).length <= HUMAN_GATE_APPROVE_OPTION_MAX, `Human Gate package requires ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} executable approve options.`)
+      : { name: "approve_options_count_required", status: "not_applicable", message: "Human Gate is not required for this draft." },
     requiresHumanGate
       ? draftGate("pause_terminate_controls_required", humanGateControls.has("pause_workflow") && humanGateControls.has("terminate_workflow"), "Human Gate package must include pause and terminate controls.")
       : { name: "pause_terminate_controls_required", status: "not_applicable", message: "Human Gate is not required for this draft." },
@@ -5107,7 +6336,8 @@ export async function workflowTaskDraft(rootDir, input = {}) {
       humanGateRequired: requiresHumanGate,
       humanGatePolicy: {
         language: "zh-CN",
-        optionsMinimum: 3,
+        optionsMinimum: HUMAN_GATE_APPROVE_OPTION_MIN,
+        optionsMaximum: HUMAN_GATE_APPROVE_OPTION_MAX,
         requiredControls: ["pause_workflow", "terminate_workflow"],
         catBrainOwnsPlanContent: true,
         catClawAuditsAndSubmits: true
@@ -5130,7 +6360,7 @@ export async function workflowTaskDraft(rootDir, input = {}) {
       ? draftGate("human_gate_original_words_required", planSpecV2.humanGatePolicy?.requiresOriginalWords === true, "Human Gate policy must require Flashcat original words before completion.")
       : { name: "human_gate_original_words_required", status: "not_applicable", message: "Human Gate is not required for this draft." },
     requiresHumanGate
-      ? draftGate("human_gate_chinese_body_required", planSpecV2.humanGatePolicy?.language === "zh-CN", "Human Gate policy must require Chinese report content.")
+      ? draftGate("human_gate_chinese_body_required", planSpecV2.humanGatePolicy?.language === "zh-CN", "Human Gate policy must require Chinese-format report content.")
       : { name: "human_gate_chinese_body_required", status: "not_applicable", message: "Human Gate is not required for this draft." },
     draftGate("failure_routes_required", Array.isArray(planSpecV2.failureRoutes) && planSpecV2.failureRoutes.length >= 3, "Plan Spec v2 must declare fallback routes for missing receipts, Human Gate failure, and uncertain side effects.")
   ];
@@ -8326,6 +9556,6056 @@ WHERE run_id=${sqlValue(runId)};`);
   return { ...next, dbFile: paths.dbFile };
 }
 
+function workflowV2JsonObject(value, fallback = {}) {
+  const parsed = parseJsonValue(value, fallback);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
+}
+
+function workflowV2JsonArray(value, fallback = []) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return fallback;
+    if (text.startsWith("[")) {
+      const parsed = parseJsonValue(text, fallback);
+      return Array.isArray(parsed) ? parsed : fallback;
+    }
+    return toList(text);
+  }
+  return fallback;
+}
+
+function workflowV2NormalizeEnum(value, allowed, fallback) {
+  const normalized = String(value || fallback || "").trim().toLowerCase().replace(/-/g, "_");
+  return allowed.has(normalized) ? normalized : fallback;
+}
+
+function workflowV2NormalizeBackend(value, fallback = "hermers_docker_worker") {
+  return String(value || fallback || "").trim().toLowerCase().replace(/-/g, "_");
+}
+
+function workflowV2NonNegativeInt(value, fallback = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return Math.max(0, Math.floor(Number(fallback) || 0));
+  return Math.max(0, Math.floor(number));
+}
+
+function workflowV2OptionalNonNegativeInt(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.max(0, Math.floor(number));
+}
+
+function workflowV2ValidationError(code, message, details = {}) {
+  return { code, message, ...details };
+}
+
+function workflowV2ValidationAdvisory(code, message, details = {}) {
+  return { code, message, severity: "advisory", ...details };
+}
+
+function workflowV2InputOrchestrationPattern(input = {}) {
+  const payload = workflowV2JsonObject(input.payload, {});
+  const orchestrationInput = workflowV2JsonObject(input.orchestration ?? input.orchestration_contract ?? payload.orchestration, {});
+  return workflowV2NormalizeEnum(
+    firstText(input.orchestrationPattern, input.orchestration_pattern, input.workflowPattern, input.workflow_pattern, orchestrationInput.pattern, orchestrationInput.orchestrationPattern, orchestrationInput.orchestration_pattern, payload.orchestrationPattern, payload.orchestration_pattern),
+    WORKFLOW_V2_ORCHESTRATION_PATTERNS,
+    ""
+  );
+}
+
+function workflowV2HasExplicitPlanManagers(input = {}) {
+  return [
+    "participantManagers",
+    "participant_managers",
+    "managers",
+    "managerAgents",
+    "manager_agents"
+  ].some((key) => input[key] !== undefined && input[key] !== null && input[key] !== "");
+}
+
+function workflowV2PlanOrchestrationContract(input = {}, managerAgents = []) {
+  const payload = workflowV2JsonObject(input.payload, {});
+  const orchestrationInput = workflowV2JsonObject(input.orchestration ?? input.orchestration_contract ?? payload.orchestration, {});
+  const workerBudgetInput = workflowV2JsonObject(input.workerBudget ?? input.worker_budget ?? orchestrationInput.workerBudget ?? orchestrationInput.worker_budget ?? payload.workerBudget ?? payload.worker_budget, {});
+  const pattern = workflowV2InputOrchestrationPattern(input);
+  const workerBudget = {
+    maxWorkers: workflowV2OptionalNonNegativeInt(firstText(input.maxWorkers, input.max_workers, workerBudgetInput.maxWorkers, workerBudgetInput.max_workers)),
+    concurrencyLimit: workflowV2OptionalNonNegativeInt(firstText(input.workerConcurrencyLimit, input.worker_concurrency_limit, input.concurrencyLimit, input.concurrency_limit, workerBudgetInput.concurrencyLimit, workerBudgetInput.concurrency_limit)),
+    maxWorkerContextTokens: workflowV2OptionalNonNegativeInt(firstText(input.maxWorkerContextTokens, input.max_worker_context_tokens, workerBudgetInput.maxWorkerContextTokens, workerBudgetInput.max_worker_context_tokens))
+  };
+  const rationale = firstText(input.orchestrationRationale, input.orchestration_rationale, orchestrationInput.rationale, orchestrationInput.reason, payload.orchestrationRationale, payload.orchestration_rationale);
+  const taskGroupRequired = boolOption(input.taskGroupRequired ?? input.task_group_required ?? orchestrationInput.taskGroupRequired ?? orchestrationInput.task_group_required, false);
+  const managerCount = Array.isArray(managerAgents) ? managerAgents.length : 0;
+  return {
+    pattern,
+    rationale,
+    complexityTier: firstText(input.complexityTier, input.complexity_tier, orchestrationInput.complexityTier, orchestrationInput.complexity_tier),
+    taskGroupRequired,
+    managerCount,
+    workerBudget
+  };
+}
+
+function workflowV2PlanOrchestrationAdvisories(contract = {}, acceptanceCriteria = []) {
+  const advisories = [];
+  if (!contract.pattern) {
+    advisories.push(workflowV2ValidationAdvisory("orchestration_pattern_recommended", "workflow v2 plan should name an orchestrationPattern when the task shape is known"));
+  }
+  if (contract.pattern && !WORKFLOW_V2_ORCHESTRATION_PATTERNS.has(contract.pattern)) {
+    advisories.push(workflowV2ValidationAdvisory("orchestration_pattern_unsupported", "workflow v2 plan orchestrationPattern is not in the known pattern set", { pattern: contract.pattern }));
+  }
+  if (!contract.rationale) {
+    advisories.push(workflowV2ValidationAdvisory("orchestration_rationale_recommended", "workflow v2 plan should include brief orchestration rationale for Cat Brain governance audit"));
+  }
+  if (!Array.isArray(acceptanceCriteria) || acceptanceCriteria.length === 0) {
+    advisories.push(workflowV2ValidationAdvisory("acceptance_criteria_recommended", "workflow v2 plan should include acceptanceCriteria before deeper execution"));
+  }
+  const budget = workflowV2JsonObject(contract.workerBudget, {});
+  if (budget.maxWorkers === null || budget.maxWorkers === undefined) {
+    advisories.push(workflowV2ValidationAdvisory("worker_budget_max_workers_recommended", "workflow v2 plan should estimate workerBudget.maxWorkers when workers may be spawned"));
+  }
+  if (budget.concurrencyLimit === null || budget.concurrencyLimit === undefined) {
+    advisories.push(workflowV2ValidationAdvisory("worker_budget_concurrency_recommended", "workflow v2 plan should estimate workerBudget.concurrencyLimit when workers may be spawned"));
+  }
+  if (budget.maxWorkerContextTokens === null || budget.maxWorkerContextTokens === undefined) {
+    advisories.push(workflowV2ValidationAdvisory("worker_budget_context_limit_recommended", "workflow v2 plan should state the max worker context budget when workers may be spawned"));
+  }
+  if (Number(budget.concurrencyLimit || 0) > WORKFLOW_V2_MAX_CONCURRENT_WORKERS) {
+    advisories.push(workflowV2ValidationAdvisory("worker_budget_concurrency_too_high", `workflow v2 planned concurrency is above the current ${WORKFLOW_V2_MAX_CONCURRENT_WORKERS} worker design target`, { concurrencyLimit: budget.concurrencyLimit }));
+  }
+  if (Number(budget.maxWorkerContextTokens || 0) > WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS) {
+    advisories.push(workflowV2ValidationAdvisory("worker_context_limit_too_high", `workflow v2 planned worker context limit is above the ${WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS} token worker window`, { maxWorkerContextTokens: budget.maxWorkerContextTokens }));
+  }
+  if (WORKFLOW_V2_WORKER_PATTERNS.has(contract.pattern) && Number(budget.maxWorkers || 0) < 1) {
+    advisories.push(workflowV2ValidationAdvisory("worker_budget_incompatible_with_pattern", "worker orchestration patterns should reserve workerBudget.maxWorkers >= 1", { pattern: contract.pattern }));
+  }
+  if (contract.pattern === "direct_owner_execution" && Number(budget.maxWorkers || 0) > 0) {
+    advisories.push(workflowV2ValidationAdvisory("direct_owner_budget_inconsistent", "direct_owner_execution plans usually should not reserve worker budget"));
+  }
+  if (["manager_worker", "parallel_manager_sections"].includes(contract.pattern) && Number(contract.managerCount || 0) < 1) {
+    advisories.push(workflowV2ValidationAdvisory("manager_pattern_without_managers", "manager_worker and parallel_manager_sections patterns should include participant managers"));
+  }
+  return advisories;
+}
+
+function workflowV2WorkerDelegationContract(input = {}) {
+  const payload = workflowV2JsonObject(input.payload, {});
+  const delegationInput = workflowV2JsonObject(input.delegation ?? input.delegationContract ?? input.delegation_contract ?? payload.delegation ?? payload.delegationContract ?? payload.delegation_contract, {});
+  const acceptanceCriteria = workflowV2JsonArray(input.acceptanceCriteria ?? input.acceptance_criteria ?? delegationInput.acceptanceCriteria ?? delegationInput.acceptance_criteria, []);
+  const stopConditions = workflowV2JsonArray(input.stopConditions ?? input.stop_conditions ?? delegationInput.stopConditions ?? delegationInput.stop_conditions, []);
+  const stopCondition = firstText(input.stopCondition, input.stop_condition, delegationInput.stopCondition, delegationInput.stop_condition);
+  return {
+    objective: firstText(input.workerObjective, input.worker_objective, input.delegationObjective, input.delegation_objective, delegationInput.objective, delegationInput.goal),
+    outputFormat: firstText(input.outputFormat, input.output_format, delegationInput.outputFormat, delegationInput.output_format),
+    toolBoundary: firstText(input.toolBoundary, input.tool_boundary, delegationInput.toolBoundary, delegationInput.tool_boundary),
+    acceptanceCriteria,
+    stopCondition,
+    stopConditions,
+    reviewPath: firstText(input.reviewPath, input.review_path, delegationInput.reviewPath, delegationInput.review_path, "manager_review"),
+    maxContextTokens: workflowV2NonNegativeInt(input.contextBudgetTokens ?? input.context_budget_tokens, WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS)
+  };
+}
+
+function workflowV2ValidateWorkerDelegationContract(contract = {}, contextBudgetTokens = 0, options = {}) {
+  const errors = [];
+  if (!contract.objective) errors.push(workflowV2ValidationError("worker_objective_required", "worker spawn requires a bounded workerObjective/delegation.objective"));
+  if (!contract.outputFormat) errors.push(workflowV2ValidationError("worker_output_format_required", "worker spawn requires outputFormat/delegation.outputFormat"));
+  if (!contract.toolBoundary) errors.push(workflowV2ValidationError("worker_tool_boundary_required", "worker spawn requires toolBoundary/delegation.toolBoundary"));
+  if (!Array.isArray(contract.acceptanceCriteria) || contract.acceptanceCriteria.length === 0) {
+    errors.push(workflowV2ValidationError("worker_acceptance_criteria_required", "worker spawn requires delegation acceptanceCriteria"));
+  }
+  if (!contract.stopCondition && (!Array.isArray(contract.stopConditions) || contract.stopConditions.length === 0)) {
+    errors.push(workflowV2ValidationError("worker_stop_condition_required", "worker spawn requires stopCondition or stopConditions"));
+  }
+  if (!options.explicitContextBudget) {
+    errors.push(workflowV2ValidationError("worker_context_budget_required", "worker spawn requires explicit contextBudgetTokens"));
+  } else if (Number(contextBudgetTokens || 0) < 1) {
+    errors.push(workflowV2ValidationError("worker_context_budget_required", "worker spawn requires explicit contextBudgetTokens"));
+  }
+  if (Number(contextBudgetTokens || 0) > WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS) {
+    errors.push(workflowV2ValidationError("worker_context_budget_too_high", `worker contextBudgetTokens cannot exceed ${WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS}`, { contextBudgetTokens }));
+  }
+  return errors;
+}
+
+function workflowV2PlanManagers(input = {}) {
+  const explicit = workflowV2JsonArray(input.participantManagers ?? input.participant_managers ?? input.managers ?? input.managerAgents ?? input.manager_agents, null);
+  const managers = explicit || ["cat_body", "cat_nose", "cat_eyes", "cat_ears", "cat_penclaw"];
+  return managers.map((agent) => normalizeOptionalAgentId(agent)).filter(Boolean);
+}
+
+function workflowV2DefaultPlanNodes(plan = {}, input = {}) {
+  const nodes = [];
+  const managerAgents = Array.isArray(plan.participantManagers) ? plan.participantManagers : workflowV2PlanManagers(input);
+  const workflowId = plan.workflowId;
+  const planId = plan.planId;
+  const taskOwnerAgent = plan.taskOwnerAgent || "cat_heart";
+  const addNode = (nodeType, ownerAgent, extra = {}) => {
+    const nodeId = String(extra.nodeId || `${planId}.${nodeType}.${nodes.length + 1}`).replace(/[^a-zA-Z0-9._:-]+/g, "_");
+    nodes.push({
+      nodeId,
+      planId,
+      workflowId,
+      parentNodeId: extra.parentNodeId || "",
+      nodeType,
+      status: workflowV2NormalizeEnum(extra.status, WORKFLOW_V2_NODE_STATUSES, "planned"),
+      ownerAgent: normalizeOptionalAgentId(ownerAgent) || taskOwnerAgent,
+      runtimeBackend: workflowV2NormalizeBackend(extra.runtimeBackend || extra.runtime_backend || "hermers_docker_worker"),
+      sessionId: String(extra.sessionId || extra.session_id || "").trim(),
+      dependsOn: workflowV2JsonArray(extra.dependsOn ?? extra.depends_on, []),
+      inputInfoId: String(extra.inputInfoId || extra.input_info_id || "").trim(),
+      outputInfoId: String(extra.outputInfoId || extra.output_info_id || "").trim(),
+      payload: workflowV2JsonObject(extra.payload, {})
+    });
+  };
+  addNode("intake", taskOwnerAgent, { runtimeBackend: "hermers" });
+  addNode("manager_planning", taskOwnerAgent, { runtimeBackend: "hermers", dependsOn: [nodes[0]?.nodeId].filter(Boolean) });
+  for (const manager of managerAgents) {
+    addNode("manager_worker_spawn", manager, { dependsOn: [nodes[1]?.nodeId].filter(Boolean) });
+    addNode("manager_review", manager, { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: "hermers" });
+  }
+  addNode("cat_brain_synthesis", "main", { dependsOn: nodes.filter((node) => node.nodeType === "manager_review").map((node) => node.nodeId), runtimeBackend: "hermers" });
+  addNode("cat_claw_audit", "cat_claw", { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: "openclaw_review_only" });
+  addNode("human_gate", "cat_claw", { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: "openclaw_review_only" });
+  addNode("closeout", taskOwnerAgent, { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: "hermers" });
+  return nodes;
+}
+
+function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
+  const createdAt = firstText(input.createdAt, input.created_at, nowIso());
+  const updatedAt = firstText(input.updatedAt, input.updated_at, createdAt);
+  const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, plan.plannerAgent, "main");
+  const planRevision = workflowV2NonNegativeInt(plan.planRevision ?? input.planRevision ?? input.plan_revision, 1) || 1;
+  const workflowId = plan.workflowId || firstText(input.workflowId, input.workflow_id);
+  const planId = plan.planId || firstText(input.planId, input.plan_id) || `${workflowId}.plan`;
+  const participantAgents = workflowV2UniqueTextList([], [
+    plan.taskOwnerAgent,
+    plan.plannerAgent,
+    ...(Array.isArray(plan.participantManagers) ? plan.participantManagers : [])
+  ]).filter(Boolean);
+  const traceId = firstText(input.traceId, input.trace_id, `trace-v2-${textHash([workflowId, planId, createdAt].join(":")).slice(0, 16)}`);
+  return {
+    schemaVersion: "workflow_plan_spec.v2",
+    meta: {
+      workflowId,
+      planId,
+      planRevision,
+      traceId,
+      idempotencyKey: firstText(input.idempotencyKey, input.idempotency_key, `workflow_v2_plan:${workflowId}:${planId}:${planRevision}`),
+      workflowType: firstText(input.workflowType, input.workflow_type, "workflow_v2_orchestration"),
+      riskTier: firstText(input.riskTier, input.risk_tier, "medium"),
+      createdAt,
+      updatedAt,
+      timezone: firstText(input.timezone, input.time_zone, "Asia/Shanghai"),
+      createdBy,
+      sourceSystem: firstText(input.sourceSystem, input.source_system, "workflow.v2.plan"),
+      sourceChannel: firstText(input.sourceChannel, input.source_channel, "workflow_api"),
+      sourceMessageId: firstText(input.sourceMessageId, input.source_message_id)
+    },
+    objective: {
+      goal: plan.objective || "",
+      acceptanceCriteria: Array.isArray(plan.acceptanceCriteria) ? plan.acceptanceCriteria : [],
+      constraints: workflowV2JsonObject(plan.constraints, {}),
+      stopConditions: workflowV2JsonArray(input.stopConditions ?? input.stop_conditions ?? input.stopCondition ?? input.stop_condition, [])
+    },
+    participants: participantAgents.map((agentId) => ({
+      agentId,
+      role: agentId === plan.taskOwnerAgent ? "task_owner" : agentId === plan.plannerAgent ? "governor" : "manager",
+      runtime: agentId === "main" || agentId === "cat_claw" ? "openclaw" : "hermers",
+      source: "runtime_agents"
+    })),
+    phaseGraph: nodes.map((node, index) => ({
+      phaseId: node.nodeId,
+      ordinal: index + 1,
+      nodeType: node.nodeType,
+      ownerAgent: node.ownerAgent,
+      dependsOn: Array.isArray(node.dependsOn) ? node.dependsOn : [],
+      status: node.status || "planned"
+    })),
+    nodes: nodes.map((node) => ({
+      nodeId: node.nodeId,
+      phaseId: node.nodeId,
+      nodeType: node.nodeType,
+      ownerAgent: node.ownerAgent,
+      runtime: node.runtimeBackend,
+      agentId: node.ownerAgent,
+      status: node.status || "planned",
+      dependsOn: Array.isArray(node.dependsOn) ? node.dependsOn : [],
+      inputRefs: node.inputInfoId ? [node.inputInfoId] : [],
+      outputRefs: node.outputInfoId ? [node.outputInfoId] : [],
+      expectedArtifacts: workflowV2JsonArray(node.payload?.expectedArtifacts ?? node.payload?.expected_artifacts, []),
+      acceptanceCriteria: workflowV2JsonArray(node.payload?.acceptanceCriteria ?? node.payload?.acceptance_criteria, plan.acceptanceCriteria || []),
+      receiptRequired: true,
+      humanGateRequired: node.nodeType === "human_gate",
+      verifier: node.nodeType === "cat_claw_audit"
+        ? { agentId: "cat_claw", mode: "protocol_audit" }
+        : node.nodeType === "cat_brain_synthesis"
+          ? { agentId: "main", mode: "governance_audit" }
+          : { agentId: plan.taskOwnerAgent, mode: "owner_or_manager_review" },
+      payload: workflowV2JsonObject(node.payload, {})
+    })),
+    orchestration: {
+      pattern: plan.orchestrationPattern || "",
+      rationale: plan.orchestrationRationale || "",
+      complexityTier: plan.complexityTier || "",
+      taskGroupRequired: Boolean(plan.taskGroupRequired),
+      workerBudget: workflowV2JsonObject(plan.workerBudget, {})
+    },
+    acceptance: {
+      workflowSuccess: Array.isArray(plan.acceptanceCriteria) ? plan.acceptanceCriteria : [],
+      ownerReviewsManagerArtifacts: true,
+      workerOutputRequiresOwnerOrManagerReview: true,
+      boundedDelegationRequired: true,
+      maxWorkerContextTokens: WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS,
+      completeOnlyIf: ["plan_artifact_persisted", "required_receipts_present", "owner_review_passed", "cat_brain_governance_audit_passed"]
+    },
+    verification: {
+      mode: "owner_manager_cat_brain_cat_claw",
+      verifierAgent: plan.plannerAgent || "main",
+      ownerReviewRequired: true,
+      managerReviewRequiredForManagerWorkerPaths: true,
+      catBrainAuditBeforeHumanGate: true,
+      catClawAuditBeforeHumanGate: true
+    },
+    humanGatePolicy: workflowV2JsonObject(plan.humanGatePolicy, {}),
+    permissionPolicy: {
+      defaultOutcome: "deny_without_registered_runtime_agent",
+      ownerAgent: plan.taskOwnerAgent,
+      catBrainAgent: plan.plannerAgent || "main",
+      catClawAgent: "cat_claw"
+    },
+    evidencePolicy: {
+      artifactRefs: [],
+      receiptRefs: [],
+      infoRefs: [],
+      rawLogsInPlan: false
+    },
+    resumePolicy: {
+      checkpointRequired: true,
+      stableWorkflowIdRequired: true,
+      idempotencyRequired: true,
+      resumeFrom: "workflow_v2_plan_artifact"
+    },
+    failureRoutes: [
+      { routeId: "worker_review_failed", match: { state: "waiting_review" }, action: "return_to_manager_or_respawn_worker", ownerAgent: plan.taskOwnerAgent },
+      { routeId: "manager_artifact_rejected", match: { state: "waiting_manager" }, action: "return_to_manager_revision", ownerAgent: plan.taskOwnerAgent },
+      { routeId: "human_gate_request_due", match: { state: "human_gate_request_due" }, action: "cat_claw_submit_human_gate_request", ownerAgent: "cat_claw" },
+      { routeId: "human_gate_waiting", match: { state: "waiting_human" }, action: "await_flashcat_human_gate_response", ownerAgent: "cat_claw" }
+    ],
+    artifacts: {
+      canonicalPlan: {
+        kind: "workflow_v2_plan_spec_json",
+        path: "",
+        sourceOfTruth: true
+      }
+    },
+    audit: {
+      generatedBy: "workflow.v2.plan",
+      generatedAt: createdAt,
+      designReference: "Anthropic Building effective agents: simple composable workflows, orchestrator-workers, evaluator-optimizer"
+    }
+  };
+}
+
+export async function workflowV2PlanPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const objective = firstText(input.objective, input.summary, input.prompt, input.text);
+  if (!objective) errors.push(workflowV2ValidationError("objective_required", "workflow v2 plan preview requires objective/summary/prompt"));
+  const workflowId = firstText(input.workflowId, input.workflow_id) || safeId("workflow-v2");
+  const planId = firstText(input.planId, input.plan_id) || `${workflowId}.plan`;
+  const planRevision = workflowV2NonNegativeInt(input.planRevision ?? input.plan_revision, 1) || 1;
+  const taskOwnerAgent = normalizeOptionalAgentId(firstText(input.taskOwnerAgent, input.task_owner_agent, input.ownerAgent, input.owner_agent, "cat_heart")) || "cat_heart";
+  const inputPattern = workflowV2InputOrchestrationPattern(input);
+  const participantManagers = inputPattern === "direct_owner_execution" && !workflowV2HasExplicitPlanManagers(input)
+    ? []
+    : workflowV2PlanManagers(input);
+  const acceptanceCriteria = workflowV2JsonArray(input.acceptanceCriteria ?? input.acceptance_criteria, []);
+  const orchestration = workflowV2PlanOrchestrationContract(input, participantManagers);
+  const advisoryChecks = workflowV2PlanOrchestrationAdvisories(orchestration, acceptanceCriteria);
+  const plan = {
+    planId,
+    workflowId,
+    planRevision,
+    status: workflowV2NormalizeEnum(input.status, WORKFLOW_V2_PLAN_STATUSES, "draft"),
+    workflowState: workflowV2NormalizeEnum(input.workflowState || input.workflow_state, WORKFLOW_V2_WORKFLOW_STATES, "draft"),
+    taskOwnerAgent,
+    plannerAgent: normalizeOptionalAgentId(firstText(input.plannerAgent, input.planner_agent, "main")) || "main",
+    objective,
+    participantManagers,
+    acceptanceCriteria,
+    orchestrationPattern: orchestration.pattern,
+    orchestrationRationale: orchestration.rationale,
+    complexityTier: orchestration.complexityTier,
+    taskGroupRequired: orchestration.taskGroupRequired,
+    workerBudget: orchestration.workerBudget,
+    constraints: workflowV2JsonObject(input.constraints, {}),
+    humanGatePolicy: {
+      required: boolOption(input.humanGateRequired ?? input.human_gate_required, true),
+      ownerAgent: "cat_claw",
+      minApproveOptions: HUMAN_GATE_APPROVE_OPTION_MIN,
+      maxApproveOptions: HUMAN_GATE_APPROVE_OPTION_MAX,
+      controls: ["pause", "terminate"],
+      flashcatOriginalWordsRequired: true,
+      language: "zh-CN"
+    },
+    resumePolicy: {
+      checkpointRequired: true,
+      stableWorkflowIdRequired: true,
+      idempotencyRequired: true
+    },
+    payload: {
+      ...workflowV2JsonObject(input.payload, {}),
+      orchestration
+    }
+  };
+  const nodes = workflowV2JsonArray(input.nodes, null)?.map((node, index) => {
+    const item = workflowV2JsonObject(node, {});
+    return {
+      nodeId: String(item.nodeId || item.node_id || `${planId}.node.${index + 1}`).trim(),
+      planId,
+      workflowId,
+      parentNodeId: String(item.parentNodeId || item.parent_node_id || "").trim(),
+      nodeType: String(item.nodeType || item.node_type || "task").trim(),
+      status: workflowV2NormalizeEnum(item.status, WORKFLOW_V2_NODE_STATUSES, "planned"),
+      ownerAgent: normalizeOptionalAgentId(item.ownerAgent || item.owner_agent || taskOwnerAgent) || taskOwnerAgent,
+      runtimeBackend: workflowV2NormalizeBackend(item.runtimeBackend || item.runtime_backend || "hermers_docker_worker"),
+      sessionId: String(item.sessionId || item.session_id || "").trim(),
+      dependsOn: workflowV2JsonArray(item.dependsOn ?? item.depends_on, []),
+      inputInfoId: String(item.inputInfoId || item.input_info_id || "").trim(),
+      outputInfoId: String(item.outputInfoId || item.output_info_id || "").trim(),
+      payload: workflowV2JsonObject(item.payload, {})
+    };
+  }) || workflowV2DefaultPlanNodes(plan, input);
+  const planSpecV2 = workflowV2PlanSpecArtifact(plan, nodes, input);
+  return {
+    operation: "workflow.v2.plan.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    advisoryChecks,
+    warnings: advisoryChecks,
+    recommendations: {
+      source: "anthropic_simplest_effective_pattern",
+      preferredPattern: orchestration.pattern || (participantManagers.length ? "manager_worker" : "direct_owner_execution"),
+      workerContextLimitTokens: WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS,
+      maxConcurrentWorkersDesignTarget: WORKFLOW_V2_MAX_CONCURRENT_WORKERS
+    },
+    plan,
+    planSpecV2,
+    nodes,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2PlanCreate(rootDir, input = {}) {
+  const validationPreview = await workflowV2PlanPreview(rootDir, input);
+  if (!validationPreview.valid) throw new Error(`workflow v2 plan is invalid: ${validationPreview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const existingRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_plans WHERE plan_id=${sqlValue(validationPreview.plan.planId)} LIMIT 1;`, { json: true });
+  const existingPlan = existingRows[0] || null;
+  const createdAt = existingPlan?.created_at || firstText(input.createdAt, input.created_at, now);
+  const existingUpdatedAt = existingPlan?.updated_at || createdAt;
+  const createdBy = existingPlan?.created_by || firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "main");
+  const planRevision = workflowV2NonNegativeInt(input.planRevision ?? input.plan_revision ?? existingPlan?.plan_revision, 1) || 1;
+  const preview = await workflowV2PlanPreview(rootDir, {
+    ...input,
+    createdAt,
+    updatedAt: existingUpdatedAt,
+    createdBy,
+    planRevision
+  });
+  const plan = {
+    ...preview.plan,
+    status: workflowV2NormalizeEnum(input.status, WORKFLOW_V2_PLAN_STATUSES, "planned"),
+    workflowState: workflowV2NormalizeEnum(input.workflowState || input.workflow_state, WORKFLOW_V2_WORKFLOW_STATES, "planned")
+  };
+  const artifactId = cleanFileSegment(firstText(input.artifactId, input.artifact_id, `${plan.planId}.workflow_plan_spec.v2`));
+  const artifactDir = path.join(paths.artifactsDir, "workflow-v2", cleanFileSegment(plan.workflowId), "plans");
+  const planSpecFilePath = path.join(artifactDir, `${artifactId}.json`);
+  const planSpecPath = relativeTo(paths.root, planSpecFilePath);
+  let planSpecV2 = {
+    ...preview.planSpecV2,
+    meta: {
+      ...preview.planSpecV2.meta,
+      createdAt,
+      updatedAt: existingUpdatedAt,
+      createdBy
+    }
+  };
+  planSpecV2.artifacts = {
+    ...planSpecV2.artifacts,
+    canonicalPlan: {
+      ...(planSpecV2.artifacts?.canonicalPlan || {}),
+      path: planSpecPath,
+      artifactId: `${artifactId}.json`,
+      sourceOfTruth: true
+    }
+  };
+  let planSpecHash = jsonHash(planSpecV2);
+  const existingArtifactStable = existingPlan?.plan_spec_artifact_ref === planSpecPath
+    && existingPlan?.plan_spec_artifact_hash === planSpecHash
+    && await pathExists(planSpecFilePath);
+  const rowUpdatedAt = existingArtifactStable ? existingUpdatedAt : now;
+  if (!existingArtifactStable) {
+    planSpecV2 = {
+      ...planSpecV2,
+      meta: {
+        ...planSpecV2.meta,
+        updatedAt: rowUpdatedAt
+      },
+      audit: {
+        ...planSpecV2.audit,
+        generatedAt: createdAt
+      }
+    };
+    planSpecHash = jsonHash(planSpecV2);
+    await writeJsonAtomic(planSpecFilePath, planSpecV2);
+  }
+  const planPayload = {
+    ...workflowV2JsonObject(plan.payload, {}),
+    orchestration: {
+      pattern: plan.orchestrationPattern,
+      rationale: plan.orchestrationRationale,
+      complexityTier: plan.complexityTier,
+      taskGroupRequired: Boolean(plan.taskGroupRequired),
+      workerBudget: workflowV2JsonObject(plan.workerBudget, {})
+    },
+    planSpecV2ArtifactRef: planSpecPath,
+    planSpecV2ArtifactId: `${artifactId}.json`,
+    planSpecV2Hash: planSpecHash
+  };
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_plans(plan_id, workflow_id, plan_revision, status, workflow_state, task_owner_agent, planner_agent, objective, participant_managers_json, acceptance_criteria_json, constraints_json, human_gate_policy_json, plan_spec_artifact_ref, plan_spec_artifact_hash, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(plan.planId)}, ${sqlValue(plan.workflowId)}, ${sqlValue(plan.planRevision)}, ${sqlValue(plan.status)}, ${sqlValue(plan.workflowState)}, ${sqlValue(plan.taskOwnerAgent)}, ${sqlValue(plan.plannerAgent)}, ${sqlValue(plan.objective)}, ${sqlValue(JSON.stringify(plan.participantManagers))}, ${sqlValue(JSON.stringify(plan.acceptanceCriteria))}, ${sqlValue(JSON.stringify(plan.constraints))}, ${sqlValue(JSON.stringify(plan.humanGatePolicy))}, ${sqlValue(planSpecPath)}, ${sqlValue(planPayload.planSpecV2Hash)}, ${sqlValue(JSON.stringify(planPayload))}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)}, ${sqlValue(rowUpdatedAt)})
+ON CONFLICT(plan_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_revision=excluded.plan_revision,
+  status=excluded.status,
+  workflow_state=excluded.workflow_state,
+  task_owner_agent=excluded.task_owner_agent,
+  planner_agent=excluded.planner_agent,
+  objective=excluded.objective,
+  participant_managers_json=excluded.participant_managers_json,
+  acceptance_criteria_json=excluded.acceptance_criteria_json,
+  constraints_json=excluded.constraints_json,
+  human_gate_policy_json=excluded.human_gate_policy_json,
+  plan_spec_artifact_ref=excluded.plan_spec_artifact_ref,
+  plan_spec_artifact_hash=excluded.plan_spec_artifact_hash,
+  payload_json=excluded.payload_json,
+  updated_at=excluded.updated_at;`);
+  await sqlite(paths.dbFile, `
+INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES (${sqlValue(`${artifactId}.json`)}, ${sqlValue(plan.workflowId)}, 'workflow_v2_plan_spec_json', ${sqlValue(planSpecPath)}, ${sqlValue(plan.objective)}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)})
+ON CONFLICT(artifact_id) DO UPDATE SET workflow_id=excluded.workflow_id, kind=excluded.kind, path=excluded.path, summary=excluded.summary, created_by=excluded.created_by;`);
+  for (const node of preview.nodes) {
+    await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_plan_nodes(node_id, plan_id, workflow_id, parent_node_id, node_type, status, owner_agent, runtime_backend, session_id, depends_on_json, input_info_id, output_info_id, payload_json, created_at, updated_at)
+VALUES (${sqlValue(node.nodeId)}, ${sqlValue(node.planId)}, ${sqlValue(node.workflowId)}, ${sqlValue(node.parentNodeId)}, ${sqlValue(node.nodeType)}, ${sqlValue(node.status)}, ${sqlValue(node.ownerAgent)}, ${sqlValue(node.runtimeBackend)}, ${sqlValue(node.sessionId)}, ${sqlValue(JSON.stringify(node.dependsOn))}, ${sqlValue(node.inputInfoId)}, ${sqlValue(node.outputInfoId)}, ${sqlValue(JSON.stringify(node.payload))}, ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(node_id) DO UPDATE SET
+  plan_id=excluded.plan_id,
+  workflow_id=excluded.workflow_id,
+  parent_node_id=excluded.parent_node_id,
+  node_type=excluded.node_type,
+  status=excluded.status,
+  owner_agent=excluded.owner_agent,
+  runtime_backend=excluded.runtime_backend,
+  session_id=excluded.session_id,
+  depends_on_json=excluded.depends_on_json,
+  input_info_id=excluded.input_info_id,
+  output_info_id=excluded.output_info_id,
+  payload_json=excluded.payload_json,
+  updated_at=excluded.updated_at;`);
+  }
+  return {
+    operation: "workflow.v2.plan.create",
+    plan: { ...plan, payload: planPayload },
+    planSpecV2,
+    artifacts: {
+      planSpecV2: planSpecPath,
+      canonicalJson: planSpecPath,
+      artifactId: `${artifactId}.json`
+    },
+    nodeCount: preview.nodes.length,
+    nodes: preview.nodes,
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowV2NotificationPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const channel = workflowV2NormalizeEnum(input.channel, WORKFLOW_V2_NOTIFICATION_CHANNELS, "message_flow");
+  const payloadMode = workflowV2NormalizeEnum(input.payloadMode || input.payload_mode, WORKFLOW_V2_NOTIFICATION_PAYLOAD_MODES, "pointer_only");
+  const status = String(input.status || "prepared").trim().toLowerCase();
+  const infoId = String(input.infoId || input.info_id || "").trim();
+  const inboxItemId = String(input.inboxItemId || input.inbox_item_id || "").trim();
+  const messageFlowId = String(input.messageFlowId || input.message_flow_id || input.flowId || input.flow_id || "").trim();
+  const notificationBody = firstText(input.notificationBody, input.notification_body, input.notificationText, input.notification_text);
+  if (payloadMode === "pointer_only" && notificationBody) {
+    errors.push(workflowV2ValidationError("pointer_notification_body_disallowed", "pointer_only notification may not carry full body text"));
+  }
+  if (payloadMode === "legacy_inline" && !firstText(input.legacyInlineReason, input.legacy_inline_reason)) {
+    errors.push(workflowV2ValidationError("legacy_inline_reason_required", "legacy_inline notification requires legacyInlineReason"));
+  }
+  if (channel === "message_flow" && ["sent", "delivered", "failed", "telegram_sent", "telegram_failed"].includes(status) && !messageFlowId) {
+    errors.push(workflowV2ValidationError("message_flow_id_required_for_terminal_notification", "sent/delivered message_flow notification requires messageFlowId"));
+  }
+  const notificationId = String(input.notificationId || input.notification_id || safeId("v2-notify")).trim();
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const payload = {
+    schemaVersion: 1,
+    payloadMode,
+    workflowId,
+    infoId,
+    inboxItemId,
+    messageFlowId,
+    title: firstText(input.title, input.subject),
+    summary: firstText(input.summary),
+    readAction: "workflow.v2.info_stack.read",
+    expiresAt: firstText(input.expiresAt, input.expires_at),
+    traceId: firstText(input.traceId, input.trace_id),
+    legacyInlineReason: firstText(input.legacyInlineReason, input.legacy_inline_reason)
+  };
+  return {
+    operation: "workflow.v2.notification.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    notification: {
+      notificationId,
+      workflowId,
+      infoId,
+      inboxItemId,
+      messageFlowId,
+      channel,
+      targetAgent: normalizeOptionalAgentId(firstText(input.targetAgent, input.target_agent, input.recipientAgent, input.recipient_agent)),
+      payloadMode,
+      status,
+      payload
+    },
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2InfoStackPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const workflowId = firstText(input.workflowId, input.workflow_id) || safeId("workflow-v2");
+  const planId = firstText(input.planId, input.plan_id);
+  const nodeId = firstText(input.nodeId, input.node_id);
+  const workerRunId = firstText(input.workerRunId, input.worker_run_id);
+  const infoId = firstText(input.infoId, input.info_id) || safeId("v2-info");
+  const classification = workflowV2NormalizeEnum(input.classification, WORKFLOW_V2_INFO_CLASSIFICATIONS, "internal");
+  const bodyText = firstText(input.bodyText, input.body_text, input.contentText, input.content_text, input.text);
+  const explicitStorage = firstText(input.contentStorage, input.content_storage);
+  const contentStorage = workflowV2NormalizeEnum(explicitStorage || "artifact_ref", WORKFLOW_V2_CONTENT_STORAGES, "artifact_ref");
+  const inlineReason = firstText(input.inlineReason, input.inline_reason, input.legacyInlineReason, input.legacy_inline_reason);
+  const allowInlineContent = boolOption(input.allowInlineContent ?? input.allow_inline_content, false);
+  const contentRef = firstText(input.contentRef, input.content_ref, input.artifactRef, input.artifact_ref, input.externalRef, input.external_ref);
+  if (WORKFLOW_V2_SENSITIVE_CLASSIFICATIONS.has(classification) && (contentStorage === "inline" || bodyText)) {
+    errors.push(workflowV2ValidationError("sensitive_inline_body_disallowed", "sensitive/secret/trading info must be stored by artifact_ref/external_ref/redacted pointer, not inline body"));
+  }
+  if (contentStorage === "inline" && (!allowInlineContent || !inlineReason)) {
+    errors.push(workflowV2ValidationError("inline_content_requires_explicit_reason", "inline info storage requires allowInlineContent=true and inlineReason"));
+  }
+  if (contentStorage !== "inline" && !contentRef && contentStorage !== "redacted") {
+    errors.push(workflowV2ValidationError("content_ref_required", `${contentStorage} info requires contentRef/artifactRef/externalRef`));
+  }
+  const recipientKind = firstText(input.recipientKind, input.recipient_kind, "agent");
+  const recipientId = firstText(input.recipientId, input.recipient_id, input.recipientAgent, input.recipient_agent, input.targetAgent, input.target_agent);
+  const inboxItemId = recipientId ? (firstText(input.inboxItemId, input.inbox_item_id) || safeId("v2-inbox")) : "";
+  const grantId = recipientId ? (firstText(input.grantId, input.grant_id) || safeId("v2-grant")) : "";
+  const notificationPreview = await workflowV2NotificationPreview(rootDir, {
+    ...input,
+    workflowId,
+    infoId,
+    inboxItemId,
+    targetAgent: recipientKind === "agent" ? recipientId : input.targetAgent,
+    payloadMode: input.payloadMode || input.payload_mode || "pointer_only"
+  });
+  errors.push(...notificationPreview.errors);
+  const contentHash = contentStorage === "inline" ? textHash(bodyText) : textHash(`${contentStorage}:${contentRef}`);
+  return {
+    operation: "workflow.v2.info_stack.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    infoItem: {
+      infoId,
+      workflowId,
+      planId,
+      nodeId,
+      workerRunId,
+      classification,
+      contentStorage,
+      contentRef,
+      contentHash,
+      summary: firstText(input.summary),
+      payload: {
+        ...workflowV2JsonObject(input.payload, {}),
+        ...(contentStorage === "inline" ? { inlineReason } : {}),
+        ...(contentStorage === "inline" ? { content: bodyText } : {})
+      }
+    },
+    inboxItem: inboxItemId ? {
+      inboxItemId,
+      infoId,
+      workflowId,
+      recipientKind,
+      recipientId,
+      status: "pending",
+      payload: workflowV2JsonObject(input.inboxPayload || input.inbox_payload, {})
+    } : null,
+    accessGrant: grantId ? {
+      grantId,
+      infoId,
+      inboxItemId,
+      principalKind: recipientKind,
+      principalId: recipientId,
+      accessMode: firstText(input.accessMode, input.access_mode, "read"),
+      tokenRef: firstText(input.tokenRef, input.token_ref),
+      expiresAt: firstText(input.expiresAt, input.expires_at),
+      status: "active"
+    } : null,
+    notification: notificationPreview.notification,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2InfoStackRecord(rootDir, input = {}) {
+  const preview = await workflowV2InfoStackPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 info stack item is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "main");
+  const item = preview.infoItem;
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_info_items(info_id, workflow_id, plan_id, node_id, worker_run_id, classification, content_storage, content_ref, content_hash, summary, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(item.infoId)}, ${sqlValue(item.workflowId)}, ${sqlValue(item.planId)}, ${sqlValue(item.nodeId)}, ${sqlValue(item.workerRunId)}, ${sqlValue(item.classification)}, ${sqlValue(item.contentStorage)}, ${sqlValue(item.contentRef)}, ${sqlValue(item.contentHash)}, ${sqlValue(item.summary)}, ${sqlValue(JSON.stringify(item.payload))}, ${sqlValue(createdBy)}, ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(info_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  node_id=excluded.node_id,
+  worker_run_id=excluded.worker_run_id,
+  classification=excluded.classification,
+  content_storage=excluded.content_storage,
+  content_ref=excluded.content_ref,
+  content_hash=excluded.content_hash,
+  summary=excluded.summary,
+  payload_json=excluded.payload_json,
+  updated_at=excluded.updated_at;`);
+  if (preview.inboxItem) {
+    const inbox = preview.inboxItem;
+    await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_inbox_items(inbox_item_id, info_id, workflow_id, recipient_kind, recipient_id, status, notification_id, payload_json, created_at, updated_at)
+VALUES (${sqlValue(inbox.inboxItemId)}, ${sqlValue(inbox.infoId)}, ${sqlValue(inbox.workflowId)}, ${sqlValue(inbox.recipientKind)}, ${sqlValue(inbox.recipientId)}, ${sqlValue(inbox.status)}, ${sqlValue(preview.notification.notificationId)}, ${sqlValue(JSON.stringify(inbox.payload))}, ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(inbox_item_id) DO UPDATE SET
+  info_id=excluded.info_id,
+  workflow_id=excluded.workflow_id,
+  recipient_kind=excluded.recipient_kind,
+  recipient_id=excluded.recipient_id,
+  status=excluded.status,
+  notification_id=excluded.notification_id,
+  payload_json=excluded.payload_json,
+  updated_at=excluded.updated_at;`);
+  }
+  if (preview.accessGrant) {
+    const grant = preview.accessGrant;
+    await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_access_grants(grant_id, info_id, inbox_item_id, principal_kind, principal_id, access_mode, token_ref, expires_at, status, payload_json, created_at, updated_at)
+VALUES (${sqlValue(grant.grantId)}, ${sqlValue(grant.infoId)}, ${sqlValue(grant.inboxItemId)}, ${sqlValue(grant.principalKind)}, ${sqlValue(grant.principalId)}, ${sqlValue(grant.accessMode)}, ${sqlValue(grant.tokenRef)}, ${sqlValue(grant.expiresAt)}, ${sqlValue(grant.status)}, '{}', ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(grant_id) DO UPDATE SET
+  info_id=excluded.info_id,
+  inbox_item_id=excluded.inbox_item_id,
+  principal_kind=excluded.principal_kind,
+  principal_id=excluded.principal_id,
+  access_mode=excluded.access_mode,
+  token_ref=excluded.token_ref,
+  expires_at=excluded.expires_at,
+  status=excluded.status,
+  updated_at=excluded.updated_at;`);
+  }
+  const notification = preview.notification;
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_notifications(notification_id, workflow_id, info_id, inbox_item_id, message_flow_id, channel, target_agent, payload_mode, status, payload_json, created_at, updated_at)
+VALUES (${sqlValue(notification.notificationId)}, ${sqlValue(item.workflowId)}, ${sqlValue(notification.infoId)}, ${sqlValue(notification.inboxItemId)}, ${sqlValue(notification.messageFlowId)}, ${sqlValue(notification.channel)}, ${sqlValue(notification.targetAgent)}, ${sqlValue(notification.payloadMode)}, ${sqlValue(notification.status)}, ${sqlValue(JSON.stringify(notification.payload))}, ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(notification_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  info_id=excluded.info_id,
+  inbox_item_id=excluded.inbox_item_id,
+  message_flow_id=excluded.message_flow_id,
+  channel=excluded.channel,
+  target_agent=excluded.target_agent,
+  payload_mode=excluded.payload_mode,
+  status=excluded.status,
+  payload_json=excluded.payload_json,
+  updated_at=excluded.updated_at;`);
+  return { ...preview, operation: "workflow.v2.info_stack.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
+}
+
+function workflowV2InfoStackItemFromRow(row = {}, includeInlineContent = false) {
+  if (!row.info_id) return null;
+  const payload = parseJsonValue(row.payload_json, {});
+  const classification = row.classification || "internal";
+  const sensitive = WORKFLOW_V2_SENSITIVE_CLASSIFICATIONS.has(classification);
+  const item = {
+    infoId: row.info_id,
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    nodeId: row.node_id || "",
+    workerRunId: row.worker_run_id || "",
+    classification,
+    contentStorage: row.content_storage || "artifact_ref",
+    contentRef: row.content_ref || "",
+    contentHash: row.content_hash || "",
+    summary: row.summary || "",
+    payload: {
+      ...payload,
+      ...(payload.content ? { content: "[not returned by default]" } : {})
+    },
+    inlineContentReturned: false
+  };
+  if (includeInlineContent && item.contentStorage === "inline" && !sensitive) {
+    item.payload = payload;
+    item.inlineContentReturned = Boolean(payload.content);
+  }
+  return item;
+}
+
+export async function workflowV2InfoStackRead(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const infoId = firstText(input.infoId, input.info_id);
+  const inboxItemId = firstText(input.inboxItemId, input.inbox_item_id);
+  const grantId = firstText(input.grantId, input.grant_id);
+  const allowDirectInfoRead = boolOption(input.allowDirectInfoRead ?? input.allow_direct_info_read, false);
+  const principalKind = firstText(input.principalKind, input.principal_kind, input.readerKind, input.reader_kind, input.recipientKind, input.recipient_kind, "agent");
+  const principalId = firstText(input.principalId, input.principal_id, input.readerId, input.reader_id, input.recipientId, input.recipient_id, input.recipientAgent, input.recipient_agent, input.callerAgent, input.caller_agent);
+  if (!grantId && !inboxItemId && !allowDirectInfoRead) {
+    throw new Error("workflow v2 info read requires inboxItemId or grantId");
+  }
+  let rows = [];
+  if (grantId) {
+    rows = await sqlite(paths.dbFile, `
+SELECT i.*, inbox.inbox_item_id AS matched_inbox_item_id, g.grant_id AS matched_grant_id, g.principal_kind, g.principal_id, g.status AS grant_status, g.expires_at AS grant_expires_at
+FROM workflow_v2_access_grants g
+JOIN workflow_v2_info_items i ON i.info_id=g.info_id
+LEFT JOIN workflow_v2_inbox_items inbox ON inbox.inbox_item_id=g.inbox_item_id
+WHERE g.grant_id=${sqlValue(grantId)}
+LIMIT 1;`, { json: true });
+  } else if (inboxItemId) {
+    rows = await sqlite(paths.dbFile, `
+SELECT i.*, inbox.inbox_item_id AS matched_inbox_item_id, '' AS matched_grant_id, inbox.recipient_kind AS principal_kind, inbox.recipient_id AS principal_id, inbox.status AS inbox_status
+FROM workflow_v2_inbox_items inbox
+JOIN workflow_v2_info_items i ON i.info_id=inbox.info_id
+WHERE inbox.inbox_item_id=${sqlValue(inboxItemId)}
+LIMIT 1;`, { json: true });
+  } else if (infoId && allowDirectInfoRead) {
+    rows = await sqlite(paths.dbFile, `
+SELECT *, '' AS matched_inbox_item_id, '' AS matched_grant_id
+FROM workflow_v2_info_items
+WHERE info_id=${sqlValue(infoId)}
+LIMIT 1;`, { json: true });
+  }
+  const row = rows[0];
+  if (!row) throw new Error("workflow v2 info item not found or unreadable");
+  if (infoId && row.info_id !== infoId) throw new Error("workflow v2 info id mismatch");
+  if (grantId) {
+    if (row.grant_status !== "active") throw new Error(`workflow v2 access grant is not active: ${row.grant_status || "unknown"}`);
+    if (row.grant_expires_at && new Date(row.grant_expires_at).getTime() < Date.now()) throw new Error("workflow v2 access grant expired");
+  }
+  if (principalId && row.principal_id && row.principal_id !== principalId) throw new Error("workflow v2 info read principal mismatch");
+  if (principalKind && row.principal_kind && row.principal_kind !== principalKind) throw new Error("workflow v2 info read principal kind mismatch");
+  const item = workflowV2InfoStackItemFromRow(row, boolOption(input.includeInlineContent ?? input.include_inline_content, false));
+  return {
+    operation: "workflow.v2.info_stack.read",
+    readOnly: true,
+    item,
+    access: {
+      inboxItemId: row.matched_inbox_item_id || inboxItemId || "",
+      grantId: row.matched_grant_id || grantId || "",
+      principalKind: row.principal_kind || principalKind,
+      principalId: row.principal_id || principalId
+    },
+    receiptRecordAction: "workflow.v2.read_receipt.record",
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowV2ReadReceiptRecord(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const infoId = firstText(input.infoId, input.info_id);
+  if (!infoId) throw new Error("workflow v2 read receipt requires infoId");
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const receipt = {
+    receiptId: firstText(input.receiptId, input.receipt_id) || safeId("v2-read"),
+    workflowId,
+    infoId,
+    inboxItemId: firstText(input.inboxItemId, input.inbox_item_id),
+    grantId: firstText(input.grantId, input.grant_id),
+    readerKind: firstText(input.readerKind, input.reader_kind, input.principalKind, input.principal_kind, "agent"),
+    readerId: firstText(input.readerId, input.reader_id, input.principalId, input.principal_id, input.callerAgent, input.caller_agent),
+    status: firstText(input.status, "read"),
+    payload: workflowV2JsonObject(input.payload, {}),
+    createdAt: nowIso()
+  };
+  if (!receipt.inboxItemId && !receipt.grantId) throw new Error("workflow v2 read receipt requires inboxItemId or grantId");
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_read_receipts(receipt_id, workflow_id, info_id, inbox_item_id, grant_id, reader_kind, reader_id, status, payload_json, created_at)
+VALUES (${sqlValue(receipt.receiptId)}, ${sqlValue(receipt.workflowId)}, ${sqlValue(receipt.infoId)}, ${sqlValue(receipt.inboxItemId)}, ${sqlValue(receipt.grantId)}, ${sqlValue(receipt.readerKind)}, ${sqlValue(receipt.readerId)}, ${sqlValue(receipt.status)}, ${sqlValue(JSON.stringify(receipt.payload))}, ${sqlValue(receipt.createdAt)})
+ON CONFLICT(receipt_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  info_id=excluded.info_id,
+  inbox_item_id=excluded.inbox_item_id,
+  grant_id=excluded.grant_id,
+  reader_kind=excluded.reader_kind,
+  reader_id=excluded.reader_id,
+  status=excluded.status,
+  payload_json=excluded.payload_json;`);
+  return { operation: "workflow.v2.read_receipt.record", receipt, dbFile: paths.dbFile };
+}
+
+export async function workflowV2WorkerBackendPreflight(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const warnings = [];
+  const backendId = workflowV2NormalizeBackend(input.backendId || input.backend_id || input.runtimeBackend || input.runtime_backend || "hermers_docker_worker");
+  if (WORKFLOW_V2_DISALLOWED_WORKER_BACKENDS.has(backendId)) {
+    errors.push(workflowV2ValidationError("openclaw_worker_backend_disallowed", "OpenClaw is not allowed as a workflow v2 worker runtime backend"));
+  } else if (!WORKFLOW_V2_WORKER_BACKENDS.has(backendId)) {
+    warnings.push(workflowV2ValidationError("unknown_worker_backend", `unknown worker backend will require explicit adapter registration: ${backendId}`));
+  }
+  const modelRoute = workflowV2JsonObject(input.modelRoute ?? input.model_route, {});
+  const expectedProviderModel = firstText(modelRoute.providerModel, modelRoute.provider_model, input.providerModel, input.provider_model, "openai-codex/gpt-5.5");
+  if (!expectedProviderModel.startsWith("openai-codex/")) {
+    warnings.push(workflowV2ValidationError("model_route_not_codex_quota_path", "expected provider model should use openai-codex/<model> for Codex quota accounting", { expectedProviderModel }));
+  }
+  const receiptInput = input.receipt ?? input.modelReceipt ?? input.model_receipt;
+  const receiptProvided = receiptInput !== undefined && receiptInput !== null && receiptInput !== "";
+  const receipt = workflowV2JsonObject(receiptInput, {});
+  const receiptKeys = ["provider", "model", "fallbackAttempts", "errorCode"];
+  const missingReceiptKeys = receiptKeys.filter((key) => !Object.prototype.hasOwnProperty.call(receipt, key));
+  if (!receiptProvided) {
+    errors.push(workflowV2ValidationError("model_receipt_required", "worker backend preflight requires observed model receipt evidence"));
+  } else if (missingReceiptKeys.length) {
+    errors.push(workflowV2ValidationError("model_receipt_missing_required_fields", "model receipt must include provider, model, fallbackAttempts, and errorCode", { missingReceiptKeys }));
+  }
+  if (receiptProvided && Object.keys(receipt).length > 0) {
+    const observedProviderModel = `${receipt.provider || ""}/${receipt.model || ""}`.replace(/\/+$/g, "");
+    if (receipt.provider && receipt.model && observedProviderModel !== expectedProviderModel) {
+      errors.push(workflowV2ValidationError("model_route_mismatch", "observed model receipt does not match expected route", { expectedProviderModel, observedProviderModel }));
+    }
+    if (Number(receipt.fallbackAttempts || 0) > 0 && boolOption(input.fallbackAllowed ?? input.fallback_allowed, false) === false) {
+      errors.push(workflowV2ValidationError("model_fallback_disallowed", "fallbackAttempts must be zero when fallbackAllowed=false", { fallbackAttempts: Number(receipt.fallbackAttempts || 0) }));
+    }
+  }
+  const oauthInput = input.oauth ?? input.oauthStatus ?? input.oauth_status;
+  const oauthProvided = oauthInput !== undefined && oauthInput !== null && oauthInput !== "";
+  const oauth = workflowV2JsonObject(oauthInput, {});
+  if (!oauthProvided || Object.keys(oauth).length === 0) {
+    errors.push(workflowV2ValidationError("oauth_status_required", "worker backend preflight requires OAuth expiry and refresh evidence"));
+  }
+  const oauthHasExpiry = Object.prototype.hasOwnProperty.call(oauth, "expiryOk") || Object.prototype.hasOwnProperty.call(oauth, "expiry_ok") || Object.prototype.hasOwnProperty.call(oauth, "expired");
+  const oauthHasRefresh = Object.prototype.hasOwnProperty.call(oauth, "refreshOk") || Object.prototype.hasOwnProperty.call(oauth, "refresh_ok");
+  if (oauthProvided && Object.keys(oauth).length > 0 && (!oauthHasExpiry || !oauthHasRefresh)) {
+    errors.push(workflowV2ValidationError("oauth_status_missing_required_fields", "OAuth status must include expiryOk/expiry_ok and refreshOk/refresh_ok evidence"));
+  }
+  if (oauth.expiryOk === false || oauth.expiry_ok === false || oauth.expired === true) {
+    errors.push(workflowV2ValidationError("oauth_token_expired", "OpenAI/Codex OAuth token is expired or expiry check failed"));
+  }
+  if (oauth.refreshOk === false || oauth.refresh_ok === false) {
+    errors.push(workflowV2ValidationError("oauth_refresh_failed", "OpenAI/Codex OAuth refresh check failed"));
+  }
+  if (oauth.revocationVerified === false || oauth.revocation_verified === false) {
+    warnings.push(workflowV2ValidationError("oauth_revocation_unverified", "OAuth revocation/rotation evidence is not verified"));
+  }
+  const networkInput = input.network ?? input.networkPolicy ?? input.network_policy;
+  const networkProvided = networkInput !== undefined && networkInput !== null && networkInput !== "";
+  const network = workflowV2JsonObject(networkInput, {});
+  if (!networkProvided || Object.keys(network).length === 0) {
+    errors.push(workflowV2ValidationError("network_policy_required", "worker backend preflight requires host-only Tailscale and container exposure evidence"));
+  }
+  const networkHasHostOnly = Object.prototype.hasOwnProperty.call(network, "hostOnlyTailscale") || Object.prototype.hasOwnProperty.call(network, "host_only_tailscale");
+  const networkHasWslTailscaled = Object.prototype.hasOwnProperty.call(network, "wslTailscaledActive") || Object.prototype.hasOwnProperty.call(network, "wsl_tailscaled_active");
+  const networkHasDirectPort = Object.prototype.hasOwnProperty.call(network, "directContainerPortExposed") || Object.prototype.hasOwnProperty.call(network, "direct_container_port_exposed");
+  if (networkProvided && Object.keys(network).length > 0 && (!networkHasHostOnly || !networkHasWslTailscaled || !networkHasDirectPort)) {
+    errors.push(workflowV2ValidationError("network_policy_missing_required_fields", "network policy must include hostOnlyTailscale, wslTailscaledActive, and directContainerPortExposed evidence"));
+  }
+  if (network.wslTailscaledActive === true || network.wsl_tailscaled_active === true) {
+    errors.push(workflowV2ValidationError("wsl_tailscaled_disallowed", "wsl-agents must use Windows host-only Tailscale; do not start WSL tailscaled"));
+  }
+  if (network.directContainerPortExposed === true || network.direct_container_port_exposed === true) {
+    errors.push(workflowV2ValidationError("direct_container_port_disallowed", "worker containers should not expose unmanaged direct ports"));
+  }
+  if (network.hostOnlyTailscale === false || network.host_only_tailscale === false) {
+    warnings.push(workflowV2ValidationError("host_only_tailscale_not_verified", "host-only Tailscale path is not verified"));
+  }
+  const preflight = {
+    preflightId: firstText(input.preflightId, input.preflight_id) || safeId("v2-preflight"),
+    workflowId: firstText(input.workflowId, input.workflow_id),
+    backendId,
+    hostAlias: firstText(input.hostAlias, input.host_alias, "wsl-agents"),
+    allowed: errors.length === 0,
+    status: errors.length ? "fail" : warnings.length ? "warn" : "pass",
+    expectedProviderModel,
+    requiredReceiptFields: receiptKeys,
+    disallowedActions: [
+      "start_openclaw_worker_runtime",
+      "start_wsl_tailscaled",
+      "expose_unmanaged_container_port",
+      "treat_fallback_receipt_as_primary_success"
+    ],
+    checks: {
+      backendAllowed: !WORKFLOW_V2_DISALLOWED_WORKER_BACKENDS.has(backendId),
+      modelRouteObserved: Object.keys(receipt).length > 0,
+      oauthObserved: Object.keys(oauth).length > 0,
+      hostOnlyTailscaleObserved: Object.keys(network).length > 0
+    }
+  };
+  return {
+    operation: "workflow.v2.worker_backend.preflight",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    preflight,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2WorkerBackendPreflightRecord(rootDir, input = {}) {
+  const preview = await workflowV2WorkerBackendPreflight(rootDir, input);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "main");
+  const preflight = preview.preflight;
+  const findings = [
+    ...preview.errors.map((item) => ({ severity: "error", ...item })),
+    ...preview.warnings.map((item) => ({ severity: "warning", ...item }))
+  ];
+  const payload = {
+    preflight,
+    errors: preview.errors,
+    warnings: preview.warnings,
+    planId: firstText(input.planId, input.plan_id),
+    nodeId: firstText(input.nodeId, input.node_id),
+    workerRunId: firstText(input.workerRunId, input.worker_run_id)
+  };
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_backend_preflights(preflight_id, workflow_id, backend_id, status, findings_json, payload_json, created_by, created_at)
+VALUES (${sqlValue(preflight.preflightId)}, ${sqlValue(preflight.workflowId)}, ${sqlValue(preflight.backendId)}, ${sqlValue(preflight.status)}, ${sqlValue(JSON.stringify(findings))}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdBy)}, ${sqlValue(now)})
+ON CONFLICT(preflight_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  backend_id=excluded.backend_id,
+  status=excluded.status,
+  findings_json=excluded.findings_json,
+  payload_json=excluded.payload_json,
+  created_by=excluded.created_by,
+  created_at=excluded.created_at;`);
+  return { ...preview, operation: "workflow.v2.worker_backend_preflight.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
+}
+
+function workflowV2WorkerSessionRunInput(run = {}) {
+  return {
+    schemaVersion: "workflow_v2_worker_session_input.v1",
+    workflowId: run.workflowId || "",
+    planId: run.planId || "",
+    nodeId: run.nodeId || "",
+    workerRunId: run.workerRunId || "",
+    parentWorkerRunId: run.parentWorkerRunId || "",
+    supersedesWorkerRunId: run.supersedesWorkerRunId || "",
+    workerGeneration: workflowV2NonNegativeInt(run.workerGeneration, 0),
+    managerAgent: run.managerAgent || "",
+    workerAgentId: run.workerAgentId || "",
+    runtimeBackend: run.runtimeBackend || "",
+    taskInputInfoId: run.taskInputInfoId || "",
+    expectedOutputInfoId: run.outputInfoId || "",
+    handoffInfoId: run.handoffInfoId || "",
+    sourceContextRefs: workflowV2JsonArray(run.sourceContextRefs, []),
+    context: {
+      budgetTokens: workflowV2NonNegativeInt(run.contextBudgetTokens, 0),
+      usedTokens: workflowV2NonNegativeInt(run.contextUsedTokens, 0),
+      compactionCount: workflowV2NonNegativeInt(run.compactionCount, 0)
+    },
+    receiptRequired: true,
+    reviewRequired: true,
+    workerPayload: workflowV2JsonObject(run.payload, {})
+  };
+}
+
+function workflowV2ErrorMessage(error) {
+  return String(error?.message || error || "unknown error").slice(0, 2000);
+}
+
+async function workflowV2RestoreWorkerRunRow(paths, row = {}) {
+  if (!row?.worker_run_id) return;
+  await sqlite(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status=${sqlValue(row.status || "")},
+    parent_worker_run_id=${sqlValue(row.parent_worker_run_id || "")},
+    supersedes_worker_run_id=${sqlValue(row.supersedes_worker_run_id || "")},
+    successor_worker_run_id=${sqlValue(row.successor_worker_run_id || "")},
+    worker_generation=${sqlValue(Number(row.worker_generation || 0))},
+    attempt=${sqlValue(Number(row.attempt || 0))},
+    max_attempts=${sqlValue(Number(row.max_attempts || 1))},
+    lease_owner=${sqlValue(row.lease_owner || "")},
+    lease_until=${sqlValue(row.lease_until || "")},
+    next_retry_at=${sqlValue(row.next_retry_at || "")},
+    output_info_id=${sqlValue(row.output_info_id || "")},
+    handoff_info_id=${sqlValue(row.handoff_info_id || "")},
+    receipt_ref=${sqlValue(row.receipt_ref || "")},
+    last_error=${sqlValue(row.last_error || "")},
+    context_budget_tokens=${sqlValue(Number(row.context_budget_tokens || 0))},
+    context_used_tokens=${sqlValue(Number(row.context_used_tokens || 0))},
+    compaction_count=${sqlValue(Number(row.compaction_count || 0))},
+    source_context_refs_json=${sqlValue(row.source_context_refs_json || "[]")},
+    payload_json=${sqlValue(row.payload_json || "{}")},
+    started_at=${sqlValue(row.started_at || "")},
+    completed_at=${sqlValue(row.completed_at || "")},
+    updated_at=${sqlValue(row.updated_at || nowIso())}
+WHERE worker_run_id=${sqlValue(row.worker_run_id)};`);
+}
+
+async function workflowV2RestoreSessionRunRow(paths, row = {}) {
+  if (!row?.run_id) return;
+  await sqlite(paths.dbFile, `
+UPDATE workflow_session_runs
+SET session_id=${sqlValue(row.session_id || "")},
+    pack_version=${sqlValue(Number(row.pack_version || 0))},
+    workflow_id=${sqlValue(row.workflow_id || "")},
+    task_id=${sqlValue(row.task_id || "")},
+    dispatch_id=${sqlValue(row.dispatch_id || "")},
+    worker_id=${sqlValue(row.worker_id || "")},
+    status=${sqlValue(row.status || "")},
+    input_json=${sqlValue(row.input_json || "{}")},
+    worker_input_json=${sqlValue(row.worker_input_json || "{}")},
+    output_json=${sqlValue(row.output_json || "{}")},
+    receipt_ref=${sqlValue(row.receipt_ref || "")},
+    error=${sqlValue(row.error || "")},
+    started_at=${sqlValue(row.started_at || "")},
+    completed_at=${sqlValue(row.completed_at || "")},
+    created_at=${sqlValue(row.created_at || nowIso())},
+    updated_at=${sqlValue(row.updated_at || nowIso())}
+WHERE run_id=${sqlValue(row.run_id)};`);
+}
+
+async function workflowV2RestoreManagerReviewRow(paths, row = null, reviewId = "") {
+  const id = row?.review_id || reviewId;
+  if (!id) return;
+  if (!row) {
+    await sqlite(paths.dbFile, `DELETE FROM workflow_v2_manager_reviews WHERE review_id=${sqlValue(id)};`);
+    return;
+  }
+  await sqlite(paths.dbFile, `
+UPDATE workflow_v2_manager_reviews
+SET workflow_id=${sqlValue(row.workflow_id || "")},
+    plan_id=${sqlValue(row.plan_id || "")},
+    node_id=${sqlValue(row.node_id || "")},
+    worker_run_id=${sqlValue(row.worker_run_id || "")},
+    reviewer_agent=${sqlValue(row.reviewer_agent || "")},
+    decision=${sqlValue(row.decision || "")},
+    summary=${sqlValue(row.summary || "")},
+    findings_json=${sqlValue(row.findings_json || "[]")},
+    artifact_refs_json=${sqlValue(row.artifact_refs_json || "[]")},
+    receipt_refs_json=${sqlValue(row.receipt_refs_json || "[]")},
+    blocker_json=${sqlValue(row.blocker_json || "{}")},
+    payload_json=${sqlValue(row.payload_json || "{}")},
+    created_at=${sqlValue(row.created_at || nowIso())}
+WHERE review_id=${sqlValue(id)};`);
+}
+
+function workflowV2UniqueTextList(value, fallback = []) {
+  const items = workflowV2JsonArray(value, fallback);
+  return Array.from(new Set(items.map((item) => String(item || "").trim()).filter(Boolean)));
+}
+
+function workflowV2PlanSummary(row = {}) {
+  if (!row) return null;
+  return {
+    planId: row.plan_id || "",
+    workflowId: row.workflow_id || "",
+    status: row.status || "",
+    workflowState: row.workflow_state || "",
+    taskOwnerAgent: row.task_owner_agent || "",
+    plannerAgent: row.planner_agent || "",
+    participantManagers: workflowV2JsonArray(row.participant_managers_json, []),
+    objective: row.objective || "",
+    createdBy: row.created_by || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function workflowV2ManagerReviewSummary(row = {}) {
+  if (!row) return null;
+  return {
+    reviewId: row.review_id || "",
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    nodeId: row.node_id || "",
+    workerRunId: row.worker_run_id || "",
+    reviewerAgent: row.reviewer_agent || "",
+    decision: row.decision || "",
+    summary: row.summary || "",
+    findings: workflowV2JsonArray(row.findings_json, []),
+    artifactRefs: workflowV2JsonArray(row.artifact_refs_json, []),
+    receiptRefs: workflowV2JsonArray(row.receipt_refs_json, []),
+    blocker: workflowV2JsonObject(row.blocker_json, {}),
+    createdAt: row.created_at || ""
+  };
+}
+
+function workflowV2OwnerReviewSummary(row = {}) {
+  if (!row) return null;
+  return {
+    reviewId: row.review_id || "",
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    ownerAgent: row.owner_agent || "",
+    decision: row.decision || "",
+    summary: row.summary || "",
+    managerReviewRefs: workflowV2JsonArray(row.manager_review_refs_json, []),
+    artifactRefs: workflowV2JsonArray(row.artifact_refs_json, []),
+    receiptRefs: workflowV2JsonArray(row.receipt_refs_json, []),
+    findings: workflowV2JsonArray(row.findings_json, []),
+    payload: workflowV2JsonObject(row.payload_json, {}),
+    createdBy: row.created_by || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function workflowV2TaskGroupPackageSummary(row = {}) {
+  if (!row) return null;
+  return {
+    packageId: row.package_id || "",
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    ownerReviewId: row.owner_review_id || "",
+    taskOwnerAgent: row.task_owner_agent || "",
+    taskGroupAgents: workflowV2JsonArray(row.task_group_agents_json, []),
+    status: row.status || "",
+    summary: row.summary || "",
+    managerReviewRefs: workflowV2JsonArray(row.manager_review_refs_json, []),
+    ownerReviewRefs: workflowV2JsonArray(row.owner_review_refs_json, []),
+    artifactRefs: workflowV2JsonArray(row.artifact_refs_json, []),
+    evidenceRefs: workflowV2JsonArray(row.evidence_refs_json, []),
+    payload: workflowV2JsonObject(row.payload_json, {}),
+    createdBy: row.created_by || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function workflowV2CatBrainAuditSummary(row = {}) {
+  if (!row) return null;
+  return {
+    auditId: row.audit_id || "",
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    taskGroupPackageId: row.task_group_package_id || "",
+    catBrainAgent: row.cat_brain_agent || "",
+    decision: row.decision || "",
+    scope: row.scope || "",
+    summary: row.summary || "",
+    findings: workflowV2JsonArray(row.findings_json, []),
+    evidenceRefs: workflowV2JsonArray(row.evidence_refs_json, []),
+    payload: workflowV2JsonObject(row.payload_json, {}),
+    createdBy: row.created_by || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function workflowV2CatClawAuditSummary(row = {}) {
+  if (!row) return null;
+  return {
+    auditId: row.audit_id || "",
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    catBrainAuditId: row.cat_brain_audit_id || "",
+    catClawAgent: row.cat_claw_agent || "",
+    decision: row.decision || "",
+    summary: row.summary || "",
+    checks: workflowV2JsonArray(row.checks_json, []),
+    evidenceRefs: workflowV2JsonArray(row.evidence_refs_json, []),
+    payload: workflowV2JsonObject(row.payload_json, {}),
+    createdBy: row.created_by || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function workflowV2HumanGatePackageSummary(row = {}) {
+  if (!row) return null;
+  return {
+    packageId: row.package_id || "",
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    sourceReviewId: row.source_review_id || "",
+    sourceCatClawAuditId: row.source_cat_claw_audit_id || "",
+    catBrainAgent: row.cat_brain_agent || "",
+    catClawAgent: row.cat_claw_agent || "",
+    status: row.status || "",
+    options: workflowV2JsonArray(row.options_json, []),
+    requiredControls: workflowV2JsonArray(row.required_controls_json, []),
+    evidenceRefs: workflowV2JsonArray(row.evidence_refs_json, []),
+    payload: workflowV2JsonObject(row.payload_json, {}),
+    createdBy: row.created_by || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+async function workflowV2LoadPlanRow(paths, workflowId, planId) {
+  if (!workflowId || !planId || !fileExistsSync(paths.dbFile)) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_plans
+WHERE workflow_id=${sqlValue(workflowId)} AND plan_id=${sqlValue(planId)}
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function workflowV2PatchPlanWorkflowState(paths, workflowId, planId, workflowState, timestamp = nowIso()) {
+  if (!workflowId || !planId || !WORKFLOW_V2_WORKFLOW_STATES.has(workflowState)) return 0;
+  return sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_plans
+SET workflow_state=${sqlValue(workflowState)},
+    updated_at=${sqlValue(timestamp)}
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId)};`);
+}
+
+async function workflowV2AcceptedManagerReviewRows(paths, workflowId, planId, reviewIds = []) {
+  if (!workflowId || !planId || !fileExistsSync(paths.dbFile)) {
+    return { rows: [], missingIds: reviewIds, nonAcceptedIds: [] };
+  }
+  if (!reviewIds.length) {
+    const rows = await sqlite(paths.dbFile, `
+SELECT workflow_v2_manager_reviews.*
+FROM workflow_v2_manager_reviews
+JOIN workflow_v2_worker_runs w ON w.worker_run_id=workflow_v2_manager_reviews.worker_run_id
+WHERE workflow_v2_manager_reviews.workflow_id=${sqlValue(workflowId)}
+  AND workflow_v2_manager_reviews.plan_id=${sqlValue(planId)}
+  AND workflow_v2_manager_reviews.decision='accepted'
+  AND workflow_v2_manager_reviews.worker_run_id!=''
+  AND w.workflow_id=workflow_v2_manager_reviews.workflow_id
+  AND w.plan_id=workflow_v2_manager_reviews.plan_id
+  AND w.manager_agent=workflow_v2_manager_reviews.reviewer_agent
+  AND w.status='accepted'
+ORDER BY workflow_v2_manager_reviews.created_at DESC;`, { json: true });
+    return { rows, missingIds: [], nonAcceptedIds: [] };
+  }
+  const rows = [];
+  const missingIds = [];
+  const nonAcceptedIds = [];
+  for (const reviewId of reviewIds) {
+    const found = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_manager_reviews
+WHERE review_id=${sqlValue(reviewId)}
+LIMIT 1;`, { json: true });
+    const row = found[0];
+    if (!row || row.workflow_id !== workflowId || row.plan_id !== planId) {
+      missingIds.push(reviewId);
+    } else if (row.decision !== "accepted" || !row.worker_run_id) {
+      nonAcceptedIds.push(reviewId);
+    } else {
+      const workerRows = await sqlite(paths.dbFile, `
+SELECT worker_run_id
+FROM workflow_v2_worker_runs
+WHERE worker_run_id=${sqlValue(row.worker_run_id)}
+  AND workflow_id=${sqlValue(row.workflow_id)}
+  AND plan_id=${sqlValue(row.plan_id)}
+  AND manager_agent=${sqlValue(row.reviewer_agent)}
+  AND status='accepted'
+LIMIT 1;`, { json: true });
+      if (!workerRows[0]) {
+        nonAcceptedIds.push(reviewId);
+      } else {
+        rows.push(row);
+      }
+    }
+  }
+  return { rows, missingIds, nonAcceptedIds };
+}
+
+async function workflowV2LatestOwnerReviewRow(paths, workflowId, planId) {
+  if (!workflowId || !planId || !fileExistsSync(paths.dbFile)) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_owner_reviews
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId)}
+  AND decision='accepted'
+ORDER BY updated_at DESC, created_at DESC
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function workflowV2OwnerReviewRow(paths, workflowId, planId, reviewId) {
+  if (!reviewId || !fileExistsSync(paths.dbFile)) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_owner_reviews
+WHERE review_id=${sqlValue(reviewId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0] || null;
+  if (!row || row.workflow_id !== workflowId || row.plan_id !== planId) return null;
+  return row;
+}
+
+async function workflowV2TaskGroupPackageRow(paths, workflowId, planId, packageId) {
+  if (!packageId || !fileExistsSync(paths.dbFile)) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_task_group_packages
+WHERE package_id=${sqlValue(packageId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0] || null;
+  if (!row || row.workflow_id !== workflowId || row.plan_id !== planId) return null;
+  return row;
+}
+
+async function workflowV2CatBrainAuditRow(paths, workflowId, planId, auditId) {
+  if (!auditId || !fileExistsSync(paths.dbFile)) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_cat_brain_audits
+WHERE audit_id=${sqlValue(auditId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0] || null;
+  if (!row || row.workflow_id !== workflowId || row.plan_id !== planId) return null;
+  return row;
+}
+
+async function workflowV2CatClawAuditRowById(paths, auditId) {
+  if (!auditId || !fileExistsSync(paths.dbFile)) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_cat_claw_audits
+WHERE audit_id=${sqlValue(auditId)}
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function workflowV2HumanGatePackageRow(paths, input = {}) {
+  if (!fileExistsSync(paths.dbFile)) return null;
+  const packageId = firstText(input.packageId, input.package_id, input.humanGatePackageId, input.human_gate_package_id);
+  if (packageId) {
+    const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_human_gate_packages
+WHERE package_id=${sqlValue(packageId)}
+LIMIT 1;`, { json: true });
+    return rows[0] || null;
+  }
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const planId = firstText(input.planId, input.plan_id);
+  const sourceCatClawAuditId = firstText(input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id);
+  const filters = [];
+  if (workflowId) filters.push(`workflow_id=${sqlValue(workflowId)}`);
+  if (planId) filters.push(`plan_id=${sqlValue(planId)}`);
+  if (sourceCatClawAuditId) filters.push(`source_cat_claw_audit_id=${sqlValue(sourceCatClawAuditId)}`);
+  if (!filters.length) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_human_gate_packages
+WHERE ${filters.join(" AND ")}
+ORDER BY updated_at DESC, created_at DESC
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function workflowV2PatchSessionRunState(paths, runId = "", patch = {}) {
+  if (!runId) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_session_runs
+WHERE run_id=${sqlValue(runId)}
+LIMIT 1;`, { json: true });
+  const current = sessionRunFromRow(rows[0]);
+  if (!current) return null;
+  const timestamp = firstText(patch.timestamp, patch.updatedAt, patch.updated_at, nowIso());
+  const status = requireWorkflowSessionRunStatus(patch.status || current.status, current.status);
+  const output = patch.output !== undefined ? sessionJsonObject(patch.output) : current.output;
+  const receiptRef = patch.receiptRef !== undefined || patch.receipt_ref !== undefined ? firstText(patch.receiptRef, patch.receipt_ref) : current.receiptRef;
+  const errorText = patch.error !== undefined ? String(patch.error || "") : current.error;
+  const startedAt = status === "running" && !current.startedAt ? timestamp : current.startedAt;
+  const completedAt = isTerminalWorkflowSessionRunStatus(status) ? (current.completedAt || timestamp) : "";
+  await sqlite(paths.dbFile, `
+UPDATE workflow_session_runs
+SET status=${sqlValue(status)},
+    output_json=${sqlValue(JSON.stringify(output))},
+    receipt_ref=${sqlValue(receiptRef)},
+    error=${sqlValue(errorText)},
+    started_at=${sqlValue(startedAt)},
+    completed_at=${sqlValue(completedAt)},
+    updated_at=${sqlValue(timestamp)}
+WHERE run_id=${sqlValue(runId)};`);
+  const packRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_packs WHERE session_id=${sqlValue(current.sessionId)} LIMIT 1;`, { json: true });
+  const pack = sessionPackFromRow(packRows[0]) || {};
+  const phaseInfo = await workflowTaskPhaseInfo(paths, current.workflowId, current.taskId);
+  let agentRunSyncError = "";
+  try {
+    await upsertWorkflowAgentRun(paths, {
+      agentRunId: `session.${runId}`,
+      workflowId: current.workflowId,
+      phaseId: phaseInfo.phaseId,
+      phaseKey: phaseInfo.phaseKey,
+      taskId: current.taskId,
+      dispatchId: current.dispatchId,
+      sessionRunId: runId,
+      runtime: pack.runtimeTarget || "session_pack",
+      agentId: current.workerId || pack.ownerAgent || "",
+      status,
+      inputHash: jsonHash(current.input),
+      outputHash: jsonHash(output),
+      receiptRef,
+      error: errorText,
+      payload: { source: "workflow_session_runs", sessionId: current.sessionId, packVersion: current.packVersion, v2Patch: true },
+      startedAt,
+      completedAt,
+      updatedAt: timestamp
+    });
+  } catch (error) {
+    agentRunSyncError = workflowV2ErrorMessage(error);
+  }
+  const updatedRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_runs WHERE run_id=${sqlValue(runId)} LIMIT 1;`, { json: true });
+  const updated = sessionRunFromRow(updatedRows[0]);
+  return updated ? { ...updated, agentRunSyncError } : null;
+}
+
+async function workflowV2RequireSessionRunPatch(paths, runId = "", patch = {}, context = "worker lifecycle") {
+  const sessionRun = await workflowV2PatchSessionRunState(paths, runId, patch);
+  if (!sessionRun) {
+    throw new Error(`workflow v2 session run patch failed: ${context} session_run_id=${runId || ""}`);
+  }
+  return sessionRun;
+}
+
+export async function workflowV2WorkerSpawnPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const workflowId = firstText(input.workflowId, input.workflow_id) || safeId("workflow-v2");
+  const planId = firstText(input.planId, input.plan_id);
+  const nodeId = firstText(input.nodeId, input.node_id);
+  const managerAgent = normalizeOptionalAgentId(firstText(input.managerAgent, input.manager_agent, input.ownerAgent, input.owner_agent, "cat_heart")) || "cat_heart";
+  const sessionId = firstText(input.sessionId, input.session_id, input.sessionTemplateId, input.session_template_id);
+  const taskInputInfoId = firstText(input.taskInputInfoId, input.task_input_info_id, input.infoId, input.info_id);
+  const runtimeBackend = workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend || "hermers_docker_worker");
+  if (!planId) errors.push(workflowV2ValidationError("plan_id_required", "worker spawn requires planId"));
+  if (!nodeId) errors.push(workflowV2ValidationError("node_id_required", "worker spawn requires nodeId"));
+  if (!sessionId) errors.push(workflowV2ValidationError("session_id_required", "worker spawn requires sessionId/sessionTemplateId from session repository"));
+  if (!taskInputInfoId) errors.push(workflowV2ValidationError("task_input_info_id_required", "worker spawn requires taskInputInfoId pointer"));
+  const preflight = await workflowV2WorkerBackendPreflight(rootDir, { ...input, backendId: runtimeBackend, workflowId });
+  errors.push(...preflight.errors);
+  const preflightId = firstText(input.preflightId, input.preflight_id, preflight.preflight.preflightId);
+  const workerRunId = firstText(input.workerRunId, input.worker_run_id) || safeId("v2-worker");
+  const sessionRunId = firstText(input.sessionRunId, input.session_run_id) || `${workerRunId}.session`;
+  const requestedStatus = firstText(input.status, input.workerStatus, input.worker_status);
+  const normalizedRequestedStatus = requestedStatus ? workflowV2NormalizeEnum(requestedStatus, WORKFLOW_V2_WORKER_RUN_STATUSES, "") : "";
+  if (requestedStatus && normalizedRequestedStatus !== "queued") {
+    errors.push(workflowV2ValidationError("worker_spawn_status_must_be_queued", "worker spawn create can only create queued worker runs; lifecycle transitions must go through control-loop, result, review, or renewal actions", {
+      requestedStatus,
+      normalizedRequestedStatus
+    }));
+  }
+  const parentWorkerRunId = firstText(input.parentWorkerRunId, input.parent_worker_run_id);
+  const supersedesWorkerRunId = firstText(input.supersedesWorkerRunId, input.supersedes_worker_run_id);
+  const successorWorkerRunId = firstText(input.successorWorkerRunId, input.successor_worker_run_id);
+  const contextBudgetRaw = input.contextBudgetTokens ?? input.context_budget_tokens;
+  const explicitContextBudget = contextBudgetRaw !== undefined && contextBudgetRaw !== null && String(contextBudgetRaw).trim() !== "";
+  const contextBudgetTokens = workflowV2NonNegativeInt(contextBudgetRaw, 0);
+  const delegation = workflowV2WorkerDelegationContract({ ...input, contextBudgetTokens });
+  errors.push(...workflowV2ValidateWorkerDelegationContract(delegation, contextBudgetTokens, { explicitContextBudget }));
+  const workerRun = {
+    workerRunId,
+    workflowId,
+    planId,
+    nodeId,
+    parentWorkerRunId,
+    supersedesWorkerRunId,
+    successorWorkerRunId,
+    workerGeneration: workflowV2NonNegativeInt(input.workerGeneration ?? input.worker_generation, parentWorkerRunId || supersedesWorkerRunId ? 1 : 0),
+    managerAgent,
+    workerAgentId: firstText(input.workerAgentId, input.worker_agent_id) || safeId("worker"),
+    sessionId,
+    sessionRunId,
+    preflightId,
+    runtimeBackend,
+    status: "queued",
+    attempt: Math.max(0, Number(input.attempt || 0)),
+    maxAttempts: Math.max(1, Math.min(20, Number(input.maxAttempts || input.max_attempts || 1))),
+    leaseOwner: firstText(input.leaseOwner, input.lease_owner),
+    leaseUntil: firstText(input.leaseUntil, input.lease_until),
+    nextRetryAt: firstText(input.nextRetryAt, input.next_retry_at),
+    taskInputInfoId,
+    outputInfoId: firstText(input.outputInfoId, input.output_info_id),
+    handoffInfoId: firstText(input.handoffInfoId, input.handoff_info_id),
+    receiptRef: firstText(input.receiptRef, input.receipt_ref),
+    lastError: firstText(input.lastError, input.last_error),
+    contextBudgetTokens,
+    contextUsedTokens: workflowV2NonNegativeInt(input.contextUsedTokens ?? input.context_used_tokens, 0),
+    compactionCount: workflowV2NonNegativeInt(input.compactionCount ?? input.compaction_count, 0),
+    sourceContextRefs: workflowV2JsonArray(input.sourceContextRefs ?? input.source_context_refs, []),
+    startedAt: firstText(input.startedAt, input.started_at),
+    completedAt: firstText(input.completedAt, input.completed_at),
+    payload: {
+      ...workflowV2JsonObject(input.payload, {}),
+      delegation
+    }
+  };
+  return {
+    operation: "workflow.v2.worker_spawn.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    warnings: preflight.warnings,
+    workerRun,
+    sessionRunPlan: {
+      runId: sessionRunId,
+      sessionId,
+      status: "queued",
+      workflowId,
+      taskId: nodeId,
+      workerId: workerRun.workerAgentId,
+      input: workflowV2WorkerSessionRunInput(workerRun)
+    },
+    backendPreflight: preflight.preflight,
+    reviewRequired: true,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2WorkerSpawnCreate(rootDir, input = {}) {
+  const preview = await workflowV2WorkerSpawnPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 worker spawn is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const run = preview.workerRun;
+  const existingSessionRows = await sqlite(paths.dbFile, `SELECT run_id FROM workflow_session_runs WHERE run_id=${sqlValue(run.sessionRunId)} LIMIT 1;`, { json: true });
+  const existingPreflightRows = await sqlite(paths.dbFile, `SELECT preflight_id FROM workflow_v2_backend_preflights WHERE preflight_id=${sqlValue(run.preflightId)} LIMIT 1;`, { json: true });
+  let sessionRun = null;
+  try {
+    sessionRun = await workflowSessionRunStart(rootDir, {
+      runId: run.sessionRunId,
+      sessionId: run.sessionId,
+      workflowId: run.workflowId,
+      taskId: run.nodeId,
+      workerId: run.workerAgentId,
+      status: "queued",
+      input: workflowV2WorkerSessionRunInput(run)
+    });
+    await workflowV2WorkerBackendPreflightRecord(rootDir, {
+      ...input,
+      workflowId: run.workflowId,
+      planId: run.planId,
+      nodeId: run.nodeId,
+      workerRunId: run.workerRunId,
+      preflightId: run.preflightId,
+      backendId: run.runtimeBackend
+    });
+    const workerPayload = {
+      ...run.payload,
+      sessionRun: {
+        sessionRunId: sessionRun.runId,
+        sessionId: sessionRun.sessionId,
+        packVersion: sessionRun.packVersion,
+        status: sessionRun.status,
+        source: "workflow_session_runs"
+      }
+    };
+    await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_worker_runs(worker_run_id, workflow_id, plan_id, node_id, parent_worker_run_id, supersedes_worker_run_id, successor_worker_run_id, worker_generation, manager_agent, worker_agent_id, session_id, session_run_id, preflight_id, runtime_backend, status, attempt, max_attempts, lease_owner, lease_until, next_retry_at, task_input_info_id, output_info_id, handoff_info_id, receipt_ref, last_error, context_budget_tokens, context_used_tokens, compaction_count, source_context_refs_json, payload_json, started_at, completed_at, created_at, updated_at)
+VALUES (${sqlValue(run.workerRunId)}, ${sqlValue(run.workflowId)}, ${sqlValue(run.planId)}, ${sqlValue(run.nodeId)}, ${sqlValue(run.parentWorkerRunId)}, ${sqlValue(run.supersedesWorkerRunId)}, ${sqlValue(run.successorWorkerRunId)}, ${sqlValue(run.workerGeneration)}, ${sqlValue(run.managerAgent)}, ${sqlValue(run.workerAgentId)}, ${sqlValue(run.sessionId)}, ${sqlValue(run.sessionRunId)}, ${sqlValue(run.preflightId)}, ${sqlValue(run.runtimeBackend)}, ${sqlValue(run.status)}, ${sqlValue(run.attempt)}, ${sqlValue(run.maxAttempts)}, ${sqlValue(run.leaseOwner)}, ${sqlValue(run.leaseUntil)}, ${sqlValue(run.nextRetryAt)}, ${sqlValue(run.taskInputInfoId)}, ${sqlValue(run.outputInfoId)}, ${sqlValue(run.handoffInfoId)}, ${sqlValue(run.receiptRef)}, ${sqlValue(run.lastError)}, ${sqlValue(run.contextBudgetTokens)}, ${sqlValue(run.contextUsedTokens)}, ${sqlValue(run.compactionCount)}, ${sqlValue(JSON.stringify(run.sourceContextRefs))}, ${sqlValue(JSON.stringify(workerPayload))}, ${sqlValue(run.startedAt)}, ${sqlValue(run.completedAt)}, ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(worker_run_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  node_id=excluded.node_id,
+  parent_worker_run_id=excluded.parent_worker_run_id,
+  supersedes_worker_run_id=excluded.supersedes_worker_run_id,
+  successor_worker_run_id=excluded.successor_worker_run_id,
+  worker_generation=excluded.worker_generation,
+  manager_agent=excluded.manager_agent,
+  worker_agent_id=excluded.worker_agent_id,
+  session_id=excluded.session_id,
+  session_run_id=excluded.session_run_id,
+  preflight_id=excluded.preflight_id,
+  runtime_backend=excluded.runtime_backend,
+  status=excluded.status,
+  attempt=excluded.attempt,
+  max_attempts=excluded.max_attempts,
+  lease_owner=excluded.lease_owner,
+  lease_until=excluded.lease_until,
+  next_retry_at=excluded.next_retry_at,
+  task_input_info_id=excluded.task_input_info_id,
+  output_info_id=excluded.output_info_id,
+  handoff_info_id=excluded.handoff_info_id,
+  receipt_ref=excluded.receipt_ref,
+  last_error=excluded.last_error,
+  context_budget_tokens=excluded.context_budget_tokens,
+  context_used_tokens=excluded.context_used_tokens,
+  compaction_count=excluded.compaction_count,
+  source_context_refs_json=excluded.source_context_refs_json,
+  payload_json=excluded.payload_json,
+  started_at=excluded.started_at,
+  completed_at=excluded.completed_at,
+  updated_at=excluded.updated_at;`);
+  } catch (error) {
+    if (!existingPreflightRows[0]) {
+      await sqlite(paths.dbFile, `DELETE FROM workflow_v2_backend_preflights WHERE preflight_id=${sqlValue(run.preflightId)};`);
+    }
+    if (!existingSessionRows[0]) {
+      await sqlite(paths.dbFile, `
+DELETE FROM workflow_agent_runs WHERE agent_run_id=${sqlValue(`session.${run.sessionRunId}`)};
+DELETE FROM workflow_session_runs WHERE run_id=${sqlValue(run.sessionRunId)};`);
+    }
+    throw error;
+  }
+  return { ...preview, operation: "workflow.v2.worker_spawn.create", dryRun: false, previewOnly: false, sessionRun, dbFile: paths.dbFile };
+}
+
+function workflowV2WorkerRunSummary(row = {}) {
+  return {
+    workerRunId: row.worker_run_id || "",
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    nodeId: row.node_id || "",
+    parentWorkerRunId: row.parent_worker_run_id || "",
+    supersedesWorkerRunId: row.supersedes_worker_run_id || "",
+    successorWorkerRunId: row.successor_worker_run_id || "",
+    workerGeneration: Number(row.worker_generation || 0),
+    managerAgent: row.manager_agent || "",
+    workerAgentId: row.worker_agent_id || "",
+    sessionId: row.session_id || "",
+    sessionRunId: row.session_run_id || "",
+    preflightId: row.preflight_id || "",
+    runtimeBackend: row.runtime_backend || "",
+    status: row.status || "",
+    attempt: Number(row.attempt || 0),
+    maxAttempts: Number(row.max_attempts || 1),
+    leaseOwner: row.lease_owner || "",
+    leaseUntil: row.lease_until || "",
+    nextRetryAt: row.next_retry_at || "",
+    taskInputInfoId: row.task_input_info_id || "",
+    outputInfoId: row.output_info_id || "",
+    handoffInfoId: row.handoff_info_id || "",
+    receiptRef: row.receipt_ref || "",
+    lastError: row.last_error || "",
+    contextBudgetTokens: Number(row.context_budget_tokens || 0),
+    contextUsedTokens: Number(row.context_used_tokens || 0),
+    compactionCount: Number(row.compaction_count || 0),
+    sourceContextRefs: workflowV2JsonArray(row.source_context_refs_json, []),
+    startedAt: row.started_at || "",
+    completedAt: row.completed_at || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+const WORKFLOW_V2_WORKER_RUN_CONTROL_COLUMNS = [
+  "worker_run_id",
+  "workflow_id",
+  "plan_id",
+  "node_id",
+  "preflight_id",
+  "runtime_backend",
+  "status",
+  "attempt",
+  "max_attempts",
+  "lease_owner",
+  "lease_until",
+  "next_retry_at",
+  "task_input_info_id",
+  "output_info_id",
+  "receipt_ref",
+  "last_error",
+  "started_at",
+  "completed_at"
+];
+
+async function workflowV2WorkerRunControlSchema(dbFile) {
+  const workerColumns = await tableColumns(dbFile, "workflow_v2_worker_runs");
+  const preflightColumns = await tableColumns(dbFile, "workflow_v2_backend_preflights");
+  return {
+    ready: hasAllColumns(workerColumns, WORKFLOW_V2_WORKER_RUN_CONTROL_COLUMNS) && hasAllColumns(preflightColumns, ["preflight_id", "workflow_id", "backend_id", "status"]),
+    missingWorkerColumns: WORKFLOW_V2_WORKER_RUN_CONTROL_COLUMNS.filter((column) => !workerColumns.has(column)),
+    missingPreflightColumns: ["preflight_id", "workflow_id", "backend_id", "status"].filter((column) => !preflightColumns.has(column)),
+    workerTableExists: workerColumns.size > 0,
+    preflightTableExists: preflightColumns.size > 0
+  };
+}
+
+async function workflowV2WorkerLifecycleSchema(dbFile) {
+  const workerColumns = await tableColumns(dbFile, "workflow_v2_worker_runs");
+  const handoffColumns = await tableColumns(dbFile, "workflow_v2_worker_handoffs");
+  const workerRequired = [
+    "worker_run_id",
+    "workflow_id",
+    "plan_id",
+    "node_id",
+    "parent_worker_run_id",
+    "supersedes_worker_run_id",
+    "successor_worker_run_id",
+    "worker_generation",
+    "manager_agent",
+    "status",
+    "handoff_info_id",
+    "output_info_id",
+    "receipt_ref",
+    "context_budget_tokens",
+    "context_used_tokens",
+    "compaction_count",
+    "source_context_refs_json",
+    "lease_until"
+  ];
+  const handoffRequired = [
+    "handoff_id",
+    "workflow_id",
+    "plan_id",
+    "worker_run_id",
+    "successor_worker_run_id",
+    "handoff_info_id",
+    "status"
+  ];
+  return {
+    ready: hasAllColumns(workerColumns, workerRequired) && hasAllColumns(handoffColumns, handoffRequired),
+    missingWorkerColumns: workerRequired.filter((column) => !workerColumns.has(column)),
+    missingHandoffColumns: handoffRequired.filter((column) => !handoffColumns.has(column)),
+    workerTableExists: workerColumns.size > 0,
+    handoffTableExists: handoffColumns.size > 0
+  };
+}
+
+function workflowV2ContextPressureThreshold(input = {}) {
+  const threshold = Number(input.contextPressureThreshold ?? input.context_pressure_threshold ?? 0.82);
+  if (!Number.isFinite(threshold)) return 0.82;
+  return Math.max(0.1, Math.min(1, threshold));
+}
+
+export async function workflowV2WorkerLifecyclePreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const workerRunId = firstText(input.workerRunId, input.worker_run_id, input.runId, input.run_id);
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const errors = [];
+  if (!workerRunId) errors.push(workflowV2ValidationError("worker_run_id_required", "worker lifecycle preview requires workerRunId"));
+  if (!fileExistsSync(paths.dbFile)) {
+    return {
+      operation: "workflow.v2.worker_lifecycle.preview",
+      dryRun: true,
+      previewOnly: true,
+      status: "skipped",
+      valid: errors.length === 0,
+      errors,
+      reason: "workflow database does not exist",
+      generatedAt,
+      recommendation: null,
+      dbFile: paths.dbFile,
+      writes: []
+    };
+  }
+  const schema = await workflowV2WorkerLifecycleSchema(paths.dbFile);
+  if (!schema.ready) {
+    return {
+      operation: "workflow.v2.worker_lifecycle.preview",
+      dryRun: true,
+      previewOnly: true,
+      status: "schema_gap",
+      ok: false,
+      valid: false,
+      errors,
+      generatedAt,
+      schema,
+      recommendation: null,
+      dbFile: paths.dbFile,
+      writes: []
+    };
+  }
+  let row = null;
+  if (workerRunId) {
+    const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_runs
+WHERE worker_run_id=${sqlValue(workerRunId)}
+LIMIT 1;`, { json: true });
+    row = rows[0] || null;
+    if (!row) errors.push(workflowV2ValidationError("worker_run_not_found", `worker run not found: ${workerRunId}`));
+    if (row && workflowId && row.workflow_id !== workflowId) {
+      errors.push(workflowV2ValidationError("workflow_id_mismatch", "worker lifecycle workflowId does not match worker run", {
+        workerWorkflowId: row.workflow_id,
+        workflowId
+      }));
+    }
+  }
+  if (!row) {
+    return {
+      operation: "workflow.v2.worker_lifecycle.preview",
+      dryRun: true,
+      previewOnly: true,
+      status: "invalid",
+      valid: false,
+      errors,
+      generatedAt,
+      recommendation: null,
+      dbFile: paths.dbFile,
+      writes: []
+    };
+  }
+  const planRows = await sqlite(paths.dbFile, `
+SELECT task_owner_agent
+FROM workflow_v2_plans
+WHERE plan_id=${sqlValue(row.plan_id)}
+LIMIT 1;`, { json: true });
+  const reviewRows = await sqlite(paths.dbFile, `
+SELECT review_id, reviewer_agent, decision, summary, created_at
+FROM workflow_v2_manager_reviews
+WHERE worker_run_id=${sqlValue(row.worker_run_id)}
+ORDER BY created_at DESC
+LIMIT 1;`, { json: true });
+  const handoffRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_handoffs
+WHERE worker_run_id=${sqlValue(row.worker_run_id)}
+ORDER BY updated_at DESC, created_at DESC
+LIMIT 1;`, { json: true });
+  const taskOwnerAgent = normalizeOptionalAgentId(planRows[0]?.task_owner_agent || "") || "";
+  const latestReview = reviewRows[0] || null;
+  const latestHandoff = handoffRows[0] || null;
+  const budget = workflowV2NonNegativeInt(input.contextBudgetTokens ?? input.context_budget_tokens, row.context_budget_tokens || 0);
+  const used = workflowV2NonNegativeInt(input.contextUsedTokens ?? input.context_used_tokens, row.context_used_tokens || 0);
+  const compactionCount = workflowV2NonNegativeInt(input.compactionCount ?? input.compaction_count, row.compaction_count || 0);
+  const maxCompactions = Math.max(1, Math.min(20, workflowV2NonNegativeInt(input.maxCompactions ?? input.max_compactions, 2)));
+  const threshold = workflowV2ContextPressureThreshold(input);
+  const contextPressureRatio = budget > 0 ? used / budget : null;
+  const signals = [];
+  if (contextPressureRatio !== null && contextPressureRatio >= threshold) {
+    signals.push({
+      code: "context_pressure_high",
+      severity: contextPressureRatio >= 0.95 ? "critical" : "warning",
+      ratio: Number(contextPressureRatio.toFixed(4)),
+      threshold
+    });
+  }
+  if (compactionCount >= maxCompactions) {
+    signals.push({
+      code: "compaction_limit_reached",
+      severity: compactionCount > maxCompactions ? "critical" : "warning",
+      compactionCount,
+      maxCompactions
+    });
+  }
+  if (latestReview && ["rejected", "revise_required"].includes(latestReview.decision)) {
+    signals.push({
+      code: "review_failure",
+      severity: "warning",
+      reviewId: latestReview.review_id,
+      decision: latestReview.decision
+    });
+  }
+  const leaseUntilMs = Date.parse(row.lease_until || "");
+  const generatedAtMs = Date.parse(generatedAt || "");
+  if (row.status === "running" && row.lease_until && !Number.isNaN(leaseUntilMs) && !Number.isNaN(generatedAtMs) && leaseUntilMs <= generatedAtMs) {
+    signals.push({ code: "lease_expired", severity: "warning", leaseUntil: row.lease_until });
+  }
+  if (row.status === "submitted_for_review") signals.push({ code: "review_due", severity: "info" });
+  if (row.status === "handoff_required" && !latestHandoff) signals.push({ code: "handoff_package_missing", severity: "warning" });
+  if (row.status === "handoff_required" && latestHandoff && latestHandoff.status !== "accepted") {
+    signals.push({
+      code: "handoff_not_accepted",
+      severity: "warning",
+      handoffId: latestHandoff.handoff_id,
+      handoffStatus: latestHandoff.status
+    });
+  }
+  if (row.status === "blocked") signals.push({ code: "blocked_condition", severity: "warning", lastError: row.last_error || "" });
+  if (row.status === "needs_human_gate") signals.push({ code: "human_gate_required", severity: "info" });
+
+  const terminalNoAction = new Set(["accepted", "cancelled", "successor_spawned"]);
+  let recommendedAction = "continue";
+  let reason = "worker can continue under current lifecycle policy";
+  if (terminalNoAction.has(row.status)) {
+    recommendedAction = "no_action";
+    reason = `worker status ${row.status} does not require renewal`;
+  } else if (row.status === "retired") {
+    recommendedAction = row.successor_worker_run_id ? "no_action" : "spawn_successor";
+    reason = row.successor_worker_run_id ? "retired worker already points at a successor" : "retired worker has no successor";
+  } else if (row.status === "handoff_required") {
+    recommendedAction = latestHandoff?.status === "accepted" ? "spawn_successor" : "handoff_required";
+    reason = latestHandoff?.status === "accepted" ? "accepted handoff package exists and successor can be prepared" : "accepted handoff package is required before successor spawn";
+  } else if (["failed", "timed_out", "rejected", "revise_required"].includes(row.status)) {
+    recommendedAction = "spawn_successor";
+    reason = `worker status ${row.status} should be renewed by successor worker`;
+  } else if (row.status === "blocked") {
+    recommendedAction = "escalate_to_owner";
+    reason = "blocked worker requires owner/manager condition review before renewal";
+  } else if (row.status === "needs_human_gate") {
+    recommendedAction = "human_gate_due";
+    reason = "worker outcome requires Human Gate path, not automatic renewal";
+  } else if (signals.some((signal) => ["context_pressure_high", "compaction_limit_reached"].includes(signal.code))) {
+    recommendedAction = "handoff_required";
+    reason = "context pressure or compaction threshold requires a curated handoff before more work";
+  } else if (row.status === "submitted_for_review") {
+    recommendedAction = "review_due";
+    reason = "worker output is waiting for responsible owner/manager review";
+  }
+  const handoffNeeded = ["handoff_required", "spawn_successor", "retire"].includes(recommendedAction);
+  const sourceContextRefs = workflowV2JsonArray(input.sourceContextRefs ?? input.source_context_refs, workflowV2JsonArray(row.source_context_refs_json, []));
+  const artifactRefs = workflowV2JsonArray(input.artifactRefs ?? input.artifact_refs, row.output_info_id ? [row.output_info_id] : []);
+  const receiptRefs = workflowV2JsonArray(input.receiptRefs ?? input.receipt_refs, row.receipt_ref ? [row.receipt_ref] : []);
+  const handoffId = firstText(input.handoffId, input.handoff_id) || `${row.worker_run_id}.handoff`;
+  const handoffInfoId = firstText(input.handoffInfoId, input.handoff_info_id, row.handoff_info_id) || `${handoffId}.info`;
+  return {
+    operation: "workflow.v2.worker_lifecycle.preview",
+    dryRun: true,
+    previewOnly: true,
+    status: "ok",
+    ok: errors.length === 0,
+    valid: errors.length === 0,
+    errors,
+    generatedAt,
+    workerRun: workflowV2WorkerRunSummary(row),
+    telemetry: {
+      contextBudgetTokens: budget,
+      contextUsedTokens: used,
+      contextPressureRatio: contextPressureRatio === null ? null : Number(contextPressureRatio.toFixed(4)),
+      contextPressureThreshold: threshold,
+      compactionCount,
+      maxCompactions
+    },
+    latestReview,
+    latestHandoff: latestHandoff ? {
+      handoffId: latestHandoff.handoff_id,
+      status: latestHandoff.status,
+      handoffInfoId: latestHandoff.handoff_info_id,
+      successorWorkerRunId: latestHandoff.successor_worker_run_id,
+      updatedAt: latestHandoff.updated_at
+    } : null,
+    signals,
+    recommendation: {
+      action: recommendedAction,
+      reason,
+      handoffRequired: handoffNeeded,
+      successorAllowed: ["spawn_successor", "retire"].includes(recommendedAction) || (recommendedAction === "handoff_required" && latestHandoff?.status === "accepted"),
+      requiredAuthority: {
+        kind: "responsible_owner_or_manager",
+        managerAgent: row.manager_agent || "",
+        taskOwnerAgent,
+        allowedAgents: Array.from(new Set([row.manager_agent || "", taskOwnerAgent].filter(Boolean)))
+      }
+    },
+    handoffPackagePreview: handoffNeeded ? {
+      handoffId,
+      workflowId: row.workflow_id,
+      planId: row.plan_id,
+      nodeId: row.node_id,
+      workerRunId: row.worker_run_id,
+      managerAgent: row.manager_agent || "",
+      successorWorkerRunId: row.successor_worker_run_id || firstText(input.successorWorkerRunId, input.successor_worker_run_id),
+      handoffInfoId,
+      status: "recommended",
+      reason,
+      sourceContextRefs,
+      artifactRefs,
+      receiptRefs
+    } : null,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2ControlLoopPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  if (!fileExistsSync(paths.dbFile)) {
+    return {
+      operation: "workflow.v2.control_loop.preview",
+      dryRun: true,
+      previewOnly: true,
+      status: "skipped",
+      reason: "workflow database does not exist",
+      generatedAt,
+      counts: {},
+      runnableWorkers: [],
+      dbFile: paths.dbFile
+    };
+  }
+  const schema = await workflowV2WorkerRunControlSchema(paths.dbFile);
+  if (!schema.ready) {
+    return {
+      operation: "workflow.v2.control_loop.preview",
+      dryRun: true,
+      previewOnly: true,
+      status: "schema_gap",
+      ok: false,
+      generatedAt,
+      schema,
+      counts: {},
+      runnableWorkers: [],
+      dbFile: paths.dbFile
+    };
+  }
+  const workflowFilter = firstText(input.workflowId, input.workflow_id);
+  const whereWorkflow = workflowFilter ? `AND w.workflow_id=${sqlValue(workflowFilter)}` : "";
+  const counts = await sqlite(paths.dbFile, `
+SELECT
+  COUNT(*) AS total,
+  SUM(CASE WHEN w.status='queued' THEN 1 ELSE 0 END) AS queued,
+  SUM(CASE WHEN w.status='retry_scheduled' THEN 1 ELSE 0 END) AS retry_scheduled,
+  SUM(CASE WHEN w.status='running' THEN 1 ELSE 0 END) AS running,
+  SUM(CASE WHEN w.status='running' AND COALESCE(w.lease_until,'')!='' AND w.lease_until <= ${sqlValue(generatedAt)} THEN 1 ELSE 0 END) AS expired_leases,
+  SUM(CASE WHEN w.status='submitted_for_review' THEN 1 ELSE 0 END) AS submitted_for_review,
+  SUM(CASE WHEN w.status IN ('accepted','rejected','failed','timed_out','cancelled') THEN 1 ELSE 0 END) AS terminal,
+  SUM(CASE WHEN w.status IN ('queued','retry_scheduled') AND (w.next_retry_at='' OR w.next_retry_at <= ${sqlValue(generatedAt)}) THEN 1 ELSE 0 END) AS due,
+  SUM(CASE WHEN p.preflight_id IS NULL OR p.workflow_id != w.workflow_id OR p.backend_id != w.runtime_backend OR p.status NOT IN ('pass','warn') THEN 1 ELSE 0 END) AS invalid_preflight
+FROM workflow_v2_worker_runs w
+LEFT JOIN workflow_v2_backend_preflights p ON p.preflight_id=w.preflight_id
+WHERE 1=1 ${whereWorkflow};`, { json: true });
+  const limit = Math.max(1, Math.min(20, Number(input.limit || 10)));
+  const rows = await sqlite(paths.dbFile, `
+SELECT w.*
+FROM workflow_v2_worker_runs w
+JOIN workflow_v2_backend_preflights p ON p.preflight_id=w.preflight_id
+WHERE w.status IN ('queued','retry_scheduled')
+  AND (w.next_retry_at='' OR w.next_retry_at <= ${sqlValue(generatedAt)})
+  AND w.attempt < w.max_attempts
+  AND p.workflow_id=w.workflow_id
+  AND p.backend_id=w.runtime_backend
+  AND p.status IN ('pass','warn')
+  ${whereWorkflow}
+ORDER BY w.updated_at ASC, w.created_at ASC
+LIMIT ${limit};`, { json: true });
+  return {
+    operation: "workflow.v2.control_loop.preview",
+    dryRun: true,
+    previewOnly: true,
+    status: "ok",
+    ok: true,
+    generatedAt,
+    counts: counts[0] || {},
+    runnableWorkers: rows.map(workflowV2WorkerRunSummary),
+    dbFile: paths.dbFile
+  };
+}
+
+function workflowV2WorkerLeaseMs(input = {}) {
+  const value = Number(input.workerLeaseMs || input.worker_lease_ms || input.leaseMs || input.lease_ms || 60_000);
+  return Math.max(1_000, Math.min(30 * 60_000, Number.isFinite(value) ? value : 60_000));
+}
+
+function workflowV2WorkerRetryDelayMs(input = {}, attempt = 1) {
+  const value = Number(input.retryDelayMs || input.retry_delay_ms || 5_000 * Math.max(1, attempt));
+  return Math.max(0, Math.min(30 * 60_000, Number.isFinite(value) ? value : 5_000));
+}
+
+async function workflowV2ExpireWorkerLeases(paths, input = {}, generatedAt = nowIso()) {
+  const limit = Math.max(1, Math.min(50, Number(input.expireLimit || input.expire_limit || 20)));
+  const workflowFilter = firstText(input.workflowId, input.workflow_id);
+  const whereWorkflow = workflowFilter ? `AND workflow_id=${sqlValue(workflowFilter)}` : "";
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_runs
+WHERE status='running'
+  AND COALESCE(lease_until,'')!=''
+  AND lease_until <= ${sqlValue(generatedAt)}
+  ${whereWorkflow}
+ORDER BY lease_until ASC, updated_at ASC
+LIMIT ${limit};`, { json: true });
+  const expired = [];
+  for (const row of rows) {
+    const attempt = Number(row.attempt || 0);
+    const maxAttempts = Math.max(1, Number(row.max_attempts || 1));
+    const retry = attempt < maxAttempts;
+    const status = retry ? "retry_scheduled" : "timed_out";
+    const nextRetryAt = retry ? new Date(new Date(generatedAt).getTime() + workflowV2WorkerRetryDelayMs(input, attempt)).toISOString() : "";
+    const lastError = "worker lease expired before completion";
+    const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status=${sqlValue(status)},
+    lease_owner='',
+    lease_until='',
+    next_retry_at=${sqlValue(nextRetryAt)},
+    last_error=${sqlValue(lastError)},
+    completed_at=${sqlValue(retry ? "" : generatedAt)},
+    updated_at=${sqlValue(generatedAt)}
+WHERE worker_run_id=${sqlValue(row.worker_run_id)}
+  AND status='running'
+  AND lease_owner=${sqlValue(row.lease_owner || "")}
+  AND lease_until=${sqlValue(row.lease_until || "")};`);
+    if (changed !== 1) {
+      expired.push({ workerRunId: row.worker_run_id, status: "lease_lost" });
+      continue;
+    }
+    try {
+      await workflowV2RequireSessionRunPatch(paths, row.session_run_id || "", {
+        status: retry ? "queued" : "failed",
+        error: lastError,
+        timestamp: generatedAt
+      }, "worker lease expiry");
+      const closedAdapterJobs = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET status='cancelled',
+    lease_owner='',
+    lease_until='',
+    runner_id='',
+    next_retry_at='',
+    last_error=${sqlValue(lastError)},
+    completed_at=${sqlValue(generatedAt)},
+    updated_at=${sqlValue(generatedAt)}
+WHERE worker_run_id=${sqlValue(row.worker_run_id)}
+  AND worker_attempt=${sqlValue(attempt)}
+  AND status IN ('queued','retry_scheduled','running');`);
+      expired.push({ workerRunId: row.worker_run_id, status, attempt, maxAttempts, nextRetryAt, lastError, closedAdapterJobs });
+    } catch (error) {
+      await workflowV2RestoreWorkerRunRow(paths, row);
+      expired.push({ workerRunId: row.worker_run_id, status: "session_sync_failed", error: workflowV2ErrorMessage(error) });
+    }
+  }
+  return expired;
+}
+
+async function workflowV2ClaimWorkerRuns(paths, input = {}, generatedAt = nowIso()) {
+  const owner = firstText(input.claimOwner, input.claim_owner, input.owner, input.leaseOwner, input.lease_owner) || `pid:${process.pid}:${safeId("v2-claim")}`;
+  const limit = Math.max(1, Math.min(20, Number(input.workerLimit || input.worker_limit || input.limit || 4)));
+  const leaseUntil = new Date(new Date(generatedAt).getTime() + workflowV2WorkerLeaseMs(input)).toISOString();
+  const workflowFilter = firstText(input.workflowId, input.workflow_id);
+  const whereWorkflow = workflowFilter ? `AND w.workflow_id=${sqlValue(workflowFilter)}` : "";
+  const rows = await sqlite(paths.dbFile, `
+SELECT w.*
+FROM workflow_v2_worker_runs w
+JOIN workflow_v2_backend_preflights p ON p.preflight_id=w.preflight_id
+WHERE w.status IN ('queued','retry_scheduled')
+  AND (w.next_retry_at='' OR w.next_retry_at <= ${sqlValue(generatedAt)})
+  AND w.attempt < w.max_attempts
+  AND p.workflow_id=w.workflow_id
+  AND p.backend_id=w.runtime_backend
+  AND p.status IN ('pass','warn')
+  ${whereWorkflow}
+ORDER BY w.updated_at ASC, w.created_at ASC
+LIMIT ${limit};`, { json: true });
+  const claimed = [];
+  const claimErrors = [];
+  for (const row of rows) {
+    const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='running',
+    attempt=attempt+1,
+    lease_owner=${sqlValue(owner)},
+    lease_until=${sqlValue(leaseUntil)},
+    next_retry_at='',
+    started_at=CASE WHEN started_at='' THEN ${sqlValue(generatedAt)} ELSE started_at END,
+    updated_at=${sqlValue(generatedAt)}
+WHERE worker_run_id=${sqlValue(row.worker_run_id)}
+  AND status IN ('queued','retry_scheduled')
+  AND (next_retry_at='' OR next_retry_at <= ${sqlValue(generatedAt)})
+  AND attempt < max_attempts
+  AND EXISTS (
+    SELECT 1
+    FROM workflow_v2_backend_preflights p
+    WHERE p.preflight_id=workflow_v2_worker_runs.preflight_id
+      AND p.workflow_id=workflow_v2_worker_runs.workflow_id
+      AND p.backend_id=workflow_v2_worker_runs.runtime_backend
+      AND p.status IN ('pass','warn')
+  );`);
+    if (changed !== 1) continue;
+    const latest = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_worker_runs WHERE worker_run_id=${sqlValue(row.worker_run_id)} AND status='running' AND lease_owner=${sqlValue(owner)} LIMIT 1;`, { json: true });
+    if (latest[0]) {
+      try {
+        await workflowV2RequireSessionRunPatch(paths, latest[0].session_run_id || "", {
+          status: "running",
+          timestamp: generatedAt
+        }, "worker claim");
+        claimed.push(latest[0]);
+      } catch (error) {
+        await workflowV2RestoreWorkerRunRow(paths, row);
+        claimErrors.push({ workerRunId: row.worker_run_id, status: "session_sync_failed", error: workflowV2ErrorMessage(error) });
+      }
+    }
+  }
+  return { claimed, claimErrors };
+}
+
+async function workflowV2ExecuteDeterministicWorker(paths, row = {}, input = {}, generatedAt = nowIso()) {
+  if (row.runtime_backend !== "local_deterministic") {
+    return { workerRunId: row.worker_run_id, status: "leased_waiting_adapter", runtimeBackend: row.runtime_backend };
+  }
+  const payload = workflowV2JsonObject(row.payload_json, {});
+  const outputInfoId = firstText(row.output_info_id, `${row.worker_run_id}.output`);
+  const summary = firstText(payload.outputSummary, payload.output_summary, input.outputSummary, input.output_summary, `Deterministic local worker output for ${row.worker_run_id}`);
+  const artifactDir = path.join(paths.artifactsDir, "workflow-v2", cleanFileSegment(row.workflow_id || "workflow"), "worker-runs");
+  const artifactFile = path.join(artifactDir, `${cleanFileSegment(row.worker_run_id)}.deterministic-output.json`);
+  const outputInfoExisting = await workflowV2InfoStackExistingItem(paths.dbFile, outputInfoId);
+  const artifactPayload = {
+    schemaVersion: "workflow_v2_local_deterministic_output.v1",
+    generatedAt,
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    nodeId: row.node_id || "",
+    workerRunId: row.worker_run_id || "",
+    managerAgent: row.manager_agent || "",
+    workerAgentId: row.worker_agent_id || "",
+    sessionId: row.session_id || "",
+    sessionRunId: row.session_run_id || "",
+    runtimeBackend: row.runtime_backend || "",
+    attempt: Number(row.attempt || 0),
+    taskInputInfoId: row.task_input_info_id || "",
+    summary,
+    deterministic: true
+  };
+  await fs.mkdir(artifactDir, { recursive: true });
+  await writeJsonAtomic(artifactFile, artifactPayload);
+  const artifactRef = `artifact://workflow-v2/${cleanFileSegment(row.workflow_id || "workflow")}/worker-runs/${cleanFileSegment(row.worker_run_id)}.deterministic-output.json`;
+  await workflowV2InfoStackRecord(paths.root, {
+    workflowId: row.workflow_id,
+    planId: row.plan_id,
+    nodeId: row.node_id,
+    workerRunId: row.worker_run_id,
+    infoId: outputInfoId,
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef,
+    recipientAgent: row.manager_agent,
+    summary,
+    payload: {
+      runner: "local_deterministic",
+      artifactFile,
+      generatedAt,
+      taskInputInfoId: row.task_input_info_id || ""
+    }
+  });
+  const receiptRef = `receipt://workflow-v2/${row.worker_run_id}/local-deterministic/${textHash(JSON.stringify(artifactPayload)).slice(0, 16)}`;
+  const nextPayload = {
+    ...payload,
+    localDeterministic: {
+      outputInfoId,
+      artifactRef,
+      artifactFile,
+      receiptRef,
+      generatedAt
+    }
+  };
+  const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='submitted_for_review',
+    output_info_id=${sqlValue(outputInfoId)},
+    receipt_ref=${sqlValue(receiptRef)},
+    lease_owner='',
+    lease_until='',
+    payload_json=${sqlValue(JSON.stringify(nextPayload))},
+    completed_at=${sqlValue(generatedAt)},
+    updated_at=${sqlValue(generatedAt)}
+WHERE worker_run_id=${sqlValue(row.worker_run_id)}
+  AND status='running'
+  AND lease_owner=${sqlValue(row.lease_owner || "")}
+  AND lease_until=${sqlValue(row.lease_until || "")};`);
+  if (changed !== 1) {
+    if (!outputInfoExisting) await workflowV2CleanupInfoStackItem(paths.dbFile, outputInfoId);
+    await fs.rm(artifactFile, { force: true });
+    return { workerRunId: row.worker_run_id, status: "lease_lost" };
+  }
+  try {
+    await workflowV2RequireSessionRunPatch(paths, row.session_run_id || "", {
+      status: "completed",
+      output: {
+        outputInfoId,
+        artifactRef,
+        artifactFile,
+        receiptRef,
+        runtimeBackend: row.runtime_backend || "",
+        deterministic: true
+      },
+      receiptRef,
+      timestamp: generatedAt
+    }, "deterministic worker completion");
+  } catch (error) {
+    await workflowV2RestoreWorkerRunRow(paths, row);
+    if (!outputInfoExisting) await workflowV2CleanupInfoStackItem(paths.dbFile, outputInfoId);
+    await fs.rm(artifactFile, { force: true });
+    return { workerRunId: row.worker_run_id, status: "session_sync_failed", error: workflowV2ErrorMessage(error) };
+  }
+  return {
+    workerRunId: row.worker_run_id,
+    status: "submitted_for_review",
+    outputInfoId,
+    artifactRef,
+    artifactFile,
+    receiptRef
+  };
+}
+
+export async function workflowV2ControlLoopTick(rootDir, input = {}) {
+  if (boolOption(input.dryRun ?? input.dry_run, false)) {
+    return workflowV2ControlLoopPreview(rootDir, input);
+  }
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const schema = await workflowV2WorkerRunControlSchema(paths.dbFile);
+  if (!schema.ready) {
+    return {
+      operation: "workflow.v2.control_loop.tick",
+      status: "schema_gap",
+      ok: false,
+      generatedAt,
+      schema,
+      expiredLeases: [],
+      claimedWorkers: [],
+      workerResults: [],
+      dbFile: paths.dbFile
+    };
+  }
+  const expiredLeases = await workflowV2ExpireWorkerLeases(paths, input, generatedAt);
+  const claimResult = await workflowV2ClaimWorkerRuns(paths, input, generatedAt);
+  const claimed = claimResult.claimed || [];
+  const workerResults = [];
+  for (const errorResult of claimResult.claimErrors || []) {
+    workerResults.push(errorResult);
+  }
+  for (const row of claimed) {
+    try {
+      workerResults.push(await workflowV2ExecuteDeterministicWorker(paths, row, input, generatedAt));
+    } catch (error) {
+      workerResults.push({ workerRunId: row.worker_run_id || "", status: "worker_execution_failed", error: workflowV2ErrorMessage(error) });
+    }
+  }
+  const after = await workflowV2ControlLoopPreview(rootDir, { ...input, generatedAt });
+  return {
+    operation: "workflow.v2.control_loop.tick",
+    status: "ok",
+    ok: true,
+    dryRun: false,
+    previewOnly: false,
+    generatedAt,
+    expiredLeases,
+    claimedWorkers: claimed.map(workflowV2WorkerRunSummary),
+    workerResults,
+    counts: after.counts || {},
+    dbFile: paths.dbFile
+  };
+}
+
+async function workflowV2LoadWorkerRunForResult(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const workerRunId = firstText(input.workerRunId, input.worker_run_id, input.runId, input.run_id);
+  if (!workerRunId) {
+    return { paths, workerRunId, row: null, errors: [workflowV2ValidationError("worker_run_id_required", "worker result requires workerRunId")] };
+  }
+  if (!fileExistsSync(paths.dbFile)) {
+    return { paths, workerRunId, row: null, errors: [workflowV2ValidationError("workflow_database_missing", "workflow database does not exist")] };
+  }
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_runs
+WHERE worker_run_id=${sqlValue(workerRunId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0] || null;
+  const errors = [];
+  if (!row) errors.push(workflowV2ValidationError("worker_run_not_found", `worker run not found: ${workerRunId}`));
+  return { paths, workerRunId, row, errors };
+}
+
+function workflowV2LeaseCheckAt(input = {}) {
+  return firstText(input.leaseCheckAt, input.lease_check_at, input.generatedAt, input.generated_at, input.now) || nowIso();
+}
+
+function workflowV2LeaseErrors(row = {}, input = {}) {
+  const errors = [];
+  const leaseOwner = firstText(input.leaseOwner, input.lease_owner);
+  const leaseUntil = firstText(input.leaseUntil, input.lease_until);
+  const leaseCheckAt = workflowV2LeaseCheckAt(input);
+  if (!leaseOwner) errors.push(workflowV2ValidationError("lease_owner_required", "worker result requires leaseOwner"));
+  if (!leaseUntil) errors.push(workflowV2ValidationError("lease_until_required", "worker result requires leaseUntil"));
+  if (row.status && row.status !== "running") errors.push(workflowV2ValidationError("worker_not_running", `worker result requires running status, got ${row.status}`));
+  if (row.lease_owner && leaseOwner && row.lease_owner !== leaseOwner) errors.push(workflowV2ValidationError("lease_owner_mismatch", "worker result leaseOwner does not match current lease"));
+  if (row.lease_until && leaseUntil && row.lease_until !== leaseUntil) errors.push(workflowV2ValidationError("lease_until_mismatch", "worker result leaseUntil does not match current lease"));
+  if (!row.lease_owner || !row.lease_until) errors.push(workflowV2ValidationError("worker_not_leased", "worker result requires an active worker lease"));
+  const rowLeaseMs = Date.parse(row.lease_until || "");
+  const checkAtMs = Date.parse(leaseCheckAt || "");
+  if (row.lease_until && Number.isNaN(rowLeaseMs)) errors.push(workflowV2ValidationError("lease_until_invalid", "worker result leaseUntil is not a valid timestamp"));
+  if (Number.isNaN(checkAtMs)) errors.push(workflowV2ValidationError("lease_check_at_invalid", "worker result lease check timestamp is invalid"));
+  if (row.lease_until && !Number.isNaN(rowLeaseMs) && !Number.isNaN(checkAtMs) && rowLeaseMs <= checkAtMs) {
+    errors.push(workflowV2ValidationError("lease_expired", "worker result lease has expired"));
+  }
+  return errors;
+}
+
+function workflowV2ReceiptRefForResult(row = {}, input = {}, resultKind = "submit") {
+  const explicit = firstText(input.receiptRef, input.receipt_ref);
+  if (explicit) return explicit;
+  const receipt = workflowV2JsonObject(input.receipt ?? input.runtimeReceipt ?? input.runtime_receipt, {});
+  if (Object.keys(receipt).length === 0) return "";
+  const digest = textHash(JSON.stringify({ workerRunId: row.worker_run_id || "", resultKind, receipt })).slice(0, 16);
+  return `receipt://workflow-v2/${row.worker_run_id || "worker"}/${resultKind}/${digest}`;
+}
+
+function workflowV2AdapterJobArtifact(rootDir, row = {}, input = {}) {
+  const artifactId = firstText(input.artifactId, input.artifact_id) || `${cleanFileSegment(row.worker_run_id || "worker")}.adapter-job.${Number(row.attempt || 0)}.json`;
+  const safeArtifactId = cleanFileSegment(artifactId.replace(/\.json$/i, ""));
+  const workflowSegment = cleanFileSegment(row.workflow_id || "workflow");
+  const fileName = `${safeArtifactId}.json`;
+  const artifactFile = path.join(rootDir, "artifacts", "workflow-v2", workflowSegment, "worker-runs", fileName);
+  const artifactRef = `artifact://workflow-v2/${workflowSegment}/worker-runs/${fileName}`;
+  return { artifactId: fileName, artifactFile, artifactRef };
+}
+
+function workflowV2AdapterBackendProfile(runtimeBackend = "", input = {}) {
+  const backend = workflowV2NormalizeBackend(runtimeBackend, runtimeBackend || "hermers_docker_worker");
+  const runnerKind = backend === "claude_code_docker_worker" ? "claude_code" : "hermers";
+  const image = firstText(input.runnerImage, input.runner_image, input.image, WORKFLOW_V2_ADAPTER_JOB_IMAGES[backend]);
+  return {
+    hostAlias: firstText(input.hostAlias, input.host_alias, "wsl-agents"),
+    runtimeBackend: backend,
+    runnerKind,
+    image,
+    executionMode: "pull_runner_manifest",
+    docker: {
+      image,
+      containerNameHint: firstText(input.containerName, input.container_name),
+      startContainer: false,
+      runContainer: false,
+      directPortExposure: false
+    },
+    returnPath: {
+      submitAction: "workflow.v2.worker_result.submit",
+      failAction: "workflow.v2.worker_result.fail",
+      directDatabaseWritesAllowed: false
+    }
+  };
+}
+
+function workflowV2AdapterJobSummary(row = {}) {
+  if (!row?.adapter_job_id) return null;
+  return {
+    adapterJobId: row.adapter_job_id || "",
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    nodeId: row.node_id || "",
+    workerRunId: row.worker_run_id || "",
+    sessionRunId: row.session_run_id || "",
+    runtimeBackend: row.runtime_backend || "",
+    workerAttempt: Number(row.worker_attempt || 0),
+    runnerAttempt: Number(row.runner_attempt || 0),
+    maxRunnerAttempts: Number(row.max_runner_attempts || 3),
+    status: row.status || "",
+    leaseOwner: row.lease_owner || "",
+    leaseUntil: row.lease_until || "",
+    nextRetryAt: row.next_retry_at || "",
+    runnerId: row.runner_id || "",
+    artifactRef: row.artifact_ref || "",
+    artifactId: row.artifact_id || "",
+    infoId: row.info_id || "",
+    manifestHash: row.manifest_hash || "",
+    runnerReceiptRef: row.runner_receipt_ref || "",
+    lastError: row.last_error || "",
+    payload: workflowV2JsonObject(row.payload_json, {}),
+    createdBy: row.created_by || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+    completedAt: row.completed_at || ""
+  };
+}
+
+function workflowV2AdapterJobLeaseMs(input = {}) {
+  const requested = Number(input.adapterJobLeaseMs || input.adapter_job_lease_ms || input.leaseMs || input.lease_ms || 300_000);
+  if (!Number.isFinite(requested)) return 300_000;
+  return Math.max(10_000, Math.min(60 * 60_000, Math.floor(requested)));
+}
+
+function workflowV2AdapterJobRetryDelayMs(input = {}, runnerAttempt = 0) {
+  const requested = Number(input.retryDelayMs ?? input.retry_delay_ms);
+  if (Number.isFinite(requested)) return Math.max(0, Math.min(60 * 60_000, Math.floor(requested)));
+  return Math.min(10 * 60_000, Math.max(10_000, 10_000 * Math.max(1, Number(runnerAttempt || 1))));
+}
+
+function workflowV2CapacityInt(candidates = [], fallback = 1, min = 0, max = 10_000) {
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null || candidate === "") continue;
+    const value = Number(candidate);
+    if (Number.isFinite(value)) return Math.max(min, Math.min(max, Math.floor(value)));
+  }
+  return Math.max(min, Math.min(max, Math.floor(Number(fallback) || 0)));
+}
+
+function workflowV2DefaultProviderConcurrency(providerModel = "", backendMaxActiveJobs = 200) {
+  const text = String(providerModel || "").toLowerCase();
+  if (/(iflytek|xunfei|xfyun)/.test(text)) return Math.min(3, backendMaxActiveJobs);
+  return backendMaxActiveJobs;
+}
+
+async function workflowV2AdapterRunnerCapacity(paths, input = {}, generatedAt = nowIso(), runtimeBackend = "") {
+  const profile = workflowV2JsonObject(input.capacityProfile ?? input.capacity_profile ?? input.backendCapacity ?? input.backend_capacity, {});
+  const requestedLimit = workflowV2CapacityInt([
+    input.limit,
+    input.jobLimit,
+    input.job_limit,
+    profile.requestedLimit,
+    profile.requested_limit
+  ], 1, 0, 200);
+  const maxLogicalWorkers = workflowV2CapacityInt([
+    input.maxLogicalWorkers,
+    input.max_logical_workers,
+    profile.maxLogicalWorkers,
+    profile.max_logical_workers
+  ], 200, 1, 10_000);
+  const backendMaxActiveJobs = workflowV2CapacityInt([
+    input.backendMaxActiveJobs,
+    input.backend_max_active_jobs,
+    input.maxActiveJobs,
+    input.max_active_jobs,
+    profile.backendMaxActiveJobs,
+    profile.backend_max_active_jobs,
+    profile.maxActiveJobs,
+    profile.max_active_jobs
+  ], 200, 0, maxLogicalWorkers);
+  const providerModel = firstText(
+    input.providerModel,
+    input.provider_model,
+    input.model,
+    profile.providerModel,
+    profile.provider_model,
+    profile.model,
+    profile.modelId,
+    profile.model_id
+  );
+  const providerMaxConcurrentCalls = workflowV2CapacityInt([
+    input.providerMaxConcurrentCalls,
+    input.provider_max_concurrent_calls,
+    input.modelMaxConcurrentCalls,
+    input.model_max_concurrent_calls,
+    profile.providerMaxConcurrentCalls,
+    profile.provider_max_concurrent_calls,
+    profile.modelMaxConcurrentCalls,
+    profile.model_max_concurrent_calls
+  ], workflowV2DefaultProviderConcurrency(providerModel, backendMaxActiveJobs), 0, maxLogicalWorkers);
+  const backendClause = runtimeBackend ? `AND j.runtime_backend=${sqlValue(runtimeBackend)}` : "";
+  const activeRows = await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_adapter_jobs j
+WHERE j.status='running'
+  AND j.lease_until > ${sqlValue(generatedAt)}
+  ${backendClause};`, { json: true });
+  const dueRows = await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_adapter_jobs j
+JOIN workflow_v2_worker_runs w ON w.worker_run_id=j.worker_run_id
+WHERE j.status IN ('queued','retry_scheduled')
+  AND (j.next_retry_at='' OR j.next_retry_at <= ${sqlValue(generatedAt)})
+  ${backendClause}
+  AND w.status='running'
+  AND w.lease_until > ${sqlValue(generatedAt)}
+  AND w.attempt=j.worker_attempt;`, { json: true });
+  const activeBackendJobs = Number(activeRows[0]?.count || 0);
+  const dueCount = Number(dueRows[0]?.count || 0);
+  const availableBackendSlots = Math.max(0, backendMaxActiveJobs - activeBackendJobs);
+  const activeProviderCalls = activeBackendJobs;
+  const availableProviderSlots = Math.max(0, providerMaxConcurrentCalls - activeProviderCalls);
+  const availableSlots = Math.max(0, Math.min(availableBackendSlots, availableProviderSlots, maxLogicalWorkers));
+  const effectiveLimit = Math.max(0, Math.min(requestedLimit, availableSlots, dueCount));
+  return {
+    requestedLimit,
+    effectiveLimit,
+    dueCount,
+    maxLogicalWorkers,
+    runtimeBackend,
+    providerModel,
+    backendMaxActiveJobs,
+    providerMaxConcurrentCalls,
+    activeBackendJobs,
+    activeProviderCalls,
+    availableBackendSlots,
+    availableProviderSlots,
+    availableSlots,
+    providerScopedByBackend: true,
+    throttled: effectiveLimit < requestedLimit,
+    source: Object.keys(profile).length ? "input_capacity_profile" : "defaults"
+  };
+}
+
+function workflowV2ArtifactRefToFile(paths, artifactRef = "") {
+  const text = String(artifactRef || "").trim();
+  const prefix = "artifact://workflow-v2/";
+  if (!text.startsWith(prefix)) {
+    throw new Error(`workflow v2 artifact ref is not readable by local runner: ${text || "missing"}`);
+  }
+  const suffix = text.slice(prefix.length);
+  if (!suffix || suffix.split("/").some((part) => part === "..")) {
+    throw new Error(`workflow v2 artifact ref has unsafe path: ${text}`);
+  }
+  const base = path.resolve(paths.artifactsDir, "workflow-v2");
+  const filePath = path.resolve(base, suffix);
+  if (filePath !== base && !filePath.startsWith(`${base}${path.sep}`)) {
+    throw new Error(`workflow v2 artifact ref escapes artifact root: ${text}`);
+  }
+  return filePath;
+}
+
+async function workflowV2AdapterJobManifest(paths, job = {}) {
+  const artifactFile = workflowV2ArtifactRefToFile(paths, job.artifactRef || job.artifact_ref || "");
+  const manifest = JSON.parse(await fs.readFile(artifactFile, "utf8"));
+  const expectedHash = job.manifestHash || job.manifest_hash || "";
+  const actualHash = `sha256:${jsonHash(manifest)}`;
+  if (!expectedHash) {
+    throw new Error(`workflow v2 adapter job manifest hash missing: ${job.adapterJobId || job.adapter_job_id || ""}`);
+  }
+  if (expectedHash !== actualHash) {
+    throw new Error(`workflow v2 adapter job manifest hash mismatch: ${job.adapterJobId || job.adapter_job_id || ""}`);
+  }
+  return { manifest, artifactFile, manifestHash: actualHash };
+}
+
+function workflowV2AdapterRunnerOutcome(input = {}, job = {}, index = 0) {
+  const outcomeMap = workflowV2JsonObject(input.jobOutcomes ?? input.job_outcomes ?? input.outcomes, {});
+  const mapped = outcomeMap[job.adapterJobId] ?? outcomeMap[job.adapter_job_id] ?? outcomeMap[job.workerRunId] ?? outcomeMap[job.worker_run_id];
+  const raw = firstText(mapped, input.mockOutcome, input.mock_outcome, input.outcome, input.resultStatus, input.result_status, "success");
+  const normalized = String(raw || "success").trim().toLowerCase().replace(/-/g, "_");
+  if (["success", "succeeded", "complete", "completed", "submit", "submitted"].includes(normalized)) return "success";
+  if (["fail", "failed", "failure", "terminal_fail", "terminal_failure"].includes(normalized)) return "fail";
+  if (["release", "retry", "retry_scheduled"].includes(normalized)) return "release";
+  throw new Error(`unsupported workflow v2 adapter runner mock outcome at index ${index}: ${raw}`);
+}
+
+async function workflowV2AdapterRunnerMockOutput(paths, job = {}, manifest = {}, input = {}, generatedAt = nowIso()) {
+  const workflowId = job.workflowId || manifest.workflowId || "workflow";
+  const adapterJobId = job.adapterJobId || manifest.adapterJobId || safeId("adapter-job");
+  const runnerAttempt = workflowV2NonNegativeInt(job.runnerAttempt ?? job.runner_attempt, 0);
+  const artifactDir = path.join(paths.artifactsDir, "workflow-v2", cleanFileSegment(workflowId), "adapter-runner");
+  const artifactFile = path.join(artifactDir, `${cleanFileSegment(adapterJobId)}.${runnerAttempt}.mock-output.json`);
+  const artifactRef = `artifact://workflow-v2/${cleanFileSegment(workflowId)}/adapter-runner/${path.basename(artifactFile)}`;
+  const output = {
+    schemaVersion: "workflow_v2_adapter_runner_mock_output.v1",
+    generatedAt,
+    runnerMode: "mock",
+    runnerId: firstText(input.runnerId, input.runner_id, input.leaseOwner, input.lease_owner),
+    adapterJobId,
+    workerRunId: job.workerRunId || manifest.workerRunId || "",
+    workflowId,
+    planId: job.planId || manifest.planId || "",
+    nodeId: job.nodeId || manifest.nodeId || "",
+    runtimeBackend: job.runtimeBackend || manifest.runtimeBackend || "",
+    workerAttempt: workflowV2NonNegativeInt(job.workerAttempt ?? manifest.lease?.attempt, 0),
+    runnerAttempt,
+    summary: firstText(input.summary, input.outputSummary, input.output_summary, `Mock adapter runner output for ${job.workerRunId || manifest.workerRunId || adapterJobId}`),
+    manifestHash: job.manifestHash || "",
+    taskInputInfoId: manifest.taskInput?.infoId || ""
+  };
+  await fs.mkdir(artifactDir, { recursive: true });
+  await writeJsonAtomic(artifactFile, output);
+  return { artifactFile, artifactRef, output };
+}
+
+async function workflowV2AdapterJobExistingForWorkerAttempt(dbFile, workerRunId = "", workerAttempt = 0) {
+  if (!workerRunId) return null;
+  const columns = await tableColumns(dbFile, "workflow_v2_worker_adapter_jobs");
+  if (!columns.size) return null;
+  const rows = await sqlite(dbFile, `
+SELECT *
+FROM workflow_v2_worker_adapter_jobs
+WHERE worker_run_id=${sqlValue(workerRunId)}
+  AND worker_attempt=${sqlValue(Number(workerAttempt || 0))}
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function workflowV2AdapterJobById(dbFile, adapterJobId = "") {
+  if (!adapterJobId) return null;
+  const rows = await sqlite(dbFile, `
+SELECT *
+FROM workflow_v2_worker_adapter_jobs
+WHERE adapter_job_id=${sqlValue(adapterJobId)}
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function workflowV2ExpireAdapterJobLeases(paths, input = {}, generatedAt = nowIso()) {
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_adapter_jobs
+WHERE status='running'
+  AND lease_until!=''
+  AND lease_until <= ${sqlValue(generatedAt)}
+ORDER BY lease_until ASC
+LIMIT 200;`, { json: true });
+  const expired = [];
+  for (const row of rows) {
+    const runnerAttempt = Number(row.runner_attempt || 0);
+    const maxRunnerAttempts = Math.max(1, Number(row.max_runner_attempts || 3));
+    const retry = runnerAttempt < maxRunnerAttempts;
+    const nextStatus = retry ? "retry_scheduled" : "failed";
+    const nextRetryAt = retry ? new Date(new Date(generatedAt).getTime() + workflowV2AdapterJobRetryDelayMs(input, runnerAttempt)).toISOString() : "";
+    const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET status=${sqlValue(nextStatus)},
+    lease_owner='',
+    lease_until='',
+    next_retry_at=${sqlValue(nextRetryAt)},
+    last_error=${sqlValue(firstText(row.last_error, `adapter job lease expired at ${generatedAt}`))},
+    completed_at=${sqlValue(retry ? "" : generatedAt)},
+    updated_at=${sqlValue(generatedAt)}
+WHERE adapter_job_id=${sqlValue(row.adapter_job_id)}
+  AND status='running'
+  AND lease_until=${sqlValue(row.lease_until || "")};`);
+    if (changed === 1) {
+      expired.push({
+        adapterJobId: row.adapter_job_id,
+        previousStatus: "running",
+        status: nextStatus,
+        retry,
+        nextRetryAt
+      });
+    }
+  }
+  return expired;
+}
+
+export async function workflowV2WorkerAdapterJobPreview(rootDir, input = {}) {
+  const { paths, row, errors } = await workflowV2LoadWorkerRunForResult(rootDir, input);
+  if (row) errors.push(...workflowV2LeaseErrors(row, input));
+  const leaseCheckAt = workflowV2LeaseCheckAt(input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const adapterJobId = firstText(input.adapterJobId, input.adapter_job_id, input.jobId, input.job_id) || `${row?.worker_run_id || "worker"}.adapter-job.${Number(row?.attempt || 0)}`;
+  const adapterJobInfoId = firstText(input.adapterJobInfoId, input.adapter_job_info_id, input.infoId, input.info_id) || `${row?.worker_run_id || "worker"}.adapter-job.info`;
+  const artifact = row ? workflowV2AdapterJobArtifact(paths.root, row, input) : { artifactId: "", artifactFile: "", artifactRef: "" };
+  const runtimeBackend = row ? workflowV2NormalizeBackend(row.runtime_backend, row.runtime_backend) : "";
+  if (row && row.runtime_backend === "local_deterministic") {
+    errors.push(workflowV2ValidationError("adapter_job_local_backend_disallowed", "local_deterministic worker runs execute inside the local control loop and do not use adapter job manifests"));
+  } else if (row && !WORKFLOW_V2_ADAPTER_JOB_BACKENDS.has(runtimeBackend)) {
+    errors.push(workflowV2ValidationError("adapter_job_backend_unsupported", `worker adapter jobs currently support Hermers and Claude Code Docker worker backends, got ${runtimeBackend || "unknown"}`, { runtimeBackend }));
+  }
+
+  let sessionRun = null;
+  if (row) {
+    const sessionRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_session_runs
+WHERE run_id=${sqlValue(row.session_run_id || "")}
+LIMIT 1;`, { json: true });
+    sessionRun = sessionRunFromRow(sessionRows[0]);
+    if (!sessionRun) {
+      errors.push(workflowV2ValidationError("session_run_not_found", "adapter job requires the worker's prepared session run"));
+    } else {
+      if (sessionRun.workflowId && sessionRun.workflowId !== row.workflow_id) {
+        errors.push(workflowV2ValidationError("session_run_workflow_mismatch", "session run workflowId does not match worker run"));
+      }
+      if (sessionRun.taskId && sessionRun.taskId !== row.node_id) {
+        errors.push(workflowV2ValidationError("session_run_node_mismatch", "session run taskId does not match worker nodeId"));
+      }
+      if (sessionRun.workerId && sessionRun.workerId !== row.worker_agent_id) {
+        errors.push(workflowV2ValidationError("session_run_worker_mismatch", "session run workerId does not match workerAgentId"));
+      }
+      if (sessionRun.status !== "running") {
+        errors.push(workflowV2ValidationError("session_run_not_running", `adapter job requires running session run status, got ${sessionRun.status || "missing"}`));
+      }
+    }
+  }
+
+  let preflight = null;
+  if (row) {
+    if (!row.preflight_id) {
+      errors.push(workflowV2ValidationError("backend_preflight_id_required", "adapter job requires a worker backend preflight id"));
+    } else {
+      const preflightRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_backend_preflights
+WHERE preflight_id=${sqlValue(row.preflight_id)}
+LIMIT 1;`, { json: true });
+      const preflightRow = preflightRows[0];
+      if (!preflightRow) {
+        errors.push(workflowV2ValidationError("backend_preflight_not_found", "adapter job requires recorded backend preflight evidence"));
+      } else {
+        preflight = {
+          preflightId: preflightRow.preflight_id || "",
+          workflowId: preflightRow.workflow_id || "",
+          backendId: preflightRow.backend_id || "",
+          status: preflightRow.status || "",
+          findings: workflowV2JsonArray(preflightRow.findings_json, []),
+          payload: workflowV2JsonObject(preflightRow.payload_json, {}),
+          createdBy: preflightRow.created_by || "",
+          createdAt: preflightRow.created_at || ""
+        };
+        if (preflight.workflowId && preflight.workflowId !== row.workflow_id) {
+          errors.push(workflowV2ValidationError("backend_preflight_workflow_mismatch", "backend preflight workflowId does not match worker run"));
+        }
+        if (preflight.backendId && preflight.backendId !== row.runtime_backend) {
+          errors.push(workflowV2ValidationError("backend_preflight_backend_mismatch", "backend preflight backendId does not match worker runtimeBackend"));
+        }
+        if (preflight.status === "fail") {
+          errors.push(workflowV2ValidationError("backend_preflight_failed", "failed backend preflight cannot produce an adapter job"));
+        }
+      }
+    }
+  }
+
+  const adapterJobInfoExisting = row ? await workflowV2InfoStackExistingItem(paths.dbFile, adapterJobInfoId) : null;
+  const adapterJobExisting = row ? await workflowV2AdapterJobExistingForWorkerAttempt(paths.dbFile, row.worker_run_id, Number(row.attempt || 0)) : null;
+  const workerPayload = row ? workflowV2JsonObject(row.payload_json, {}) : {};
+  const existingAdapterJob = row ? workflowV2JsonObject(workerPayload.adapterJob ?? workerPayload.adapter_job, {}) : {};
+  const existingAdapterJobAttempt = Number(existingAdapterJob.attempt ?? existingAdapterJob.leaseAttempt ?? NaN);
+  const existingAdapterJobSameAttempt = row && Object.keys(existingAdapterJob).length > 0 && (
+    Number.isFinite(existingAdapterJobAttempt)
+      ? existingAdapterJobAttempt === Number(row.attempt || 0)
+      : (
+        (!existingAdapterJob.leaseUntil || existingAdapterJob.leaseUntil === row.lease_until)
+        && (!existingAdapterJob.leaseOwner || existingAdapterJob.leaseOwner === row.lease_owner)
+      )
+  );
+  if (row && existingAdapterJobSameAttempt) {
+    errors.push(workflowV2ValidationError("adapter_job_already_recorded", "worker run already has an adapter job manifest recorded", {
+      adapterJobInfoId: existingAdapterJob.adapterJobInfoId || existingAdapterJob.adapter_job_info_id || "",
+      artifactRef: existingAdapterJob.artifactRef || existingAdapterJob.artifact_ref || ""
+    }));
+  }
+  if (row && adapterJobExisting) {
+    errors.push(workflowV2ValidationError("adapter_job_already_recorded", "worker run already has an adapter job row for the current attempt", {
+      adapterJobId: adapterJobExisting.adapter_job_id || "",
+      adapterJobInfoId: adapterJobExisting.info_id || "",
+      artifactRef: adapterJobExisting.artifact_ref || ""
+    }));
+  }
+  if (row && adapterJobInfoExisting && (
+    adapterJobInfoExisting.workflow_id !== row.workflow_id
+    || adapterJobInfoExisting.worker_run_id !== row.worker_run_id
+  )) {
+    errors.push(workflowV2ValidationError("adapter_job_info_id_conflict", "adapter job infoId already exists outside the current worker run", {
+      adapterJobInfoId,
+      existingWorkflowId: adapterJobInfoExisting.workflow_id || "",
+      existingWorkerRunId: adapterJobInfoExisting.worker_run_id || ""
+    }));
+  }
+
+  const backendProfile = row ? workflowV2AdapterBackendProfile(runtimeBackend, input) : workflowV2AdapterBackendProfile("hermers_docker_worker", input);
+  const contextBudgetTokens = Math.min(
+    WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS,
+    Math.max(1, workflowV2NonNegativeInt(row?.context_budget_tokens, WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS) || WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS)
+  );
+  const manifest = row ? {
+    schemaVersion: "workflow_v2_worker_adapter_job.v1",
+    generatedAt,
+    adapterJobId,
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    nodeId: row.node_id || "",
+    workerRunId: row.worker_run_id || "",
+    sessionRunId: row.session_run_id || "",
+    sessionId: row.session_id || "",
+    managerAgent: row.manager_agent || "",
+    workerAgentId: row.worker_agent_id || "",
+    runtimeBackend,
+    backend: backendProfile,
+    lease: {
+      owner: row.lease_owner || "",
+      until: row.lease_until || "",
+      attempt: Number(row.attempt || 0),
+      checkAt: leaseCheckAt
+    },
+    context: {
+      limitTokens: contextBudgetTokens,
+      hardLimitTokens: WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS,
+      usedTokens: Number(row.context_used_tokens || 0),
+      compactionCount: Number(row.compaction_count || 0),
+      sourceContextRefs: workflowV2JsonArray(row.source_context_refs_json, [])
+    },
+    taskInput: {
+      infoId: row.task_input_info_id || "",
+      readAction: "workflow.v2.info_stack.read"
+    },
+    sessionInput: sessionRun?.workerInput || {},
+    output: {
+      expectedOutputInfoId: firstText(row.output_info_id, `${row.worker_run_id}.output`),
+      submitAction: "workflow.v2.worker_result.submit",
+      failAction: "workflow.v2.worker_result.fail",
+      receiptRequired: true,
+      managerReviewRequired: true
+    },
+    preflight: preflight ? {
+      preflightId: preflight.preflightId,
+      backendId: preflight.backendId,
+      status: preflight.status,
+      findings: preflight.findings,
+      createdAt: preflight.createdAt
+    } : null,
+    constraints: {
+      noDirectDatabaseWrites: true,
+      noRuntimeMembership: true,
+      noOpenClawWorkerBackend: true,
+      noProductionSecrets: true,
+      noHeavyMonolithicTasks: true
+    }
+  } : null;
+  const manifestHash = manifest ? `sha256:${jsonHash(manifest)}` : "";
+  let infoPreview = null;
+  if (row) {
+    infoPreview = await workflowV2InfoStackPreview(paths.root, {
+      ...input,
+      workflowId: row.workflow_id,
+      planId: row.plan_id,
+      nodeId: row.node_id,
+      workerRunId: row.worker_run_id,
+      infoId: adapterJobInfoId,
+      recipientKind: "worker_runner",
+      recipientId: runtimeBackend,
+      classification: "internal",
+      contentStorage: "artifact_ref",
+      artifactRef: artifact.artifactRef,
+      channel: "workflow_inbox",
+      summary: firstText(input.summary, `Adapter job manifest for ${row.worker_run_id}`),
+      payload: {
+        adapterJobId,
+        runtimeBackend,
+        artifactRef: artifact.artifactRef,
+        manifestHash,
+        leaseOwner: row.lease_owner || "",
+        leaseUntil: row.lease_until || ""
+      }
+    });
+    errors.push(...infoPreview.errors);
+  }
+  return {
+    operation: "workflow.v2.worker_adapter_job.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    workerRun: row ? workflowV2WorkerRunSummary(row) : null,
+    sessionRun,
+    preflight,
+    adapterJobId,
+    adapterJobInfoId,
+    adapterJobInfoExisting,
+    adapterJobExisting: adapterJobExisting ? workflowV2AdapterJobSummary(adapterJobExisting) : null,
+    leaseCheckAt,
+    manifest,
+    manifestHash,
+    artifact,
+    infoPreview,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2WorkerAdapterJobRecord(rootDir, input = {}) {
+  const preview = await workflowV2WorkerAdapterJobPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 worker adapter job is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const row = preview.workerRun;
+  const rawRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_worker_runs WHERE worker_run_id=${sqlValue(row.workerRunId)} LIMIT 1;`, { json: true });
+  const rawRow = rawRows[0] || {};
+  const previousPayload = workflowV2JsonObject(rawRow.payload_json, {});
+  await writeJsonAtomic(preview.artifact.artifactFile, preview.manifest);
+  let adapterJobInfo = null;
+  let createdAdapterJob = false;
+  try {
+    adapterJobInfo = await workflowV2InfoStackRecord(paths.root, {
+      ...input,
+      workflowId: row.workflowId,
+      planId: row.planId,
+      nodeId: row.nodeId,
+      workerRunId: row.workerRunId,
+      infoId: preview.adapterJobInfoId,
+      recipientKind: "worker_runner",
+      recipientId: row.runtimeBackend,
+      classification: "internal",
+      contentStorage: "artifact_ref",
+      artifactRef: preview.artifact.artifactRef,
+      channel: "workflow_inbox",
+      summary: firstText(input.summary, `Adapter job manifest for ${row.workerRunId}`),
+      payload: {
+        adapterJobId: preview.adapterJobId,
+        runtimeBackend: row.runtimeBackend,
+        artifactRef: preview.artifact.artifactRef,
+        artifactId: preview.artifact.artifactId,
+        manifestHash: preview.manifestHash,
+        attempt: row.attempt,
+        leaseOwner: row.leaseOwner || "",
+        leaseUntil: row.leaseUntil || "",
+        recordedAt: now
+      }
+    });
+    await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_worker_adapter_jobs(adapter_job_id, workflow_id, plan_id, node_id, worker_run_id, session_run_id, runtime_backend, worker_attempt, runner_attempt, max_runner_attempts, status, lease_owner, lease_until, next_retry_at, runner_id, artifact_ref, artifact_id, info_id, manifest_hash, runner_receipt_ref, last_error, payload_json, created_by, created_at, updated_at, completed_at)
+VALUES (${sqlValue(preview.adapterJobId)}, ${sqlValue(row.workflowId)}, ${sqlValue(row.planId)}, ${sqlValue(row.nodeId)}, ${sqlValue(row.workerRunId)}, ${sqlValue(row.sessionRunId)}, ${sqlValue(row.runtimeBackend)}, ${sqlValue(row.attempt)}, 0, ${sqlValue(Math.max(1, Math.min(20, Number(input.maxRunnerAttempts || input.max_runner_attempts || 3))))}, 'queued', '', '', '', '', ${sqlValue(preview.artifact.artifactRef)}, ${sqlValue(preview.artifact.artifactId)}, ${sqlValue(preview.adapterJobInfoId)}, ${sqlValue(preview.manifestHash)}, '', '', ${sqlValue(JSON.stringify({
+      backend: preview.manifest?.backend || {},
+      workerLease: preview.manifest?.lease || {},
+      context: preview.manifest?.context || {},
+      output: preview.manifest?.output || {}
+    }))}, ${sqlValue(firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "workflow_v2"))}, ${sqlValue(now)}, ${sqlValue(now)}, '');`);
+    createdAdapterJob = true;
+    const nextPayload = {
+      ...previousPayload,
+      adapterJob: {
+        adapterJobId: preview.adapterJobId,
+        adapterJobInfoId: preview.adapterJobInfoId,
+        artifactRef: preview.artifact.artifactRef,
+        artifactFile: preview.artifact.artifactFile,
+        manifestHash: preview.manifestHash,
+        runtimeBackend: row.runtimeBackend,
+        attempt: row.attempt,
+        leaseOwner: row.leaseOwner || "",
+        leaseUntil: row.leaseUntil || "",
+        recordedAt: now
+      }
+    };
+    const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET payload_json=${sqlValue(JSON.stringify(nextPayload))},
+    updated_at=${sqlValue(now)}
+WHERE worker_run_id=${sqlValue(row.workerRunId)}
+  AND status='running'
+  AND lease_owner=${sqlValue(row.leaseOwner)}
+  AND lease_until=${sqlValue(row.leaseUntil)}
+  AND payload_json=${sqlValue(rawRow.payload_json || "{}")}
+  AND lease_until > ${sqlValue(preview.leaseCheckAt)};`);
+    if (changed !== 1) throw new Error("workflow v2 worker adapter job lost lease or worker row changed before update");
+  } catch (error) {
+    if (createdAdapterJob) await sqlite(paths.dbFile, `DELETE FROM workflow_v2_worker_adapter_jobs WHERE adapter_job_id=${sqlValue(preview.adapterJobId)};`);
+    if (!preview.adapterJobInfoExisting) await workflowV2CleanupInfoStackItem(paths.dbFile, preview.adapterJobInfoId);
+    await fs.rm(preview.artifact.artifactFile, { force: true });
+    throw error;
+  }
+  const adapterJobRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_adapter_jobs
+WHERE adapter_job_id=${sqlValue(preview.adapterJobId)}
+LIMIT 1;`, { json: true });
+  return {
+    ...preview,
+    operation: "workflow.v2.worker_adapter_job.record",
+    dryRun: false,
+    previewOnly: false,
+    adapterJobInfo: adapterJobInfo?.infoItem || null,
+    adapterJob: workflowV2AdapterJobSummary(adapterJobRows[0]),
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowV2WorkerAdapterJobList(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const clauses = [];
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const workerRunId = firstText(input.workerRunId, input.worker_run_id);
+  const runtimeBackend = input.runtimeBackend || input.runtime_backend
+    ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
+    : "";
+  const explicitStatuses = workflowV2JsonArray(input.statuses ?? input.status_list ?? input.statusList, null);
+  const statuses = explicitStatuses
+    ? explicitStatuses.map((status) => workflowV2NormalizeEnum(status, WORKFLOW_V2_ADAPTER_JOB_STATUSES, "")).filter(Boolean)
+    : (input.status ? [workflowV2NormalizeEnum(input.status, WORKFLOW_V2_ADAPTER_JOB_STATUSES, "")].filter(Boolean) : []);
+  if (workflowId) clauses.push(`workflow_id=${sqlValue(workflowId)}`);
+  if (workerRunId) clauses.push(`worker_run_id=${sqlValue(workerRunId)}`);
+  if (runtimeBackend) clauses.push(`runtime_backend=${sqlValue(runtimeBackend)}`);
+  if (statuses.length) clauses.push(`status IN (${statuses.map(sqlValue).join(",")})`);
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const limit = Math.max(1, Math.min(500, Number(input.limit || 100) || 100));
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_adapter_jobs
+${where}
+ORDER BY updated_at DESC, created_at DESC
+LIMIT ${limit};`, { json: true });
+  return {
+    operation: "workflow.v2.worker_adapter_job.list",
+    readOnly: true,
+    count: rows.length,
+    jobs: rows.map(workflowV2AdapterJobSummary),
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowV2WorkerAdapterJobClaim(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const runnerId = firstText(input.runnerId, input.runner_id, input.leaseOwner, input.lease_owner, input.claimOwner, input.claim_owner);
+  if (!runnerId) throw new Error("workflow v2 worker adapter job claim requires runnerId/leaseOwner");
+  const runtimeBackend = input.runtimeBackend || input.runtime_backend
+    ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
+    : "";
+  const leaseUntil = new Date(new Date(generatedAt).getTime() + workflowV2AdapterJobLeaseMs(input)).toISOString();
+  const expiredLeases = await workflowV2ExpireAdapterJobLeases(paths, input, generatedAt);
+  const capacity = await workflowV2AdapterRunnerCapacity(paths, input, generatedAt, runtimeBackend);
+  const limit = capacity.effectiveLimit;
+  const backendClause = runtimeBackend ? `AND j.runtime_backend=${sqlValue(runtimeBackend)}` : "";
+  const activeBackendClause = runtimeBackend ? `AND active.runtime_backend=${sqlValue(runtimeBackend)}` : "";
+  if (limit <= 0) {
+    return {
+      operation: "workflow.v2.worker_adapter_job.claim",
+      dryRun: false,
+      previewOnly: false,
+      generatedAt,
+      runnerId,
+      leaseUntil: "",
+      expiredLeases,
+      capacity,
+      claimed: [],
+      count: 0,
+      dbFile: paths.dbFile
+    };
+  }
+  const rows = await sqlite(paths.dbFile, `
+SELECT j.*
+FROM workflow_v2_worker_adapter_jobs j
+JOIN workflow_v2_worker_runs w ON w.worker_run_id=j.worker_run_id
+WHERE j.status IN ('queued','retry_scheduled')
+  AND (j.next_retry_at='' OR j.next_retry_at <= ${sqlValue(generatedAt)})
+  ${backendClause}
+  AND w.status='running'
+  AND w.lease_until > ${sqlValue(generatedAt)}
+  AND w.attempt=j.worker_attempt
+ORDER BY
+  CASE j.status WHEN 'retry_scheduled' THEN 0 ELSE 1 END,
+  j.created_at ASC
+LIMIT ${limit};`, { json: true });
+  const claimed = [];
+  for (const row of rows) {
+    const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET status='running',
+    runner_attempt=runner_attempt + 1,
+    lease_owner=${sqlValue(runnerId)},
+    runner_id=${sqlValue(runnerId)},
+    lease_until=${sqlValue(leaseUntil)},
+    next_retry_at='',
+    updated_at=${sqlValue(generatedAt)}
+WHERE adapter_job_id=${sqlValue(row.adapter_job_id)}
+  AND status=${sqlValue(row.status || "")}
+  AND runner_attempt=${sqlValue(Number(row.runner_attempt || 0))}
+  AND (next_retry_at='' OR next_retry_at <= ${sqlValue(generatedAt)})
+  AND EXISTS (
+    SELECT 1
+    FROM workflow_v2_worker_runs w
+    WHERE w.worker_run_id=workflow_v2_worker_adapter_jobs.worker_run_id
+      AND w.status='running'
+      AND w.lease_until > ${sqlValue(generatedAt)}
+      AND w.attempt=workflow_v2_worker_adapter_jobs.worker_attempt
+  )
+  AND (
+    SELECT COUNT(*)
+    FROM workflow_v2_worker_adapter_jobs active
+    WHERE active.status='running'
+      AND active.lease_until > ${sqlValue(generatedAt)}
+      ${activeBackendClause}
+  ) < ${sqlValue(capacity.backendMaxActiveJobs)}
+  AND (
+    SELECT COUNT(*)
+    FROM workflow_v2_worker_adapter_jobs active
+    WHERE active.status='running'
+      AND active.lease_until > ${sqlValue(generatedAt)}
+      ${activeBackendClause}
+  ) < ${sqlValue(capacity.providerMaxConcurrentCalls)};`);
+    if (changed === 1) {
+      const claimedRow = await workflowV2AdapterJobById(paths.dbFile, row.adapter_job_id);
+      claimed.push(workflowV2AdapterJobSummary(claimedRow));
+    }
+  }
+  return {
+    operation: "workflow.v2.worker_adapter_job.claim",
+    dryRun: false,
+    previewOnly: false,
+    generatedAt,
+    runnerId,
+    leaseUntil,
+    expiredLeases,
+    capacity,
+    claimed,
+    count: claimed.length,
+    dbFile: paths.dbFile
+  };
+}
+
+async function workflowV2AdapterJobLeaseGuard(paths, input = {}, actionLabel = "adapter job action") {
+  const adapterJobId = firstText(input.adapterJobId, input.adapter_job_id, input.jobId, input.job_id);
+  if (!adapterJobId) throw new Error(`${actionLabel} requires adapterJobId`);
+  const leaseOwner = firstText(input.leaseOwner, input.lease_owner, input.runnerId, input.runner_id);
+  const leaseUntil = firstText(input.leaseUntil, input.lease_until);
+  if (!leaseOwner) throw new Error(`${actionLabel} requires leaseOwner/runnerId`);
+  if (!leaseUntil) throw new Error(`${actionLabel} requires leaseUntil`);
+  const leaseCheckAt = workflowV2LeaseCheckAt(input);
+  const rows = await sqlite(paths.dbFile, `
+SELECT j.*, w.status AS worker_status, w.lease_owner AS worker_lease_owner, w.lease_until AS worker_lease_until, w.attempt AS current_worker_attempt
+FROM workflow_v2_worker_adapter_jobs j
+LEFT JOIN workflow_v2_worker_runs w ON w.worker_run_id=j.worker_run_id
+WHERE j.adapter_job_id=${sqlValue(adapterJobId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0];
+  if (!row) throw new Error(`${actionLabel} adapter job not found`);
+  const errors = [];
+  if (row.status !== "running") errors.push(`adapter_job_not_running:${row.status || ""}`);
+  if (row.lease_owner !== leaseOwner) errors.push("adapter_job_lease_owner_mismatch");
+  if (row.lease_until !== leaseUntil) errors.push("adapter_job_lease_until_mismatch");
+  const adapterLeaseMs = Date.parse(row.lease_until || "");
+  const workerLeaseMs = Date.parse(row.worker_lease_until || "");
+  const leaseCheckMs = Date.parse(leaseCheckAt || "");
+  if (!Number.isFinite(adapterLeaseMs) || !Number.isFinite(leaseCheckMs) || adapterLeaseMs <= leaseCheckMs) errors.push("adapter_job_lease_expired");
+  if (row.worker_status !== "running") errors.push(`worker_not_running:${row.worker_status || ""}`);
+  if (Number(row.current_worker_attempt || 0) !== Number(row.worker_attempt || 0)) errors.push("worker_attempt_mismatch");
+  if (!Number.isFinite(workerLeaseMs) || !Number.isFinite(leaseCheckMs) || workerLeaseMs <= leaseCheckMs) errors.push("worker_lease_expired");
+  if (errors.length) throw new Error(`${actionLabel} blocked: ${errors.join(",")}`);
+  return { row, leaseOwner, leaseUntil, leaseCheckAt };
+}
+
+export async function workflowV2WorkerAdapterJobHeartbeat(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const guard = await workflowV2AdapterJobLeaseGuard(paths, { ...input, generatedAt }, "workflow v2 worker adapter job heartbeat");
+  const newLeaseUntil = new Date(new Date(generatedAt).getTime() + workflowV2AdapterJobLeaseMs(input)).toISOString();
+  const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET lease_until=${sqlValue(newLeaseUntil)},
+    updated_at=${sqlValue(generatedAt)}
+WHERE adapter_job_id=${sqlValue(guard.row.adapter_job_id)}
+  AND status='running'
+  AND lease_owner=${sqlValue(guard.leaseOwner)}
+  AND lease_until=${sqlValue(guard.leaseUntil)}
+  AND EXISTS (
+    SELECT 1
+    FROM workflow_v2_worker_runs w
+    WHERE w.worker_run_id=workflow_v2_worker_adapter_jobs.worker_run_id
+      AND w.status='running'
+      AND w.lease_until > ${sqlValue(generatedAt)}
+      AND w.attempt=workflow_v2_worker_adapter_jobs.worker_attempt
+  );`);
+  if (changed !== 1) throw new Error("workflow v2 worker adapter job heartbeat lost lease before update");
+  const row = await workflowV2AdapterJobById(paths.dbFile, guard.row.adapter_job_id);
+  return {
+    operation: "workflow.v2.worker_adapter_job.heartbeat",
+    dryRun: false,
+    previewOnly: false,
+    generatedAt,
+    leaseUntil: newLeaseUntil,
+    job: workflowV2AdapterJobSummary(row),
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowV2WorkerAdapterJobRelease(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const guard = await workflowV2AdapterJobLeaseGuard(paths, { ...input, generatedAt }, "workflow v2 worker adapter job release");
+  const retryDelayMs = workflowV2AdapterJobRetryDelayMs(input, Number(guard.row.runner_attempt || 0));
+  const nextRetryAt = firstText(input.nextRetryAt, input.next_retry_at) || (retryDelayMs > 0 ? new Date(new Date(generatedAt).getTime() + retryDelayMs).toISOString() : generatedAt);
+  const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET status='retry_scheduled',
+    lease_owner='',
+    lease_until='',
+    runner_id='',
+    next_retry_at=${sqlValue(nextRetryAt)},
+    last_error=${sqlValue(firstText(input.reason, input.error, input.errorMessage, input.error_message, "adapter job released by runner"))},
+    updated_at=${sqlValue(generatedAt)}
+WHERE adapter_job_id=${sqlValue(guard.row.adapter_job_id)}
+  AND status='running'
+  AND lease_owner=${sqlValue(guard.leaseOwner)}
+  AND lease_until=${sqlValue(guard.leaseUntil)}
+  AND EXISTS (
+    SELECT 1
+    FROM workflow_v2_worker_runs w
+    WHERE w.worker_run_id=workflow_v2_worker_adapter_jobs.worker_run_id
+      AND w.status='running'
+      AND w.lease_until > ${sqlValue(generatedAt)}
+      AND w.attempt=workflow_v2_worker_adapter_jobs.worker_attempt
+  );`);
+  if (changed !== 1) throw new Error("workflow v2 worker adapter job release lost lease before update");
+  const row = await workflowV2AdapterJobById(paths.dbFile, guard.row.adapter_job_id);
+  return {
+    operation: "workflow.v2.worker_adapter_job.release",
+    dryRun: false,
+    previewOnly: false,
+    generatedAt,
+    job: workflowV2AdapterJobSummary(row),
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowV2WorkerAdapterJobFail(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const guard = await workflowV2AdapterJobLeaseGuard(paths, { ...input, generatedAt }, "workflow v2 worker adapter job fail");
+  const errorMessage = firstText(input.error, input.errorMessage, input.error_message, input.reason);
+  if (!errorMessage) throw new Error("workflow v2 worker adapter job fail requires error/errorMessage");
+  const retryAllowed = boolOption(input.retryAllowed ?? input.retry_allowed, true);
+  const runnerAttempt = Number(guard.row.runner_attempt || 0);
+  const maxRunnerAttempts = Math.max(1, Number(guard.row.max_runner_attempts || 3));
+  const retry = retryAllowed && runnerAttempt < maxRunnerAttempts;
+  const nextStatus = retry ? "retry_scheduled" : "failed";
+  const nextRetryAt = retry ? new Date(new Date(generatedAt).getTime() + workflowV2AdapterJobRetryDelayMs(input, runnerAttempt)).toISOString() : "";
+  const runnerReceiptRef = firstText(input.runnerReceiptRef, input.runner_receipt_ref, input.receiptRef, input.receipt_ref);
+  if (!retry) {
+    const workerResult = await workflowV2WorkerResultFail(paths.root, {
+      ...input,
+      workerRunId: guard.row.worker_run_id,
+      leaseOwner: guard.row.worker_lease_owner,
+      leaseUntil: guard.row.worker_lease_until,
+      adapterJobId: guard.row.adapter_job_id,
+      adapterJobLeaseOwner: guard.leaseOwner,
+      adapterJobLeaseUntil: guard.leaseUntil,
+      failureType: "adapter_job_failed",
+      retryAllowed: false,
+      error: errorMessage,
+      runnerReceiptRef,
+      generatedAt
+    });
+    const row = await workflowV2AdapterJobById(paths.dbFile, guard.row.adapter_job_id);
+    return {
+      operation: "workflow.v2.worker_adapter_job.fail",
+      dryRun: false,
+      previewOnly: false,
+      generatedAt,
+      retry,
+      nextStatus,
+      job: workflowV2AdapterJobSummary(row),
+      workerResult,
+      dbFile: paths.dbFile
+    };
+  }
+  const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET status=${sqlValue(nextStatus)},
+    lease_owner='',
+    lease_until='',
+    runner_id='',
+    next_retry_at=${sqlValue(nextRetryAt)},
+    runner_receipt_ref=${sqlValue(runnerReceiptRef)},
+    last_error=${sqlValue(errorMessage)},
+    completed_at=${sqlValue(retry ? "" : generatedAt)},
+    updated_at=${sqlValue(generatedAt)}
+WHERE adapter_job_id=${sqlValue(guard.row.adapter_job_id)}
+  AND status='running'
+  AND lease_owner=${sqlValue(guard.leaseOwner)}
+  AND lease_until=${sqlValue(guard.leaseUntil)}
+  AND EXISTS (
+    SELECT 1
+    FROM workflow_v2_worker_runs w
+    WHERE w.worker_run_id=workflow_v2_worker_adapter_jobs.worker_run_id
+      AND w.status='running'
+      AND w.lease_until > ${sqlValue(generatedAt)}
+      AND w.attempt=workflow_v2_worker_adapter_jobs.worker_attempt
+  );`);
+  if (changed !== 1) throw new Error("workflow v2 worker adapter job fail lost lease before update");
+  const row = await workflowV2AdapterJobById(paths.dbFile, guard.row.adapter_job_id);
+  return {
+    operation: "workflow.v2.worker_adapter_job.fail",
+    dryRun: false,
+    previewOnly: false,
+    generatedAt,
+    retry,
+    nextStatus,
+    job: workflowV2AdapterJobSummary(row),
+    dbFile: paths.dbFile
+  };
+}
+
+async function workflowV2MarkAdapterJobTerminal(paths, input = {}, workerRunId = "", status = "completed", timestamp = nowIso(), expectedWorkerAttempt = 0) {
+  const adapterJobId = firstText(input.adapterJobId, input.adapter_job_id);
+  if (!adapterJobId && !workerRunId) return null;
+  const runnerLeaseOwner = firstText(
+    input.adapterJobLeaseOwner,
+    input.adapter_job_lease_owner,
+    input.runnerLeaseOwner,
+    input.runner_lease_owner,
+    input.runnerId,
+    input.runner_id
+  );
+  const runnerLeaseUntil = firstText(
+    input.adapterJobLeaseUntil,
+    input.adapter_job_lease_until,
+    input.runnerLeaseUntil,
+    input.runner_lease_until
+  );
+  const workerAttempt = workflowV2NonNegativeInt(input.workerAttempt ?? input.worker_attempt ?? expectedWorkerAttempt, 0);
+  const receiptRef = firstText(input.runnerReceiptRef, input.runner_receipt_ref, input.receiptRef, input.receipt_ref);
+  const errorMessage = firstText(input.error, input.errorMessage, input.error_message);
+  const clauses = adapterJobId
+    ? [`adapter_job_id=${sqlValue(adapterJobId)}`]
+    : [`worker_run_id=${sqlValue(workerRunId)}`, "status='running'"];
+  if (workerRunId) clauses.push(`worker_run_id=${sqlValue(workerRunId)}`);
+  if (workerAttempt > 0) clauses.push(`worker_attempt=${sqlValue(workerAttempt)}`);
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_adapter_jobs
+WHERE ${clauses.join(" AND ")}
+ORDER BY updated_at DESC
+LIMIT 1;`, { json: true });
+  const row = rows[0];
+  if (!row) {
+    if (adapterJobId) throw new Error("workflow v2 adapter job terminal update found no matching running job");
+    return null;
+  }
+  const errors = [];
+  if (row.status !== "running") errors.push(`adapter_job_not_running:${row.status || ""}`);
+  if (workerRunId && row.worker_run_id !== workerRunId) errors.push("worker_run_mismatch");
+  if (workerAttempt > 0 && Number(row.worker_attempt || 0) !== workerAttempt) errors.push("worker_attempt_mismatch");
+  if (!runnerLeaseOwner) errors.push("adapter_job_lease_owner_required");
+  if (!runnerLeaseUntil) errors.push("adapter_job_lease_until_required");
+  if (runnerLeaseOwner && row.lease_owner !== runnerLeaseOwner) errors.push("adapter_job_lease_owner_mismatch");
+  if (runnerLeaseUntil && row.lease_until !== runnerLeaseUntil) errors.push("adapter_job_lease_until_mismatch");
+  const adapterLeaseMs = Date.parse(row.lease_until || "");
+  const timestampMs = Date.parse(timestamp || "");
+  if (!Number.isFinite(adapterLeaseMs) || !Number.isFinite(timestampMs) || adapterLeaseMs <= timestampMs) errors.push("adapter_job_lease_expired");
+  if (errors.length) throw new Error(`workflow v2 adapter job terminal update blocked: ${errors.join(",")}`);
+  const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET status=${sqlValue(status)},
+    lease_owner='',
+    lease_until='',
+    runner_id='',
+    next_retry_at='',
+    runner_receipt_ref=${sqlValue(receiptRef)},
+    last_error=${sqlValue(status === "failed" ? errorMessage : row.last_error || "")},
+    completed_at=${sqlValue(timestamp)},
+    updated_at=${sqlValue(timestamp)}
+WHERE adapter_job_id=${sqlValue(row.adapter_job_id)}
+  AND status='running'
+  AND worker_run_id=${sqlValue(workerRunId || row.worker_run_id || "")}
+  AND worker_attempt=${sqlValue(Number(row.worker_attempt || 0))}
+  AND lease_owner=${sqlValue(runnerLeaseOwner)}
+  AND lease_until=${sqlValue(runnerLeaseUntil)}
+  AND lease_until > ${sqlValue(timestamp)};`);
+  if (changed !== 1) throw new Error("workflow v2 adapter job terminal update lost runner lease before update");
+  const updated = await workflowV2AdapterJobById(paths.dbFile, row.adapter_job_id);
+  return { changed, job: workflowV2AdapterJobSummary(updated) };
+}
+
+export async function workflowV2AdapterRunnerPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const runtimeBackend = input.runtimeBackend || input.runtime_backend
+    ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
+    : "";
+  const capacity = await workflowV2AdapterRunnerCapacity(paths, input, generatedAt, runtimeBackend);
+  const backendClause = runtimeBackend ? `AND j.runtime_backend=${sqlValue(runtimeBackend)}` : "";
+  const rows = await sqlite(paths.dbFile, `
+SELECT j.*
+FROM workflow_v2_worker_adapter_jobs j
+JOIN workflow_v2_worker_runs w ON w.worker_run_id=j.worker_run_id
+WHERE j.status IN ('queued','retry_scheduled')
+  AND (j.next_retry_at='' OR j.next_retry_at <= ${sqlValue(generatedAt)})
+  ${backendClause}
+  AND w.status='running'
+  AND w.lease_until > ${sqlValue(generatedAt)}
+  AND w.attempt=j.worker_attempt
+ORDER BY
+  CASE j.status WHEN 'retry_scheduled' THEN 0 ELSE 1 END,
+  j.created_at ASC
+LIMIT ${capacity.effectiveLimit};`, { json: true });
+  return {
+    operation: "workflow.v2.adapter_runner.preview",
+    dryRun: true,
+    previewOnly: true,
+    generatedAt,
+    runtimeBackend,
+    mode: "mock",
+    count: rows.length,
+    dueCount: capacity.dueCount,
+    capacity,
+    jobs: rows.map(workflowV2AdapterJobSummary),
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowV2AdapterRunnerDrain(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const runnerId = firstText(input.runnerId, input.runner_id, input.leaseOwner, input.lease_owner, input.claimOwner, input.claim_owner, `mock-adapter-runner:${process.pid}`);
+  const mode = workflowV2NormalizeEnum(input.mode || input.runnerMode || input.runner_mode || "mock", new Set(["mock"]), "mock");
+  const stopOnError = boolOption(input.stopOnError ?? input.stop_on_error, false);
+  if (mode !== "mock") throw new Error(`workflow v2 adapter runner mode is not implemented: ${mode}`);
+  const runtimeBackend = input.runtimeBackend || input.runtime_backend
+    ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
+    : "";
+  const claim = await workflowV2WorkerAdapterJobClaim(paths.root, {
+    ...input,
+    runnerId,
+    generatedAt
+  });
+  const capacity = claim.capacity || await workflowV2AdapterRunnerCapacity(paths, input, generatedAt, runtimeBackend);
+  const results = [];
+  for (let index = 0; index < claim.claimed.length; index += 1) {
+    const job = claim.claimed[index];
+    const outcome = workflowV2AdapterRunnerOutcome(input, job, index);
+    try {
+      if (outcome === "release") {
+        const release = await workflowV2WorkerAdapterJobRelease(paths.root, {
+          ...input,
+          adapterJobId: job.adapterJobId,
+          runnerId,
+          leaseUntil: job.leaseUntil,
+          generatedAt,
+          reason: firstText(input.reason, "mock adapter runner requested release")
+        });
+        results.push({ adapterJobId: job.adapterJobId, workerRunId: job.workerRunId, outcome, status: "released", release });
+        continue;
+      }
+      if (outcome === "fail") {
+        const failure = await workflowV2WorkerAdapterJobFail(paths.root, {
+          ...input,
+          adapterJobId: job.adapterJobId,
+          runnerId,
+          leaseUntil: job.leaseUntil,
+          retryAllowed: boolOption(input.mockFailureRetryAllowed ?? input.mock_failure_retry_allowed ?? false, false),
+          error: firstText(input.error, input.errorMessage, input.error_message, `mock adapter runner failed ${job.adapterJobId}`),
+          generatedAt
+        });
+        results.push({ adapterJobId: job.adapterJobId, workerRunId: job.workerRunId, outcome, status: failure.job?.status || "failed", failure });
+        continue;
+      }
+      const { manifest, artifactFile: manifestFile } = await workflowV2AdapterJobManifest(paths, job);
+      const workerRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_runs
+WHERE worker_run_id=${sqlValue(job.workerRunId)}
+LIMIT 1;`, { json: true });
+      const workerRow = workerRows[0];
+      if (!workerRow) throw new Error(`adapter runner worker row not found: ${job.workerRunId}`);
+      if (workerRow.status !== "running") throw new Error(`adapter runner worker is not running: ${job.workerRunId} status=${workerRow.status || ""}`);
+      if (Number(workerRow.attempt || 0) !== Number(job.workerAttempt || 0)) throw new Error(`adapter runner worker attempt mismatch: ${job.workerRunId}`);
+      const outputArtifact = await workflowV2AdapterRunnerMockOutput(paths, job, manifest, { ...input, runnerId }, generatedAt);
+      try {
+        const receipt = {
+          adapterRunner: "mock",
+          runnerId,
+          adapterJobId: job.adapterJobId,
+          workerRunId: job.workerRunId,
+          manifestFile,
+          outputArtifactRef: outputArtifact.artifactRef,
+          generatedAt
+        };
+        const submit = await workflowV2WorkerResultSubmit(paths.root, {
+          ...input,
+          workerRunId: job.workerRunId,
+          leaseOwner: workerRow.lease_owner || "",
+          leaseUntil: workerRow.lease_until || "",
+          adapterJobId: job.adapterJobId,
+          adapterJobLeaseOwner: runnerId,
+          adapterJobLeaseUntil: job.leaseUntil,
+          generatedAt,
+          outputInfoId: manifest.output?.expectedOutputInfoId || `${job.workerRunId}.output`,
+          contentStorage: "artifact_ref",
+          artifactRef: outputArtifact.artifactRef,
+          receipt,
+          summary: outputArtifact.output.summary
+        });
+        results.push({
+          adapterJobId: job.adapterJobId,
+          workerRunId: job.workerRunId,
+          outcome,
+          status: "submitted",
+          outputArtifact,
+          submit
+        });
+      } catch (error) {
+        await fs.rm(outputArtifact.artifactFile, { force: true });
+        throw error;
+      }
+    } catch (error) {
+      const errorMessage = workflowV2ErrorMessage(error);
+      let failure = null;
+      try {
+        failure = await workflowV2WorkerAdapterJobFail(paths.root, {
+          adapterJobId: job.adapterJobId,
+          runnerId,
+          leaseUntil: job.leaseUntil,
+          retryAllowed: boolOption(input.internalErrorRetryAllowed ?? input.internal_error_retry_allowed, false),
+          error: `adapter runner drain error: ${errorMessage}`,
+          generatedAt
+        });
+      } catch (failureError) {
+        failure = { error: workflowV2ErrorMessage(failureError) };
+      }
+      const result = { adapterJobId: job.adapterJobId, workerRunId: job.workerRunId, outcome, status: "error", error: errorMessage, failure };
+      results.push(result);
+      if (stopOnError) throw error;
+    }
+  }
+  return {
+    operation: "workflow.v2.adapter_runner.drain",
+    dryRun: false,
+    previewOnly: false,
+    generatedAt,
+    mode,
+    runnerId,
+    runtimeBackend,
+    capacity,
+    claimed: claim.claimed,
+    expiredLeases: claim.expiredLeases,
+    results,
+    count: results.length,
+    submittedCount: results.filter((item) => item.status === "submitted").length,
+    failedCount: results.filter((item) => item.status === "failed" || item.status === "error").length,
+    releasedCount: results.filter((item) => item.status === "released").length,
+    dbFile: paths.dbFile
+  };
+}
+
+async function workflowV2InfoStackExistingItem(dbFile, infoId = "") {
+  if (!infoId) return null;
+  const rows = await sqlite(dbFile, `
+SELECT info_id, workflow_id, worker_run_id
+FROM workflow_v2_info_items
+WHERE info_id=${sqlValue(infoId)}
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function workflowV2CleanupInfoStackItem(dbFile, infoId = "") {
+  if (!infoId) return;
+  await sqlite(dbFile, `
+DELETE FROM workflow_v2_read_receipts WHERE info_id=${sqlValue(infoId)};
+DELETE FROM workflow_v2_notifications WHERE info_id=${sqlValue(infoId)};
+DELETE FROM workflow_v2_access_grants WHERE info_id=${sqlValue(infoId)};
+DELETE FROM workflow_v2_inbox_items WHERE info_id=${sqlValue(infoId)};
+DELETE FROM workflow_v2_info_items WHERE info_id=${sqlValue(infoId)};`);
+}
+
+const WORKFLOW_V2_HANDOFF_RECORD_STATUSES = new Set(["recommended", "required", "accepted"]);
+const WORKFLOW_V2_SUCCESSOR_SOURCE_STATUSES = new Set(["handoff_required", "retired", "failed", "timed_out", "rejected", "revise_required"]);
+
+function workflowV2UniqueTextArray(values = []) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result;
+}
+
+async function workflowV2LoadWorkerLifecycleActor(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const workerRunId = firstText(input.workerRunId, input.worker_run_id, input.sourceWorkerRunId, input.source_worker_run_id, input.runId, input.run_id);
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  if (!workerRunId) errors.push(workflowV2ValidationError("worker_run_id_required", "worker lifecycle action requires workerRunId/sourceWorkerRunId"));
+  if (!fileExistsSync(paths.dbFile)) {
+    errors.push(workflowV2ValidationError("workflow_database_missing", "workflow database does not exist"));
+    return {
+      paths,
+      errors,
+      workerRunId,
+      workflowId,
+      row: null,
+      plan: null,
+      callerAgent: "",
+      managerAgent: "",
+      taskOwnerAgent: "",
+      allowedAgents: []
+    };
+  }
+  let row = null;
+  if (workerRunId) {
+    const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_runs
+WHERE worker_run_id=${sqlValue(workerRunId)}
+LIMIT 1;`, { json: true });
+    row = rows[0] || null;
+    if (!row) errors.push(workflowV2ValidationError("worker_run_not_found", `worker run not found: ${workerRunId}`));
+    if (row && workflowId && row.workflow_id !== workflowId) {
+      errors.push(workflowV2ValidationError("workflow_id_mismatch", "worker lifecycle action workflowId does not match worker run", {
+        workerWorkflowId: row.workflow_id,
+        workflowId
+      }));
+    }
+  }
+  let plan = null;
+  if (row?.plan_id) {
+    const planRows = await sqlite(paths.dbFile, `
+SELECT plan_id, workflow_id, task_owner_agent
+FROM workflow_v2_plans
+WHERE plan_id=${sqlValue(row.plan_id)}
+LIMIT 1;`, { json: true });
+    plan = planRows[0] || null;
+    if (!plan) {
+      errors.push(workflowV2ValidationError("plan_not_found", "worker lifecycle action requires the worker plan record"));
+    } else if (plan.workflow_id !== row.workflow_id) {
+      errors.push(workflowV2ValidationError("plan_workflow_mismatch", "worker lifecycle action plan workflow does not match worker run"));
+    }
+  }
+  const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.createdBy, input.created_by));
+  const managerAgent = normalizeOptionalAgentId(row?.manager_agent || "");
+  const taskOwnerAgent = normalizeOptionalAgentId(plan?.task_owner_agent || "");
+  const allowedAgents = workflowV2UniqueTextArray([managerAgent, taskOwnerAgent]);
+  if (!callerAgent) {
+    errors.push(workflowV2ValidationError("caller_agent_required", "worker lifecycle action requires callerAgent/createdBy for manager or task-owner authority"));
+  } else if (row && allowedAgents.length && !allowedAgents.includes(callerAgent)) {
+    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "worker lifecycle action can only be performed by the responsible manager or task owner", {
+      callerAgent,
+      allowedAgents
+    }));
+  }
+  return { paths, errors, workerRunId, workflowId, row, plan, callerAgent, managerAgent, taskOwnerAgent, allowedAgents };
+}
+
+async function workflowV2WorkerHandoffRow(paths, workerRunId = "", handoffId = "") {
+  if (!workerRunId && !handoffId) return null;
+  const clauses = [];
+  if (workerRunId) clauses.push(`worker_run_id=${sqlValue(workerRunId)}`);
+  if (handoffId) clauses.push(`handoff_id=${sqlValue(handoffId)}`);
+  const order = handoffId ? "" : "ORDER BY updated_at DESC, created_at DESC";
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_handoffs
+WHERE ${clauses.join(" AND ")}
+${order}
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function workflowV2WorkerHandoffById(paths, handoffId = "") {
+  if (!handoffId) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_handoffs
+WHERE handoff_id=${sqlValue(handoffId)}
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function workflowV2RestoreWorkerHandoffRow(paths, row = null, handoffId = "") {
+  const id = row?.handoff_id || handoffId;
+  if (!id) return;
+  if (!row) {
+    await sqlite(paths.dbFile, `DELETE FROM workflow_v2_worker_handoffs WHERE handoff_id=${sqlValue(id)};`);
+    return;
+  }
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_worker_handoffs(handoff_id, workflow_id, plan_id, node_id, worker_run_id, manager_agent, successor_worker_run_id, handoff_info_id, status, reason, summary, source_context_refs_json, artifact_refs_json, receipt_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(row.handoff_id)}, ${sqlValue(row.workflow_id || "")}, ${sqlValue(row.plan_id || "")}, ${sqlValue(row.node_id || "")}, ${sqlValue(row.worker_run_id || "")}, ${sqlValue(row.manager_agent || "")}, ${sqlValue(row.successor_worker_run_id || "")}, ${sqlValue(row.handoff_info_id || "")}, ${sqlValue(row.status || "draft")}, ${sqlValue(row.reason || "")}, ${sqlValue(row.summary || "")}, ${sqlValue(row.source_context_refs_json || "[]")}, ${sqlValue(row.artifact_refs_json || "[]")}, ${sqlValue(row.receipt_refs_json || "[]")}, ${sqlValue(row.payload_json || "{}")}, ${sqlValue(row.created_by || "")}, ${sqlValue(row.created_at || nowIso())}, ${sqlValue(row.updated_at || nowIso())})
+ON CONFLICT(handoff_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  node_id=excluded.node_id,
+  worker_run_id=excluded.worker_run_id,
+  manager_agent=excluded.manager_agent,
+  successor_worker_run_id=excluded.successor_worker_run_id,
+  handoff_info_id=excluded.handoff_info_id,
+  status=excluded.status,
+  reason=excluded.reason,
+  summary=excluded.summary,
+  source_context_refs_json=excluded.source_context_refs_json,
+  artifact_refs_json=excluded.artifact_refs_json,
+  receipt_refs_json=excluded.receipt_refs_json,
+  payload_json=excluded.payload_json,
+  created_by=excluded.created_by,
+  created_at=excluded.created_at,
+  updated_at=excluded.updated_at;`);
+}
+
+async function workflowV2CleanupWorkerSpawn(paths, workerRunId = "", sessionRunId = "", preflightId = "", deletePreflight = false) {
+  if (workerRunId) {
+    await sqlite(paths.dbFile, `DELETE FROM workflow_v2_worker_runs WHERE worker_run_id=${sqlValue(workerRunId)};`);
+  }
+  if (sessionRunId) {
+    await sqlite(paths.dbFile, `
+DELETE FROM workflow_agent_runs WHERE agent_run_id=${sqlValue(`session.${sessionRunId}`)} OR session_run_id=${sqlValue(sessionRunId)};
+DELETE FROM workflow_session_runs WHERE run_id=${sqlValue(sessionRunId)};`);
+  }
+  if (deletePreflight && preflightId) {
+    await sqlite(paths.dbFile, `DELETE FROM workflow_v2_backend_preflights WHERE preflight_id=${sqlValue(preflightId)};`);
+  }
+}
+
+export async function workflowV2WorkerHandoffPreview(rootDir, input = {}) {
+  const loaded = await workflowV2LoadWorkerLifecycleActor(rootDir, input);
+  const { paths, row } = loaded;
+  const errors = [...loaded.errors];
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const requestedStatus = firstText(input.status, input.handoffStatus, input.handoff_status, "accepted");
+  const status = workflowV2NormalizeEnum(requestedStatus, WORKFLOW_V2_WORKER_HANDOFF_STATUSES, "");
+  if (!status) {
+    errors.push(workflowV2ValidationError("handoff_status_invalid", "worker handoff status is not recognized", { requestedStatus }));
+  } else if (!WORKFLOW_V2_HANDOFF_RECORD_STATUSES.has(status)) {
+    errors.push(workflowV2ValidationError("handoff_status_not_recordable", "worker handoff record only supports recommended, required, or accepted status", { status }));
+  }
+  let handoffPackage = null;
+  let infoExisting = null;
+  let infoPreview = null;
+  let existingHandoff = null;
+  if (row) {
+    if (["cancelled", "successor_spawned"].includes(row.status)) {
+      errors.push(workflowV2ValidationError("worker_not_handoff_eligible", `worker status ${row.status} cannot record a new handoff`));
+    }
+    const handoffId = firstText(input.handoffId, input.handoff_id) || `${row.worker_run_id}.handoff`;
+    const handoffInfoId = firstText(input.handoffInfoId, input.handoff_info_id, row.handoff_info_id) || `${handoffId}.info`;
+    const summary = firstText(input.summary, input.handoffSummary, input.handoff_summary);
+    const reason = firstText(input.reason, input.handoffReason, input.handoff_reason, "worker lifecycle handoff recorded");
+    if (!summary) errors.push(workflowV2ValidationError("handoff_summary_required", "worker handoff requires a summary"));
+    existingHandoff = handoffId
+      ? await workflowV2WorkerHandoffById(paths, handoffId)
+      : await workflowV2WorkerHandoffRow(paths, row.worker_run_id, "");
+    if (existingHandoff && existingHandoff.worker_run_id !== row.worker_run_id) {
+      errors.push(workflowV2ValidationError("handoff_id_conflict", "handoffId already belongs to another worker run", {
+        handoffId,
+        existingWorkerRunId: existingHandoff.worker_run_id
+      }));
+    }
+    infoExisting = await workflowV2InfoStackExistingItem(paths.dbFile, handoffInfoId);
+    if (infoExisting && (infoExisting.workflow_id !== row.workflow_id || (infoExisting.worker_run_id && infoExisting.worker_run_id !== row.worker_run_id))) {
+      errors.push(workflowV2ValidationError("handoff_info_id_conflict", "handoffInfoId already exists outside the current worker handoff binding", {
+        handoffInfoId,
+        existingWorkflowId: infoExisting.workflow_id || "",
+        existingWorkerRunId: infoExisting.worker_run_id || ""
+      }));
+    }
+    const sourceContextRefs = workflowV2UniqueTextArray(workflowV2JsonArray(input.sourceContextRefs ?? input.source_context_refs, workflowV2JsonArray(row.source_context_refs_json, [])));
+    const artifactRefs = workflowV2UniqueTextArray(workflowV2JsonArray(input.artifactRefs ?? input.artifact_refs, row.output_info_id ? [row.output_info_id] : []));
+    const receiptRefs = workflowV2UniqueTextArray(workflowV2JsonArray(input.receiptRefs ?? input.receipt_refs, row.receipt_ref ? [row.receipt_ref] : []));
+    const payload = workflowV2JsonObject(input.payload, {});
+    handoffPackage = {
+      handoffId,
+      workflowId: row.workflow_id,
+      planId: row.plan_id,
+      nodeId: row.node_id,
+      workerRunId: row.worker_run_id,
+      managerAgent: row.manager_agent || "",
+      successorWorkerRunId: firstText(input.successorWorkerRunId, input.successor_worker_run_id),
+      handoffInfoId,
+      status: status || requestedStatus,
+      reason,
+      summary,
+      sourceContextRefs,
+      artifactRefs,
+      receiptRefs,
+      payload
+    };
+    if (!infoExisting) {
+      infoPreview = await workflowV2InfoStackPreview(rootDir, {
+        ...input,
+        workflowId: row.workflow_id,
+        planId: row.plan_id,
+        nodeId: row.node_id,
+        workerRunId: row.worker_run_id,
+        infoId: handoffInfoId,
+        recipientAgent: firstText(input.recipientAgent, input.recipient_agent, row.manager_agent),
+        classification: input.classification || "internal",
+        contentStorage: input.contentStorage || input.content_storage || "artifact_ref",
+        summary,
+        payload: {
+          ...payload,
+          lifecycleAction: "worker_handoff",
+          handoffId,
+          sourceWorkerRunId: row.worker_run_id,
+          sourceContextRefs,
+          artifactRefs,
+          receiptRefs
+        }
+      });
+      errors.push(...infoPreview.errors);
+    }
+  }
+  return {
+    operation: "workflow.v2.worker_handoff.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    generatedAt,
+    workerRun: row ? workflowV2WorkerRunSummary(row) : null,
+    authority: {
+      callerAgent: loaded.callerAgent,
+      managerAgent: loaded.managerAgent,
+      taskOwnerAgent: loaded.taskOwnerAgent,
+      allowedAgents: loaded.allowedAgents
+    },
+    handoffPackage,
+    existingHandoff: existingHandoff ? {
+      handoffId: existingHandoff.handoff_id,
+      status: existingHandoff.status,
+      workerRunId: existingHandoff.worker_run_id,
+      handoffInfoId: existingHandoff.handoff_info_id
+    } : null,
+    infoAction: infoExisting ? "reference_existing" : "create_info_stack_item",
+    infoExisting,
+    infoPreview,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2WorkerHandoffRecord(rootDir, input = {}) {
+  const preview = await workflowV2WorkerHandoffPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 worker handoff is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const handoff = preview.handoffPackage;
+  const rawRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_worker_runs WHERE worker_run_id=${sqlValue(handoff.workerRunId)} LIMIT 1;`, { json: true });
+  const rawRow = rawRows[0] || {};
+  const existingHandoffById = await workflowV2WorkerHandoffById(paths, handoff.handoffId);
+  if (existingHandoffById && existingHandoffById.worker_run_id !== handoff.workerRunId) {
+    throw new Error(`workflow v2 worker handoff is invalid: handoff_id_conflict`);
+  }
+  const existingHandoff = existingHandoffById || await workflowV2WorkerHandoffRow(paths, handoff.workerRunId, handoff.handoffId);
+  let infoRecord = null;
+  let createdInfo = false;
+  try {
+    if (!preview.infoExisting) {
+      infoRecord = await workflowV2InfoStackRecord(paths.root, {
+        ...input,
+        workflowId: handoff.workflowId,
+        planId: handoff.planId,
+        nodeId: handoff.nodeId,
+        workerRunId: handoff.workerRunId,
+        infoId: handoff.handoffInfoId,
+        recipientAgent: firstText(input.recipientAgent, input.recipient_agent, handoff.managerAgent),
+        classification: input.classification || "internal",
+        contentStorage: input.contentStorage || input.content_storage || "artifact_ref",
+        summary: handoff.summary,
+        payload: {
+          ...handoff.payload,
+          lifecycleAction: "worker_handoff",
+          handoffId: handoff.handoffId,
+          sourceWorkerRunId: handoff.workerRunId,
+          sourceContextRefs: handoff.sourceContextRefs,
+          artifactRefs: handoff.artifactRefs,
+          receiptRefs: handoff.receiptRefs
+        }
+      });
+      createdInfo = true;
+    }
+    await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_worker_handoffs(handoff_id, workflow_id, plan_id, node_id, worker_run_id, manager_agent, successor_worker_run_id, handoff_info_id, status, reason, summary, source_context_refs_json, artifact_refs_json, receipt_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(handoff.handoffId)}, ${sqlValue(handoff.workflowId)}, ${sqlValue(handoff.planId)}, ${sqlValue(handoff.nodeId)}, ${sqlValue(handoff.workerRunId)}, ${sqlValue(handoff.managerAgent)}, ${sqlValue(handoff.successorWorkerRunId)}, ${sqlValue(handoff.handoffInfoId)}, ${sqlValue(handoff.status)}, ${sqlValue(handoff.reason)}, ${sqlValue(handoff.summary)}, ${sqlValue(JSON.stringify(handoff.sourceContextRefs))}, ${sqlValue(JSON.stringify(handoff.artifactRefs))}, ${sqlValue(JSON.stringify(handoff.receiptRefs))}, ${sqlValue(JSON.stringify(handoff.payload))}, ${sqlValue(preview.authority.callerAgent)}, ${sqlValue(existingHandoff?.created_at || now)}, ${sqlValue(now)})
+ON CONFLICT(handoff_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  node_id=excluded.node_id,
+  worker_run_id=excluded.worker_run_id,
+  manager_agent=excluded.manager_agent,
+  successor_worker_run_id=excluded.successor_worker_run_id,
+  handoff_info_id=excluded.handoff_info_id,
+  status=excluded.status,
+  reason=excluded.reason,
+  summary=excluded.summary,
+  source_context_refs_json=excluded.source_context_refs_json,
+  artifact_refs_json=excluded.artifact_refs_json,
+  receipt_refs_json=excluded.receipt_refs_json,
+  payload_json=excluded.payload_json,
+  created_by=excluded.created_by,
+  updated_at=excluded.updated_at;`);
+    const currentPayload = workflowV2JsonObject(rawRow.payload_json, {});
+    const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='handoff_required',
+    lease_owner='',
+    lease_until='',
+    next_retry_at='',
+    handoff_info_id=${sqlValue(handoff.handoffInfoId)},
+    last_error=CASE WHEN last_error='' THEN ${sqlValue(handoff.reason)} ELSE last_error END,
+    payload_json=${sqlValue(JSON.stringify({
+      ...currentPayload,
+      lifecycleRenewal: {
+        action: "handoff_recorded",
+        handoffId: handoff.handoffId,
+        handoffInfoId: handoff.handoffInfoId,
+        handoffStatus: handoff.status,
+        recordedAt: now,
+        callerAgent: preview.authority.callerAgent
+      }
+    }))},
+    completed_at=CASE WHEN completed_at='' THEN ${sqlValue(now)} ELSE completed_at END,
+    updated_at=${sqlValue(now)}
+WHERE worker_run_id=${sqlValue(handoff.workerRunId)}
+  AND status=${sqlValue(rawRow.status || "")}
+  AND handoff_info_id=${sqlValue(rawRow.handoff_info_id || "")}
+  AND successor_worker_run_id=${sqlValue(rawRow.successor_worker_run_id || "")};`);
+    if (changed !== 1) throw new Error("workflow v2 worker handoff lost worker row before update");
+    const sessionRun = await workflowV2RequireSessionRunPatch(paths, rawRow.session_run_id || "", {
+      status: "completed",
+      output: {
+        handoffId: handoff.handoffId,
+        handoffInfoId: handoff.handoffInfoId,
+        handoffStatus: handoff.status,
+        lifecycleAction: "handoff_recorded"
+      },
+      timestamp: now
+    }, "worker handoff record");
+    return {
+      ...preview,
+      operation: "workflow.v2.worker_handoff.record",
+      dryRun: false,
+      previewOnly: false,
+      handoff,
+      infoItem: infoRecord?.infoItem || preview.infoExisting,
+      sessionRun,
+      dbFile: paths.dbFile
+    };
+  } catch (error) {
+    await workflowV2RestoreWorkerRunRow(paths, rawRow);
+    await workflowV2RestoreWorkerHandoffRow(paths, existingHandoff, handoff.handoffId);
+    if (createdInfo) await workflowV2CleanupInfoStackItem(paths.dbFile, handoff.handoffInfoId);
+    throw error;
+  }
+}
+
+export async function workflowV2WorkerRetirePreview(rootDir, input = {}) {
+  const loaded = await workflowV2LoadWorkerLifecycleActor(rootDir, input);
+  const { paths, row } = loaded;
+  const errors = [...loaded.errors];
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const handoffId = firstText(input.handoffId, input.handoff_id);
+  const latestHandoff = row ? await workflowV2WorkerHandoffRow(paths, row.worker_run_id, handoffId) : null;
+  const allowWithoutHandoff = boolOption(input.allowWithoutHandoff ?? input.allow_without_handoff, false);
+  const reason = firstText(input.reason, input.summary, input.retireReason, input.retire_reason);
+  if (!reason) errors.push(workflowV2ValidationError("retire_reason_required", "worker retire requires reason/summary"));
+  if (row && ["cancelled", "successor_spawned", "accepted"].includes(row.status)) {
+    errors.push(workflowV2ValidationError("worker_not_retire_eligible", `worker status ${row.status} cannot be retired by lifecycle action`));
+  }
+  if (row && handoffId && !latestHandoff) {
+    errors.push(workflowV2ValidationError("handoff_not_found_for_worker", "handoffId does not belong to the worker being retired", {
+      handoffId,
+      workerRunId: row.worker_run_id
+    }));
+  } else if (row && (!latestHandoff || latestHandoff.status !== "accepted") && !allowWithoutHandoff) {
+    errors.push(workflowV2ValidationError("accepted_handoff_required_before_retire", "worker retire requires an accepted handoff package unless allowWithoutHandoff=true"));
+  }
+  return {
+    operation: "workflow.v2.worker_retire.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    generatedAt,
+    workerRun: row ? workflowV2WorkerRunSummary(row) : null,
+    authority: {
+      callerAgent: loaded.callerAgent,
+      managerAgent: loaded.managerAgent,
+      taskOwnerAgent: loaded.taskOwnerAgent,
+      allowedAgents: loaded.allowedAgents
+    },
+    latestHandoff: latestHandoff ? {
+      handoffId: latestHandoff.handoff_id,
+      status: latestHandoff.status,
+      handoffInfoId: latestHandoff.handoff_info_id,
+      successorWorkerRunId: latestHandoff.successor_worker_run_id
+    } : null,
+    allowWithoutHandoff,
+    nextStatus: "retired",
+    nextSessionStatus: latestHandoff?.status === "accepted" ? "completed" : "failed",
+    reason,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2WorkerRetireRecord(rootDir, input = {}) {
+  const preview = await workflowV2WorkerRetirePreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 worker retire is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = preview.generatedAt || nowIso();
+  const row = preview.workerRun;
+  const rawRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_worker_runs WHERE worker_run_id=${sqlValue(row.workerRunId)} LIMIT 1;`, { json: true });
+  const rawRow = rawRows[0] || {};
+  const currentPayload = workflowV2JsonObject(rawRow.payload_json, {});
+  const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='retired',
+    lease_owner='',
+    lease_until='',
+    next_retry_at='',
+    handoff_info_id=CASE WHEN handoff_info_id='' THEN ${sqlValue(preview.latestHandoff?.handoffInfoId || "")} ELSE handoff_info_id END,
+    last_error=${sqlValue(preview.reason)},
+    payload_json=${sqlValue(JSON.stringify({
+      ...currentPayload,
+      lifecycleRenewal: {
+        action: "worker_retired",
+        reason: preview.reason,
+        handoffId: preview.latestHandoff?.handoffId || "",
+        retiredAt: now,
+        callerAgent: preview.authority.callerAgent
+      }
+    }))},
+    completed_at=CASE WHEN completed_at='' THEN ${sqlValue(now)} ELSE completed_at END,
+    updated_at=${sqlValue(now)}
+WHERE worker_run_id=${sqlValue(row.workerRunId)}
+  AND status=${sqlValue(rawRow.status || "")}
+  AND handoff_info_id=${sqlValue(rawRow.handoff_info_id || "")}
+  AND successor_worker_run_id=${sqlValue(rawRow.successor_worker_run_id || "")};`);
+  if (changed !== 1) throw new Error("workflow v2 worker retire lost worker row before update");
+  try {
+    const sessionRun = await workflowV2RequireSessionRunPatch(paths, row.sessionRunId || "", {
+      status: preview.nextSessionStatus,
+      output: {
+        lifecycleAction: "worker_retired",
+        reason: preview.reason,
+        handoffId: preview.latestHandoff?.handoffId || "",
+        handoffInfoId: preview.latestHandoff?.handoffInfoId || ""
+      },
+      error: preview.nextSessionStatus === "failed" ? preview.reason : "",
+      timestamp: now
+    }, "worker retire");
+    return {
+      ...preview,
+      operation: "workflow.v2.worker_retire.record",
+      dryRun: false,
+      previewOnly: false,
+      sessionRun,
+      dbFile: paths.dbFile
+    };
+  } catch (error) {
+    await workflowV2RestoreWorkerRunRow(paths, rawRow);
+    throw error;
+  }
+}
+
+export async function workflowV2WorkerSuccessorPreview(rootDir, input = {}) {
+  const loaded = await workflowV2LoadWorkerLifecycleActor(rootDir, input);
+  const { paths, row } = loaded;
+  const errors = [...loaded.errors];
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const handoffId = firstText(input.handoffId, input.handoff_id);
+  const acceptedHandoff = row ? await workflowV2WorkerHandoffRow(paths, row.worker_run_id, handoffId) : null;
+  if (row && handoffId && !acceptedHandoff) {
+    errors.push(workflowV2ValidationError("handoff_not_found_for_worker", "handoffId does not belong to the worker spawning a successor", {
+      handoffId,
+      workerRunId: row.worker_run_id
+    }));
+  } else if (row && (!acceptedHandoff || acceptedHandoff.status !== "accepted")) {
+    errors.push(workflowV2ValidationError("accepted_handoff_required_before_successor", "successor worker requires an accepted handoff package"));
+  }
+  if (row && !WORKFLOW_V2_SUCCESSOR_SOURCE_STATUSES.has(row.status)) {
+    errors.push(workflowV2ValidationError("worker_not_successor_eligible", `worker status ${row.status} cannot spawn a successor`));
+  }
+  if (row?.successor_worker_run_id) {
+    errors.push(workflowV2ValidationError("successor_already_exists", "source worker already points to a successor", {
+      successorWorkerRunId: row.successor_worker_run_id
+    }));
+  }
+  let spawnInput = null;
+  let spawnPreview = null;
+  if (row) {
+    const successorWorkerRunId = firstText(input.successorWorkerRunId, input.successor_worker_run_id, input.newWorkerRunId, input.new_worker_run_id) || safeId("v2-worker-successor");
+    if (successorWorkerRunId === row.worker_run_id) {
+      errors.push(workflowV2ValidationError("successor_worker_run_id_conflict", "successor workerRunId must differ from source workerRunId"));
+    }
+    const existingSuccessorRows = await sqlite(paths.dbFile, `SELECT worker_run_id FROM workflow_v2_worker_runs WHERE worker_run_id=${sqlValue(successorWorkerRunId)} LIMIT 1;`, { json: true });
+    if (existingSuccessorRows[0]) {
+      errors.push(workflowV2ValidationError("successor_worker_run_id_exists", "successor workerRunId already exists", { successorWorkerRunId }));
+    }
+    const handoffInfoId = acceptedHandoff?.handoff_info_id || row.handoff_info_id || "";
+    const handoffSourceRefs = workflowV2JsonArray(acceptedHandoff?.source_context_refs_json, []);
+    const explicitSourceRefs = workflowV2JsonArray(input.sourceContextRefs ?? input.source_context_refs, null);
+    const sourceContextRefs = workflowV2UniqueTextArray(explicitSourceRefs || [
+      handoffInfoId,
+      ...handoffSourceRefs,
+      ...workflowV2JsonArray(row.source_context_refs_json, [])
+    ]);
+    const sourcePayload = workflowV2JsonObject(row.payload_json, {});
+    const explicitDelegation = workflowV2JsonObject(input.delegation ?? input.delegationContract ?? input.delegation_contract, null);
+    const successorDelegation = explicitDelegation || workflowV2JsonObject(sourcePayload.delegation, {});
+    spawnInput = {
+      ...input,
+      workflowId: row.workflow_id,
+      planId: row.plan_id,
+      nodeId: row.node_id,
+      managerAgent: row.manager_agent,
+      workerRunId: successorWorkerRunId,
+      sessionRunId: firstText(input.successorSessionRunId, input.successor_session_run_id, input.sessionRunId, input.session_run_id) || `${successorWorkerRunId}.session`,
+      sessionId: firstText(input.sessionId, input.session_id, row.session_id),
+      runtimeBackend: workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend || row.runtime_backend),
+      taskInputInfoId: firstText(input.taskInputInfoId, input.task_input_info_id, handoffInfoId),
+      parentWorkerRunId: firstText(input.parentWorkerRunId, input.parent_worker_run_id, row.worker_run_id),
+      supersedesWorkerRunId: firstText(input.supersedesWorkerRunId, input.supersedes_worker_run_id, row.worker_run_id),
+      successorWorkerRunId: "",
+      workerGeneration: workflowV2NonNegativeInt(input.workerGeneration ?? input.worker_generation, Number(row.worker_generation || 0) + 1),
+      handoffInfoId,
+      contextBudgetTokens: workflowV2NonNegativeInt(input.contextBudgetTokens ?? input.context_budget_tokens, row.context_budget_tokens || 0),
+      contextUsedTokens: workflowV2NonNegativeInt(input.contextUsedTokens ?? input.context_used_tokens, 0),
+      compactionCount: workflowV2NonNegativeInt(input.compactionCount ?? input.compaction_count, 0),
+      sourceContextRefs,
+      delegation: successorDelegation,
+      payload: {
+        ...workflowV2JsonObject(input.payload, {}),
+        delegation: successorDelegation,
+        lifecycleRenewal: {
+          action: "successor_spawned",
+          sourceWorkerRunId: row.worker_run_id,
+          handoffId: acceptedHandoff?.handoff_id || "",
+          handoffInfoId,
+          generatedAt
+        }
+      }
+    };
+    spawnPreview = await workflowV2WorkerSpawnPreview(rootDir, spawnInput);
+    errors.push(...spawnPreview.errors);
+  }
+  return {
+    operation: "workflow.v2.worker_successor.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    generatedAt,
+    workerRun: row ? workflowV2WorkerRunSummary(row) : null,
+    authority: {
+      callerAgent: loaded.callerAgent,
+      managerAgent: loaded.managerAgent,
+      taskOwnerAgent: loaded.taskOwnerAgent,
+      allowedAgents: loaded.allowedAgents
+    },
+    acceptedHandoff: acceptedHandoff ? {
+      handoffId: acceptedHandoff.handoff_id,
+      status: acceptedHandoff.status,
+      handoffInfoId: acceptedHandoff.handoff_info_id,
+      sourceContextRefs: workflowV2JsonArray(acceptedHandoff.source_context_refs_json, []),
+      artifactRefs: workflowV2JsonArray(acceptedHandoff.artifact_refs_json, []),
+      receiptRefs: workflowV2JsonArray(acceptedHandoff.receipt_refs_json, [])
+    } : null,
+    spawnInput,
+    successorWorkerRun: spawnPreview?.workerRun || null,
+    spawnPreview,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2WorkerSuccessorCreate(rootDir, input = {}) {
+  const preview = await workflowV2WorkerSuccessorPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 worker successor is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = preview.generatedAt || nowIso();
+  const source = preview.workerRun;
+  const successor = preview.successorWorkerRun;
+  const rawSourceRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_worker_runs WHERE worker_run_id=${sqlValue(source.workerRunId)} LIMIT 1;`, { json: true });
+  const rawSourceRow = rawSourceRows[0] || {};
+  const rawHandoff = await workflowV2WorkerHandoffRow(paths, source.workerRunId, preview.acceptedHandoff?.handoffId || "");
+  const existingPreflightRows = await sqlite(paths.dbFile, `SELECT preflight_id FROM workflow_v2_backend_preflights WHERE preflight_id=${sqlValue(successor.preflightId)} LIMIT 1;`, { json: true });
+  let spawnResult = null;
+  try {
+    spawnResult = await workflowV2WorkerSpawnCreate(rootDir, preview.spawnInput);
+    const handoffPayload = workflowV2JsonObject(rawHandoff?.payload_json, {});
+    const handoffChanged = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_handoffs
+SET status='superseded',
+    successor_worker_run_id=${sqlValue(successor.workerRunId)},
+    payload_json=${sqlValue(JSON.stringify({
+      ...handoffPayload,
+      successorWorkerRunId: successor.workerRunId,
+      supersededAt: now,
+      callerAgent: preview.authority.callerAgent
+    }))},
+    updated_at=${sqlValue(now)}
+WHERE handoff_id=${sqlValue(preview.acceptedHandoff.handoffId)}
+  AND worker_run_id=${sqlValue(source.workerRunId)}
+  AND status=${sqlValue(rawHandoff?.status || "")}
+  AND successor_worker_run_id=${sqlValue(rawHandoff?.successor_worker_run_id || "")};`);
+    if (handoffChanged !== 1) throw new Error("workflow v2 worker successor lost accepted handoff before update");
+    const currentPayload = workflowV2JsonObject(rawSourceRow.payload_json, {});
+    const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='successor_spawned',
+    successor_worker_run_id=${sqlValue(successor.workerRunId)},
+    lease_owner='',
+    lease_until='',
+    next_retry_at='',
+    handoff_info_id=CASE WHEN handoff_info_id='' THEN ${sqlValue(preview.acceptedHandoff.handoffInfoId)} ELSE handoff_info_id END,
+    payload_json=${sqlValue(JSON.stringify({
+      ...currentPayload,
+      lifecycleRenewal: {
+        action: "successor_spawned",
+        successorWorkerRunId: successor.workerRunId,
+        handoffId: preview.acceptedHandoff.handoffId,
+        handoffInfoId: preview.acceptedHandoff.handoffInfoId,
+        spawnedAt: now,
+        callerAgent: preview.authority.callerAgent
+      }
+    }))},
+    completed_at=CASE WHEN completed_at='' THEN ${sqlValue(now)} ELSE completed_at END,
+    updated_at=${sqlValue(now)}
+WHERE worker_run_id=${sqlValue(source.workerRunId)}
+  AND status=${sqlValue(rawSourceRow.status || "")}
+  AND handoff_info_id=${sqlValue(rawSourceRow.handoff_info_id || "")}
+  AND successor_worker_run_id=${sqlValue(rawSourceRow.successor_worker_run_id || "")};`);
+    if (changed !== 1) throw new Error("workflow v2 worker successor lost source worker before update");
+    const sourceSessionRun = await workflowV2RequireSessionRunPatch(paths, source.sessionRunId || "", {
+      status: "completed",
+      output: {
+        lifecycleAction: "successor_spawned",
+        successorWorkerRunId: successor.workerRunId,
+        handoffId: preview.acceptedHandoff.handoffId,
+        handoffInfoId: preview.acceptedHandoff.handoffInfoId
+      },
+      timestamp: now
+    }, "worker successor create");
+    return {
+      ...preview,
+      operation: "workflow.v2.worker_successor.create",
+      dryRun: false,
+      previewOnly: false,
+      spawnResult,
+      sourceSessionRun,
+      dbFile: paths.dbFile
+    };
+  } catch (error) {
+    await workflowV2RestoreWorkerRunRow(paths, rawSourceRow);
+    await workflowV2RestoreWorkerHandoffRow(paths, rawHandoff, preview.acceptedHandoff?.handoffId || "");
+    if (spawnResult) {
+      await workflowV2CleanupWorkerSpawn(
+        paths,
+        successor.workerRunId,
+        successor.sessionRunId,
+        successor.preflightId,
+        !existingPreflightRows[0]
+      );
+    }
+    throw error;
+  }
+}
+
+export async function workflowV2WorkerResultSubmitPreview(rootDir, input = {}) {
+  const { paths, row, errors } = await workflowV2LoadWorkerRunForResult(rootDir, input);
+  if (row) errors.push(...workflowV2LeaseErrors(row, input));
+  const leaseCheckAt = workflowV2LeaseCheckAt(input);
+  const outputInfoId = firstText(input.outputInfoId, input.output_info_id, row?.output_info_id, `${row?.worker_run_id || "worker"}.output`);
+  const receiptRef = row ? workflowV2ReceiptRefForResult(row, input, "submit") : firstText(input.receiptRef, input.receipt_ref);
+  if (!receiptRef) errors.push(workflowV2ValidationError("receipt_ref_required", "worker result submit requires receiptRef or receipt evidence"));
+  const outputInfoExisting = row ? await workflowV2InfoStackExistingItem(paths.dbFile, outputInfoId) : null;
+  if (row && outputInfoExisting && (
+    outputInfoExisting.workflow_id !== row.workflow_id
+    || outputInfoExisting.worker_run_id !== row.worker_run_id
+    || row.output_info_id !== outputInfoId
+  )) {
+    errors.push(workflowV2ValidationError("output_info_id_conflict", "worker result outputInfoId already exists outside the current worker output binding", {
+      outputInfoId,
+      existingWorkflowId: outputInfoExisting.workflow_id || "",
+      existingWorkerRunId: outputInfoExisting.worker_run_id || "",
+      currentWorkerOutputInfoId: row.output_info_id || ""
+    }));
+  }
+  let infoPreview = null;
+  if (row) {
+    infoPreview = await workflowV2InfoStackPreview(rootDir, {
+      ...input,
+      workflowId: row.workflow_id,
+      planId: row.plan_id,
+      nodeId: row.node_id,
+      workerRunId: row.worker_run_id,
+      infoId: outputInfoId,
+      recipientAgent: row.manager_agent,
+      classification: input.classification || "internal",
+      contentStorage: input.contentStorage || input.content_storage || "artifact_ref",
+      summary: firstText(input.summary, input.outputSummary, input.output_summary, `Worker output for ${row.worker_run_id}`)
+    });
+    errors.push(...infoPreview.errors);
+  }
+  return {
+    operation: "workflow.v2.worker_result.submit.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    workerRun: row ? workflowV2WorkerRunSummary(row) : null,
+    outputInfoId,
+    outputInfoExisting,
+    leaseCheckAt,
+    receiptRef,
+    infoPreview,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2WorkerResultSubmit(rootDir, input = {}) {
+  const preview = await workflowV2WorkerResultSubmitPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 worker result submit is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = workflowV2LeaseCheckAt(input);
+  const row = preview.workerRun;
+  const receipt = workflowV2JsonObject(input.receipt ?? input.runtimeReceipt ?? input.runtime_receipt, {});
+  const rawRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_worker_runs WHERE worker_run_id=${sqlValue(row.workerRunId)} LIMIT 1;`, { json: true });
+  const rawRow = rawRows[0] || {};
+  const rawSessionRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_runs WHERE run_id=${sqlValue(row.sessionRunId || "")} LIMIT 1;`, { json: true });
+  const rawSessionRow = rawSessionRows[0] || null;
+  const outputInfo = await workflowV2InfoStackRecord(paths.root, {
+    ...input,
+    workflowId: row.workflowId,
+    planId: row.planId,
+    nodeId: row.nodeId,
+    workerRunId: row.workerRunId,
+    infoId: preview.outputInfoId,
+    recipientAgent: row.managerAgent,
+    classification: input.classification || "internal",
+    contentStorage: input.contentStorage || input.content_storage || "artifact_ref",
+    summary: firstText(input.summary, input.outputSummary, input.output_summary, `Worker output for ${row.workerRunId}`)
+  });
+  const payload = workflowV2JsonObject(input.payload, {});
+  const currentRows = await sqlite(paths.dbFile, `
+SELECT payload_json
+FROM workflow_v2_worker_runs
+WHERE worker_run_id=${sqlValue(row.workerRunId)}
+LIMIT 1;`, { json: true });
+  const currentPayload = workflowV2JsonObject(currentRows[0]?.payload_json, {});
+  const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='submitted_for_review',
+    output_info_id=${sqlValue(preview.outputInfoId)},
+    receipt_ref=${sqlValue(preview.receiptRef)},
+    lease_owner='',
+    lease_until='',
+    next_retry_at='',
+    payload_json=${sqlValue(JSON.stringify({
+      ...currentPayload,
+      adapterResult: {
+        submittedAt: now,
+        receiptRef: preview.receiptRef,
+        outputInfoId: preview.outputInfoId,
+        receipt,
+        payload
+      }
+    }))},
+    completed_at=${sqlValue(now)},
+    updated_at=${sqlValue(now)}
+WHERE worker_run_id=${sqlValue(row.workerRunId)}
+  AND status='running'
+  AND lease_owner=${sqlValue(row.leaseOwner)}
+  AND lease_until=${sqlValue(row.leaseUntil)}
+  AND lease_until > ${sqlValue(preview.leaseCheckAt)};`);
+  if (changed !== 1) {
+    if (!preview.outputInfoExisting) {
+      await workflowV2CleanupInfoStackItem(paths.dbFile, preview.outputInfoId);
+    }
+    throw new Error("workflow v2 worker result submit lost lease before update");
+  }
+  let adapterJobUpdate = null;
+  try {
+    await workflowV2RequireSessionRunPatch(paths, row.sessionRunId || "", {
+      status: "completed",
+      output: {
+        outputInfoId: preview.outputInfoId,
+        receiptRef: preview.receiptRef,
+        runtimeBackend: row.runtimeBackend || "",
+        adapterResult: true
+      },
+      receiptRef: preview.receiptRef,
+      timestamp: now
+    }, "adapter worker submit");
+    adapterJobUpdate = await workflowV2MarkAdapterJobTerminal(paths, input, row.workerRunId, "completed", now, row.attempt);
+  } catch (error) {
+    await workflowV2RestoreWorkerRunRow(paths, rawRow);
+    if (rawSessionRow) await workflowV2RestoreSessionRunRow(paths, rawSessionRow);
+    if (!preview.outputInfoExisting) {
+      await workflowV2CleanupInfoStackItem(paths.dbFile, preview.outputInfoId);
+    }
+    throw error;
+  }
+  return {
+    ...preview,
+    operation: "workflow.v2.worker_result.submit",
+    dryRun: false,
+    previewOnly: false,
+    outputInfo: outputInfo.infoItem,
+    adapterJobUpdate,
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowV2WorkerResultFailPreview(rootDir, input = {}) {
+  const { paths, row, errors } = await workflowV2LoadWorkerRunForResult(rootDir, input);
+  if (row) errors.push(...workflowV2LeaseErrors(row, input));
+  const leaseCheckAt = workflowV2LeaseCheckAt(input);
+  const failureType = firstText(input.failureType, input.failure_type, "runtime_failure");
+  const errorMessage = firstText(input.error, input.errorMessage, input.error_message, input.summary);
+  if (!errorMessage) errors.push(workflowV2ValidationError("error_required", "worker result fail requires error/errorMessage"));
+  const attempt = Number(row?.attempt || 0);
+  const maxAttempts = Math.max(1, Number(row?.max_attempts || 1));
+  const retryAllowed = boolOption(input.retryAllowed ?? input.retry_allowed, true);
+  const retry = Boolean(row) && retryAllowed && attempt < maxAttempts;
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const nextRetryAt = retry ? new Date(new Date(generatedAt).getTime() + workflowV2WorkerRetryDelayMs(input, attempt)).toISOString() : "";
+  return {
+    operation: "workflow.v2.worker_result.fail.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    workerRun: row ? workflowV2WorkerRunSummary(row) : null,
+    leaseCheckAt,
+    failureType,
+    errorMessage,
+    retry,
+    nextStatus: retry ? "retry_scheduled" : "failed",
+    nextRetryAt,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2WorkerResultFail(rootDir, input = {}) {
+  const preview = await workflowV2WorkerResultFailPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 worker result fail is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const row = preview.workerRun;
+  const now = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const payload = workflowV2JsonObject(input.payload, {});
+  const rawRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_worker_runs WHERE worker_run_id=${sqlValue(row.workerRunId)} LIMIT 1;`, { json: true });
+  const rawRow = rawRows[0] || {};
+  const rawSessionRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_runs WHERE run_id=${sqlValue(row.sessionRunId || "")} LIMIT 1;`, { json: true });
+  const rawSessionRow = rawSessionRows[0] || null;
+  const currentPayload = workflowV2JsonObject(rawRow.payload_json, {});
+  const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status=${sqlValue(preview.nextStatus)},
+    lease_owner='',
+    lease_until='',
+    next_retry_at=${sqlValue(preview.nextRetryAt)},
+    last_error=${sqlValue(preview.errorMessage)},
+    payload_json=${sqlValue(JSON.stringify({
+      ...currentPayload,
+      adapterFailure: {
+        failedAt: now,
+        failureType: preview.failureType,
+        error: preview.errorMessage,
+        retry: preview.retry,
+        payload
+      }
+    }))},
+    completed_at=${sqlValue(preview.retry ? "" : now)},
+    updated_at=${sqlValue(now)}
+WHERE worker_run_id=${sqlValue(row.workerRunId)}
+  AND status='running'
+  AND lease_owner=${sqlValue(row.leaseOwner)}
+  AND lease_until=${sqlValue(row.leaseUntil)}
+  AND lease_until > ${sqlValue(preview.leaseCheckAt)};`);
+  if (changed !== 1) throw new Error("workflow v2 worker result fail lost lease before update");
+  let adapterJobUpdate = null;
+  try {
+    await workflowV2RequireSessionRunPatch(paths, row.sessionRunId || "", {
+      status: preview.retry ? "queued" : "failed",
+      error: preview.errorMessage,
+      timestamp: now
+    }, "adapter worker failure");
+    adapterJobUpdate = await workflowV2MarkAdapterJobTerminal(paths, input, row.workerRunId, "failed", now, row.attempt);
+  } catch (error) {
+    await workflowV2RestoreWorkerRunRow(paths, rawRow);
+    if (rawSessionRow) await workflowV2RestoreSessionRunRow(paths, rawSessionRow);
+    throw error;
+  }
+  return {
+    ...preview,
+    operation: "workflow.v2.worker_result.fail",
+    dryRun: false,
+    previewOnly: false,
+    adapterJobUpdate,
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowV2ManagerReviewRecord(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  if (String(input.decision || "").trim().toLowerCase() === "blocked") {
+    throw new Error("workflow v2 manager review decision blocked is not allowed; use revise_required or needs_human_gate with blocker details");
+  }
+  const decision = workflowV2NormalizeEnum(input.decision, WORKFLOW_V2_REVIEW_DECISIONS, "revise_required");
+  const now = nowIso();
+  const review = {
+    reviewId: firstText(input.reviewId, input.review_id) || safeId("v2-review"),
+    workflowId: firstText(input.workflowId, input.workflow_id),
+    planId: firstText(input.planId, input.plan_id),
+    nodeId: firstText(input.nodeId, input.node_id),
+    workerRunId: firstText(input.workerRunId, input.worker_run_id),
+    reviewerAgent: normalizeOptionalAgentId(firstText(input.reviewerAgent, input.reviewer_agent, input.callerAgent, input.caller_agent, "cat_heart")) || "cat_heart",
+    decision,
+    summary: firstText(input.summary, input.text),
+    findings: workflowV2JsonArray(input.findings, []),
+    artifactRefs: workflowV2JsonArray(input.artifactRefs ?? input.artifact_refs, []),
+    receiptRefs: workflowV2JsonArray(input.receiptRefs ?? input.receipt_refs, []),
+    blocker: workflowV2JsonObject(input.blocker ?? input.blocker_json ?? input.blockerJson, {}),
+    payload: workflowV2JsonObject(input.payload, {})
+  };
+  if (!review.workflowId || !review.planId) throw new Error("workflow v2 manager review requires workflowId and planId");
+  if (!review.workerRunId) throw new Error("workflow v2 manager review requires workerRunId; manager reviews must be bound to a submitted worker run");
+  let workerStatus = "";
+  let nextLastError = "";
+  let workerSessionRunId = "";
+  let previousWorkerRow = null;
+  const existingReviewRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_manager_reviews WHERE review_id=${sqlValue(review.reviewId)} LIMIT 1;`, { json: true });
+  const previousReviewRow = existingReviewRows[0] || null;
+  if (review.workerRunId) {
+    const workerRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_runs
+WHERE worker_run_id=${sqlValue(review.workerRunId)}
+LIMIT 1;`, { json: true });
+    const worker = workerRows[0];
+    if (!worker) throw new Error(`workflow v2 manager review worker run not found: ${review.workerRunId}`);
+    previousWorkerRow = worker;
+    if (review.workflowId && worker.workflow_id !== review.workflowId) throw new Error("workflow v2 manager review workflowId does not match worker run");
+    if (review.planId && worker.plan_id !== review.planId) throw new Error("workflow v2 manager review planId does not match worker run");
+    if (review.nodeId && worker.node_id !== review.nodeId) throw new Error("workflow v2 manager review nodeId does not match worker run");
+    review.nodeId = review.nodeId || worker.node_id || "";
+    if (worker.manager_agent && review.reviewerAgent !== worker.manager_agent) {
+      throw new Error(`workflow v2 manager review reviewer_agent_not_worker_manager: expected ${worker.manager_agent}, got ${review.reviewerAgent}`);
+    }
+    if (worker.status !== "submitted_for_review") {
+      throw new Error(`workflow v2 manager review requires worker status submitted_for_review, got ${worker.status || "unknown"}`);
+    }
+    workerSessionRunId = worker.session_run_id || "";
+    const workerStatusByDecision = {
+      accepted: "accepted",
+      rejected: "rejected",
+      revise_required: "revise_required",
+      needs_human_gate: "needs_human_gate"
+    };
+    workerStatus = workerStatusByDecision[decision] || "submitted_for_review";
+    if (["accepted", "rejected", "revise_required", "needs_human_gate"].includes(workerStatus) && (!worker.output_info_id || !worker.receipt_ref || !worker.completed_at)) {
+      throw new Error(`workflow v2 manager review decision ${decision} requires worker output_info_id, receipt_ref, and completed_at`);
+    }
+    nextLastError = ["rejected", "revise_required"].includes(workerStatus) ? review.summary : "";
+  }
+  try {
+    await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_manager_reviews(review_id, workflow_id, plan_id, node_id, worker_run_id, reviewer_agent, decision, summary, findings_json, artifact_refs_json, receipt_refs_json, blocker_json, payload_json, created_at)
+VALUES (${sqlValue(review.reviewId)}, ${sqlValue(review.workflowId)}, ${sqlValue(review.planId)}, ${sqlValue(review.nodeId)}, ${sqlValue(review.workerRunId)}, ${sqlValue(review.reviewerAgent)}, ${sqlValue(review.decision)}, ${sqlValue(review.summary)}, ${sqlValue(JSON.stringify(review.findings))}, ${sqlValue(JSON.stringify(review.artifactRefs))}, ${sqlValue(JSON.stringify(review.receiptRefs))}, ${sqlValue(JSON.stringify(review.blocker))}, ${sqlValue(JSON.stringify(review.payload))}, ${sqlValue(now)})
+ON CONFLICT(review_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  node_id=excluded.node_id,
+  worker_run_id=excluded.worker_run_id,
+  reviewer_agent=excluded.reviewer_agent,
+  decision=excluded.decision,
+  summary=excluded.summary,
+  findings_json=excluded.findings_json,
+  artifact_refs_json=excluded.artifact_refs_json,
+  receipt_refs_json=excluded.receipt_refs_json,
+  blocker_json=excluded.blocker_json,
+  payload_json=excluded.payload_json;`);
+    if (review.workerRunId) {
+      const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status=${sqlValue(workerStatus)},
+    lease_owner='',
+    lease_until='',
+    next_retry_at='',
+    last_error=${sqlValue(nextLastError)},
+    completed_at=CASE WHEN completed_at='' THEN ${sqlValue(now)} ELSE completed_at END,
+    updated_at=${sqlValue(now)}
+WHERE worker_run_id=${sqlValue(review.workerRunId)}
+  AND status='submitted_for_review'
+  AND manager_agent=${sqlValue(review.reviewerAgent)};`);
+      if (changed !== 1) throw new Error("workflow v2 manager review lost worker review state before update");
+      const sessionStatusByWorkerStatus = {
+        accepted: "completed",
+        rejected: "completed",
+        revise_required: "completed",
+        needs_human_gate: "completed"
+      };
+      const sessionStatus = sessionStatusByWorkerStatus[workerStatus];
+      if (sessionStatus) {
+        await workflowV2RequireSessionRunPatch(paths, workerSessionRunId, {
+          status: sessionStatus,
+          error: nextLastError,
+          timestamp: now
+        }, "manager review");
+      }
+    }
+  } catch (error) {
+    if (previousWorkerRow) await workflowV2RestoreWorkerRunRow(paths, previousWorkerRow);
+    await workflowV2RestoreManagerReviewRow(paths, previousReviewRow, review.reviewId);
+    throw error;
+  }
+  return { operation: "workflow.v2.manager_review.record", review, dbFile: paths.dbFile };
+}
+
+export async function workflowV2OwnerReviewPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const planId = firstText(input.planId, input.plan_id);
+  if (!workflowId) errors.push(workflowV2ValidationError("workflow_id_required", "owner review requires workflowId"));
+  if (!planId) errors.push(workflowV2ValidationError("plan_id_required", "owner review requires planId"));
+  const planRow = await workflowV2LoadPlanRow(paths, workflowId, planId);
+  if (workflowId && planId && !planRow) errors.push(workflowV2ValidationError("plan_not_found", "owner review requires an existing v2 plan", { workflowId, planId }));
+  if (String(input.decision || "").trim().toLowerCase() === "blocked") {
+    errors.push(workflowV2ValidationError("blocked_decision_not_allowed", "owner review decision blocked is not allowed; use revise_required or needs_human_gate with findings"));
+  }
+  const decision = workflowV2NormalizeEnum(input.decision, WORKFLOW_V2_REVIEW_DECISIONS, "accepted");
+  const plan = workflowV2PlanSummary(planRow);
+  const ownerAgent = normalizeOptionalAgentId(firstText(input.ownerAgent, input.owner_agent, plan?.taskOwnerAgent, "cat_heart")) || "cat_heart";
+  const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.createdBy, input.created_by, ownerAgent)) || ownerAgent;
+  if (plan?.taskOwnerAgent && ownerAgent !== plan.taskOwnerAgent) {
+    errors.push(workflowV2ValidationError("owner_agent_mismatch", "owner review ownerAgent must match plan task owner", { expectedOwnerAgent: plan.taskOwnerAgent, ownerAgent }));
+  }
+  if (plan?.taskOwnerAgent && callerAgent !== plan.taskOwnerAgent) {
+    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "only the plan task owner may record owner review", { expectedCallerAgent: plan.taskOwnerAgent, callerAgent }));
+  }
+  const requestedReviewIds = workflowV2UniqueTextList(input.managerReviewIds ?? input.manager_review_ids ?? input.managerReviewRefs ?? input.manager_review_refs, []);
+  const managerReviewSet = await workflowV2AcceptedManagerReviewRows(paths, workflowId, planId, requestedReviewIds);
+  if (managerReviewSet.missingIds.length) {
+    errors.push(workflowV2ValidationError("manager_review_not_found", "owner review references unknown manager review ids", { missingIds: managerReviewSet.missingIds }));
+  }
+  if (managerReviewSet.nonAcceptedIds.length) {
+    errors.push(workflowV2ValidationError("manager_review_not_accepted", "owner review may only accept accepted manager review outputs", { nonAcceptedIds: managerReviewSet.nonAcceptedIds }));
+  }
+  const allowNoManagerReviews = boolOption(input.allowNoManagerReviews ?? input.allow_no_manager_reviews, false);
+  if (!managerReviewSet.rows.length && !allowNoManagerReviews) {
+    errors.push(workflowV2ValidationError("manager_review_required", "owner review requires accepted manager reviews unless allowNoManagerReviews is explicitly set"));
+  }
+  const artifactRefs = workflowV2UniqueTextList(input.artifactRefs ?? input.artifact_refs, managerReviewSet.rows.flatMap((row) => workflowV2JsonArray(row.artifact_refs_json, [])));
+  const receiptRefs = workflowV2UniqueTextList(input.receiptRefs ?? input.receipt_refs, managerReviewSet.rows.flatMap((row) => workflowV2JsonArray(row.receipt_refs_json, [])));
+  if (!managerReviewSet.rows.length && allowNoManagerReviews && !artifactRefs.length && !receiptRefs.length) {
+    errors.push(workflowV2ValidationError("owner_direct_evidence_required", "owner-direct review requires artifactRefs or receiptRefs when no manager reviews are used"));
+  }
+  const taskGroupRequired = boolOption(input.taskGroupRequired ?? input.task_group_required, managerReviewSet.rows.length > 1);
+  const nextWorkflowState = decision === "accepted"
+    ? taskGroupRequired ? "waiting_group_discussion" : "waiting_cat_brain_check"
+    : decision === "needs_human_gate" ? "waiting_cat_brain_check" : "waiting_manager";
+  const review = {
+    reviewId: firstText(input.reviewId, input.review_id) || safeId("v2-owner-review"),
+    workflowId,
+    planId,
+    ownerAgent,
+    callerAgent,
+    decision,
+    summary: firstText(input.summary, input.text),
+    managerReviewRefs: managerReviewSet.rows.map((row) => row.review_id),
+    managerReviews: managerReviewSet.rows.map(workflowV2ManagerReviewSummary),
+    artifactRefs,
+    receiptRefs,
+    findings: workflowV2JsonArray(input.findings, []),
+    payload: {
+      ...workflowV2JsonObject(input.payload, {}),
+      allowNoManagerReviews,
+      taskGroupRequired,
+      nextWorkflowState
+    },
+    nextWorkflowState
+  };
+  return {
+    operation: "workflow.v2.owner_review.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    ownerReview: review,
+    plan,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2OwnerReviewRecord(rootDir, input = {}) {
+  const preview = await workflowV2OwnerReviewPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 owner review is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const review = preview.ownerReview;
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_owner_reviews(review_id, workflow_id, plan_id, owner_agent, decision, summary, manager_review_refs_json, artifact_refs_json, receipt_refs_json, findings_json, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(review.reviewId)}, ${sqlValue(review.workflowId)}, ${sqlValue(review.planId)}, ${sqlValue(review.ownerAgent)}, ${sqlValue(review.decision)}, ${sqlValue(review.summary)}, ${sqlValue(JSON.stringify(review.managerReviewRefs))}, ${sqlValue(JSON.stringify(review.artifactRefs))}, ${sqlValue(JSON.stringify(review.receiptRefs))}, ${sqlValue(JSON.stringify(review.findings))}, ${sqlValue(JSON.stringify(review.payload))}, ${sqlValue(review.callerAgent)}, ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(review_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  owner_agent=excluded.owner_agent,
+  decision=excluded.decision,
+  summary=excluded.summary,
+  manager_review_refs_json=excluded.manager_review_refs_json,
+  artifact_refs_json=excluded.artifact_refs_json,
+  receipt_refs_json=excluded.receipt_refs_json,
+  findings_json=excluded.findings_json,
+  payload_json=excluded.payload_json,
+  created_by=excluded.created_by,
+  updated_at=excluded.updated_at;`);
+  await workflowV2PatchPlanWorkflowState(paths, review.workflowId, review.planId, review.nextWorkflowState, now);
+  return { ...preview, operation: "workflow.v2.owner_review.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
+}
+
+export async function workflowV2TaskGroupPackagePreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const planId = firstText(input.planId, input.plan_id);
+  if (!workflowId) errors.push(workflowV2ValidationError("workflow_id_required", "task group package requires workflowId"));
+  if (!planId) errors.push(workflowV2ValidationError("plan_id_required", "task group package requires planId"));
+  const planRow = await workflowV2LoadPlanRow(paths, workflowId, planId);
+  if (workflowId && planId && !planRow) errors.push(workflowV2ValidationError("plan_not_found", "task group package requires an existing v2 plan", { workflowId, planId }));
+  const plan = workflowV2PlanSummary(planRow);
+  const ownerReviewId = firstText(input.ownerReviewId, input.owner_review_id) || (await workflowV2LatestOwnerReviewRow(paths, workflowId, planId))?.review_id || "";
+  const ownerReviewRow = await workflowV2OwnerReviewRow(paths, workflowId, planId, ownerReviewId);
+  if (!ownerReviewId || !ownerReviewRow) {
+    errors.push(workflowV2ValidationError("owner_review_not_found", "task group package requires an accepted owner review", { ownerReviewId }));
+  } else if (ownerReviewRow.decision !== "accepted") {
+    errors.push(workflowV2ValidationError("owner_review_not_accepted", "task group package requires an accepted owner review", { ownerReviewId, decision: ownerReviewRow.decision }));
+  }
+  const ownerReview = workflowV2OwnerReviewSummary(ownerReviewRow);
+  const taskOwnerAgent = normalizeOptionalAgentId(firstText(input.taskOwnerAgent, input.task_owner_agent, plan?.taskOwnerAgent, ownerReview?.ownerAgent, "cat_heart")) || "cat_heart";
+  const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.createdBy, input.created_by, taskOwnerAgent)) || taskOwnerAgent;
+  if (plan?.taskOwnerAgent && callerAgent !== plan.taskOwnerAgent) {
+    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "only the plan task owner may record task group package", { expectedCallerAgent: plan.taskOwnerAgent, callerAgent }));
+  }
+  const ownerManagerRefs = ownerReview?.managerReviewRefs || [];
+  const managerReviewRows = ownerManagerRefs.length ? (await workflowV2AcceptedManagerReviewRows(paths, workflowId, planId, ownerManagerRefs)).rows : [];
+  const defaultGroupAgents = [
+    taskOwnerAgent,
+    "cat_body",
+    ...managerReviewRows.map((row) => row.reviewer_agent),
+    ...(plan?.participantManagers || [])
+  ];
+  const taskGroupAgents = workflowV2UniqueTextList(input.taskGroupAgents ?? input.task_group_agents ?? input.participantAgents ?? input.participant_agents, defaultGroupAgents)
+    .map((agent) => normalizeOptionalAgentId(agent))
+    .filter(Boolean);
+  const status = workflowV2NormalizeEnum(input.status, WORKFLOW_V2_TASK_GROUP_PACKAGE_STATUSES, "ready");
+  const artifactRefs = workflowV2UniqueTextList(input.artifactRefs ?? input.artifact_refs, ownerReview?.artifactRefs || []);
+  const evidenceRefs = workflowV2UniqueTextList(input.evidenceRefs ?? input.evidence_refs, [
+    ...(ownerReview?.receiptRefs || []),
+    ...(ownerReview?.artifactRefs || [])
+  ]);
+  const pkg = {
+    packageId: firstText(input.packageId, input.package_id) || safeId("v2-task-group-package"),
+    workflowId,
+    planId,
+    ownerReviewId,
+    taskOwnerAgent,
+    callerAgent,
+    taskGroupAgents,
+    status,
+    summary: firstText(input.summary, input.text, ownerReview?.summary),
+    managerReviewRefs: ownerManagerRefs,
+    ownerReviewRefs: ownerReviewId ? [ownerReviewId] : [],
+    artifactRefs,
+    evidenceRefs,
+    payload: {
+      ...workflowV2JsonObject(input.payload, {}),
+      taskGroupRequired: boolOption(input.taskGroupRequired ?? input.task_group_required, taskGroupAgents.length > 1),
+      nextWorkflowState: status === "ready" ? "waiting_cat_brain_check" : "waiting_group_discussion"
+    }
+  };
+  return {
+    operation: "workflow.v2.task_group_package.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    taskGroupPackage: pkg,
+    ownerReview,
+    plan,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2TaskGroupPackageRecord(rootDir, input = {}) {
+  const preview = await workflowV2TaskGroupPackagePreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 task group package is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const pkg = preview.taskGroupPackage;
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_task_group_packages(package_id, workflow_id, plan_id, owner_review_id, task_owner_agent, task_group_agents_json, status, summary, manager_review_refs_json, owner_review_refs_json, artifact_refs_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(pkg.packageId)}, ${sqlValue(pkg.workflowId)}, ${sqlValue(pkg.planId)}, ${sqlValue(pkg.ownerReviewId)}, ${sqlValue(pkg.taskOwnerAgent)}, ${sqlValue(JSON.stringify(pkg.taskGroupAgents))}, ${sqlValue(pkg.status)}, ${sqlValue(pkg.summary)}, ${sqlValue(JSON.stringify(pkg.managerReviewRefs))}, ${sqlValue(JSON.stringify(pkg.ownerReviewRefs))}, ${sqlValue(JSON.stringify(pkg.artifactRefs))}, ${sqlValue(JSON.stringify(pkg.evidenceRefs))}, ${sqlValue(JSON.stringify(pkg.payload))}, ${sqlValue(pkg.callerAgent)}, ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(package_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  owner_review_id=excluded.owner_review_id,
+  task_owner_agent=excluded.task_owner_agent,
+  task_group_agents_json=excluded.task_group_agents_json,
+  status=excluded.status,
+  summary=excluded.summary,
+  manager_review_refs_json=excluded.manager_review_refs_json,
+  owner_review_refs_json=excluded.owner_review_refs_json,
+  artifact_refs_json=excluded.artifact_refs_json,
+  evidence_refs_json=excluded.evidence_refs_json,
+  payload_json=excluded.payload_json,
+  created_by=excluded.created_by,
+  updated_at=excluded.updated_at;`);
+  await workflowV2PatchPlanWorkflowState(paths, pkg.workflowId, pkg.planId, pkg.payload.nextWorkflowState, now);
+  return { ...preview, operation: "workflow.v2.task_group_package.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
+}
+
+export async function workflowV2CatBrainAuditPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const planId = firstText(input.planId, input.plan_id);
+  const taskGroupPackageId = firstText(input.taskGroupPackageId, input.task_group_package_id, input.packageId, input.package_id);
+  const ownerReviewId = firstText(input.ownerReviewId, input.owner_review_id, input.sourceReviewId, input.source_review_id);
+  if (!workflowId) errors.push(workflowV2ValidationError("workflow_id_required", "Cat Brain audit requires workflowId"));
+  if (!planId) errors.push(workflowV2ValidationError("plan_id_required", "Cat Brain audit requires planId"));
+  if (!taskGroupPackageId && !ownerReviewId) {
+    errors.push(workflowV2ValidationError("cat_brain_audit_source_required", "Cat Brain audit requires taskGroupPackageId or an accepted ownerReviewId/sourceReviewId"));
+  }
+  const planRow = await workflowV2LoadPlanRow(paths, workflowId, planId);
+  if (workflowId && planId && !planRow) errors.push(workflowV2ValidationError("plan_not_found", "Cat Brain audit requires an existing v2 plan", { workflowId, planId }));
+  const taskGroupPackageRow = taskGroupPackageId ? await workflowV2TaskGroupPackageRow(paths, workflowId, planId, taskGroupPackageId) : null;
+  const ownerReviewRow = !taskGroupPackageId && ownerReviewId ? await workflowV2OwnerReviewRow(paths, workflowId, planId, ownerReviewId) : null;
+  if (taskGroupPackageId && !taskGroupPackageRow) {
+    errors.push(workflowV2ValidationError("task_group_package_not_found", "Cat Brain audit requires a task group package for the same workflow and plan", { taskGroupPackageId }));
+  } else if (taskGroupPackageRow && taskGroupPackageRow.status !== "ready") {
+    errors.push(workflowV2ValidationError("task_group_package_not_ready", "Cat Brain audit requires a ready task group package", { taskGroupPackageId, status: taskGroupPackageRow.status }));
+  }
+  if (!taskGroupPackageId && ownerReviewId && !ownerReviewRow) {
+    errors.push(workflowV2ValidationError("owner_review_not_found", "Cat Brain owner-direct audit requires an owner review for the same workflow and plan", { ownerReviewId }));
+  } else if (ownerReviewRow && ownerReviewRow.decision !== "accepted") {
+    errors.push(workflowV2ValidationError("owner_review_not_accepted", "Cat Brain owner-direct audit requires an accepted owner review", { ownerReviewId, decision: ownerReviewRow.decision }));
+  }
+  if (String(input.decision || "").trim().toLowerCase() === "blocked") {
+    errors.push(workflowV2ValidationError("blocked_decision_not_allowed", "Cat Brain audit decision blocked is not allowed; use revision_required, rejected, or needs_human_gate"));
+  }
+  const catBrainAgent = normalizeOptionalAgentId(firstText(input.catBrainAgent, input.cat_brain_agent, "main")) || "main";
+  const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.createdBy, input.created_by, catBrainAgent)) || catBrainAgent;
+  if (catBrainAgent !== "main" || callerAgent !== "main") {
+    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "Cat Brain governance audit must be recorded by main", { catBrainAgent, callerAgent }));
+  }
+  const decision = workflowV2NormalizeEnum(input.decision, WORKFLOW_V2_CAT_BRAIN_AUDIT_DECISIONS, "approved");
+  const pkg = workflowV2TaskGroupPackageSummary(taskGroupPackageRow);
+  const ownerReview = workflowV2OwnerReviewSummary(ownerReviewRow);
+  const evidenceRefs = workflowV2UniqueTextList(input.evidenceRefs ?? input.evidence_refs, pkg?.evidenceRefs || [
+    ...(ownerReview?.receiptRefs || []),
+    ...(ownerReview?.artifactRefs || [])
+  ]);
+  const audit = {
+    auditId: firstText(input.auditId, input.audit_id) || safeId("v2-cat-brain-audit"),
+    workflowId,
+    planId,
+    taskGroupPackageId: taskGroupPackageId || "",
+    catBrainAgent,
+    callerAgent,
+    decision,
+    scope: firstText(input.scope, "governance_semantic"),
+    summary: firstText(input.summary, input.text),
+    findings: workflowV2JsonArray(input.findings, []),
+    evidenceRefs,
+    payload: {
+      ...workflowV2JsonObject(input.payload, {}),
+      sourceKind: taskGroupPackageId ? "task_group_package" : "owner_review",
+      sourceOwnerReviewId: ownerReviewId || "",
+      nextWorkflowState: ["approved", "needs_human_gate"].includes(decision) ? "waiting_cat_claw_audit" : "waiting_group_discussion"
+    }
+  };
+  return {
+    operation: "workflow.v2.cat_brain_audit.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    catBrainAudit: audit,
+    taskGroupPackage: pkg,
+    ownerReview,
+    plan: workflowV2PlanSummary(planRow),
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2CatBrainAuditRecord(rootDir, input = {}) {
+  const preview = await workflowV2CatBrainAuditPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 Cat Brain audit is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const audit = preview.catBrainAudit;
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_cat_brain_audits(audit_id, workflow_id, plan_id, task_group_package_id, cat_brain_agent, decision, scope, summary, findings_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(audit.auditId)}, ${sqlValue(audit.workflowId)}, ${sqlValue(audit.planId)}, ${sqlValue(audit.taskGroupPackageId)}, ${sqlValue(audit.catBrainAgent)}, ${sqlValue(audit.decision)}, ${sqlValue(audit.scope)}, ${sqlValue(audit.summary)}, ${sqlValue(JSON.stringify(audit.findings))}, ${sqlValue(JSON.stringify(audit.evidenceRefs))}, ${sqlValue(JSON.stringify(audit.payload))}, ${sqlValue(audit.callerAgent)}, ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(audit_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  task_group_package_id=excluded.task_group_package_id,
+  cat_brain_agent=excluded.cat_brain_agent,
+  decision=excluded.decision,
+  scope=excluded.scope,
+  summary=excluded.summary,
+  findings_json=excluded.findings_json,
+  evidence_refs_json=excluded.evidence_refs_json,
+  payload_json=excluded.payload_json,
+  created_by=excluded.created_by,
+  updated_at=excluded.updated_at;`);
+  await workflowV2PatchPlanWorkflowState(paths, audit.workflowId, audit.planId, audit.payload.nextWorkflowState, now);
+  return { ...preview, operation: "workflow.v2.cat_brain_audit.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
+}
+
+export async function workflowV2CatClawAuditPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const planId = firstText(input.planId, input.plan_id);
+  const catBrainAuditId = firstText(input.catBrainAuditId, input.cat_brain_audit_id, input.auditSourceId, input.audit_source_id);
+  if (!workflowId) errors.push(workflowV2ValidationError("workflow_id_required", "Cat Claw audit requires workflowId"));
+  if (!planId) errors.push(workflowV2ValidationError("plan_id_required", "Cat Claw audit requires planId"));
+  if (!catBrainAuditId) errors.push(workflowV2ValidationError("cat_brain_audit_id_required", "Cat Claw audit requires catBrainAuditId"));
+  const planRow = await workflowV2LoadPlanRow(paths, workflowId, planId);
+  if (workflowId && planId && !planRow) errors.push(workflowV2ValidationError("plan_not_found", "Cat Claw audit requires an existing v2 plan", { workflowId, planId }));
+  const brainAuditRow = await workflowV2CatBrainAuditRow(paths, workflowId, planId, catBrainAuditId);
+  if (!brainAuditRow) {
+    errors.push(workflowV2ValidationError("cat_brain_audit_not_found", "Cat Claw audit requires Cat Brain audit evidence for the same workflow and plan", { catBrainAuditId }));
+  } else if (!["approved", "needs_human_gate"].includes(brainAuditRow.decision)) {
+    errors.push(workflowV2ValidationError("cat_brain_audit_not_approved", "Cat Claw audit requires Cat Brain approved or needs_human_gate decision", { catBrainAuditId, decision: brainAuditRow.decision }));
+  }
+  if (String(input.decision || "").trim().toLowerCase() === "blocked") {
+    errors.push(workflowV2ValidationError("blocked_decision_not_allowed", "Cat Claw audit decision blocked is not allowed; use protocol_revision_required or rejected"));
+  }
+  const catClawAgent = normalizeOptionalAgentId(firstText(input.catClawAgent, input.cat_claw_agent, "cat_claw")) || "cat_claw";
+  const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.createdBy, input.created_by, catClawAgent)) || catClawAgent;
+  if (catClawAgent !== "cat_claw" || callerAgent !== "cat_claw") {
+    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "Cat Claw protocol audit must be recorded by cat_claw", { catClawAgent, callerAgent }));
+  }
+  const decision = workflowV2NormalizeEnum(input.decision, WORKFLOW_V2_CAT_CLAW_AUDIT_DECISIONS, "protocol_ready");
+  const brainAudit = workflowV2CatBrainAuditSummary(brainAuditRow);
+  const evidenceRefs = workflowV2UniqueTextList(input.evidenceRefs ?? input.evidence_refs, brainAudit?.evidenceRefs || []);
+  if (decision === "protocol_ready" && !evidenceRefs.length) {
+    errors.push(workflowV2ValidationError("evidence_refs_required", "Cat Claw protocol_ready audit requires evidenceRefs"));
+  }
+  const audit = {
+    auditId: firstText(input.auditId, input.audit_id) || safeId("v2-cat-claw-audit"),
+    workflowId,
+    planId,
+    catBrainAuditId,
+    catClawAgent,
+    callerAgent,
+    decision,
+    summary: firstText(input.summary, input.text),
+    checks: workflowV2JsonArray(input.checks, []),
+    evidenceRefs,
+    payload: {
+      ...workflowV2JsonObject(input.payload, {}),
+      nextWorkflowState: decision === "protocol_ready" ? "human_gate_request_due" : "waiting_cat_brain_check"
+    }
+  };
+  return {
+    operation: "workflow.v2.cat_claw_audit.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    catClawAudit: audit,
+    catBrainAudit: brainAudit,
+    plan: workflowV2PlanSummary(planRow),
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2CatClawAuditRecord(rootDir, input = {}) {
+  const preview = await workflowV2CatClawAuditPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 Cat Claw audit is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const audit = preview.catClawAudit;
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_cat_claw_audits(audit_id, workflow_id, plan_id, cat_brain_audit_id, cat_claw_agent, decision, summary, checks_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(audit.auditId)}, ${sqlValue(audit.workflowId)}, ${sqlValue(audit.planId)}, ${sqlValue(audit.catBrainAuditId)}, ${sqlValue(audit.catClawAgent)}, ${sqlValue(audit.decision)}, ${sqlValue(audit.summary)}, ${sqlValue(JSON.stringify(audit.checks))}, ${sqlValue(JSON.stringify(audit.evidenceRefs))}, ${sqlValue(JSON.stringify(audit.payload))}, ${sqlValue(audit.callerAgent)}, ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(audit_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  cat_brain_audit_id=excluded.cat_brain_audit_id,
+  cat_claw_agent=excluded.cat_claw_agent,
+  decision=excluded.decision,
+  summary=excluded.summary,
+  checks_json=excluded.checks_json,
+  evidence_refs_json=excluded.evidence_refs_json,
+  payload_json=excluded.payload_json,
+  created_by=excluded.created_by,
+  updated_at=excluded.updated_at;`);
+  await workflowV2PatchPlanWorkflowState(paths, audit.workflowId, audit.planId, audit.payload.nextWorkflowState, now);
+  return { ...preview, operation: "workflow.v2.cat_claw_audit.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
+}
+
+export async function workflowV2HumanGatePackagePreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const errors = [];
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  if (!workflowId) errors.push(workflowV2ValidationError("workflow_id_required", "Human Gate package requires workflowId"));
+  const sourceCatClawAuditId = firstText(input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id);
+  let packagePlanId = firstText(input.planId, input.plan_id);
+  let sourceCatClawAudit = null;
+  let sourcePlanId = "";
+  if (sourceCatClawAuditId) {
+    const auditRow = await workflowV2CatClawAuditRowById(paths, sourceCatClawAuditId);
+    if (!auditRow || auditRow.workflow_id !== workflowId) {
+      errors.push(workflowV2ValidationError("cat_claw_audit_not_found", "Human Gate package sourceCatClawAuditId must reference a Cat Claw audit for the same workflow", { sourceCatClawAuditId }));
+    } else if (auditRow.decision !== "protocol_ready") {
+      errors.push(workflowV2ValidationError("cat_claw_audit_not_protocol_ready", "Human Gate package source Cat Claw audit must be protocol_ready", { sourceCatClawAuditId, decision: auditRow.decision }));
+    } else if (packagePlanId && auditRow.plan_id !== packagePlanId) {
+      errors.push(workflowV2ValidationError("cat_claw_audit_plan_mismatch", "Human Gate package sourceCatClawAuditId must reference a Cat Claw audit for the same plan", { sourceCatClawAuditId, expectedPlanId: packagePlanId, actualPlanId: auditRow.plan_id }));
+    } else {
+      sourceCatClawAudit = workflowV2CatClawAuditSummary(auditRow);
+      sourcePlanId = auditRow.plan_id || "";
+      packagePlanId = packagePlanId || sourcePlanId;
+    }
+  }
+  const rawOptions = workflowV2JsonArray(input.options, []);
+  const options = rawOptions.map((option, index) => {
+    const item = workflowV2JsonObject(option, {});
+    const title = firstText(item.title, `方案 ${index + 1}`);
+    const body = firstText(item.body, item.content, item.summary);
+    const prompt = firstText(item.prompt, item.nextAction, item.next_action, body);
+    const rollback = firstText(item.rollback, item.rollbackPlan, item.rollback_plan, item.recovery, item.restore, "如该方案执行条件不满足，退回 task owner 重新汇总证据并恢复到上一 checkpoint。");
+    return {
+      optionId: firstText(item.optionId, item.option_id, `option_${index + 1}`),
+      title,
+      body,
+      summary: firstText(item.summary, body, title),
+      prompt,
+      rollback,
+      buttonStyle: "success",
+      approvalPayload: workflowV2JsonObject(item.approvalPayload ?? item.approval_payload, {})
+    };
+  });
+  if (options.length < HUMAN_GATE_APPROVE_OPTION_MIN) {
+    errors.push(workflowV2ValidationError("human_gate_min_two_options_required", `Human Gate package must contain at least ${HUMAN_GATE_APPROVE_OPTION_MIN} independent approve options`));
+  }
+  if (!rawOptions.length) {
+    errors.push(workflowV2ValidationError("human_gate_options_required", "Human Gate package options must be authored by task owner/Cat Brain evidence; Cat Claw package code must not generate default options"));
+  }
+  if (options.length > HUMAN_GATE_APPROVE_OPTION_MAX) {
+    errors.push(workflowV2ValidationError("human_gate_max_five_options_required", `Human Gate package must contain at most ${HUMAN_GATE_APPROVE_OPTION_MAX} independent approve options`));
+  }
+  const incompleteOptionIds = options
+    .filter((option) => !option.optionId || !option.title || !option.body || !option.summary || !option.prompt || !option.rollback)
+    .map((option) => option.optionId || option.title || "<unknown>");
+  if (incompleteOptionIds.length) {
+    errors.push(workflowV2ValidationError("human_gate_option_details_required", "Human Gate package options require optionId, title, body, summary, prompt, and rollback", { incompleteOptionIds }));
+  }
+  const rawStatus = firstText(input.status);
+  const defaultStatus = sourceCatClawAuditId ? "cat_claw_audited" : "draft";
+  const normalizedStatus = workflowV2NormalizeEnum(rawStatus, WORKFLOW_V2_HUMAN_GATE_PACKAGE_STATUSES, defaultStatus);
+  if (rawStatus) {
+    const rawNormalized = rawStatus.trim().toLowerCase().replace(/-/g, "_");
+    if (!WORKFLOW_V2_HUMAN_GATE_PACKAGE_STATUSES.has(rawNormalized)) {
+      errors.push(workflowV2ValidationError("human_gate_package_status_invalid", "Human Gate package status is limited to draft or cat_claw_audited in the local v2 control-plane slice", { status: rawStatus }));
+    }
+  }
+  if (normalizedStatus === "cat_claw_audited" && !sourceCatClawAuditId) {
+    errors.push(workflowV2ValidationError("source_cat_claw_audit_required", "cat_claw_audited Human Gate package requires sourceCatClawAuditId"));
+  }
+  const packagePreview = {
+    packageId: firstText(input.packageId, input.package_id) || safeId("v2-hgate"),
+    workflowId,
+    planId: packagePlanId,
+    sourceReviewId: firstText(input.sourceReviewId, input.source_review_id),
+    sourceCatClawAuditId,
+    catBrainAgent: normalizeOptionalAgentId(firstText(input.catBrainAgent, input.cat_brain_agent, "main")) || "main",
+    catClawAgent: normalizeOptionalAgentId(firstText(input.catClawAgent, input.cat_claw_agent, "cat_claw")) || "cat_claw",
+    status: normalizedStatus,
+    options,
+    requiredControls: ["pause", "terminate"],
+    controls: [
+      { controlId: "pause_workflow", title: "暂停工作流", buttonStyle: "primary", decision: "paused" },
+      { controlId: "terminate_workflow", title: "终止工作流", buttonStyle: "danger", decision: "terminated" }
+    ],
+    evidenceRefs: workflowV2UniqueTextList(input.evidenceRefs ?? input.evidence_refs, sourceCatClawAudit?.evidenceRefs || []),
+    payload: {
+      ...workflowV2JsonObject(input.payload, {}),
+      sourceCatClawAuditId: sourceCatClawAuditId || "",
+      sourcePlanId: packagePlanId
+    },
+    sourceCatClawAudit
+  };
+  return {
+    operation: "workflow.v2.human_gate_package.preview",
+    dryRun: true,
+    previewOnly: true,
+    valid: errors.length === 0,
+    errors,
+    humanGatePackage: packagePreview,
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+export async function workflowV2HumanGatePackageRecord(rootDir, input = {}) {
+  const preview = await workflowV2HumanGatePackagePreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 Human Gate package is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const now = nowIso();
+  const pkg = preview.humanGatePackage;
+  const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "main");
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(pkg.packageId)}, ${sqlValue(pkg.workflowId)}, ${sqlValue(pkg.planId)}, ${sqlValue(pkg.sourceReviewId)}, ${sqlValue(pkg.sourceCatClawAuditId)}, ${sqlValue(pkg.catBrainAgent)}, ${sqlValue(pkg.catClawAgent)}, ${sqlValue(pkg.status)}, ${sqlValue(JSON.stringify(pkg.options))}, ${sqlValue(JSON.stringify(pkg.requiredControls))}, ${sqlValue(JSON.stringify(pkg.evidenceRefs))}, ${sqlValue(JSON.stringify({ ...pkg.payload, controls: pkg.controls }))}, ${sqlValue(createdBy)}, ${sqlValue(now)}, ${sqlValue(now)})
+ON CONFLICT(package_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  source_review_id=excluded.source_review_id,
+  source_cat_claw_audit_id=excluded.source_cat_claw_audit_id,
+  cat_brain_agent=excluded.cat_brain_agent,
+  cat_claw_agent=excluded.cat_claw_agent,
+  status=excluded.status,
+  options_json=excluded.options_json,
+  required_controls_json=excluded.required_controls_json,
+  evidence_refs_json=excluded.evidence_refs_json,
+  payload_json=excluded.payload_json,
+  updated_at=excluded.updated_at;`);
+  if (pkg.planId) {
+    await workflowV2PatchPlanWorkflowState(paths, pkg.workflowId, pkg.planId, pkg.status === "cat_claw_audited" ? "human_gate_request_due" : "waiting_cat_claw_audit", now);
+  }
+  return { ...preview, operation: "workflow.v2.human_gate_package.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
+}
+
+function workflowV2HumanGateRequestInputFromPackage(pkg = {}, input = {}) {
+  const packagePayload = workflowV2JsonObject(pkg.payload, {});
+  const submissionKind = workflowV2NormalizeEnum(
+    input.submissionKind ?? input.submission_kind ?? packagePayload.submissionKind ?? packagePayload.submission_kind,
+    WORKFLOW_V2_HUMAN_GATE_SUBMISSION_KINDS,
+    "task_output"
+  );
+  const interactionType = workflowV2NormalizeEnum(
+    input.interactionType ?? input.interaction_type ?? packagePayload.interactionType ?? packagePayload.interaction_type,
+    WORKFLOW_V2_HUMAN_GATE_INTERACTION_TYPES,
+    "approval"
+  );
+  const responseSchema = workflowV2JsonObject(
+    input.responseSchema ?? input.response_schema ?? packagePayload.responseSchema ?? packagePayload.response_schema,
+    {
+      required: ["buttonSelection", "flashcatOriginalWords"],
+      flashcatOriginalWordsRequired: true,
+      fields: [
+        { name: "buttonSelection", type: "button", required: true },
+        { name: "flashcatOriginalWords", type: "text", required: true }
+      ]
+    }
+  );
+  const resumeContract = {
+    sourcePackageId: pkg.packageId,
+    sourcePlanId: pkg.planId,
+    completionAction: "human_gate.resume",
+    approved: "resume_workflow_from_selected_option",
+    rejected: "return_to_task_owner_or_cat_brain",
+    paused: "pause_workflow",
+    terminated: "closeout_and_archive",
+    ...workflowV2JsonObject(input.resumeContract ?? input.resume_contract ?? packagePayload.resumeContract ?? packagePayload.resume_contract, {})
+  };
+  const evidenceRefs = Array.isArray(pkg.evidenceRefs) ? pkg.evidenceRefs : [];
+  const artifactRef = firstText(input.artifactRef, input.artifact_ref, evidenceRefs[0], `workflow_v2_human_gate_package:${pkg.packageId}`);
+  const optionButtons = (Array.isArray(pkg.options) ? pkg.options : []).map((rawOption, index) => {
+    const option = workflowV2JsonObject(rawOption, {});
+    const optionKey = WORKFLOW_V2_HUMAN_GATE_OPTION_KEYS[index] || String(index + 1);
+    const title = firstText(option.title, option.name, `方案 ${optionKey}`);
+    const body = firstText(option.body, option.content, option.text, option.description, title);
+    const summary = firstText(option.summary, body, title);
+    const prompt = firstText(option.prompt, option.nextAction, option.next_action, body, summary);
+    const rollback = firstText(option.rollback, option.rollbackPlan, option.rollback_plan, option.recovery, option.restore, "如该方案执行条件不满足，退回 task owner 补齐证据并恢复到上一 checkpoint。");
+    return {
+      optionId: firstText(option.optionId, option.option_id, option.id, `option_${index + 1}`),
+      optionKey,
+      title,
+      summary,
+      prompt,
+      rollback,
+      artifactRef: firstText(option.artifactRef, option.artifact_ref, artifactRef),
+      payload: {
+        ...workflowV2JsonObject(option.approvalPayload ?? option.approval_payload, {}),
+        optionId: firstText(option.optionId, option.option_id, option.id, `option_${index + 1}`),
+        optionKey,
+        workflowV2HumanGatePackageId: pkg.packageId,
+        workflowId: pkg.workflowId,
+        planId: pkg.planId,
+        submissionKind,
+        interactionType,
+        sourceCatClawAuditId: pkg.sourceCatClawAuditId,
+        evidenceRefs,
+        rollback
+      }
+    };
+  });
+  const evidenceText = evidenceRefs.length ? `证据/回执：${evidenceRefs.slice(0, 8).join("；")}` : "证据/回执：已记录在 v2 Human Gate package payload 中。";
+  const defaultText = [
+    `猫爪正式汇报：workflow ${pkg.workflowId} 的 v2 plan ${pkg.planId} 已完成 task owner 汇总、task group 产出、猫之脑治理审计和猫爪协议审计。`,
+    `提交类型：${submissionKind}；交互类型：${interactionType}。Human Gate 在这里是受治理的人类交互边界，不只是 approval 开关。`,
+    "请闪电猫选择一个可批准方案，并在按钮表单中填写闪电猫原话/审核意见。按钮选择和原话绑定后，Human Gate 才正式完成并恢复 workflow。",
+    evidenceText
+  ].join("\n");
+  return {
+    workflowId: pkg.workflowId,
+    meetingId: firstText(input.meetingId, input.meeting_id, pkg.workflowId),
+    gateType: firstText(input.gateType, input.gate_type, "workflow_v2_task_delivery"),
+    humanGateStageKey: firstText(input.humanGateStageKey, input.human_gate_stage_key, input.stageKey, input.stage_key, `workflow-v2:${pkg.planId}:${pkg.packageId}`),
+    submissionKind,
+    interactionType,
+    responseSchema,
+    resumeContract,
+    title: firstText(input.title, `v2 workflow Human Gate：${pkg.planId}`),
+    summary: firstText(input.summary, input.text, defaultText),
+    text: firstText(input.text, input.reportText, input.report_text, defaultText),
+    artifactRef,
+    buttons: optionButtons,
+    addDefaultControls: true,
+    from: "cat_claw",
+    sourceAgent: "cat_claw",
+    actor: firstText(input.actor, input.callerAgent, input.caller_agent, input.createdBy, input.created_by, "cat_claw"),
+    autoDeliver: false,
+    auto_deliver: false,
+    deliver: false,
+    humanGateId: firstText(input.humanGateId, input.human_gate_id, input.requestHumanGateId, input.request_human_gate_id),
+    targetKind: firstText(input.targetKind, input.target_kind),
+    targetRef: firstText(input.targetRef, input.target_ref, input.target, input.chatId, input.chat_id, input.notifyTargets, input.notify_targets),
+    payload: {
+      workflowV2HumanGatePackageId: pkg.packageId,
+      workflowId: pkg.workflowId,
+      planId: pkg.planId,
+      submissionKind,
+      interactionType,
+      responseSchema,
+      resumeContract,
+      sourceReviewId: pkg.sourceReviewId,
+      sourceCatClawAuditId: pkg.sourceCatClawAuditId,
+      catBrainAgent: pkg.catBrainAgent,
+      catClawAgent: pkg.catClawAgent,
+      evidenceRefs,
+      requiredControls: pkg.requiredControls,
+      controls: packagePayload.controls || [],
+      packagePayload,
+      writeBoundary: "human_gate_request_only"
+    }
+  };
+}
+
+export async function workflowV2HumanGateRequestPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = nowIso();
+  const violations = [];
+  const writeViolations = [];
+  const warnings = [];
+  const requestedWorkflowId = firstText(input.workflowId, input.workflow_id);
+  const requestedPlanId = firstText(input.planId, input.plan_id);
+  const packageSelectorId = firstText(input.packageId, input.package_id, input.humanGatePackageId, input.human_gate_package_id);
+  const sourceAuditSelectorId = firstText(input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id);
+  const hasSelector = Boolean(packageSelectorId);
+  if (!packageSelectorId) {
+    violations.push(workflowV2ValidationError("human_gate_package_selector_required", "v2 Human Gate request preview requires an exact packageId selector"));
+  }
+  const packageRow = hasSelector ? await workflowV2HumanGatePackageRow(paths, input) : null;
+  if (hasSelector && !packageRow) {
+    violations.push(workflowV2ValidationError("human_gate_package_not_found", "No v2 Human Gate package matched the selector"));
+  }
+  const pkg = packageRow ? workflowV2HumanGatePackageSummary(packageRow) : null;
+  if (pkg && requestedWorkflowId && pkg.workflowId !== requestedWorkflowId) {
+    violations.push(workflowV2ValidationError("workflow_mismatch", "v2 Human Gate package workflowId does not match request", { expectedWorkflowId: requestedWorkflowId, actualWorkflowId: pkg.workflowId }));
+  }
+  if (pkg && requestedPlanId && pkg.planId !== requestedPlanId) {
+    violations.push(workflowV2ValidationError("plan_mismatch", "v2 Human Gate package planId does not match request", { expectedPlanId: requestedPlanId, actualPlanId: pkg.planId }));
+  }
+  if (pkg && sourceAuditSelectorId && pkg.sourceCatClawAuditId !== sourceAuditSelectorId) {
+    violations.push(workflowV2ValidationError("source_cat_claw_audit_mismatch", "v2 Human Gate package sourceCatClawAuditId does not match request", { expectedSourceCatClawAuditId: sourceAuditSelectorId, actualSourceCatClawAuditId: pkg.sourceCatClawAuditId }));
+  }
+  if (pkg && pkg.status !== "cat_claw_audited") {
+    violations.push(workflowV2ValidationError("human_gate_package_not_cat_claw_audited", "Formal Human Gate request requires a cat_claw_audited v2 package", { packageId: pkg.packageId, status: pkg.status }));
+  }
+  if (pkg && !pkg.sourceCatClawAuditId) {
+    violations.push(workflowV2ValidationError("source_cat_claw_audit_required", "Formal Human Gate request requires sourceCatClawAuditId on the v2 package", { packageId: pkg.packageId }));
+  }
+  const packagePayloadForMetadata = workflowV2JsonObject(pkg?.payload, {});
+  const rawSubmissionKind = firstText(input.submissionKind, input.submission_kind, packagePayloadForMetadata.submissionKind, packagePayloadForMetadata.submission_kind);
+  if (rawSubmissionKind && !WORKFLOW_V2_HUMAN_GATE_SUBMISSION_KINDS.has(rawSubmissionKind.trim().toLowerCase().replace(/-/g, "_"))) {
+    violations.push(workflowV2ValidationError("submission_kind_invalid", "v2 Human Gate submissionKind is not supported", { submissionKind: rawSubmissionKind }));
+  }
+  const rawInteractionType = firstText(input.interactionType, input.interaction_type, packagePayloadForMetadata.interactionType, packagePayloadForMetadata.interaction_type);
+  if (rawInteractionType && !WORKFLOW_V2_HUMAN_GATE_INTERACTION_TYPES.has(rawInteractionType.trim().toLowerCase().replace(/-/g, "_"))) {
+    violations.push(workflowV2ValidationError("interaction_type_invalid", "v2 Human Gate interactionType is not supported", { interactionType: rawInteractionType }));
+  }
+  let sourceCatClawAudit = null;
+  if (pkg?.sourceCatClawAuditId) {
+    const sourceRow = await workflowV2CatClawAuditRowById(paths, pkg.sourceCatClawAuditId);
+    if (!sourceRow) {
+      violations.push(workflowV2ValidationError("source_cat_claw_audit_not_found", "sourceCatClawAuditId does not reference an existing Cat Claw audit", { sourceCatClawAuditId: pkg.sourceCatClawAuditId }));
+    } else if (sourceRow.workflow_id !== pkg.workflowId || sourceRow.plan_id !== pkg.planId) {
+      violations.push(workflowV2ValidationError("source_cat_claw_audit_scope_mismatch", "source Cat Claw audit must match the v2 package workflow and plan", { sourceCatClawAuditId: pkg.sourceCatClawAuditId }));
+    } else if (sourceRow.decision !== "protocol_ready") {
+      violations.push(workflowV2ValidationError("source_cat_claw_audit_not_protocol_ready", "source Cat Claw audit must be protocol_ready before Human Gate request", { sourceCatClawAuditId: pkg.sourceCatClawAuditId, decision: sourceRow.decision }));
+    } else {
+      sourceCatClawAudit = workflowV2CatClawAuditSummary(sourceRow);
+    }
+  }
+  const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.actor, input.createdBy, input.created_by, "cat_claw")) || "cat_claw";
+  if (callerAgent !== "cat_claw") {
+    writeViolations.push(workflowV2ValidationError("caller_agent_not_authorized", "Formal v2 Human Gate request must be submitted by cat_claw", { callerAgent }));
+  }
+  const requestInput = pkg ? workflowV2HumanGateRequestInputFromPackage(pkg, { ...input, actor: callerAgent, callerAgent }) : null;
+  const buttons = requestInput ? humanGateButtonOptions(requestInput) : [];
+  const audit = requestInput ? combineHumanGateAudits(
+    auditHumanGatePlanOptions(buttons),
+    auditHumanGatePlanDetails(buttons),
+    auditHumanGatePrimaryLanguage(requestInput, buttons)
+  ) : { ok: false, reason: "human_gate_package_not_available", audits: [] };
+  if (requestInput && !audit.ok) {
+    violations.push(workflowV2ValidationError("human_gate_audit_failed", audit.reason || "Human Gate request draft does not satisfy button-first audit"));
+  }
+  const webApp = await humanGateWebAppConfig(input);
+  if (!webApp.enabled) {
+    warnings.push({ code: "web_app_base_url_missing", detail: "Token-bound Telegram Web App base URL is not configured; formal delivery will rely on governed token fallback until configured." });
+  }
+  const eligible = violations.length === 0;
+  const writeReady = eligible && writeViolations.length === 0;
+  const stageMatch = eligible ? await pendingHumanGateForStage(paths, {
+    workflowId: requestInput.workflowId,
+    gateType: requestInput.gateType,
+    stageKey: requestInput.humanGateStageKey
+  }) : null;
+  const planButtons = humanGatePlanOptionButtons(buttons);
+  const controlRoles = new Set(buttons.filter((button) => humanGateButtonIsControl(button)).map((button) => humanGateButtonRole(button)));
+  return {
+    schemaVersion: "workflow_v2_human_gate_request_preview.v1",
+    action: "workflow.v2.human_gate_request.preview",
+    preview: true,
+    readOnly: true,
+    generatedAt,
+    workflowId: pkg?.workflowId || requestedWorkflowId,
+    planId: pkg?.planId || requestedPlanId,
+    packageId: pkg?.packageId || packageSelectorId,
+    sourceCatClawAuditId: pkg?.sourceCatClawAuditId || sourceAuditSelectorId,
+    submissionKind: requestInput?.submissionKind || "",
+    interactionType: requestInput?.interactionType || "",
+    responseSchema: requestInput?.responseSchema || null,
+    resumeContract: requestInput?.resumeContract || null,
+    eligible,
+    requestReady: eligible,
+    writeReady,
+    audit,
+    buttonSummary: {
+      total: buttons.length,
+      planCount: planButtons.length,
+      planCountMin: HUMAN_GATE_APPROVE_OPTION_MIN,
+      planCountMax: HUMAN_GATE_APPROVE_OPTION_MAX,
+      hasPause: controlRoles.has("pause"),
+      hasTerminate: controlRoles.has("terminate"),
+      hasReject: controlRoles.has("reject")
+    },
+    wouldCreate: {
+      humanGateRecords: eligible && !stageMatch ? 1 : 0,
+      humanGateButtons: eligible && !stageMatch ? buttons.length : 0,
+      meetingControlEvents: eligible ? 1 : 0,
+      telegramOutbox: eligible && !stageMatch ? 1 : 0,
+      workflowEvents: eligible ? 1 : 0,
+      runtimeDispatches: 0,
+      telegramDeliveries: 0,
+      workflowStatusUpdates: eligible ? 1 : 0
+    },
+    existingPendingHumanGateId: stageMatch?.row?.object_id || "",
+    requestDraft: requestInput ? redactSensitiveForPersistence({
+      action: "human_gate.request",
+      workflowId: requestInput.workflowId,
+      meetingId: requestInput.meetingId,
+      gateType: requestInput.gateType,
+      humanGateStageKey: requestInput.humanGateStageKey,
+      submissionKind: requestInput.submissionKind,
+      interactionType: requestInput.interactionType,
+      responseSchema: requestInput.responseSchema,
+      resumeContract: requestInput.resumeContract,
+      title: requestInput.title,
+      summary: requestInput.summary,
+      text: requestInput.text,
+      artifactRef: requestInput.artifactRef,
+      buttons
+    }) : null,
+    requestInput,
+    humanGatePackage: pkg,
+    sourceCatClawAudit,
+    violations: [...violations, ...writeViolations],
+    writeViolations,
+    warnings,
+    limitations: [
+      "Preview is read-only and does not create Human Gate records, buttons, Telegram outbox, workflow events, or runtime dispatches.",
+      "Execution creates only the formal pending Human Gate request and queued Telegram outbox; actual delivery stays under telegram.outbox.delivery governance.",
+      "Human Gate completion remains button-first via human_gate.resume / Web App feedback and is not represented by workflow_v2_human_gate_packages status."
+    ],
+    dbFile: paths.dbFile
+  };
+}
+
+export async function workflowV2HumanGateRequest(rootDir, input = {}, permissionDecision = null) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const preview = await workflowV2HumanGateRequestPreview(rootDir, input);
+  if (!preview.eligible) {
+    throw new Error(`v2 Human Gate request is not eligible: ${preview.violations.map((item) => item.code).join(",") || "unknown"}`);
+  }
+  if (!preview.writeReady) {
+    throw new Error(`v2 Human Gate request is not write-ready: ${(preview.writeViolations || preview.violations || []).map((item) => item.code).join(",") || "unknown"}`);
+  }
+  const requestInput = {
+    ...preview.requestInput,
+    actor: input.actor || permissionDecision?.caller?.agentId || preview.requestInput.actor || "cat_claw"
+  };
+  const result = await humanGateRequest(rootDir, requestInput);
+  const linkedAt = nowIso();
+  const currentPayload = workflowV2JsonObject(preview.humanGatePackage?.payload, {});
+  const currentLink = workflowV2JsonObject(currentPayload.humanGateRequest, {});
+  const linkage = {
+    humanGateId: result.humanGateId,
+    gateType: result.gateType,
+    stageKey: result.stageKey,
+    submissionKind: preview.submissionKind,
+    interactionType: preview.interactionType,
+    responseSchema: preview.responseSchema,
+    resumeContract: preview.resumeContract,
+    telegramOutboxId: result.telegramOutbox?.outboxId || "",
+    telegramOutboxStatus: result.telegramOutbox?.status || "",
+    requestedAt: linkedAt,
+    reusedStageGate: Boolean(result.reusedStageGate),
+    deliveryRequired: Boolean(result.deliveryRequired)
+  };
+  const packageLinkReused = currentLink.humanGateId === result.humanGateId
+    && currentLink.gateType === result.gateType
+    && currentLink.stageKey === result.stageKey;
+  if (!packageLinkReused) {
+    await sqlite(paths.dbFile, `
+UPDATE workflow_v2_human_gate_packages
+SET payload_json=${sqlValue(JSON.stringify({
+      ...currentPayload,
+      humanGateRequest: linkage,
+      humanGateRequestHistory: [
+        ...workflowV2JsonArray(currentPayload.humanGateRequestHistory, []).slice(-9),
+        linkage
+      ]
+    }))},
+    updated_at=${sqlValue(linkedAt)}
+WHERE package_id=${sqlValue(preview.packageId)};`);
+  }
+  if (preview.workflowId && preview.planId) {
+    await workflowV2PatchPlanWorkflowState(paths, preview.workflowId, preview.planId, "waiting_human", linkedAt);
+  }
+  return {
+    schemaVersion: "workflow_v2_human_gate_request_result.v1",
+    action: "workflow.v2.human_gate_request",
+    workflowId: result.workflowId,
+    planId: preview.planId,
+    packageId: preview.packageId,
+    sourceCatClawAuditId: preview.sourceCatClawAuditId,
+    submissionKind: preview.submissionKind,
+    interactionType: preview.interactionType,
+    responseSchema: preview.responseSchema,
+    resumeContract: preview.resumeContract,
+    humanGateId: result.humanGateId,
+    gateType: result.gateType,
+    stageKey: result.stageKey,
+    writeBoundary: "human_gate_request_only",
+    reusedStageGate: Boolean(result.reusedStageGate),
+    didEnsureHumanGate: true,
+    didCreateHumanGate: !Boolean(result.reusedStageGate),
+    didCreateHumanGateButtons: Array.isArray(result.buttons),
+    humanGateButtonCount: result.buttons?.length || 0,
+    didEnsureTelegramOutbox: Boolean(result.telegramOutbox?.outboxId),
+    didCreateTelegramOutbox: Boolean(result.telegramOutbox?.outboxId) && !Boolean(result.telegramOutbox?.deduped),
+    telegramOutboxDeduped: Boolean(result.telegramOutbox?.deduped),
+    telegramOutboxId: result.telegramOutbox?.outboxId || "",
+    didSendTelegram: Boolean(result.delivery),
+    didDispatchRuntime: false,
+    didUpdateWorkflowStatus: true,
+    didLinkPackage: true,
+    didWritePackageLink: !packageLinkReused,
+    packageLinkReused,
+    deliveryRequired: Boolean(result.deliveryRequired),
+    targetKind: result.targetKind,
+    targetRef: result.targetRef,
+    buttons: result.buttons || [],
+    dbFile: result.dbFile
+  };
+}
+
+async function workflowV2SchemaSnapshot(dbFile) {
+  const tables = {
+    workflow_v2_plans: ["plan_id", "workflow_id", "status", "workflow_state", "task_owner_agent", "objective"],
+    workflow_v2_plan_nodes: ["node_id", "plan_id", "workflow_id", "node_type", "status"],
+    workflow_v2_info_items: ["info_id", "workflow_id", "classification", "content_storage"],
+    workflow_v2_inbox_items: ["inbox_item_id", "info_id", "workflow_id", "recipient_kind", "recipient_id"],
+    workflow_v2_access_grants: ["grant_id", "info_id", "principal_kind", "principal_id"],
+    workflow_v2_read_receipts: ["receipt_id", "workflow_id", "info_id", "reader_kind", "reader_id"],
+    workflow_v2_worker_runs: ["worker_run_id", "workflow_id", "plan_id", "node_id", "parent_worker_run_id", "supersedes_worker_run_id", "successor_worker_run_id", "worker_generation", "session_id", "preflight_id", "runtime_backend", "attempt", "max_attempts", "lease_owner", "lease_until", "next_retry_at", "handoff_info_id", "context_budget_tokens", "context_used_tokens", "compaction_count", "source_context_refs_json", "started_at", "completed_at"],
+    workflow_v2_worker_adapter_jobs: ["adapter_job_id", "workflow_id", "plan_id", "node_id", "worker_run_id", "session_run_id", "runtime_backend", "worker_attempt", "runner_attempt", "max_runner_attempts", "status", "lease_owner", "lease_until", "next_retry_at", "artifact_ref", "info_id", "manifest_hash", "payload_json", "completed_at"],
+    workflow_v2_worker_handoffs: ["handoff_id", "workflow_id", "plan_id", "worker_run_id", "successor_worker_run_id", "handoff_info_id", "status"],
+    workflow_session_runs: ["run_id", "session_id", "workflow_id", "task_id", "worker_id", "status", "worker_input_json"],
+    workflow_v2_manager_reviews: ["review_id", "workflow_id", "plan_id", "decision", "blocker_json"],
+    workflow_v2_owner_reviews: ["review_id", "workflow_id", "plan_id", "owner_agent", "decision", "manager_review_refs_json"],
+    workflow_v2_task_group_packages: ["package_id", "workflow_id", "plan_id", "owner_review_id", "task_group_agents_json", "status"],
+    workflow_v2_cat_brain_audits: ["audit_id", "workflow_id", "plan_id", "task_group_package_id", "cat_brain_agent", "decision"],
+    workflow_v2_cat_claw_audits: ["audit_id", "workflow_id", "plan_id", "cat_brain_audit_id", "cat_claw_agent", "decision"],
+    workflow_v2_notifications: ["notification_id", "workflow_id", "payload_mode", "status"],
+    workflow_v2_human_gate_packages: ["package_id", "workflow_id", "plan_id", "source_cat_claw_audit_id", "options_json", "required_controls_json"],
+    workflow_v2_backend_preflights: ["preflight_id", "workflow_id", "backend_id", "status"]
+  };
+  const snapshot = {};
+  for (const [table, required] of Object.entries(tables)) {
+    const columns = await tableColumns(dbFile, table);
+    snapshot[table] = {
+      exists: columns.size > 0,
+      requiredColumnsPresent: hasAllColumns(columns, required),
+      missingColumns: required.filter((column) => !columns.has(column)),
+      columns: Array.from(columns).sort()
+    };
+  }
+  return snapshot;
+}
+
+async function workflowV2MismatchCheck(dbFile, schema, checkId, requiredTables, sql) {
+  const skipped = requiredTables.filter((table) => !schema[table]?.exists);
+  if (skipped.length) return { checkId, status: "skipped", skippedTables: skipped, count: 0 };
+  const schemaGap = requiredTables.filter((table) => schema[table]?.exists && !schema[table]?.requiredColumnsPresent);
+  if (schemaGap.length) return { checkId, status: "schema_gap", schemaGapTables: schemaGap, count: 0 };
+  const rows = await sqlite(dbFile, sql, { json: true });
+  const count = Number(rows[0]?.count || 0);
+  return { checkId, status: count === 0 ? "pass" : "fail", count };
+}
+
+async function workflowV2AdvisoryCheck(dbFile, schema, checkId, requiredTables, sql) {
+  const result = await workflowV2MismatchCheck(dbFile, schema, checkId, requiredTables, sql);
+  if (result.status === "fail") {
+    return { ...result, status: "advisory", severity: "advisory", advisory: true };
+  }
+  return { ...result, severity: "advisory", advisory: true };
+}
+
+export async function workflowV2Validate(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  if (!fileExistsSync(paths.dbFile)) {
+    return {
+      operation: "workflow.v2.validate",
+      dryRun: true,
+      previewOnly: true,
+      status: "skipped",
+      ok: true,
+      reason: "workflow database does not exist",
+      schema: {},
+      checks: [],
+      advisoryChecks: [],
+      dbFile: paths.dbFile
+    };
+  }
+  const schema = await workflowV2SchemaSnapshot(paths.dbFile);
+  const checks = [];
+  const advisoryChecks = [];
+  const workerStatusesSql = [...WORKFLOW_V2_WORKER_RUN_STATUSES].map((status) => sqlValue(status)).join(", ");
+  const adapterJobStatusesSql = [...WORKFLOW_V2_ADAPTER_JOB_STATUSES].map((status) => sqlValue(status)).join(", ");
+  const handoffStatusesSql = [...WORKFLOW_V2_WORKER_HANDOFF_STATUSES].map((status) => sqlValue(status)).join(", ");
+  const orchestrationPatternsSql = [...WORKFLOW_V2_ORCHESTRATION_PATTERNS].map((status) => sqlValue(status)).join(", ");
+  const workerPatternsSql = [...WORKFLOW_V2_WORKER_PATTERNS].map((status) => sqlValue(status)).join(", ");
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "plans_required_fields", ["workflow_v2_plans"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_plans
+WHERE workflow_id='' OR objective='' OR task_owner_agent='' OR workflow_state='';`));
+  advisoryChecks.push(await workflowV2AdvisoryCheck(paths.dbFile, schema, "plans_anthropic_orchestration_contract", ["workflow_v2_plans"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_plans
+WHERE json_valid(acceptance_criteria_json)=0
+   OR json_array_length(acceptance_criteria_json)=0
+   OR json_valid(payload_json)=0
+   OR COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.pattern'), '') NOT IN (${orchestrationPatternsSql})
+   OR COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.rationale'), '')=''
+   OR json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.workerBudget.maxWorkers') IS NULL
+   OR json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.workerBudget.concurrencyLimit') IS NULL
+   OR json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.workerBudget.maxWorkerContextTokens') IS NULL
+   OR COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.workerBudget.concurrencyLimit'), 0) > ${WORKFLOW_V2_MAX_CONCURRENT_WORKERS}
+   OR COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.workerBudget.maxWorkerContextTokens'), 0) > ${WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS}
+   OR (COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.pattern'), '') IN (${workerPatternsSql}) AND COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.workerBudget.maxWorkers'), 0) < 1)
+   OR (COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.pattern'), '')='direct_owner_execution' AND COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.orchestration.workerBudget.maxWorkers'), 0) > 0);`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "nodes_match_plans", ["workflow_v2_plan_nodes", "workflow_v2_plans"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_plan_nodes n
+LEFT JOIN workflow_v2_plans p ON p.plan_id=n.plan_id
+WHERE p.plan_id IS NULL OR p.workflow_id != n.workflow_id;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "worker_runs_match_plan_node", ["workflow_v2_worker_runs", "workflow_v2_plans", "workflow_v2_plan_nodes"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_runs w
+LEFT JOIN workflow_v2_plans p ON p.plan_id=w.plan_id
+LEFT JOIN workflow_v2_plan_nodes n ON n.node_id=w.node_id
+WHERE p.plan_id IS NULL OR n.node_id IS NULL OR p.workflow_id != w.workflow_id OR n.workflow_id != w.workflow_id;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "worker_runs_require_valid_preflight", ["workflow_v2_worker_runs", "workflow_v2_backend_preflights"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_runs w
+LEFT JOIN workflow_v2_backend_preflights p ON p.preflight_id=w.preflight_id
+WHERE w.preflight_id=''
+   OR p.preflight_id IS NULL
+   OR p.workflow_id != w.workflow_id
+   OR p.backend_id != w.runtime_backend
+   OR p.status NOT IN ('pass','warn');`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "worker_runs_session_runs_match", ["workflow_v2_worker_runs", "workflow_session_runs"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_runs w
+LEFT JOIN workflow_session_runs s ON s.run_id=w.session_run_id
+WHERE w.session_run_id=''
+   OR s.run_id IS NULL
+   OR s.session_id != w.session_id
+   OR s.workflow_id != w.workflow_id
+   OR s.task_id != w.node_id
+   OR s.worker_id != w.worker_agent_id
+   OR (w.status IN ('queued','retry_scheduled') AND s.status != 'queued')
+   OR (w.status='running' AND s.status != 'running')
+   OR (w.status IN ('submitted_for_review','accepted','rejected','revise_required','needs_human_gate','handoff_required','successor_spawned') AND s.status != 'completed')
+   OR (w.status='retired' AND s.status NOT IN ('completed','failed'))
+   OR (w.status IN ('blocked','failed','timed_out') AND s.status != 'failed')
+   OR (w.status='cancelled' AND s.status != 'cancelled');`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "v2_session_runs_have_worker_runs", ["workflow_session_runs", "workflow_v2_worker_runs"], `
+SELECT COUNT(*) AS count
+FROM workflow_session_runs s
+LEFT JOIN workflow_v2_worker_runs w ON w.session_run_id=s.run_id
+WHERE (
+    json_valid(s.input_json)=0
+    OR json_extract(CASE WHEN json_valid(s.input_json) THEN s.input_json ELSE '{}' END, '$.schemaVersion')='workflow_v2_worker_session_input.v1'
+  )
+  AND w.worker_run_id IS NULL;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "worker_run_control_lifecycle_fields", ["workflow_v2_worker_runs"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_runs
+WHERE max_attempts < 1
+   OR attempt < 0
+   OR (status='running' AND (lease_owner='' OR lease_until='' OR attempt < 1 OR started_at=''))
+   OR (status='retry_scheduled' AND next_retry_at='')
+   OR (status IN ('submitted_for_review','accepted','rejected','revise_required','needs_human_gate') AND (output_info_id='' OR receipt_ref='' OR completed_at=''))
+   OR (status='handoff_required' AND handoff_info_id='')
+   OR (status='successor_spawned' AND successor_worker_run_id='')
+   OR (status IN ('submitted_for_review','accepted','rejected','revise_required','handoff_required','retired','successor_spawned','blocked','needs_human_gate','failed','timed_out','cancelled') AND lease_owner!='')
+   OR (status IN ('submitted_for_review','accepted','rejected','revise_required','handoff_required','retired','successor_spawned','blocked','needs_human_gate','failed','timed_out','cancelled') AND lease_until!='');`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "worker_runs_anthropic_delegation_contract", ["workflow_v2_worker_runs"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_runs
+WHERE context_budget_tokens < 1
+   OR context_budget_tokens > ${WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS}
+   OR json_valid(payload_json)=0
+   OR COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.delegation.objective'), '')=''
+   OR COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.delegation.outputFormat'), '')=''
+   OR COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.delegation.toolBoundary'), '')=''
+   OR COALESCE(json_array_length(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.delegation.acceptanceCriteria')), 0) < 1
+   OR (
+        COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.delegation.stopCondition'), '')=''
+        AND COALESCE(json_array_length(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.delegation.stopConditions')), 0) < 1
+      );`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "worker_run_statuses_are_known", ["workflow_v2_worker_runs"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_runs
+WHERE status NOT IN (${workerStatusesSql});`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "worker_lineage_references_match", ["workflow_v2_worker_runs", "workflow_v2_info_items"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_runs w
+LEFT JOIN workflow_v2_worker_runs parent ON parent.worker_run_id=w.parent_worker_run_id AND w.parent_worker_run_id!=''
+LEFT JOIN workflow_v2_worker_runs superseded ON superseded.worker_run_id=w.supersedes_worker_run_id AND w.supersedes_worker_run_id!=''
+LEFT JOIN workflow_v2_worker_runs successor ON successor.worker_run_id=w.successor_worker_run_id AND w.successor_worker_run_id!=''
+LEFT JOIN workflow_v2_info_items handoff_info ON handoff_info.info_id=w.handoff_info_id AND w.handoff_info_id!=''
+WHERE w.worker_generation < 0
+   OR w.context_budget_tokens < 0
+   OR w.context_used_tokens < 0
+   OR w.compaction_count < 0
+   OR json_valid(w.source_context_refs_json)=0
+   OR (w.parent_worker_run_id!='' AND (parent.worker_run_id IS NULL OR parent.workflow_id != w.workflow_id))
+   OR (w.supersedes_worker_run_id!='' AND (superseded.worker_run_id IS NULL OR superseded.workflow_id != w.workflow_id))
+   OR (w.successor_worker_run_id!='' AND (successor.worker_run_id IS NULL OR successor.workflow_id != w.workflow_id))
+   OR (w.handoff_info_id!='' AND (handoff_info.info_id IS NULL OR handoff_info.workflow_id != w.workflow_id));`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "worker_handoffs_match_worker_runs", ["workflow_v2_worker_handoffs", "workflow_v2_worker_runs", "workflow_v2_plans", "workflow_v2_info_items"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_handoffs h
+LEFT JOIN workflow_v2_worker_runs w ON w.worker_run_id=h.worker_run_id
+LEFT JOIN workflow_v2_plans p ON p.plan_id=h.plan_id
+LEFT JOIN workflow_v2_worker_runs successor ON successor.worker_run_id=h.successor_worker_run_id AND h.successor_worker_run_id!=''
+LEFT JOIN workflow_v2_info_items handoff_info ON handoff_info.info_id=h.handoff_info_id AND h.handoff_info_id!=''
+WHERE h.status NOT IN (${handoffStatusesSql})
+   OR w.worker_run_id IS NULL
+   OR w.workflow_id != h.workflow_id
+   OR p.plan_id IS NULL
+   OR p.workflow_id != h.workflow_id
+   OR json_valid(h.source_context_refs_json)=0
+   OR json_valid(h.artifact_refs_json)=0
+   OR json_valid(h.receipt_refs_json)=0
+   OR (h.status IN ('recommended','required','accepted','superseded') AND h.handoff_info_id='')
+   OR (h.status='superseded' AND h.successor_worker_run_id='')
+   OR (h.successor_worker_run_id!='' AND (successor.worker_run_id IS NULL OR successor.workflow_id != h.workflow_id))
+   OR (h.handoff_info_id!='' AND (handoff_info.info_id IS NULL OR handoff_info.workflow_id != h.workflow_id));`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "worker_run_output_info_exists", ["workflow_v2_worker_runs", "workflow_v2_info_items"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_runs w
+LEFT JOIN workflow_v2_info_items i ON i.info_id=w.output_info_id
+WHERE w.output_info_id!=''
+  AND (i.info_id IS NULL OR i.workflow_id != w.workflow_id OR i.worker_run_id != w.worker_run_id);`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "adapter_jobs_match_worker_runs", ["workflow_v2_worker_adapter_jobs", "workflow_v2_worker_runs", "workflow_v2_info_items"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_adapter_jobs j
+LEFT JOIN workflow_v2_worker_runs w ON w.worker_run_id=j.worker_run_id
+LEFT JOIN workflow_v2_info_items i ON i.info_id=j.info_id
+WHERE j.status NOT IN (${adapterJobStatusesSql})
+   OR w.worker_run_id IS NULL
+   OR w.workflow_id != j.workflow_id
+   OR w.runtime_backend != j.runtime_backend
+   OR (j.plan_id!='' AND w.plan_id != j.plan_id)
+   OR (j.node_id!='' AND w.node_id != j.node_id)
+   OR (j.session_run_id!='' AND w.session_run_id != j.session_run_id)
+   OR j.worker_attempt < 1
+   OR j.runner_attempt < 0
+   OR j.max_runner_attempts < 1
+   OR json_valid(j.payload_json)=0
+   OR j.artifact_ref=''
+   OR j.info_id=''
+   OR j.manifest_hash=''
+   OR i.info_id IS NULL
+   OR i.workflow_id != j.workflow_id
+   OR i.worker_run_id != j.worker_run_id
+   OR (j.status IN ('queued','retry_scheduled','running') AND w.status != 'running')
+   OR (j.status IN ('queued','retry_scheduled','running') AND w.attempt != j.worker_attempt)
+   OR (j.status='running' AND (j.lease_owner='' OR j.lease_until=''))
+   OR (j.status='retry_scheduled' AND j.next_retry_at='')
+   OR (j.status IN ('completed','failed','cancelled') AND j.completed_at='')
+   OR (j.status IN ('queued','retry_scheduled','completed','failed','cancelled') AND (j.lease_owner!='' OR j.lease_until!=''));`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "accepted_worker_runs_require_accepted_manager_review", ["workflow_v2_worker_runs", "workflow_v2_manager_reviews"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_worker_runs w
+LEFT JOIN workflow_v2_manager_reviews r ON r.worker_run_id=w.worker_run_id AND r.workflow_id=w.workflow_id AND r.decision='accepted'
+WHERE w.status='accepted' AND r.review_id IS NULL;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "info_references_match", ["workflow_v2_info_items", "workflow_v2_plans", "workflow_v2_plan_nodes", "workflow_v2_worker_runs"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_info_items i
+LEFT JOIN workflow_v2_plans p ON p.plan_id=i.plan_id AND i.plan_id!=''
+LEFT JOIN workflow_v2_plan_nodes n ON n.node_id=i.node_id AND i.node_id!=''
+LEFT JOIN workflow_v2_worker_runs w ON w.worker_run_id=i.worker_run_id AND i.worker_run_id!=''
+WHERE (i.plan_id!='' AND (p.plan_id IS NULL OR p.workflow_id != i.workflow_id))
+   OR (i.node_id!='' AND (n.node_id IS NULL OR n.workflow_id != i.workflow_id))
+   OR (i.worker_run_id!='' AND (w.worker_run_id IS NULL OR w.workflow_id != i.workflow_id));`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "inbox_grants_notifications_match_info", ["workflow_v2_info_items", "workflow_v2_inbox_items", "workflow_v2_access_grants", "workflow_v2_notifications"], `
+SELECT
+  (SELECT COUNT(*) FROM workflow_v2_inbox_items inbox LEFT JOIN workflow_v2_info_items info ON info.info_id=inbox.info_id WHERE info.info_id IS NULL OR info.workflow_id != inbox.workflow_id)
+  + (SELECT COUNT(*) FROM workflow_v2_access_grants grant_row LEFT JOIN workflow_v2_info_items info ON info.info_id=grant_row.info_id WHERE info.info_id IS NULL)
+  + (SELECT COUNT(*) FROM workflow_v2_notifications note LEFT JOIN workflow_v2_info_items info ON info.info_id=note.info_id WHERE note.info_id!='' AND (info.info_id IS NULL OR info.workflow_id != note.workflow_id))
+  AS count;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "read_receipts_match_info_inbox_grant", ["workflow_v2_read_receipts", "workflow_v2_info_items", "workflow_v2_inbox_items", "workflow_v2_access_grants"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_read_receipts r
+LEFT JOIN workflow_v2_info_items i ON i.info_id=r.info_id
+LEFT JOIN workflow_v2_inbox_items inbox ON inbox.inbox_item_id=r.inbox_item_id AND r.inbox_item_id!=''
+LEFT JOIN workflow_v2_access_grants grant_row ON grant_row.grant_id=r.grant_id AND r.grant_id!=''
+WHERE i.info_id IS NULL OR i.workflow_id != r.workflow_id
+   OR (r.inbox_item_id='' AND r.grant_id='')
+   OR (r.inbox_item_id!='' AND (inbox.inbox_item_id IS NULL OR inbox.workflow_id != r.workflow_id))
+   OR (r.grant_id!='' AND (grant_row.grant_id IS NULL OR grant_row.info_id != r.info_id));`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "manager_reviews_match_worker_runs", ["workflow_v2_manager_reviews", "workflow_v2_plans", "workflow_v2_worker_runs"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_manager_reviews r
+LEFT JOIN workflow_v2_plans p ON p.plan_id=r.plan_id
+LEFT JOIN workflow_v2_worker_runs w ON w.worker_run_id=r.worker_run_id
+WHERE p.plan_id IS NULL OR p.workflow_id != r.workflow_id
+   OR r.worker_run_id=''
+   OR w.worker_run_id IS NULL
+   OR w.workflow_id != r.workflow_id
+   OR w.plan_id != r.plan_id
+   OR w.manager_agent != r.reviewer_agent
+   OR (r.decision='accepted' AND w.status != 'accepted')
+   OR json_valid(r.findings_json)=0
+   OR json_valid(r.artifact_refs_json)=0
+   OR json_valid(r.receipt_refs_json)=0
+   OR json_valid(r.blocker_json)=0
+   OR json_valid(r.payload_json)=0;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "manager_review_decisions_are_outcomes", ["workflow_v2_manager_reviews"], `
+	SELECT COUNT(*) AS count
+	FROM workflow_v2_manager_reviews
+	WHERE decision NOT IN ('accepted','revise_required','rejected','needs_human_gate');`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "owner_reviews_match_plan_and_owner", ["workflow_v2_owner_reviews", "workflow_v2_plans"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_owner_reviews r
+LEFT JOIN workflow_v2_plans p ON p.plan_id=r.plan_id
+WHERE p.plan_id IS NULL
+   OR p.workflow_id != r.workflow_id
+   OR p.task_owner_agent != r.owner_agent
+   OR r.decision NOT IN ('accepted','revise_required','rejected','needs_human_gate')
+   OR json_valid(r.manager_review_refs_json)=0
+   OR json_valid(r.artifact_refs_json)=0
+   OR json_valid(r.receipt_refs_json)=0
+   OR json_valid(r.findings_json)=0
+   OR json_valid(r.payload_json)=0;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "owner_review_manager_refs_exist", ["workflow_v2_owner_reviews", "workflow_v2_manager_reviews"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_owner_reviews r
+JOIN json_each(CASE WHEN json_valid(r.manager_review_refs_json) THEN r.manager_review_refs_json ELSE '[]' END) ref
+LEFT JOIN workflow_v2_manager_reviews m ON m.review_id=ref.value
+WHERE m.review_id IS NULL
+   OR m.workflow_id != r.workflow_id
+   OR m.plan_id != r.plan_id
+   OR m.decision != 'accepted';`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "task_group_packages_match_owner_reviews", ["workflow_v2_task_group_packages", "workflow_v2_owner_reviews", "workflow_v2_plans"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_task_group_packages p
+LEFT JOIN workflow_v2_plans plan_row ON plan_row.plan_id=p.plan_id
+LEFT JOIN workflow_v2_owner_reviews r ON r.review_id=p.owner_review_id
+WHERE plan_row.plan_id IS NULL
+   OR plan_row.workflow_id != p.workflow_id
+   OR p.task_owner_agent != plan_row.task_owner_agent
+   OR r.review_id IS NULL
+   OR r.workflow_id != p.workflow_id
+   OR r.plan_id != p.plan_id
+   OR r.decision != 'accepted'
+   OR p.status NOT IN ('draft','ready','revision_required','cancelled')
+   OR json_valid(p.task_group_agents_json)=0
+   OR json_valid(p.manager_review_refs_json)=0
+   OR json_valid(p.owner_review_refs_json)=0
+   OR json_valid(p.artifact_refs_json)=0
+   OR json_valid(p.evidence_refs_json)=0
+   OR json_valid(p.payload_json)=0;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "cat_brain_audits_match_accepted_source", ["workflow_v2_cat_brain_audits", "workflow_v2_task_group_packages", "workflow_v2_owner_reviews"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_cat_brain_audits a
+LEFT JOIN workflow_v2_task_group_packages p ON p.package_id=a.task_group_package_id AND COALESCE(a.task_group_package_id, '') != ''
+LEFT JOIN workflow_v2_owner_reviews r ON r.review_id=json_extract(CASE WHEN json_valid(a.payload_json) THEN a.payload_json ELSE '{}' END, '$.sourceOwnerReviewId')
+WHERE (
+      (
+        COALESCE(a.task_group_package_id, '') != ''
+        AND (p.package_id IS NULL OR p.workflow_id != a.workflow_id OR p.plan_id != a.plan_id OR p.status != 'ready')
+      )
+      OR (
+        COALESCE(a.task_group_package_id, '') = ''
+        AND (r.review_id IS NULL OR r.workflow_id != a.workflow_id OR r.plan_id != a.plan_id OR r.decision != 'accepted')
+      )
+   )
+   OR a.cat_brain_agent != 'main'
+   OR a.decision NOT IN ('approved','revision_required','rejected','needs_human_gate')
+   OR json_valid(a.findings_json)=0
+   OR json_valid(a.evidence_refs_json)=0
+   OR json_valid(a.payload_json)=0;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "cat_claw_audits_match_cat_brain_audits", ["workflow_v2_cat_claw_audits", "workflow_v2_cat_brain_audits"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_cat_claw_audits a
+LEFT JOIN workflow_v2_cat_brain_audits b ON b.audit_id=a.cat_brain_audit_id
+WHERE b.audit_id IS NULL
+   OR b.workflow_id != a.workflow_id
+   OR b.plan_id != a.plan_id
+   OR b.decision NOT IN ('approved','needs_human_gate')
+   OR a.cat_claw_agent != 'cat_claw'
+   OR a.decision NOT IN ('protocol_ready','protocol_revision_required','rejected')
+   OR (a.decision='protocol_ready' AND json_array_length(a.evidence_refs_json)=0)
+   OR json_valid(a.checks_json)=0
+   OR json_valid(a.evidence_refs_json)=0
+   OR json_valid(a.payload_json)=0;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "human_gate_packages_options_count", ["workflow_v2_human_gate_packages"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_human_gate_packages
+WHERE json_valid(options_json)=0
+   OR json_array_length(options_json) < ${HUMAN_GATE_APPROVE_OPTION_MIN}
+   OR json_array_length(options_json) > ${HUMAN_GATE_APPROVE_OPTION_MAX}
+   OR json_valid(required_controls_json)=0
+   OR instr(required_controls_json, 'pause')=0
+   OR instr(required_controls_json, 'terminate')=0
+   OR status NOT IN ('draft','cat_claw_audited');`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "human_gate_packages_cat_claw_source_ready", ["workflow_v2_human_gate_packages", "workflow_v2_cat_claw_audits"], `
+SELECT COUNT(*) AS count
+FROM workflow_v2_human_gate_packages p
+LEFT JOIN workflow_v2_cat_claw_audits a ON a.audit_id=COALESCE(NULLIF(p.source_cat_claw_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceCatClawAuditId'))
+WHERE json_valid(p.payload_json)=0
+   OR (p.status='cat_claw_audited'
+      AND COALESCE(NULLIF(p.source_cat_claw_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceCatClawAuditId'), '') = '')
+   OR (COALESCE(NULLIF(p.source_cat_claw_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceCatClawAuditId'), '') != ''
+      AND (a.audit_id IS NULL OR a.workflow_id != p.workflow_id OR a.plan_id != p.plan_id OR a.decision != 'protocol_ready'));`));
+  const failed = checks.filter((check) => check.status === "fail");
+  const advisoryFindings = advisoryChecks.filter((check) => check.status === "advisory");
+  const schemaMissing = Object.entries(schema).filter(([, info]) => !info.exists || !info.requiredColumnsPresent);
+  return {
+    operation: "workflow.v2.validate",
+    dryRun: true,
+    previewOnly: true,
+    status: failed.length || schemaMissing.length ? "fail" : "pass",
+    ok: failed.length === 0 && schemaMissing.length === 0,
+    schema,
+    checks,
+    advisoryChecks,
+    failedChecks: failed.map((check) => check.checkId),
+    advisoryFindings: advisoryFindings.map((check) => check.checkId),
+    advisoryCount: advisoryFindings.reduce((total, check) => total + Number(check.count || 0), 0),
+    missingSchema: schemaMissing.map(([table, info]) => ({ table, missingColumns: info.missingColumns, exists: info.exists })),
+    dbFile: paths.dbFile
+  };
+}
+
 export async function instrumentUpsert(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const instrument = await upsertInstrumentRecord(paths, input);
@@ -9085,8 +16365,7 @@ function humanGateSummary(payload = {}, body = {}) {
 function optionKeyLabel(value, index) {
   const raw = String(value.optionKey || value.option_key || value.key || value.id || value.name || "").trim();
   if (raw) return raw.toUpperCase();
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  return index < alphabet.length ? alphabet[index] : String(index + 1);
+  return String(index + 1);
 }
 
 function humanGateAlternativeButtons(row, payload = {}, body = {}) {
@@ -9173,9 +16452,9 @@ function humanGatePlanKey(value = {}, fallback = "") {
   const raw = String(value.optionKey || value.option_key || value.key || value.payload?.optionKey || value.payload?.option_key || "").trim();
   if (raw) return raw.toUpperCase();
   const label = String(value.label || value.title || value.text || "").trim();
-  const match = label.match(/(?:批准)?方案\s*([A-Z])(?:\s|:|：|\.|、|$)/i)
-    || label.match(/\b(?:plan|option)\s*([A-Z])(?:\s|:|：|\.|、|$)/i)
-    || label.match(/^([A-Z])(?:\s|:|：|\.|、|$)/);
+  const match = label.match(/(?:批准)?方案\s*([A-Z0-9一二三四五])(?:\s|:|：|\.|、|$)/i)
+    || label.match(/\b(?:plan|option)\s*([A-Z0-9])(?:\s|:|：|\.|、|$)/i)
+    || label.match(/^([A-Z0-9])(?:\s|:|：|\.|、|$)/);
   return match ? match[1].toUpperCase() : fallback;
 }
 
@@ -9189,7 +16468,7 @@ function normalizeRawHumanGateButtonSpecs(specs = [], row = {}, payload = {}, bo
     const role = roleRaw || defaultHumanGateButtonRole(status);
     const isControl = status !== "approved" || ["reject", "pause", "terminate"].includes(role);
     if (!isControl) {
-      const defaultKey = nextPlanIndex < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[nextPlanIndex] : String(nextPlanIndex + 1);
+      const defaultKey = String(nextPlanIndex + 1);
       const key = humanGatePlanKey(value, defaultKey);
       nextPlanIndex += 1;
       const title = humanGateLocalizedPlanTitle(value, key);
@@ -9262,22 +16541,27 @@ function humanGatePlanOptionButtons(buttons = []) {
   return buttons.filter((button) => {
     const status = humanGateButtonStatus(button);
     const role = humanGateButtonRole(button);
-    return status === "approved" && !["reject", "pause", "terminate"].includes(role);
+    const controlToken = String(button.control || button.controlId || button.control_id || role || status || "").trim().toLowerCase();
+    const isControl = ["reject", "rejected", "pause", "paused", "terminate", "terminated"].includes(controlToken);
+    const hasOptionIdentity = Boolean(firstText(button.optionId, button.option_id, button.optionKey, button.option_key, button.key, button.id));
+    const roleLooksLikeOption = /approve[_-]?option|option|plan|alternative/i.test(role);
+    return (status === "approved" || (!status && (hasOptionIdentity || roleLooksLikeOption))) && !isControl;
   });
 }
 
 function auditHumanGatePlanOptions(buttons = []) {
   const planButtons = humanGatePlanOptionButtons(buttons);
-  const keys = new Set(planButtons.map((button, index) => humanGatePlanKey(button, index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1))).filter(Boolean));
-  const missing = ["A", "B", "C"].filter((key) => !keys.has(key));
-  const ok = planButtons.length >= 3 && missing.length === 0;
+  const ok = planButtons.length >= HUMAN_GATE_APPROVE_OPTION_MIN && planButtons.length <= HUMAN_GATE_APPROVE_OPTION_MAX;
   return {
     ok,
     planCount: planButtons.length,
-    requiredPlanCount: 3,
-    requiredKeys: ["A", "B", "C"],
-    missingKeys: missing,
-    reason: ok ? "" : "human_gate_requires_at_least_abc_alternatives"
+    requiredPlanCountMin: HUMAN_GATE_APPROVE_OPTION_MIN,
+    requiredPlanCountMax: HUMAN_GATE_APPROVE_OPTION_MAX,
+    reason: ok
+      ? ""
+      : planButtons.length < HUMAN_GATE_APPROVE_OPTION_MIN
+        ? "human_gate_requires_at_least_two_alternatives"
+        : "human_gate_allows_at_most_five_alternatives"
   };
 }
 
@@ -9286,7 +16570,7 @@ function auditHumanGatePlanDetails(buttons = []) {
   const missing = [];
   const nonChinese = [];
   for (const [index, button] of planButtons.entries()) {
-    const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
+    const fallback = String(index + 1);
     const key = humanGatePlanKey(button, fallback);
     const title = humanGateLocalizedPlanTitle(button, key, 80);
     const summary = firstHumanGateDetail(button, ["summary", "description", "text", "content"], 700);
@@ -9296,16 +16580,15 @@ function auditHumanGatePlanDetails(buttons = []) {
     if (!summary) missing.push(`${key}.summary`);
     if (!prompt) missing.push(`${key}.prompt`);
     if (!rollback) missing.push(`${key}.rollback`);
-    for (const [field, text] of Object.entries({ title, summary, prompt, rollback })) {
-      if (text && countChineseChars(text) < 2) nonChinese.push(`${key}.${field}`);
-    }
+    const optionText = [title, summary, prompt, rollback].filter(Boolean).join("\n");
+    if (optionText && !hasChineseFormatProse(optionText, { minChineseChars: 4, minChineseShare: 0.2 })) nonChinese.push(`${key}.option`);
   }
   const ok = missing.length === 0 && nonChinese.length === 0;
   return {
     ok,
     missingDetailFields: missing,
     nonChineseDetailFields: nonChinese,
-    languagePolicy: "cat_claw_report_primary_language_zh; technical terms, agent ids, artifact paths, symbols, and callback/tool names may remain original",
+    languagePolicy: "cat_claw_report_chinese_format; English terms, agent ids, artifact paths, symbols, and callback/tool names may remain original",
     reason: missing.length
       ? "human_gate_requires_complete_plan_details"
       : nonChinese.length
@@ -9316,6 +16599,27 @@ function auditHumanGatePlanDetails(buttons = []) {
 
 function countChineseChars(value) {
   return (String(value || "").match(/[\u3400-\u9fff]/g) || []).length;
+}
+
+function countLatinWordTokens(value) {
+  return (String(value || "").match(/[A-Za-z][A-Za-z0-9_-]*/g) || [])
+    .filter((token) => token.length > 1)
+    .length;
+}
+
+function chineseFormatProfile(value) {
+  const text = String(value || "");
+  const chineseChars = countChineseChars(text);
+  const latinWordTokens = countLatinWordTokens(text);
+  const chineseShare = chineseChars / Math.max(1, chineseChars + latinWordTokens * 2);
+  return { chineseChars, latinWordTokens, chineseShare };
+}
+
+function hasChineseFormatProse(value, options = {}) {
+  const minChineseChars = Number(options.minChineseChars || 8);
+  const minChineseShare = Number(options.minChineseShare || 0.25);
+  const profile = chineseFormatProfile(value);
+  return profile.chineseChars >= minChineseChars && profile.chineseShare >= minChineseShare;
 }
 
 function auditHumanGatePrimaryLanguage(context = {}, buttons = []) {
@@ -9340,7 +16644,7 @@ function auditHumanGatePrimaryLanguage(context = {}, buttons = []) {
   ];
   const textParts = [...primaryTextParts];
   for (const [index, button] of humanGatePlanOptionButtons(buttons).entries()) {
-    const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
+    const fallback = String(index + 1);
     const key = humanGatePlanKey(button, fallback);
     textParts.push(
       humanGateLocalizedPlanTitle(button, key, 80),
@@ -9350,17 +16654,24 @@ function auditHumanGatePrimaryLanguage(context = {}, buttons = []) {
     );
   }
   const primaryAuthoredText = primaryTextParts.filter(Boolean).join("\n");
-  const primaryChineseChars = countChineseChars(primaryAuthoredText);
   const visibleAuthoredText = textParts.filter(Boolean).join("\n");
-  const chineseChars = countChineseChars(visibleAuthoredText);
-  const requiredChineseChars = 6;
-  const ok = primaryChineseChars >= requiredChineseChars && chineseChars >= requiredChineseChars;
+  const primaryProfile = chineseFormatProfile(primaryAuthoredText);
+  const visibleProfile = chineseFormatProfile(visibleAuthoredText);
+  const requiredChineseChars = 8;
+  const requiredChineseShare = 0.25;
+  const ok = hasChineseFormatProse(primaryAuthoredText, { minChineseChars: requiredChineseChars, minChineseShare: requiredChineseShare })
+    && hasChineseFormatProse(visibleAuthoredText, { minChineseChars: requiredChineseChars, minChineseShare: requiredChineseShare });
   return {
     ok,
-    primaryChineseChars,
-    chineseChars,
+    primaryChineseChars: primaryProfile.chineseChars,
+    chineseChars: visibleProfile.chineseChars,
+    primaryLatinWordTokens: primaryProfile.latinWordTokens,
+    latinWordTokens: visibleProfile.latinWordTokens,
+    primaryChineseShare: primaryProfile.chineseShare,
+    chineseShare: visibleProfile.chineseShare,
     requiredChineseChars,
-    languagePolicy: "cat_claw_report_primary_language_zh; technical terms, agent ids, artifact paths, symbols, and callback/tool names may remain original",
+    requiredChineseShare,
+    languagePolicy: "cat_claw_report_chinese_format; English terms, agent ids, artifact paths, symbols, and callback/tool names may remain original",
     reason: ok ? "" : "human_gate_requires_chinese_primary_report"
   };
 }
@@ -9490,7 +16801,7 @@ async function dispatchHumanGatePlanRevision(rootDir, paths, row, workflowId, me
   const eventId = safeId("control");
   await sqlite(paths.dbFile, `
 INSERT INTO meeting_control_events(event_id, meeting_id, event_type, status, summary, payload_json, created_by, created_at)
-VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId || workflowId || row.object_id)}, 'human_gate_audit_failed', 'blocked', ${sqlValue("Human Gate evidence package lacks required complete A/B/C alternatives")}, ${sqlValue(JSON.stringify({ humanGateId: row.object_id, workflowId, audit }))}, 'cat_claw', ${sqlValue(createdAt)});`);
+VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId || workflowId || row.object_id)}, 'human_gate_audit_failed', 'blocked', ${sqlValue("Human Gate evidence package lacks required complete approve options")}, ${sqlValue(JSON.stringify({ humanGateId: row.object_id, workflowId, audit }))}, 'cat_claw', ${sqlValue(createdAt)});`);
   const dispatch = await meetingDispatch(rootDir, {
     workflowRootDir: paths.root,
     meetingId: meetingId || workflowId || row.object_id,
@@ -9508,10 +16819,10 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId || workflowId || row.object_i
       `Workflow ID: ${workflowId || ""}`,
       `摘要: ${summary || ""}`,
       "",
-      "硬性要求：提交给闪电猫的 Human Gate 汇报必须包含至少 A/B/C 三个以上可独立批准的备选方案。",
-      "语言要求：猫爪正式汇报以中文作为 primary language，正文结构和说明应让闪电猫直接读懂；技术名词、agent id、artifact 路径、symbol、tool/callback 名称和必要原文可以保留原文，不要求每个字段全中文，但整份材料不能是纯英文。",
+      `硬性要求：提交给闪电猫的 Human Gate 汇报必须包含 ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} 个可独立批准的备选方案。`,
+      "语言要求：猫爪正式汇报使用中文格式组织正文和说明，让闪电猫直接读懂；English terms、agent id、artifact 路径、symbol、tool/callback 名称和必要原文可以保留原文，不要求每个词都翻译成中文。",
       "硬性要求：Telegram 按钮必须使用 Bot API style 字段渲染整按钮颜色；不要用颜色方块 emoji 冒充按钮底色。",
-      "猫爪只审计是否满足该结构，不生成方案内容。请猫之脑 main 补齐备选方案内容，并在再次交给猫爪前自检：方案 A、方案 B、方案 C 都存在、互斥、可执行、有证据和回滚边界，正式汇报整体以中文为主。",
+      `猫爪只审计是否满足该结构，不生成方案内容。请猫之脑 main 补齐备选方案内容，并在再次交给猫爪前自检：${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} 个方案存在、互斥、可执行、有证据和回滚边界，正式汇报整体按中文格式组织。`,
       "补齐后再由猫爪复核并提交 button-first Human Gate。"
     ].filter(Boolean).join("\n"),
     payload: {
@@ -9631,7 +16942,7 @@ WHERE outbox_id=${sqlValue(outboxToCancel.outbox_id)};`);
       } catch (error) {
         revision = { status: "failed", error: String(error?.message || error).slice(0, 2000) };
       }
-      results.push({ humanGateId: row.object_id, workflowId, status: "blocked_missing_abc_options", audit: buttonSet.audit, revisionDispatch: revision.dispatch, outboxId: outboxToCancel?.outbox_id || existing?.outbox_id || "" });
+	      results.push({ humanGateId: row.object_id, workflowId, status: "blocked_human_gate_options_policy", audit: buttonSet.audit, revisionDispatch: revision.dispatch, outboxId: outboxToCancel?.outbox_id || existing?.outbox_id || "" });
       continue;
     }
     const { buttons } = buttonSet;
@@ -10203,9 +17514,12 @@ LIMIT 1;`, { json: true });
   const startIndex = Math.min(receipts.length, chunks.length);
   const replyMarkup = payload.telegramReplyMarkup || payload.reply_markup || null;
   const inlineKeyboard = Array.isArray(replyMarkup?.inline_keyboard) ? replyMarkup.inline_keyboard : [];
-  const inlineButtonCount = inlineKeyboard.reduce((count, buttonRow) => count + (Array.isArray(buttonRow) ? buttonRow.length : 0), 0);
-  const payloadButtons = Array.isArray(payload.buttons) ? payload.buttons : [];
-  const buttonCount = inlineButtonCount || payloadButtons.length;
+	  const inlineButtonCount = inlineKeyboard.reduce((count, buttonRow) => count + (Array.isArray(buttonRow) ? buttonRow.length : 0), 0);
+	  const payloadButtons = Array.isArray(payload.buttons) ? payload.buttons : [];
+	  const buttonCount = inlineButtonCount || payloadButtons.length;
+	  const approveOptionButtonCount = payloadButtons.length
+	    ? humanGatePlanOptionButtons(payloadButtons).length
+	    : Math.max(0, buttonCount - 2);
   const targetRequired = TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES.has(messageType);
   const deliveryOperatorReason = String(
     input.deliveryOperatorReason ||
@@ -10260,9 +17574,9 @@ LIMIT 1;`, { json: true });
   if (messageType === "human_gate_request" && !catClawAuditId) {
     governanceViolations.push({ code: "cat_claw_audit_required", detail: "Human Gate request delivery must be backed by Cat Claw/secretary audit evidence." });
   }
-  if (messageType === "human_gate_request" && buttonCount < 5) {
-    governanceViolations.push({ code: "human_gate_buttons_incomplete", detail: "Human Gate request delivery expects A/B/C approve options plus pause and terminate controls." });
-  }
+	  if (messageType === "human_gate_request" && (approveOptionButtonCount < HUMAN_GATE_APPROVE_OPTION_MIN || approveOptionButtonCount > HUMAN_GATE_APPROVE_OPTION_MAX)) {
+	    governanceViolations.push({ code: "human_gate_buttons_incomplete", detail: `Human Gate request delivery expects ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} approve options plus pause and terminate controls.` });
+	  }
   if (messageType === "human_gate_request" && account !== "cat_claw") {
     governanceWarnings.push({ code: "non_cat_claw_delivery_account", detail: `Human Gate request delivery should normally use cat_claw, got ${account || "<empty>"}.` });
   }
@@ -10317,7 +17631,7 @@ LIMIT 1;`, { json: true });
         "idempotency key",
         "claimable outbox status",
         "bound Telegram target",
-        ...(messageType === "human_gate_request" ? ["Cat Claw/secretary audit evidence", "A/B/C approve buttons plus pause/terminate controls"] : [])
+        ...(messageType === "human_gate_request" ? ["Cat Claw/secretary audit evidence", `${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} approve buttons plus pause/terminate controls`] : [])
       ],
       evidencePresence: {
         deliveryOperatorReason: Boolean(deliveryOperatorReason),
@@ -12856,7 +20170,7 @@ function closeoutReportDraft(closeout = {}, packageKind = "cat_claw_report") {
     receiptSummary: refs.receiptSummary || {},
     humanGateOptions: humanGatePackage ? closeoutDraftOptions(closeout) : [],
     nextActions: humanGatePackage ? [
-      "由猫爪确认三方案、暂停、终止按钮结构和中文正文完整。",
+      `由猫爪确认 ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} 个方案、暂停、终止按钮结构和中文格式正文完整。`,
       "如 evidenceGaps 为空，才可进入正式 Human Gate 投递；本预览不创建请求、不发送 Telegram。",
       "若闪电猫选择退回或暂停，保留 workflow id、incident id、checkpoint/resume 证据。"
     ] : [
@@ -13852,16 +21166,16 @@ async function workflowIncidentCloseoutHumanGateRequestPreview(rootDir, input = 
     requestReady: eligible,
     writeReady: eligible && writeViolations.length === 0,
     audit,
-    buttonSummary: {
-      total: buttons.length,
-      planCount: planButtons.length,
-      controlRoles: Array.from(controlRoles).sort(),
-      hasA: planButtons.some((button, index) => humanGatePlanKey(button, index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1)) === "A"),
-      hasB: planButtons.some((button, index) => humanGatePlanKey(button, index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1)) === "B"),
-      hasC: planButtons.some((button, index) => humanGatePlanKey(button, index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1)) === "C"),
-      hasPause: controlRoles.has("pause"),
-      hasTerminate: controlRoles.has("terminate"),
-      hasReject: controlRoles.has("reject")
+	    buttonSummary: {
+	      total: buttons.length,
+	      planCount: planButtons.length,
+	      planCountMin: HUMAN_GATE_APPROVE_OPTION_MIN,
+	      planCountMax: HUMAN_GATE_APPROVE_OPTION_MAX,
+	      planCountWithinPolicy: planButtons.length >= HUMAN_GATE_APPROVE_OPTION_MIN && planButtons.length <= HUMAN_GATE_APPROVE_OPTION_MAX,
+	      controlRoles: Array.from(controlRoles).sort(),
+	      hasPause: controlRoles.has("pause"),
+	      hasTerminate: controlRoles.has("terminate"),
+	      hasReject: controlRoles.has("reject")
     },
     wouldCreate: {
       humanGateRecords: eligible ? 1 : 0,
@@ -17203,7 +24517,7 @@ function humanGateButtonTelegramStyle(button = {}, index = 0) {
 function humanGateButtonDisplayLabel(button = {}, index = 0) {
   const label = String(button.label || button.title || button.text || `Option ${index + 1}`).trim();
   if (humanGateButtonIsControl(button)) return humanGateTranslatedText(label, 48) || label;
-  const fallback = index < 26 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index] : String(index + 1);
+  const fallback = String(index + 1);
   const key = humanGatePlanKey(button, fallback);
   const title = humanGateLocalizedPlanTitle(button, key, 36);
   return `批准方案 ${key}${title ? `：${title}` : ""}`;
@@ -17350,7 +24664,7 @@ export async function humanGateRequest(rootDir, input) {
     auditHumanGatePrimaryLanguage(input, buttonSpecs)
   );
   if (!buttonAudit.ok) {
-    throw new Error(`Human Gate request blocked: ${buttonAudit.reason}; cat-brain main must provide complete plan A/B/C details and Chinese-primary report material before cat_claw submits to Flashcat`);
+    throw new Error(`Human Gate request blocked: ${buttonAudit.reason}; cat-brain main must provide ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} complete option details and Chinese-format report material before cat_claw submits to Flashcat`);
   }
   let gate = null;
   let supersededGate = null;
@@ -20574,6 +27888,100 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.session.run.complete":
     case "session_run.complete":
       return workflowSessionRunComplete(rootDir, input);
+    case "workflow.v2.plan.preview":
+      return workflowV2PlanPreview(rootDir, input);
+    case "workflow.v2.plan.create":
+      return workflowV2PlanCreate(rootDir, input);
+    case "workflow.v2.info_stack.preview":
+      return workflowV2InfoStackPreview(rootDir, input);
+    case "workflow.v2.info_stack.record":
+      return workflowV2InfoStackRecord(rootDir, input);
+    case "workflow.v2.info_stack.read":
+      return workflowV2InfoStackRead(rootDir, input);
+    case "workflow.v2.read_receipt.record":
+      return workflowV2ReadReceiptRecord(rootDir, input);
+    case "workflow.v2.notification.preview":
+      return workflowV2NotificationPreview(rootDir, input);
+    case "workflow.v2.worker_backend.preflight":
+      return workflowV2WorkerBackendPreflight(rootDir, input);
+    case "workflow.v2.worker_backend_preflight.record":
+      return workflowV2WorkerBackendPreflightRecord(rootDir, input);
+    case "workflow.v2.worker_spawn.preview":
+      return workflowV2WorkerSpawnPreview(rootDir, input);
+    case "workflow.v2.worker_spawn.create":
+      return workflowV2WorkerSpawnCreate(rootDir, input);
+    case "workflow.v2.worker_lifecycle.preview":
+      return workflowV2WorkerLifecyclePreview(rootDir, input);
+    case "workflow.v2.worker_handoff.preview":
+      return workflowV2WorkerHandoffPreview(rootDir, input);
+    case "workflow.v2.worker_handoff.record":
+      return workflowV2WorkerHandoffRecord(rootDir, input);
+    case "workflow.v2.worker_retire.preview":
+      return workflowV2WorkerRetirePreview(rootDir, input);
+    case "workflow.v2.worker_retire.record":
+      return workflowV2WorkerRetireRecord(rootDir, input);
+    case "workflow.v2.worker_successor.preview":
+      return workflowV2WorkerSuccessorPreview(rootDir, input);
+    case "workflow.v2.worker_successor.create":
+      return workflowV2WorkerSuccessorCreate(rootDir, input);
+    case "workflow.v2.control_loop.preview":
+      return workflowV2ControlLoopPreview(rootDir, input);
+    case "workflow.v2.control_loop.tick":
+      return workflowV2ControlLoopTick(rootDir, input);
+    case "workflow.v2.worker_adapter_job.preview":
+      return workflowV2WorkerAdapterJobPreview(rootDir, input);
+    case "workflow.v2.worker_adapter_job.record":
+      return workflowV2WorkerAdapterJobRecord(rootDir, input);
+    case "workflow.v2.worker_adapter_job.list":
+      return workflowV2WorkerAdapterJobList(rootDir, input);
+    case "workflow.v2.worker_adapter_job.claim":
+      return workflowV2WorkerAdapterJobClaim(rootDir, input);
+    case "workflow.v2.worker_adapter_job.heartbeat":
+      return workflowV2WorkerAdapterJobHeartbeat(rootDir, input);
+    case "workflow.v2.worker_adapter_job.release":
+      return workflowV2WorkerAdapterJobRelease(rootDir, input);
+    case "workflow.v2.worker_adapter_job.fail":
+      return workflowV2WorkerAdapterJobFail(rootDir, input);
+    case "workflow.v2.adapter_runner.preview":
+      return workflowV2AdapterRunnerPreview(rootDir, input);
+    case "workflow.v2.adapter_runner.drain":
+      return workflowV2AdapterRunnerDrain(rootDir, input);
+    case "workflow.v2.worker_result.submit.preview":
+      return workflowV2WorkerResultSubmitPreview(rootDir, input);
+    case "workflow.v2.worker_result.submit":
+      return workflowV2WorkerResultSubmit(rootDir, input);
+    case "workflow.v2.worker_result.fail.preview":
+      return workflowV2WorkerResultFailPreview(rootDir, input);
+    case "workflow.v2.worker_result.fail":
+      return workflowV2WorkerResultFail(rootDir, input);
+    case "workflow.v2.manager_review.record":
+      return workflowV2ManagerReviewRecord(rootDir, input);
+    case "workflow.v2.owner_review.preview":
+      return workflowV2OwnerReviewPreview(rootDir, input);
+    case "workflow.v2.owner_review.record":
+      return workflowV2OwnerReviewRecord(rootDir, input);
+    case "workflow.v2.task_group_package.preview":
+      return workflowV2TaskGroupPackagePreview(rootDir, input);
+    case "workflow.v2.task_group_package.record":
+      return workflowV2TaskGroupPackageRecord(rootDir, input);
+    case "workflow.v2.cat_brain_audit.preview":
+      return workflowV2CatBrainAuditPreview(rootDir, input);
+    case "workflow.v2.cat_brain_audit.record":
+      return workflowV2CatBrainAuditRecord(rootDir, input);
+    case "workflow.v2.cat_claw_audit.preview":
+      return workflowV2CatClawAuditPreview(rootDir, input);
+    case "workflow.v2.cat_claw_audit.record":
+      return workflowV2CatClawAuditRecord(rootDir, input);
+    case "workflow.v2.human_gate_package.preview":
+      return workflowV2HumanGatePackagePreview(rootDir, input);
+    case "workflow.v2.human_gate_package.record":
+      return workflowV2HumanGatePackageRecord(rootDir, input);
+    case "workflow.v2.human_gate_request.preview":
+      return workflowV2HumanGateRequestPreview(rootDir, input);
+    case "workflow.v2.human_gate_request":
+      return workflowV2HumanGateRequest(rootDir, input, permissionDecision);
+    case "workflow.v2.validate":
+      return workflowV2Validate(rootDir, input);
     case "runtime.agent":
     case "runtime.agent.upsert":
       return runtimeAgentUpsert(rootDir, input);

@@ -168,6 +168,32 @@ async function assertRejectsMessage(fn, expected) {
   assert.fail(`expected rejection matching ${expected}`);
 }
 
+function v2PlanContract(overrides = {}) {
+  return {
+    orchestrationPattern: "manager_worker",
+    orchestrationRationale: "Fixture uses manager-worker orchestration so worker output is delegated, reviewed, and synthesized through durable artifacts.",
+    workerBudget: {
+      maxWorkers: 6,
+      concurrencyLimit: 2,
+      maxWorkerContextTokens: 64000
+    },
+    acceptanceCriteria: ["bounded delegation contract is present", "worker output is reviewed before acceptance"],
+    ...overrides
+  };
+}
+
+function v2WorkerDelegation(overrides = {}) {
+  return {
+    workerObjective: "Complete the bounded fixture task using only the provided workflow input reference.",
+    outputFormat: "structured artifact summary with receipt reference",
+    toolBoundary: "Use only the configured worker runtime tools and do not write directly to workflow state.",
+    acceptanceCriteria: ["artifact or output summary is produced", "receipt evidence is available for manager review"],
+    stopCondition: "Stop after producing the requested artifact or reporting a bounded failure.",
+    contextBudgetTokens: 64000,
+    ...overrides
+  };
+}
+
 function planButtons() {
   return [
     {
@@ -219,7 +245,7 @@ async function requestHumanGate(root, overrides = {}) {
     action: "human_gate.request",
     meetingId: "meeting-regression",
     workflowId: "workflow-regression",
-    text: "猫爪正式汇报：请选择 A/B/C。",
+    text: "猫爪正式汇报：请选择本轮可批准方案。",
     buttons: planButtons(),
     ...overrides
   });
@@ -275,7 +301,7 @@ function draftPhaseOwners(draft) {
 async function testHumanGateLanguageAndResume() {
   const englishRoot = await tempRoot("language-en");
   await assertRejectsMessage(
-    () => requestHumanGate(englishRoot, { text: "Choose A/B/C for next workflow step." }),
+    () => requestHumanGate(englishRoot, { text: "Choose one option for next workflow step." }),
     /human_gate_requires_chinese_primary_report/
   );
   const shortRoot = await tempRoot("language-short");
@@ -289,6 +315,38 @@ async function testHumanGateLanguageAndResume() {
   await assertRejectsMessage(
     () => requestHumanGate(incompleteRoot, { buttons: incompleteButtons }),
     /human_gate_requires_complete_plan_details/
+  );
+  const twoOptionRoot = await tempRoot("hgate-two-options");
+  const twoOptionRequest = await requestHumanGate(twoOptionRoot, {
+    text: "猫爪正式汇报：请选择本轮两套方案之一，并填写闪电猫原话。",
+    buttons: planButtons().slice(0, 2)
+  });
+  assert.equal(approvedButtons(twoOptionRequest).length, 2);
+  const sixOptionRoot = await tempRoot("hgate-six-options");
+  const sixButtons = [
+    ...planButtons(),
+    {
+      label: "方案 D：补充审计",
+      summary: "增加一次猫之脑流程审计，保留现有 artifacts。",
+      prompt: "由猫之脑复核流程证据后再提交。",
+      rollback: "如审计不通过，退回 task owner。"
+    },
+    {
+      label: "方案 E：降级执行",
+      summary: "降低本轮任务范围，只保留必要产出。",
+      prompt: "按最小可交付范围推进。",
+      rollback: "范围不足时恢复原计划。"
+    },
+    {
+      label: "方案 F：延后处理",
+      summary: "延后本轮执行，等待更多输入。",
+      prompt: "暂停本项并记录 resume 条件。",
+      rollback: "收到新输入后恢复。"
+    }
+  ];
+  await assertRejectsMessage(
+    () => requestHumanGate(sixOptionRoot, { buttons: sixButtons }),
+    /human_gate_allows_at_most_five_alternatives/
   );
   const englishPlansRoot = await tempRoot("hgate-english-plans");
   await assertRejectsMessage(
@@ -493,7 +551,7 @@ VALUES
       ]
     },
     reportDraft: {
-      summaryZh: "猫爪正式汇报：incident closeout 回归测试。请选择 A/B/C。",
+      summaryZh: "猫爪正式汇报：incident closeout 回归测试。请选择可批准方案。",
       humanGateOptions: []
     }
   }, null, 2));
@@ -534,7 +592,7 @@ VALUES
     meetingId: workflowId,
     gateType: "incident_closeout",
     stageKey: "incident-closeout:incident-closeout-a",
-    text: "猫爪正式汇报：incident closeout 回归测试。请选择 A/B/C 方案并填写闪电猫原话。",
+    text: "猫爪正式汇报：incident closeout 回归测试。请选择方案并填写闪电猫原话。",
     buttons: closeoutButtons,
     payload: {
       closeoutArtifactRef: artifactRel,
@@ -583,7 +641,7 @@ async function testHumanGateReadinessChecklist() {
   const dbFile = path.join(root, "tracking.db");
   sqliteExec(dbFile, `
 INSERT OR REPLACE INTO workflow_runs(workflow_id, workflow_type, status, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
-VALUES ('workflow-regression', 'regression', 'waiting_human', 'main', 'Human Gate readiness regression', '验证 Human Gate readiness checklist。', 'A/B/C、暂停、终止、证据和回执完整。', '人工停止', 'review', 'submit_human_gate', '{}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
+VALUES ('workflow-regression', 'regression', 'waiting_human', 'main', 'Human Gate readiness regression', '验证 Human Gate readiness checklist。', '方案、暂停、终止、证据和回执完整。', '人工停止', 'review', 'submit_human_gate', '{}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
 UPDATE protocol_objects
 SET source_agent='cat_claw'
 WHERE object_type='human_gate_record' AND json_extract(payload_json, '$.workflowId')='workflow-regression';
@@ -601,7 +659,7 @@ VALUES ('artifact-hgate-readiness', 'workflow-regression', 'human_gate_evidence'
 INSERT INTO workflow_agent_runs(agent_run_id, workflow_id, phase_key, task_id, dispatch_id, runtime, agent_id, status, output_hash, receipt_ref, payload_json, created_at, updated_at)
 VALUES ('agent-hgate-readiness', 'workflow-regression', 'review', 'task-hgate-readiness', 'dispatch-hgate-readiness', 'openclaw', 'cat_claw', 'completed', 'hash-hgate-readiness', 'artifact://receipt-hgate-readiness', '{}', '2026-05-31T00:00:04.000Z', '2026-05-31T00:00:05.000Z');
 INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
-VALUES ('outbox-hgate-readiness', 'workflow-regression', 'telegram', '8390724843', 'human_gate_request', 'sent', '猫爪正式汇报：请选择 A/B/C。 /hgate tawhg:readiness-secret', '{}', '2026-05-31T00:00:06.000Z', '2026-05-31T00:00:07.000Z');
+VALUES ('outbox-hgate-readiness', 'workflow-regression', 'telegram', '8390724843', 'human_gate_request', 'sent', '猫爪正式汇报：请选择方案。 /hgate tawhg:readiness-secret', '{}', '2026-05-31T00:00:06.000Z', '2026-05-31T00:00:07.000Z');
 INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
 VALUES ('noise-hgate-readiness', 'human_gate_record', 'pending', NULL, 'regression', 'cat_claw', '', 'artifact://noise', '{"workflowId":"workflow-regression-extra"}', 'hash-noise', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');
 INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
@@ -625,7 +683,7 @@ VALUES
   assert.equal(readiness.summary.approveOptionCount, 3);
   assert.equal(readiness.summary.recordCount, 1);
   assert.equal(readiness.refs.sentOutboxIds.includes("outbox-hgate-readiness"), true);
-  assert.equal(readiness.checklist.find((item) => item.key === "three_approve_options")?.status, "pass");
+  assert.equal(readiness.checklist.find((item) => item.key === "approve_options_count")?.status, "pass");
   assert.equal(readiness.checklist.find((item) => item.key === "pause_control")?.status, "pass");
   assert.equal(readiness.checklist.find((item) => item.key === "terminate_control")?.status, "pass");
   assert.equal(readiness.checklist.find((item) => item.key === "checkpoint_available")?.status, "pass");
@@ -1556,16 +1614,15 @@ ORDER BY artifact_id;`);
     incidentId: incidentLinked.incidentId,
     closeoutArtifactId: "artifact-closeout-regression"
   });
-  assert.equal(humanGateRequestPreview.schemaVersion, "workflow_incident_closeout_human_gate_request_preview.v1");
-  assert.equal(humanGateRequestPreview.readOnly, true);
-  assert.equal(humanGateRequestPreview.eligible, true);
-  assert.equal(humanGateRequestPreview.requestReady, true);
-  assert.equal(humanGateRequestPreview.buttonSummary.planCount >= 3, true);
-  assert.equal(humanGateRequestPreview.buttonSummary.hasA, true);
-  assert.equal(humanGateRequestPreview.buttonSummary.hasB, true);
-  assert.equal(humanGateRequestPreview.buttonSummary.hasC, true);
-  assert.equal(humanGateRequestPreview.buttonSummary.hasPause, true);
-  assert.equal(humanGateRequestPreview.buttonSummary.hasTerminate, true);
+	  assert.equal(humanGateRequestPreview.schemaVersion, "workflow_incident_closeout_human_gate_request_preview.v1");
+	  assert.equal(humanGateRequestPreview.readOnly, true);
+	  assert.equal(humanGateRequestPreview.eligible, true);
+	  assert.equal(humanGateRequestPreview.requestReady, true);
+	  assert.equal(humanGateRequestPreview.buttonSummary.planCountWithinPolicy, true);
+	  assert.equal(humanGateRequestPreview.buttonSummary.planCount >= 2, true);
+	  assert.equal(humanGateRequestPreview.buttonSummary.planCount <= 5, true);
+	  assert.equal(humanGateRequestPreview.buttonSummary.hasPause, true);
+	  assert.equal(humanGateRequestPreview.buttonSummary.hasTerminate, true);
   assert.equal(humanGateRequestPreview.wouldCreate.humanGateRecords, 1);
   assert.equal(humanGateRequestPreview.wouldCreate.humanGateButtons >= 5, true);
   assert.equal(humanGateRequestPreview.wouldCreate.telegramOutbox, 1);
@@ -2401,6 +2458,2953 @@ ORDER BY created_at ASC;`);
   assert.equal(rows.some((row) => row.reason.includes("abc")), false);
   const workflowRows = sqliteJson(dbFile, `SELECT status FROM workflow_runs WHERE workflow_id='${workflowId}';`);
   assert.equal(workflowRows[0].status, "active");
+}
+
+async function testWorkflowV2AdapterJobManifest() {
+  const root = await tempRoot("workflow-v2-adapter-job");
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = "wf-v2-adapter-job";
+  await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId: "session-v2-adapter-worker",
+    status: "active",
+    ownerAgent: "cat_body",
+    taskType: "coding",
+    runtimeTarget: "hermers",
+    purpose: "Adapter job manifest smoke worker",
+    systemBrief: "Use the prepared workflow session input and return results through workflow.v2.worker_result.* only.",
+    resourceBudget: { contextLimitTokens: 64000 }
+  });
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: "plan-v2-adapter-job",
+    nodeId: "node-v2-adapter-job",
+    infoId: "info-v2-adapter-task-input",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/wf-v2-adapter-job/input.json",
+    recipientAgent: "cat_body",
+    summary: "Adapter job task input pointer"
+  });
+  const worker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-adapter-job",
+    nodeId: "node-v2-adapter-job",
+    managerAgent: "cat_body",
+    sessionId: "session-v2-adapter-worker",
+    workerRunId: "worker-v2-adapter-job",
+    taskInputInfoId: "info-v2-adapter-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  const claim = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-adapter-job",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-04T00:00:00.000Z"
+  });
+  assert.equal(claim.workerResults[0].status, "leased_waiting_adapter");
+  const lease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
+  const wrongLeasePreview = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.preview",
+    workerRunId: worker.workerRun.workerRunId,
+    leaseOwner: "wrong-owner",
+    leaseUntil: lease.leaseUntil,
+    generatedAt: "2026-07-04T00:00:01.000Z"
+  });
+  assert.equal(wrongLeasePreview.valid, false);
+  assert.equal(Boolean(wrongLeasePreview.errors.some((item) => item.code === "lease_owner_mismatch")), true);
+  const preview = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.preview",
+    workerRunId: worker.workerRun.workerRunId,
+    leaseOwner: lease.leaseOwner,
+    leaseUntil: lease.leaseUntil,
+    generatedAt: "2026-07-04T00:00:01.000Z"
+  });
+  assert.equal(preview.valid, true);
+  assert.equal(preview.manifest.backend.hostAlias, "wsl-agents");
+  assert.equal(preview.manifest.backend.image, "flashcat/hermes-worker:20260704");
+  assert.equal(preview.manifest.context.limitTokens, 64000);
+  assert.equal(preview.manifest.sessionInput.input.workerRunId, worker.workerRun.workerRunId);
+  assert.equal(preview.manifest.output.submitAction, "workflow.v2.worker_result.submit");
+  assert.equal(preview.manifest.constraints.noDirectDatabaseWrites, true);
+  const record = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: worker.workerRun.workerRunId,
+    leaseOwner: lease.leaseOwner,
+    leaseUntil: lease.leaseUntil,
+    generatedAt: "2026-07-04T00:00:01.000Z"
+  });
+  assert.equal(record.valid, true);
+  assert.equal(record.adapterJob.status, "queued");
+  assert.equal(record.adapterJob.workerAttempt, 1);
+  assert.equal(Boolean(await pathExists(record.artifact.artifactFile)), true);
+  const manifest = JSON.parse(await fs.readFile(record.artifact.artifactFile, "utf8"));
+  assert.equal(manifest.workerRunId, worker.workerRun.workerRunId);
+  assert.equal(manifest.backend.returnPath.directDatabaseWritesAllowed, false);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", `info_id='${record.adapterJobInfo.infoId}' AND worker_run_id='${worker.workerRun.workerRunId}'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `adapter_job_id='${record.adapterJob.adapterJobId}' AND status='queued'`), 1);
+  const jobList = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.list",
+    workflowId,
+    status: "queued"
+  });
+  assert.equal(jobList.count, 1);
+  assert.equal(jobList.jobs[0].adapterJobId, record.adapterJob.adapterJobId);
+  const row = sqliteJson(dbFile, `SELECT status, output_info_id AS outputInfoId, payload_json AS payloadJson FROM workflow_v2_worker_runs WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
+  assert.equal(row.status, "running");
+  assert.equal(row.outputInfoId, "");
+  const payload = JSON.parse(row.payloadJson || "{}");
+  assert.equal(payload.adapterJob.adapterJobInfoId, record.adapterJobInfo.infoId);
+  assert.equal(payload.adapterJob.artifactRef, record.artifact.artifactRef);
+  assert.equal(payload.adapterJob.attempt, 1);
+  const duplicatePreview = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.preview",
+    workerRunId: worker.workerRun.workerRunId,
+    leaseOwner: lease.leaseOwner,
+    leaseUntil: lease.leaseUntil,
+    adapterJobInfoId: "info-v2-adapter-job-duplicate",
+    artifactId: "duplicate-adapter-job",
+    generatedAt: "2026-07-04T00:00:02.000Z"
+  });
+  assert.equal(duplicatePreview.valid, false);
+  assert.equal(Boolean(duplicatePreview.errors.some((item) => item.code === "adapter_job_already_recorded")), true);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_adapter_job.record",
+      workerRunId: worker.workerRun.workerRunId,
+      leaseOwner: lease.leaseOwner,
+      leaseUntil: lease.leaseUntil,
+      adapterJobInfoId: "info-v2-adapter-job-duplicate",
+      artifactId: "duplicate-adapter-job",
+      generatedAt: "2026-07-04T00:00:02.000Z"
+    }),
+    /adapter_job_already_recorded/
+  );
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET attempt=2,
+    lease_owner='test-v2-adapter-job-retry',
+    lease_until='2026-07-04T00:02:00.000Z',
+    updated_at='2026-07-04T00:01:00.000Z'
+WHERE worker_run_id='${worker.workerRun.workerRunId}';`);
+  const retryAttemptPreview = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.preview",
+    workerRunId: worker.workerRun.workerRunId,
+    leaseOwner: "test-v2-adapter-job-retry",
+    leaseUntil: "2026-07-04T00:02:00.000Z",
+    generatedAt: "2026-07-04T00:01:01.000Z"
+  });
+  assert.equal(retryAttemptPreview.valid, true);
+  assert.equal(retryAttemptPreview.manifest.lease.attempt, 2);
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET attempt=1,
+    lease_owner='${lease.leaseOwner}',
+    lease_until='${lease.leaseUntil}',
+    updated_at='2026-07-04T00:01:05.000Z'
+WHERE worker_run_id='${worker.workerRun.workerRunId}';`);
+  const claimJob = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.claim",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "runner-hermes-1",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T00:00:10.000Z"
+  });
+  assert.equal(claimJob.count, 1);
+  assert.equal(claimJob.claimed[0].adapterJobId, record.adapterJob.adapterJobId);
+  assert.equal(claimJob.claimed[0].status, "running");
+  assert.equal(claimJob.claimed[0].runnerAttempt, 1);
+  const heartbeat = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.heartbeat",
+    adapterJobId: record.adapterJob.adapterJobId,
+    runnerId: "runner-hermes-1",
+    leaseUntil: claimJob.claimed[0].leaseUntil,
+    leaseMs: 45_000,
+    generatedAt: "2026-07-04T00:00:15.000Z"
+  });
+  assert.equal(heartbeat.job.status, "running");
+  assert.notEqual(heartbeat.job.leaseUntil, claimJob.claimed[0].leaseUntil);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_result.submit",
+      workerRunId: worker.workerRun.workerRunId,
+      leaseOwner: lease.leaseOwner,
+      leaseUntil: lease.leaseUntil,
+      adapterJobId: record.adapterJob.adapterJobId,
+      generatedAt: "2026-07-04T00:00:18.000Z",
+      artifactRef: "artifact://workflow-v2/wf-v2-adapter-job/output-stale.json",
+      receipt: { adapter: "hermers", status: "completed" },
+      summary: "Adapter job output without runner lease."
+    }),
+    /adapter_job_lease_until_required/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${worker.workerRun.workerRunId}' AND status='running' AND lease_owner='${lease.leaseOwner}' AND lease_until='${lease.leaseUntil}'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${worker.workerRun.sessionRunId}' AND status='running'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `adapter_job_id='${record.adapterJob.adapterJobId}' AND status='running' AND lease_owner='runner-hermes-1' AND lease_until='${heartbeat.job.leaseUntil}'`), 1);
+  const submitResult = await runAction(root, {
+    action: "workflow.v2.worker_result.submit",
+    workerRunId: worker.workerRun.workerRunId,
+    leaseOwner: lease.leaseOwner,
+    leaseUntil: lease.leaseUntil,
+    adapterJobId: record.adapterJob.adapterJobId,
+    adapterJobLeaseOwner: "runner-hermes-1",
+    adapterJobLeaseUntil: heartbeat.job.leaseUntil,
+    generatedAt: "2026-07-04T00:00:20.000Z",
+    artifactRef: "artifact://workflow-v2/wf-v2-adapter-job/output.json",
+    receipt: { adapter: "hermers", status: "completed" },
+    summary: "Adapter job output."
+  });
+  assert.equal(submitResult.valid, true);
+  assert.equal(submitResult.adapterJobUpdate.job.status, "completed");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `adapter_job_id='${record.adapterJob.adapterJobId}' AND status='completed'`), 1);
+
+  const releaseWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-adapter-job",
+    nodeId: "node-v2-adapter-job",
+    managerAgent: "cat_body",
+    sessionId: "session-v2-adapter-worker",
+    workerRunId: "worker-v2-adapter-release",
+    taskInputInfoId: "info-v2-adapter-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-adapter-release-worker",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-04T00:10:00.000Z"
+  });
+  const releaseWorkerLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${releaseWorker.workerRun.workerRunId}';`)[0];
+  const releaseRecord = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: releaseWorker.workerRun.workerRunId,
+    leaseOwner: releaseWorkerLease.leaseOwner,
+    leaseUntil: releaseWorkerLease.leaseUntil,
+    generatedAt: "2026-07-04T00:10:01.000Z"
+  });
+  const releaseClaim = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.claim",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "runner-hermes-release",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T00:10:10.000Z"
+  });
+  assert.equal(releaseClaim.claimed[0].adapterJobId, releaseRecord.adapterJob.adapterJobId);
+  const releaseResult = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.release",
+    adapterJobId: releaseRecord.adapterJob.adapterJobId,
+    runnerId: "runner-hermes-release",
+    leaseUntil: releaseClaim.claimed[0].leaseUntil,
+    retryDelayMs: 0,
+    generatedAt: "2026-07-04T00:10:15.000Z",
+    reason: "runner voluntary release"
+  });
+  assert.equal(releaseResult.job.status, "retry_scheduled");
+  assert.equal(releaseResult.job.leaseOwner, "");
+  const releasedJobRows = sqliteJson(dbFile, `SELECT status, next_retry_at AS nextRetryAt, runner_attempt AS runnerAttempt FROM workflow_v2_worker_adapter_jobs WHERE adapter_job_id='${releaseRecord.adapterJob.adapterJobId}';`);
+  const releaseWorkerRows = sqliteJson(dbFile, `SELECT status, attempt, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${releaseWorker.workerRun.workerRunId}';`);
+  const failClaim = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.claim",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "runner-hermes-release",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T00:10:16.000Z"
+  });
+  assert.equal(failClaim.count, 1, JSON.stringify({ failClaim, releasedJobRows, releaseWorkerRows }));
+  assert.equal(failClaim.claimed[0].adapterJobId, releaseRecord.adapterJob.adapterJobId);
+  const failResult = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.fail",
+    adapterJobId: releaseRecord.adapterJob.adapterJobId,
+    runnerId: "runner-hermes-release",
+    leaseUntil: failClaim.claimed[0].leaseUntil,
+    retryAllowed: false,
+    error: "runner failed after release",
+    generatedAt: "2026-07-04T00:10:20.000Z"
+  });
+  assert.equal(failResult.job.status, "failed");
+  assert.equal(failResult.job.lastError, "runner failed after release");
+  assert.equal(failResult.workerResult.nextStatus, "failed");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${releaseWorker.workerRun.workerRunId}' AND status='failed' AND lease_owner='' AND lease_until=''`), 1);
+  const validate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const adapterJobCheck = validate.checks.find((item) => item.checkId === "adapter_jobs_match_worker_runs");
+  assert.equal(adapterJobCheck?.status, "pass", JSON.stringify(validate.failedChecks));
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET status='running',
+    lease_owner='stale-runner',
+    lease_until='2026-07-04T00:30:00.000Z',
+    completed_at='',
+    updated_at='2026-07-04T00:20:00.000Z'
+WHERE adapter_job_id='${releaseRecord.adapterJob.adapterJobId}';`);
+  const staleValidate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const staleAdapterJobCheck = staleValidate.checks.find((item) => item.checkId === "adapter_jobs_match_worker_runs");
+  assert.equal(staleAdapterJobCheck?.status, "fail");
+}
+
+async function testWorkflowV2AdapterRunnerDrain() {
+  const root = await tempRoot("workflow-v2-adapter-runner");
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = "wf-v2-adapter-runner";
+  await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId: "session-v2-runner-worker",
+    status: "active",
+    ownerAgent: "cat_body",
+    taskType: "coding",
+    runtimeTarget: "hermers",
+    purpose: "Adapter runner drain smoke worker",
+    systemBrief: "Use the prepared workflow session input and return results through workflow.v2.worker_result.* only.",
+    resourceBudget: { contextLimitTokens: 64000 }
+  });
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: "plan-v2-runner",
+    nodeId: "node-v2-runner",
+    infoId: "info-v2-runner-task-input",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/wf-v2-adapter-runner/input.json",
+    recipientAgent: "cat_body",
+    summary: "Adapter runner task input pointer"
+  });
+  const successWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-runner",
+    nodeId: "node-v2-runner",
+    managerAgent: "cat_body",
+    sessionId: "session-v2-runner-worker",
+    workerRunId: "worker-v2-runner-success",
+    taskInputInfoId: "info-v2-runner-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-runner-success-worker",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-04T01:00:00.000Z"
+  });
+  const successLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${successWorker.workerRun.workerRunId}';`)[0];
+  await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: successWorker.workerRun.workerRunId,
+    leaseOwner: successLease.leaseOwner,
+    leaseUntil: successLease.leaseUntil,
+    generatedAt: "2026-07-04T01:00:01.000Z"
+  });
+  const runnerPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    runtimeBackend: "hermers_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:00:02.000Z"
+  });
+  assert.equal(runnerPreview.count, 1);
+  assert.equal(runnerPreview.jobs[0].workerRunId, successWorker.workerRun.workerRunId);
+  const successDrain = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "mock-runner-success",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T01:00:03.000Z"
+  });
+  assert.equal(successDrain.submittedCount, 1);
+  assert.equal(successDrain.results[0].status, "submitted");
+  assert.equal(successDrain.results[0].submit.adapterJobUpdate.job.status, "completed");
+  assert.equal(Boolean(await pathExists(successDrain.results[0].outputArtifact.artifactFile)), true);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${successWorker.workerRun.workerRunId}' AND status='submitted_for_review' AND lease_owner='' AND lease_until=''`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${successWorker.workerRun.sessionRunId}' AND status='completed'`), 1);
+
+  const failWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-runner",
+    nodeId: "node-v2-runner",
+    managerAgent: "cat_body",
+    sessionId: "session-v2-runner-worker",
+    workerRunId: "worker-v2-runner-fail",
+    taskInputInfoId: "info-v2-runner-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-runner-fail-worker",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-04T01:10:00.000Z"
+  });
+  const failLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${failWorker.workerRun.workerRunId}';`)[0];
+  await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: failWorker.workerRun.workerRunId,
+    leaseOwner: failLease.leaseOwner,
+    leaseUntil: failLease.leaseUntil,
+    generatedAt: "2026-07-04T01:10:01.000Z"
+  });
+  const failDrain = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "mock-runner-fail",
+    limit: 1,
+    leaseMs: 30_000,
+    mockOutcome: "fail",
+    generatedAt: "2026-07-04T01:10:03.000Z"
+  });
+  assert.equal(failDrain.failedCount, 1);
+  assert.equal(failDrain.results[0].failure.job.status, "failed");
+  assert.equal(failDrain.results[0].failure.workerResult.nextStatus, "failed");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${failWorker.workerRun.workerRunId}' AND status='failed' AND lease_owner='' AND lease_until=''`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${failWorker.workerRun.sessionRunId}' AND status='failed'`), 1);
+  const cleanValidate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const cleanAdapterJobCheck = cleanValidate.checks.find((item) => item.checkId === "adapter_jobs_match_worker_runs");
+  assert.equal(cleanAdapterJobCheck?.status, "pass", JSON.stringify(cleanValidate.failedChecks));
+
+  const badManifestWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-runner",
+    nodeId: "node-v2-runner",
+    managerAgent: "cat_body",
+    sessionId: "session-v2-runner-worker",
+    workerRunId: "worker-v2-runner-bad-manifest",
+    taskInputInfoId: "info-v2-runner-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-runner-bad-worker",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-04T01:20:00.000Z"
+  });
+  const badManifestLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${badManifestWorker.workerRun.workerRunId}';`)[0];
+  const badManifestRecord = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: badManifestWorker.workerRun.workerRunId,
+    leaseOwner: badManifestLease.leaseOwner,
+    leaseUntil: badManifestLease.leaseUntil,
+    generatedAt: "2026-07-04T01:20:01.000Z"
+  });
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET manifest_hash=''
+WHERE adapter_job_id='${badManifestRecord.adapterJob.adapterJobId}';`);
+  const badManifestDrain = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "mock-runner-bad-manifest",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T01:20:03.000Z"
+  });
+  assert.equal(badManifestDrain.failedCount, 1);
+  assert.equal(badManifestDrain.results[0].status, "error");
+  assert.match(badManifestDrain.results[0].error, /manifest hash missing/);
+  assert.equal(badManifestDrain.results[0].failure.job.status, "failed");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${badManifestWorker.workerRun.workerRunId}' AND status='failed' AND lease_owner='' AND lease_until=''`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${badManifestWorker.workerRun.sessionRunId}' AND status='failed'`), 1);
+
+  const corruptValidate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const corruptAdapterJobCheck = corruptValidate.checks.find((item) => item.checkId === "adapter_jobs_match_worker_runs");
+  assert.equal(corruptAdapterJobCheck?.status, "fail", JSON.stringify(corruptValidate.failedChecks));
+}
+
+async function testWorkflowV2AdapterRunnerConcurrencyRecovery() {
+  const root = await tempRoot("workflow-v2-adapter-runner-concurrency");
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = "wf-v2-adapter-runner-concurrency";
+  const planId = "plan-v2-runner-concurrency";
+  const nodeId = "node-v2-runner-concurrency";
+  const sessionId = "session-v2-runner-concurrency";
+  const infoId = "info-v2-runner-concurrency-input";
+  const workerCount = 6;
+  const releaseCount = 1;
+  const failCount = 1;
+  const baseMs = Date.parse("2026-07-04T02:00:00.000Z");
+  const iso = (offsetMs) => new Date(baseMs + offsetMs).toISOString();
+  await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId,
+    status: "active",
+    ownerAgent: "cat_body",
+    taskType: "coding",
+    runtimeTarget: "hermers",
+    purpose: "Adapter runner bounded concurrency and recovery regression",
+    systemBrief: "Use the prepared workflow session input and return results through workflow.v2.worker_result.* only.",
+    resourceBudget: { contextLimitTokens: 64000 }
+  });
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId,
+    nodeId,
+    infoId,
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/wf-v2-adapter-runner-concurrency/input.json",
+    recipientAgent: "cat_body",
+    summary: "Adapter runner concurrency task input pointer"
+  });
+
+  const workers = [];
+  for (let index = 0; index < workerCount; index += 1) {
+    const workerRunId = `worker-v2-runner-concurrency-${String(index).padStart(2, "0")}`;
+    const worker = await runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId,
+      nodeId,
+      managerAgent: "cat_body",
+      sessionId,
+      workerRunId,
+      taskInputInfoId: infoId,
+      runtimeBackend: "hermers_docker_worker",
+      ...v2WorkerDelegation(),
+      maxAttempts: 2,
+      providerModel: "iflytek/fallback",
+      receipt: { provider: "iflytek", model: "fallback", fallbackAttempts: 0, errorCode: "" },
+      oauth: { expiryOk: true, refreshOk: true },
+      network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false },
+      generatedAt: iso(index)
+    });
+    workers.push(worker.workerRun);
+  }
+
+  const leaseClaim = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-runner-concurrency-worker-lease",
+    workerLimit: workerCount,
+    workerLeaseMs: 10 * 60_000,
+    generatedAt: iso(60_000)
+  });
+  assert.equal(leaseClaim.workerResults.length, workerCount);
+  assert.equal(leaseClaim.workerResults.every((item) => item.status === "leased_waiting_adapter"), true);
+
+  const adapterJobIdsByWorker = {};
+  for (let index = 0; index < workers.length; index += 1) {
+    const worker = workers[index];
+    const lease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${worker.workerRunId}';`)[0];
+    const record = await runAction(root, {
+      action: "workflow.v2.worker_adapter_job.record",
+      workerRunId: worker.workerRunId,
+      leaseOwner: lease.leaseOwner,
+      leaseUntil: lease.leaseUntil,
+      maxRunnerAttempts: 4,
+      generatedAt: iso(61_000 + index)
+    });
+    adapterJobIdsByWorker[worker.workerRunId] = record.adapterJob.adapterJobId;
+  }
+
+  const releaseWorkerIds = workers.slice(0, releaseCount).map((item) => item.workerRunId);
+  const failWorkerIds = workers.slice(releaseCount, releaseCount + failCount).map((item) => item.workerRunId);
+  const firstPassOutcomes = Object.fromEntries([
+    ...releaseWorkerIds.map((workerRunId) => [workerRunId, "release"]),
+    ...failWorkerIds.map((workerRunId) => [workerRunId, "fail"])
+  ]);
+  const beforePreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    runtimeBackend: "hermers_docker_worker",
+    limit: 200,
+    generatedAt: iso(120_000)
+  });
+  assert.equal(beforePreview.count, workerCount);
+  assert.equal(beforePreview.dueCount, workerCount);
+
+  const zeroLimitClaim = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.claim",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "mock-runner-zero-limit",
+    limit: 0,
+    generatedAt: iso(120_000)
+  });
+  assert.equal(zeroLimitClaim.capacity.requestedLimit, 0);
+  assert.equal(zeroLimitClaim.capacity.effectiveLimit, 0);
+  assert.equal(zeroLimitClaim.count, 0);
+  assert.equal(zeroLimitClaim.claimed.length, 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"), workerCount);
+
+  const pausedDrain = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "mock-runner-paused-capacity",
+    limit: 10,
+    capacityProfile: {
+      maxLogicalWorkers: 200,
+      maxActiveJobs: 0,
+      modelMaxConcurrentCalls: 0,
+      providerModel: "iflytek/fallback"
+    },
+    generatedAt: iso(120_000)
+  });
+  assert.equal(pausedDrain.capacity.requestedLimit, 10);
+  assert.equal(pausedDrain.capacity.effectiveLimit, 0);
+  assert.equal(pausedDrain.count, 0);
+  assert.equal(pausedDrain.claimed.length, 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"), workerCount);
+
+  const capacityPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    runtimeBackend: "hermers_docker_worker",
+    limit: 10,
+    capacityProfile: {
+      maxLogicalWorkers: 200,
+      maxActiveJobs: 3,
+      providerModel: "iflytek/fallback"
+    },
+    generatedAt: iso(120_000)
+  });
+  assert.equal(capacityPreview.count, 3);
+  assert.equal(capacityPreview.dueCount, workerCount);
+  assert.equal(capacityPreview.capacity.requestedLimit, 10);
+  assert.equal(capacityPreview.capacity.effectiveLimit, 3);
+  assert.equal(capacityPreview.capacity.maxLogicalWorkers, 200);
+  assert.equal(capacityPreview.capacity.backendMaxActiveJobs, 3);
+  assert.equal(capacityPreview.capacity.providerMaxConcurrentCalls, 3);
+  assert.equal(capacityPreview.capacity.throttled, true);
+
+  const firstPass = [];
+  for (const runnerId of ["mock-runner-contention-a", "mock-runner-contention-b", "mock-runner-contention-c"]) {
+    firstPass.push(await runAction(root, {
+      action: "workflow.v2.adapter_runner.drain",
+      runtimeBackend: "hermers_docker_worker",
+      runnerId,
+      limit: 10,
+      capacityProfile: {
+        maxLogicalWorkers: 200,
+        maxActiveJobs: 3,
+        providerModel: "iflytek/fallback"
+      },
+      leaseMs: 30_000,
+      retryDelayMs: 10_000,
+      jobOutcomes: firstPassOutcomes,
+      generatedAt: iso(120_000)
+    }));
+  }
+  const firstPassResults = firstPass.flatMap((item) => item.results);
+  assert.equal(firstPass.every((item) => item.capacity.requestedLimit === 10), true);
+  assert.equal(firstPass.every((item) => item.capacity.effectiveLimit <= 3), true);
+  assert.equal(firstPass.every((item) => item.count <= 3), true);
+  assert.equal(firstPass.filter((item) => item.count > 0).length >= 2, true);
+  assert.equal(firstPassResults.length, workerCount);
+  assert.equal(new Set(firstPassResults.map((item) => item.adapterJobId)).size, firstPassResults.length);
+  assert.equal(firstPass.reduce((total, item) => total + item.releasedCount, 0), releaseCount);
+  assert.equal(firstPass.reduce((total, item) => total + item.failedCount, 0), failCount);
+  assert.equal(firstPass.reduce((total, item) => total + item.submittedCount, 0), workerCount - releaseCount - failCount);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='running'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='retry_scheduled'"), releaseCount);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='failed'"), failCount);
+  for (const workerRunId of failWorkerIds) {
+    assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${workerRunId}' AND status='failed' AND lease_owner='' AND lease_until=''`), 1);
+  }
+
+  const recoveryOutcomes = Object.fromEntries(failWorkerIds.map((workerRunId) => [workerRunId, "fail"]));
+  const allRecoveryResults = [];
+  for (let round = 0; round < 8; round += 1) {
+    const generatedAt = iso(140_000 + round * 1_000);
+    const preview = await runAction(root, {
+      action: "workflow.v2.adapter_runner.preview",
+      runtimeBackend: "hermers_docker_worker",
+      limit: 200,
+      generatedAt
+    });
+    if (preview.count === 0) break;
+    const drain = await runAction(root, {
+      action: "workflow.v2.adapter_runner.drain",
+      runtimeBackend: "hermers_docker_worker",
+      runnerId: `mock-runner-recovery-${round}`,
+      limit: 11,
+      leaseMs: 30_000,
+      retryDelayMs: 0,
+      jobOutcomes: recoveryOutcomes,
+      generatedAt
+    });
+    allRecoveryResults.push(...drain.results);
+  }
+  assert.equal(allRecoveryResults.length, releaseCount);
+  assert.equal(allRecoveryResults.every((item) => item.status === "submitted"), true);
+  assert.equal(new Set(allRecoveryResults.map((item) => item.adapterJobId)).size, releaseCount);
+
+  const finalPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    runtimeBackend: "hermers_docker_worker",
+    limit: 200,
+    generatedAt: iso(160_000)
+  });
+  assert.equal(finalPreview.count, 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='retry_scheduled'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='running'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='failed'"), failCount);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='completed'"), workerCount - failCount);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "status='submitted_for_review'"), workerCount - failCount);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "status='failed'"), failCount);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", "status='completed'"), workerCount - failCount);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", "status='failed'"), failCount);
+  const allResults = [...firstPassResults, ...allRecoveryResults];
+  const completedJobIds = sqliteJson(dbFile, `
+SELECT adapter_job_id AS adapterJobId
+FROM workflow_v2_worker_adapter_jobs
+WHERE status='completed'
+ORDER BY adapter_job_id;`).map((row) => row.adapterJobId);
+  assert.equal(completedJobIds.length, workerCount - failCount);
+  for (const workerRunId of releaseWorkerIds) {
+    const adapterJobId = adapterJobIdsByWorker[workerRunId];
+    assert.equal(completedJobIds.includes(adapterJobId), true);
+    assert.equal(allResults.filter((item) => item.adapterJobId === adapterJobId && item.status === "released").length, 1);
+    assert.equal(allResults.filter((item) => item.adapterJobId === adapterJobId && item.status === "submitted").length, 1);
+  }
+  const validate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const adapterJobCheck = validate.checks.find((item) => item.checkId === "adapter_jobs_match_worker_runs");
+  assert.equal(adapterJobCheck?.status, "pass", JSON.stringify(validate.failedChecks));
+}
+
+async function testWorkflowV2OrchestrationKernel() {
+  const root = await tempRoot("workflow-v2-kernel");
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = "wf-v2-kernel";
+  const missingPatternPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "This plan intentionally omits orchestrationPattern.",
+    taskOwnerAgent: "cat_heart",
+    acceptanceCriteria: ["explicit acceptance exists"]
+  });
+  assert.equal(missingPatternPreview.valid, true);
+  assert.equal(Boolean(missingPatternPreview.advisoryChecks.some((item) => item.code === "orchestration_pattern_recommended")), true);
+  assert.equal(missingPatternPreview.recommendations.preferredPattern, "manager_worker");
+
+  const directOwnerPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "Direct owner plan should not auto-inject manager nodes.",
+    taskOwnerAgent: "cat_heart",
+    ...v2PlanContract({
+      orchestrationPattern: "direct_owner_execution",
+      orchestrationRationale: "This direct owner preview intentionally omits participantManagers and must stay owner-only.",
+      workerBudget: { maxWorkers: 0, concurrencyLimit: 0, maxWorkerContextTokens: 64000 }
+    })
+  });
+  assert.equal(directOwnerPreview.valid, true);
+  assert.deepEqual(directOwnerPreview.plan.participantManagers, []);
+  assert.equal(Boolean(directOwnerPreview.nodes.some((node) => node.nodeType === "manager_worker_spawn")), false);
+  assert.equal(Boolean(directOwnerPreview.nodes.some((node) => node.nodeType === "manager_review")), false);
+
+  const planPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "猫之心负责组织猫成员经理，分解任务并调度 worker 产出 artifacts。",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body", "cat_nose", "cat_eyes"],
+    ...v2PlanContract({
+      acceptanceCriteria: ["session repository is used", "worker output is reviewed"],
+      workerBudget: { maxWorkers: 12, concurrencyLimit: 4, maxWorkerContextTokens: 64000 }
+    })
+  });
+  assert.equal(planPreview.valid, true);
+  assert.equal(planPreview.dryRun, true);
+  assert.equal(planPreview.plan.taskOwnerAgent, "cat_heart");
+  assert.equal(planPreview.plan.planRevision, 1);
+  assert.equal(planPreview.plan.workflowState, "draft");
+  assert.equal(planPreview.plan.humanGatePolicy.minApproveOptions, 2);
+  assert.equal(planPreview.plan.humanGatePolicy.maxApproveOptions, 5);
+  assert.equal(planPreview.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
+  assert.equal(planPreview.planSpecV2.meta.workflowId, workflowId);
+  assert.equal(planPreview.planSpecV2.orchestration.pattern, "manager_worker");
+  assert.equal(planPreview.planSpecV2.orchestration.workerBudget.concurrencyLimit, 4);
+  assert.equal(planPreview.planSpecV2.acceptance.ownerReviewsManagerArtifacts, true);
+  assert.equal(planPreview.planSpecV2.acceptance.maxWorkerContextTokens, 64000);
+  assert.equal(planPreview.planSpecV2.verification.ownerReviewRequired, true);
+  assert.equal(Boolean(planPreview.nodes.some((node) => node.nodeType === "manager_worker_spawn")), true);
+  assert.equal(Boolean(await pathExists(dbFile)), false);
+
+  const plan = await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    objective: "Persist v2 orchestration plan.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body", "cat_nose"],
+    ...v2PlanContract()
+  });
+  assert.equal(plan.plan.planId, "plan-v2-kernel");
+  assert.equal(plan.plan.planRevision, 1);
+  assert.equal(plan.plan.workflowState, "planned");
+  assert.equal(plan.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
+  assert.equal(plan.planSpecV2.artifacts.canonicalPlan.sourceOfTruth, true);
+  assert.equal(await pathExists(path.join(root, plan.artifacts.canonicalJson)), true);
+  const canonicalPlanSpecText = await fs.readFile(path.join(root, plan.artifacts.canonicalJson), "utf8");
+  const canonicalPlanSpec = JSON.parse(canonicalPlanSpecText);
+  assert.equal(canonicalPlanSpec.schemaVersion, "workflow_plan_spec.v2");
+  assert.equal(canonicalPlanSpec.meta.planId, "plan-v2-kernel");
+  assert.equal(canonicalPlanSpec.meta.planRevision, 1);
+  assert.equal(canonicalPlanSpec.acceptance.ownerReviewsManagerArtifacts, true);
+  assert.equal(canonicalPlanSpec.orchestration.pattern, "manager_worker");
+  assert.equal(canonicalPlanSpec.verification.managerReviewRequiredForManagerWorkerPaths, true);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel'"), 1);
+  assert.equal(sqliteCount(dbFile, "artifact_index", `artifact_id='${plan.artifacts.artifactId}' AND kind='workflow_v2_plan_spec_json'`), 1);
+  const storedPlanRow = sqliteJson(dbFile, "SELECT plan_revision AS planRevision, plan_spec_artifact_ref AS planSpecArtifactRef, plan_spec_artifact_hash AS planSpecArtifactHash, payload_json AS payloadJson FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(storedPlanRow.planRevision, 1);
+  assert.equal(storedPlanRow.planSpecArtifactRef, plan.artifacts.canonicalJson);
+  assert.equal(Boolean(storedPlanRow.planSpecArtifactHash), true);
+  const storedPlanPayload = JSON.parse(storedPlanRow.payloadJson);
+  assert.equal(storedPlanPayload.planSpecV2ArtifactRef, plan.artifacts.canonicalJson);
+  assert.equal(storedPlanPayload.planSpecV2ArtifactId, plan.artifacts.artifactId);
+  assert.equal(Boolean(storedPlanPayload.planSpecV2Hash), true);
+  const artifactIndexRow = sqliteJson(dbFile, `SELECT workflow_id AS workflowId FROM artifact_index WHERE artifact_id='${plan.artifacts.artifactId}' LIMIT 1;`)[0];
+  assert.equal(artifactIndexRow.workflowId, workflowId);
+
+  const retryPlan = await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    objective: "Persist v2 orchestration plan.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body", "cat_nose"],
+    ...v2PlanContract()
+  });
+  assert.equal(retryPlan.artifacts.canonicalJson, plan.artifacts.canonicalJson);
+  assert.equal(await fs.readFile(path.join(root, retryPlan.artifacts.canonicalJson), "utf8"), canonicalPlanSpecText);
+  const retryStoredPlanRow = sqliteJson(dbFile, "SELECT plan_revision AS planRevision, plan_spec_artifact_ref AS planSpecArtifactRef, plan_spec_artifact_hash AS planSpecArtifactHash FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(retryStoredPlanRow.planRevision, 1);
+  assert.equal(retryStoredPlanRow.planSpecArtifactRef, storedPlanRow.planSpecArtifactRef);
+  assert.equal(retryStoredPlanRow.planSpecArtifactHash, storedPlanRow.planSpecArtifactHash);
+  sqliteExec(dbFile, `UPDATE artifact_index SET workflow_id='wrong-workflow' WHERE artifact_id='${plan.artifacts.artifactId}';`);
+  const conflictRetryPlan = await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    objective: "Persist v2 orchestration plan.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body", "cat_nose"],
+    ...v2PlanContract()
+  });
+  assert.equal(await fs.readFile(path.join(root, conflictRetryPlan.artifacts.canonicalJson), "utf8"), canonicalPlanSpecText);
+  const conflictArtifactIndexRow = sqliteJson(dbFile, `SELECT workflow_id AS workflowId FROM artifact_index WHERE artifact_id='${plan.artifacts.artifactId}' LIMIT 1;`)[0];
+  assert.equal(conflictArtifactIndexRow.workflowId, workflowId);
+
+  const legacyPlanRoot = await tempRoot("workflow-v2-plan-legacy-schema");
+  const legacyPlanDbFile = path.join(legacyPlanRoot, "tracking.db");
+  sqliteExec(legacyPlanDbFile, "CREATE TABLE workflow_v2_plans(plan_id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL);");
+  const legacyPlan = await runAction(legacyPlanRoot, {
+    action: "workflow.v2.plan.create",
+    workflowId: "wf-v2-legacy-plan",
+    planId: "plan-v2-legacy-plan",
+    objective: "Migrate legacy v2 plan table before writing canonical JSON plan.",
+    taskOwnerAgent: "cat_heart",
+    ...v2PlanContract()
+  });
+  assert.equal(await pathExists(path.join(legacyPlanRoot, legacyPlan.artifacts.canonicalJson)), true);
+  const legacyPlanColumns = sqliteJson(legacyPlanDbFile, "PRAGMA table_info(workflow_v2_plans);").map((row) => row.name);
+  assert.equal(Boolean(legacyPlanColumns.includes("plan_revision")), true);
+  assert.equal(Boolean(legacyPlanColumns.includes("plan_spec_artifact_ref")), true);
+  assert.equal(Boolean(legacyPlanColumns.includes("plan_spec_artifact_hash")), true);
+  const legacyPlanRow = sqliteJson(legacyPlanDbFile, "SELECT plan_revision AS planRevision, plan_spec_artifact_ref AS planSpecArtifactRef, plan_spec_artifact_hash AS planSpecArtifactHash FROM workflow_v2_plans WHERE plan_id='plan-v2-legacy-plan' LIMIT 1;")[0];
+  assert.equal(legacyPlanRow.planRevision, 1);
+  assert.equal(legacyPlanRow.planSpecArtifactRef, legacyPlan.artifacts.canonicalJson);
+  assert.equal(Boolean(legacyPlanRow.planSpecArtifactHash), true);
+
+  const advisoryPlanRoot = await tempRoot("workflow-v2-plan-advisory");
+  await runAction(advisoryPlanRoot, {
+    action: "workflow.v2.plan.create",
+    workflowId: "wf-v2-advisory-plan",
+    planId: "plan-v2-advisory",
+    objective: "Persist a lightweight plan before the orchestration pattern is fully known.",
+    taskOwnerAgent: "cat_heart",
+    acceptanceCriteria: ["owner can continue refining the plan"]
+  });
+  const advisoryPlanValidation = await runAction(advisoryPlanRoot, {
+    action: "workflow.v2.validate"
+  });
+  assert.equal(advisoryPlanValidation.ok, true, JSON.stringify(advisoryPlanValidation.failedChecks));
+  assert.equal(advisoryPlanValidation.failedChecks.includes("plans_anthropic_orchestration_contract"), false);
+  assert.equal(Boolean(advisoryPlanValidation.advisoryChecks.some((item) => item.checkId === "plans_anthropic_orchestration_contract" && item.status === "advisory")), true);
+
+  for (const agent of [
+    { agentId: "cat_heart", runtime: "hermers", platform: "hermers", permissions: ["workflow.verify"] },
+    { agentId: "cat_nose", runtime: "hermers", platform: "hermers", permissions: ["workflow.verify"] },
+    { agentId: "cat_body", runtime: "hermers", platform: "hermers", permissions: ["workflow.verify", "workflow.worker.lifecycle", "cat_claw.audit"] },
+    { agentId: "main", runtime: "openclaw", platform: "openclaw", permissions: ["workflow.verify"] },
+    { agentId: "cat_claw", runtime: "openclaw", platform: "openclaw", permissions: ["cat_claw.audit", "human_gate.write"] }
+  ]) {
+    await runAction(root, {
+      action: "runtime.agent.upsert",
+      agentId: agent.agentId,
+      runtime: agent.runtime,
+      platform: agent.platform,
+      capabilities: { permissions: agent.permissions }
+    });
+  }
+
+  await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId: "session-cat-body-worker",
+    ownerAgent: "cat_body",
+    runtimeTarget: "hermers",
+    taskType: "development_worker",
+    purpose: "Preloaded worker context for cat_body manager spawned coding work.",
+    systemBrief: "Use only referenced artifacts and return structured output."
+  });
+
+  const info = await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_planning").nodeId,
+    infoId: "info-v2-task-input",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/task-input.json",
+    recipientAgent: "cat_body",
+    summary: "Task input pointer for cat_body manager."
+  });
+  assert.equal(info.infoItem.infoId, "info-v2-task-input");
+  assert.equal(info.notification.payloadMode, "pointer_only");
+  assert.equal(Boolean(info.notification.payload.readAction), true);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", "info_id='info-v2-task-input'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_notifications", "info_id='info-v2-task-input'"), 1);
+  const readInfo = await runAction(root, {
+    action: "workflow.v2.info_stack.read",
+    inboxItemId: info.inboxItem.inboxItemId,
+    principalKind: "agent",
+    principalId: "cat_body"
+  });
+  assert.equal(readInfo.item.infoId, "info-v2-task-input");
+  assert.equal(readInfo.item.contentStorage, "artifact_ref");
+  assert.equal(readInfo.receiptRecordAction, "workflow.v2.read_receipt.record");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.info_stack.read",
+      infoId: "info-v2-task-input",
+      principalKind: "agent",
+      principalId: "cat_body"
+    }),
+    /requires inboxItemId or grantId/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.read_receipt.record",
+      workflowId,
+      infoId: readInfo.item.infoId,
+      readerKind: "agent",
+      readerId: "cat_body"
+    }),
+    /requires inboxItemId or grantId/
+  );
+  await runAction(root, {
+    action: "workflow.v2.read_receipt.record",
+    workflowId,
+    infoId: readInfo.item.infoId,
+    inboxItemId: readInfo.access.inboxItemId,
+    grantId: readInfo.access.grantId,
+    readerKind: "agent",
+    readerId: "cat_body"
+  });
+  assert.equal(sqliteCount(dbFile, "workflow_v2_read_receipts", "info_id='info-v2-task-input'"), 1);
+
+  const sensitiveInline = await runAction(root, {
+    action: "workflow.v2.info_stack.preview",
+    workflowId,
+    classification: "sensitive",
+    contentStorage: "inline",
+    bodyText: "do not store this inline",
+    recipientAgent: "cat_body"
+  });
+  assert.equal(sensitiveInline.valid, false);
+  assert.equal(Boolean(sensitiveInline.errors.some((item) => item.code === "sensitive_inline_body_disallowed")), true);
+  const implicitInline = await runAction(root, {
+    action: "workflow.v2.info_stack.preview",
+    workflowId,
+    classification: "internal",
+    bodyText: "non-sensitive body still needs an artifact pointer"
+  });
+  assert.equal(implicitInline.valid, false);
+  assert.equal(Boolean(implicitInline.errors.some((item) => item.code === "content_ref_required")), true);
+
+  const pointerNotification = await runAction(root, {
+    action: "workflow.v2.notification.preview",
+    workflowId,
+    infoId: "info-v2-task-input",
+    payloadMode: "pointer_only",
+    notificationBody: "full body must not be embedded"
+  });
+  assert.equal(pointerNotification.valid, false);
+  assert.equal(Boolean(pointerNotification.errors.some((item) => item.code === "pointer_notification_body_disallowed")), true);
+
+  const openclawWorker = await runAction(root, {
+    action: "workflow.v2.worker_backend.preflight",
+    workflowId,
+    backendId: "openclaw"
+  });
+  assert.equal(openclawWorker.valid, false);
+  assert.equal(Boolean(openclawWorker.errors.some((item) => item.code === "openclaw_worker_backend_disallowed")), true);
+  const emptyEvidence = await runAction(root, {
+    action: "workflow.v2.worker_backend.preflight",
+    workflowId,
+    backendId: "hermers_docker_worker",
+    receipt: {},
+    oauth: {},
+    network: {}
+  });
+  assert.equal(emptyEvidence.valid, false);
+  assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "model_receipt_missing_required_fields")), true);
+  assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "oauth_status_required")), true);
+  assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "network_policy_required")), true);
+
+  const fallbackMismatch = await runAction(root, {
+    action: "workflow.v2.worker_backend.preflight",
+    workflowId,
+    backendId: "hermers_docker_worker",
+    providerModel: "openai-codex/gpt-5.5",
+    fallbackAllowed: false,
+    receipt: { provider: "minimax", model: "MiniMax-M3", fallbackAttempts: 1, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  assert.equal(fallbackMismatch.valid, false);
+  assert.equal(Boolean(fallbackMismatch.errors.some((item) => item.code === "model_route_mismatch")), true);
+  assert.equal(Boolean(fallbackMismatch.errors.some((item) => item.code === "model_fallback_disallowed")), true);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId: "plan-v2-kernel",
+      nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+      managerAgent: "cat_body",
+      sessionId: "missing-session-pack",
+      workerRunId: "worker-v2-missing-session",
+      preflightId: "preflight-v2-missing-session",
+      taskInputInfoId: "info-v2-task-input",
+      runtimeBackend: "local_deterministic",
+      ...v2WorkerDelegation(),
+      providerModel: "openai-codex/gpt-5.5",
+      receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+      oauth: { expiryOk: true, refreshOk: true },
+      network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+    }),
+    /workflow session pack not found/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "worker_run_id='worker-v2-missing-session'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_backend_preflights", "preflight_id='preflight-v2-missing-session'"), 0);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId: "plan-v2-kernel",
+      nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+      managerAgent: "cat_body",
+      sessionId: "session-cat-body-worker",
+      workerRunId: "worker-v2-invalid-start-status",
+      taskInputInfoId: "info-v2-task-input",
+      runtimeBackend: "local_deterministic",
+      status: "running",
+      ...v2WorkerDelegation(),
+      providerModel: "openai-codex/gpt-5.5",
+      receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+      oauth: { expiryOk: true, refreshOk: true },
+      network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+    }),
+    /worker_spawn_status_must_be_queued/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "worker_run_id='worker-v2-invalid-start-status'"), 0);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId: "plan-v2-kernel",
+      nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+      managerAgent: "cat_body",
+      sessionId: "session-cat-body-worker",
+      workerRunId: "worker-v2-missing-delegation",
+      taskInputInfoId: "info-v2-task-input",
+      runtimeBackend: "local_deterministic",
+      providerModel: "openai-codex/gpt-5.5",
+      receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+      oauth: { expiryOk: true, refreshOk: true },
+      network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+    }),
+    /worker_objective_required/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "worker_run_id='worker-v2-missing-delegation'"), 0);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId: "plan-v2-kernel",
+      nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+      managerAgent: "cat_body",
+      sessionId: "session-cat-body-worker",
+      workerRunId: "worker-v2-missing-context-budget",
+      taskInputInfoId: "info-v2-task-input",
+      runtimeBackend: "local_deterministic",
+      ...v2WorkerDelegation({ contextBudgetTokens: undefined }),
+      providerModel: "openai-codex/gpt-5.5",
+      receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+      oauth: { expiryOk: true, refreshOk: true },
+      network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+    }),
+    /worker_context_budget_required/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "worker_run_id='worker-v2-missing-context-budget'"), 0);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId: "plan-v2-kernel",
+      nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+      managerAgent: "cat_body",
+      sessionId: "session-cat-body-worker",
+      workerRunId: "worker-v2-too-large-context",
+      taskInputInfoId: "info-v2-task-input",
+      runtimeBackend: "local_deterministic",
+      ...v2WorkerDelegation({ contextBudgetTokens: 64001 }),
+      providerModel: "openai-codex/gpt-5.5",
+      receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+      oauth: { expiryOk: true, refreshOk: true },
+      network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+    }),
+    /worker_context_budget_too_high/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "worker_run_id='worker-v2-too-large-context'"), 0);
+
+  const worker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    maxAttempts: 2,
+    ...v2WorkerDelegation({ contextBudgetTokens: 1000 }),
+    contextUsedTokens: 920,
+    compactionCount: 2,
+    sourceContextRefs: ["info-v2-task-input"],
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false },
+    payload: { outputSummary: "Deterministic worker output prepared for manager review." }
+  });
+  assert.equal(worker.valid, true);
+  assert.ok(worker.workerRun.sessionRunId);
+  assert.equal(worker.sessionRun.runId, worker.workerRun.sessionRunId);
+  assert.equal(worker.sessionRun.status, "queued");
+  assert.equal(worker.sessionRun.workerInput.input.workerRunId, worker.workerRun.workerRunId);
+  assert.equal(worker.sessionRun.workerInput.input.taskInputInfoId, "info-v2-task-input");
+  assert.equal(worker.sessionRun.workerInput.context.workflowId, workflowId);
+  assert.equal(worker.workerRun.contextBudgetTokens, 1000);
+  assert.equal(worker.workerRun.contextUsedTokens, 920);
+  assert.equal(worker.workerRun.compactionCount, 2);
+  assert.deepEqual(worker.workerRun.sourceContextRefs, ["info-v2-task-input"]);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "manager_agent='cat_body'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${worker.workerRun.sessionRunId}' AND session_id='session-cat-body-worker' AND workflow_id='${workflowId}'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_backend_preflights", "status IN ('pass','warn')"), 1);
+  const workerPreflightRow = sqliteJson(dbFile, `SELECT preflight_id AS preflightId FROM workflow_v2_worker_runs WHERE worker_run_id='${worker.workerRun.workerRunId}' LIMIT 1;`)[0];
+  assert.ok(workerPreflightRow.preflightId);
+  const workerSessionRow = sqliteJson(dbFile, `
+SELECT session_run_id AS sessionRunId, payload_json AS payloadJson
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='${worker.workerRun.workerRunId}'
+LIMIT 1;`)[0];
+  assert.equal(workerSessionRow.sessionRunId, worker.workerRun.sessionRunId);
+  assert.equal(workerSessionRow.payloadJson.includes("workflow_session_runs"), true);
+
+  const lifecycleHighPressure = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: worker.workerRun.workerRunId,
+    contextPressureThreshold: 0.8,
+    maxCompactions: 2
+  });
+  assert.equal(lifecycleHighPressure.valid, true);
+  assert.equal(lifecycleHighPressure.recommendation.action, "handoff_required");
+  assert.equal(lifecycleHighPressure.recommendation.requiredAuthority.managerAgent, "cat_body");
+  assert.equal(lifecycleHighPressure.telemetry.contextPressureRatio, 0.92);
+  assert.equal(Boolean(lifecycleHighPressure.signals.some((signal) => signal.code === "context_pressure_high")), true);
+  assert.equal(Boolean(lifecycleHighPressure.signals.some((signal) => signal.code === "compaction_limit_reached")), true);
+  assert.equal(lifecycleHighPressure.handoffPackagePreview.handoffInfoId, `${worker.workerRun.workerRunId}.handoff.info`);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_handoffs"), 0);
+
+  const queuePreview = await runAction(root, {
+    action: "workflow.v2.control_loop.preview",
+    workflowId
+  });
+  assert.equal(queuePreview.status, "ok");
+  assert.equal(Number(queuePreview.counts.due), 1);
+  assert.equal(queuePreview.runnableWorkers[0].runtimeBackend, "local_deterministic");
+
+  const queueTick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-control-loop",
+    workerLeaseMs: 60_000
+  });
+  assert.equal(queueTick.status, "ok");
+  assert.equal(queueTick.claimedWorkers.length, 1);
+  assert.equal(queueTick.workerResults[0].status, "submitted_for_review");
+  assert.ok(queueTick.workerResults[0].artifactFile);
+  assert.equal(await pathExists(queueTick.workerResults[0].artifactFile), true);
+  const completedWorker = sqliteJson(dbFile, `
+SELECT status, attempt, output_info_id AS outputInfoId, receipt_ref AS receiptRef, lease_owner AS leaseOwner, lease_until AS leaseUntil, completed_at AS completedAt
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
+  assert.equal(completedWorker.status, "submitted_for_review");
+  assert.equal(completedWorker.attempt, 1);
+  assert.ok(completedWorker.outputInfoId);
+  assert.ok(completedWorker.receiptRef);
+  assert.equal(completedWorker.leaseOwner, "");
+  assert.equal(completedWorker.leaseUntil, "");
+  assert.ok(completedWorker.completedAt);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", `worker_run_id='${worker.workerRun.workerRunId}' AND info_id='${completedWorker.outputInfoId}'`), 1);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.manager_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      workerRunId: worker.workerRun.workerRunId,
+      reviewerAgent: "cat_heart",
+      decision: "accepted",
+      summary: "Task owner must not accept a manager-owned worker through manager review."
+    }),
+    /reviewer_agent_not_worker_manager/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_manager_reviews", `worker_run_id='${worker.workerRun.workerRunId}' AND reviewer_agent='cat_heart'`), 0);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.manager_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      reviewerAgent: "cat_body",
+      decision: "accepted",
+      summary: "Manager review must be bound to a concrete worker run."
+    }),
+    /requires workerRunId/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_manager_reviews", "worker_run_id='' AND decision='accepted'"), 0);
+
+  const review = await runAction(root, {
+    action: "workflow.v2.manager_review.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    workerRunId: worker.workerRun.workerRunId,
+    reviewerAgent: "cat_body",
+    decision: "accepted",
+    summary: "Worker output accepted by manager."
+  });
+  assert.equal(review.review.decision, "accepted");
+
+  const lifecycleAccepted = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: worker.workerRun.workerRunId,
+    contextPressureThreshold: 0.8,
+    maxCompactions: 2
+  });
+  assert.equal(lifecycleAccepted.valid, true);
+  assert.equal(lifecycleAccepted.recommendation.action, "no_action");
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.owner_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      callerAgent: "cat_nose",
+      managerReviewIds: [review.review.reviewId],
+      decision: "accepted",
+      summary: "Unauthorized owner review."
+    }),
+    /caller_agent_not_authorized/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.owner_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      callerAgent: "cat_heart",
+      managerReviewIds: [review.review.reviewId],
+      decision: "blocked",
+      summary: "Owner review must not use blocked as a review decision."
+    }),
+    /blocked_decision_not_allowed/
+  );
+  const ownerReview = await runAction(root, {
+    action: "workflow.v2.owner_review.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "cat_heart",
+    managerReviewIds: [review.review.reviewId],
+    decision: "accepted",
+    taskGroupRequired: true,
+    summary: "Task owner accepted manager artifact and requires compact task group review.",
+    artifactRefs: ["artifact://workflow-v2/owner-package.json"],
+    receiptRefs: ["receipt://workflow-v2/manager-review"]
+  });
+  assert.equal(ownerReview.valid, true);
+  assert.equal(ownerReview.ownerReview.decision, "accepted");
+  assert.equal(ownerReview.ownerReview.nextWorkflowState, "waiting_group_discussion");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_owner_reviews", `review_id='${ownerReview.ownerReview.reviewId}' AND owner_agent='cat_heart'`), 1);
+  let planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "waiting_group_discussion");
+
+  const taskGroupPackage = await runAction(root, {
+    action: "workflow.v2.task_group_package.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "cat_heart",
+    ownerReviewId: ownerReview.ownerReview.reviewId,
+    taskGroupAgents: ["cat_heart", "cat_body"],
+    status: "ready",
+    summary: "Owner plus Cat Body task group package is ready for Cat Brain governance audit.",
+    evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
+  });
+  assert.equal(taskGroupPackage.valid, true);
+  assert.equal(taskGroupPackage.taskGroupPackage.status, "ready");
+  assert.deepEqual(taskGroupPackage.taskGroupPackage.taskGroupAgents, ["cat_heart", "cat_body"]);
+  planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "waiting_cat_brain_check");
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.cat_brain_audit.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
+      callerAgent: "cat_body",
+      decision: "approved",
+      summary: "Unauthorized Cat Brain audit."
+    }),
+    /caller_agent_not_authorized/
+  );
+  const catBrainAudit = await runAction(root, {
+    action: "workflow.v2.cat_brain_audit.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
+    callerAgent: "main",
+    decision: "approved",
+    summary: "Cat Brain governance audit approved the evidence chain.",
+    evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
+  });
+  assert.equal(catBrainAudit.valid, true);
+  assert.equal(catBrainAudit.catBrainAudit.decision, "approved");
+  planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "waiting_cat_claw_audit");
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.cat_claw_audit.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+      callerAgent: "cat_body",
+      decision: "protocol_ready",
+      summary: "Unauthorized Cat Claw audit.",
+      evidenceRefs: ["artifact://workflow-v2/owner-package.json"]
+    }),
+    /caller_agent_not_authorized/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.cat_claw_audit.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+      callerAgent: "catclaw",
+      decision: "protocol_ready",
+      summary: "Retired catclaw id must be rejected.",
+      evidenceRefs: ["artifact://workflow-v2/owner-package.json"]
+    }),
+    /retired agent id catclaw is invalid/
+  );
+  const catClawAudit = await runAction(root, {
+    action: "workflow.v2.cat_claw_audit.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+    callerAgent: "cat_claw",
+    decision: "protocol_ready",
+    summary: "Cat Claw protocol audit passed; Human Gate package can be prepared.",
+    checks: ["options_present", "evidence_refs_present", "rollback_boundary_present"],
+    evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
+  });
+  assert.equal(catClawAudit.valid, true);
+  assert.equal(catClawAudit.catClawAudit.decision, "protocol_ready");
+  planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "human_gate_request_due");
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.human_gate_package.record",
+      workflowId,
+      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      status: "submitted",
+      createdBy: "cat_claw"
+    }),
+    /human_gate_package_status_invalid/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.human_gate_package.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      status: "cat_claw_audited",
+      createdBy: "cat_claw"
+    }),
+    /source_cat_claw_audit_required/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.human_gate_package.record",
+      workflowId,
+      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      createdBy: "cat_claw"
+    }),
+    /human_gate_options_required/
+  );
+
+  await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId: "plan-v2-cross-plan",
+    objective: "Cross-plan provenance guard fixture.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: [],
+    ...v2PlanContract({
+      orchestrationPattern: "direct_owner_execution",
+      orchestrationRationale: "Owner-direct fixture has no workers and only tests provenance guards.",
+      workerBudget: { maxWorkers: 0, concurrencyLimit: 0, maxWorkerContextTokens: 64000 }
+    })
+  });
+  const crossOwnerReview = await runAction(root, {
+    action: "workflow.v2.owner_review.record",
+    workflowId,
+    planId: "plan-v2-cross-plan",
+    callerAgent: "cat_heart",
+    decision: "accepted",
+    allowNoManagerReviews: true,
+    taskGroupRequired: false,
+    summary: "Owner-direct cross-plan package evidence.",
+    artifactRefs: ["artifact://workflow-v2/cross-plan-owner.json"]
+  });
+  const crossTaskGroupPackage = await runAction(root, {
+    action: "workflow.v2.task_group_package.record",
+    workflowId,
+    planId: "plan-v2-cross-plan",
+    callerAgent: "cat_heart",
+    ownerReviewId: crossOwnerReview.ownerReview.reviewId,
+    taskGroupAgents: ["cat_heart", "cat_body"],
+    status: "ready",
+    summary: "Cross-plan task group package ready.",
+    evidenceRefs: ["artifact://workflow-v2/cross-plan-owner.json"]
+  });
+  const crossCatBrainAudit = await runAction(root, {
+    action: "workflow.v2.cat_brain_audit.record",
+    workflowId,
+    planId: "plan-v2-cross-plan",
+    taskGroupPackageId: crossTaskGroupPackage.taskGroupPackage.packageId,
+    callerAgent: "main",
+    decision: "approved",
+    summary: "Cross-plan Cat Brain audit.",
+    evidenceRefs: ["artifact://workflow-v2/cross-plan-owner.json"]
+  });
+  const crossCatClawAudit = await runAction(root, {
+    action: "workflow.v2.cat_claw_audit.record",
+    workflowId,
+    planId: "plan-v2-cross-plan",
+    catBrainAuditId: crossCatBrainAudit.catBrainAudit.auditId,
+    callerAgent: "cat_claw",
+    decision: "protocol_ready",
+    summary: "Cross-plan Cat Claw audit must not bless another plan.",
+    evidenceRefs: ["artifact://workflow-v2/cross-plan-owner.json"]
+  });
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.human_gate_package.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      sourceCatClawAuditId: crossCatClawAudit.catClawAudit.auditId,
+      createdBy: "cat_claw"
+    }),
+    /cat_claw_audit_plan_mismatch/
+  );
+
+  await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId: "plan-v2-owner-direct",
+    objective: "Owner-direct Cat Brain audit fixture.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: [],
+    ...v2PlanContract({
+      orchestrationPattern: "direct_owner_execution",
+      orchestrationRationale: "Owner-direct fixture intentionally bypasses manager workers and records owner review evidence.",
+      workerBudget: { maxWorkers: 0, concurrencyLimit: 0, maxWorkerContextTokens: 64000 }
+    })
+  });
+  const directOwnerReview = await runAction(root, {
+    action: "workflow.v2.owner_review.record",
+    workflowId,
+    planId: "plan-v2-owner-direct",
+    callerAgent: "cat_heart",
+    decision: "accepted",
+    allowNoManagerReviews: true,
+    taskGroupRequired: false,
+    summary: "Owner-direct artifact accepted without task group.",
+    artifactRefs: ["artifact://workflow-v2/owner-direct.json"],
+    receiptRefs: ["receipt://workflow-v2/owner-direct"]
+  });
+  assert.equal(directOwnerReview.ownerReview.nextWorkflowState, "waiting_cat_brain_check");
+  const directCatBrainAudit = await runAction(root, {
+    action: "workflow.v2.cat_brain_audit.record",
+    workflowId,
+    planId: "plan-v2-owner-direct",
+    ownerReviewId: directOwnerReview.ownerReview.reviewId,
+    callerAgent: "main",
+    decision: "approved",
+    summary: "Cat Brain approved owner-direct evidence without a task group package."
+  });
+  assert.equal(directCatBrainAudit.valid, true);
+  assert.equal(directCatBrainAudit.taskGroupPackage, null);
+  assert.equal(directCatBrainAudit.ownerReview.reviewId, directOwnerReview.ownerReview.reviewId);
+  planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-owner-direct' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "waiting_cat_claw_audit");
+
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: worker.workerRun.nodeId,
+    workerRunId: worker.workerRun.workerRunId,
+    infoId: "info-v2-handoff",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/handoff.json",
+    recipientAgent: "cat_body",
+    summary: "Curated handoff package for lifecycle validator."
+  });
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_worker_handoffs(handoff_id, workflow_id, plan_id, node_id, worker_run_id, manager_agent, successor_worker_run_id, handoff_info_id, status, reason, summary, source_context_refs_json, artifact_refs_json, receipt_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES ('handoff-v2-valid', '${workflowId}', 'plan-v2-kernel', '${worker.workerRun.nodeId}', '${worker.workerRun.workerRunId}', 'cat_body', '', 'info-v2-handoff', 'recommended', 'context pressure handoff preview', 'Valid handoff package validator fixture.', '["info-v2-task-input"]', '["${completedWorker.outputInfoId}"]', '["${completedWorker.receiptRef}"]', '{}', 'cat_body', '2026-07-03T00:00:00.000Z', '2026-07-03T00:00:00.000Z');`);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_handoffs", "handoff_id='handoff-v2-valid'"), 1);
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='handoff_required', handoff_info_id='info-v2-handoff', updated_at='2026-07-03T00:00:01.000Z'
+WHERE worker_run_id='${worker.workerRun.workerRunId}';`);
+  const lifecycleRecommendedHandoff = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: worker.workerRun.workerRunId
+  });
+  assert.equal(lifecycleRecommendedHandoff.valid, true);
+  assert.equal(lifecycleRecommendedHandoff.recommendation.action, "handoff_required");
+  assert.equal(lifecycleRecommendedHandoff.recommendation.successorAllowed, false);
+  assert.equal(Boolean(lifecycleRecommendedHandoff.signals.some((signal) => signal.code === "handoff_not_accepted")), true);
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='accepted', handoff_info_id='', updated_at='2026-07-03T00:00:02.000Z'
+WHERE worker_run_id='${worker.workerRun.workerRunId}';`);
+
+  const humanGateOptions = [
+    {
+      optionId: "continue_current_package",
+      title: "方案 1：接受当前产出",
+      body: "接受 task owner、task group、猫之脑和猫爪已经复核过的当前产出包。",
+      summary: "按当前证据包接受本轮产出。",
+      prompt: "闪电猫批准后，workflow 进入收口归档，保留 artifact、receipt 和回滚边界。",
+      rollback: "如后续发现证据缺口，退回 task owner 重新汇总并恢复到上一 checkpoint。"
+    },
+    {
+      optionId: "return_to_manager_review",
+      title: "方案 2：退回经理补证",
+      body: "不接受当前产出，退回 manager 层补充 worker 证据、测试或回滚说明。",
+      summary: "退回 manager 层补齐证据后再提交。",
+      prompt: "task owner 将缺口退回相关 manager，manager 复核 worker 产出后重新提交。",
+      rollback: "补证仍不完整时，保持 workflow 在 review 状态并记录 blocker。"
+    }
+  ];
+  const humanGatePackage = await runAction(root, {
+    action: "workflow.v2.human_gate_package.record",
+    workflowId,
+    sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+    createdBy: "cat_claw",
+    options: humanGateOptions
+  });
+  assert.equal(humanGatePackage.valid, true);
+  assert.equal(humanGatePackage.humanGatePackage.sourceCatClawAuditId, catClawAudit.catClawAudit.auditId);
+  assert.equal(humanGatePackage.humanGatePackage.status, "cat_claw_audited");
+  assert.equal(humanGatePackage.humanGatePackage.options.length >= 2, true);
+  assert.equal(humanGatePackage.humanGatePackage.options.length <= 5, true);
+  assert.equal(humanGatePackage.humanGatePackage.options.every((option) => option.optionId && option.title && option.body && option.summary && option.prompt && option.rollback), true);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_human_gate_packages"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_human_gate_packages", `plan_id='plan-v2-kernel' AND source_cat_claw_audit_id='${catClawAudit.catClawAudit.auditId}' AND status='cat_claw_audited'`), 1);
+  planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "human_gate_request_due");
+
+  const humanGateRequestCountsBefore = {
+    records: sqliteCount(dbFile, "protocol_objects", "object_type='human_gate_record'"),
+    buttons: sqliteCount(dbFile, "human_gate_buttons"),
+    outbox: sqliteCount(dbFile, "telegram_outbox", "message_type='human_gate_request'"),
+    events: sqliteCount(dbFile, "workflow_events", "event_type='human_gate.requested'")
+  };
+  const humanGateRequestInteractionInput = {
+    packageId: humanGatePackage.humanGatePackage.packageId,
+    callerAgent: "cat_claw",
+    submissionKind: "final_artifact",
+    interactionType: "artifact_acceptance",
+    responseSchema: {
+      required: ["buttonSelection", "flashcatOriginalWords"],
+      flashcatOriginalWordsRequired: true
+    },
+    resumeContract: {
+      approved: "archive_final_artifact",
+      rejected: "return_to_task_owner_revision"
+    }
+  };
+  const invalidHumanGateInteractionPreview = await runAction(root, {
+    action: "workflow.v2.human_gate_request.preview",
+    packageId: humanGatePackage.humanGatePackage.packageId,
+    callerAgent: "cat_claw",
+    interactionType: "freeform_unbound_chat"
+  });
+  assert.equal(invalidHumanGateInteractionPreview.eligible, false);
+  assert.equal(Boolean(invalidHumanGateInteractionPreview.violations.some((item) => item.code === "interaction_type_invalid")), true);
+  const fuzzyHumanGateSelectorPreview = await runAction(root, {
+    action: "workflow.v2.human_gate_request.preview",
+    workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "cat_claw"
+  });
+  assert.equal(fuzzyHumanGateSelectorPreview.eligible, false);
+  assert.equal(Boolean(fuzzyHumanGateSelectorPreview.violations.some((item) => item.code === "human_gate_package_selector_required")), true);
+  const humanGateRequestPreview = await runAction(root, {
+    action: "workflow.v2.human_gate_request.preview",
+    ...humanGateRequestInteractionInput
+  });
+  assert.equal(humanGateRequestPreview.schemaVersion, "workflow_v2_human_gate_request_preview.v1");
+  assert.equal(humanGateRequestPreview.eligible, true);
+  assert.equal(humanGateRequestPreview.writeReady, true);
+  assert.equal(humanGateRequestPreview.submissionKind, "final_artifact");
+  assert.equal(humanGateRequestPreview.interactionType, "artifact_acceptance");
+  assert.equal(humanGateRequestPreview.responseSchema.flashcatOriginalWordsRequired, true);
+  assert.equal(humanGateRequestPreview.resumeContract.approved, "archive_final_artifact");
+  assert.equal(humanGateRequestPreview.resumeContract.sourcePackageId, humanGatePackage.humanGatePackage.packageId);
+  assert.equal(humanGateRequestPreview.requestDraft.submissionKind, "final_artifact");
+  assert.equal(humanGateRequestPreview.requestDraft.interactionType, "artifact_acceptance");
+  assert.equal(humanGateRequestPreview.wouldCreate.humanGateRecords, 1);
+  assert.equal(humanGateRequestPreview.wouldCreate.telegramOutbox, 1);
+  assert.equal(humanGateRequestPreview.wouldCreate.runtimeDispatches, 0);
+  assert.equal(humanGateRequestPreview.wouldCreate.workflowStatusUpdates, 1);
+  assert.equal(humanGateRequestPreview.buttonSummary.planCount, 2);
+  assert.equal(humanGateRequestPreview.buttonSummary.hasPause, true);
+  assert.equal(humanGateRequestPreview.buttonSummary.hasTerminate, true);
+  assert.equal(sqliteCount(dbFile, "protocol_objects", "object_type='human_gate_record'"), humanGateRequestCountsBefore.records);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons"), humanGateRequestCountsBefore.buttons);
+  assert.equal(sqliteCount(dbFile, "telegram_outbox", "message_type='human_gate_request'"), humanGateRequestCountsBefore.outbox);
+
+  const humanGateRequest = await runAction(root, {
+    action: "workflow.v2.human_gate_request",
+    ...humanGateRequestInteractionInput
+  });
+  assert.equal(humanGateRequest.schemaVersion, "workflow_v2_human_gate_request_result.v1");
+  assert.equal(humanGateRequest.writeBoundary, "human_gate_request_only");
+  assert.equal(humanGateRequest.submissionKind, "final_artifact");
+  assert.equal(humanGateRequest.interactionType, "artifact_acceptance");
+  assert.equal(humanGateRequest.resumeContract.approved, "archive_final_artifact");
+  assert.equal(humanGateRequest.didEnsureHumanGate, true);
+  assert.equal(humanGateRequest.didCreateHumanGate, true);
+  assert.equal(humanGateRequest.didCreateHumanGateButtons, true);
+  assert.equal(humanGateRequest.didEnsureTelegramOutbox, true);
+  assert.equal(humanGateRequest.didCreateTelegramOutbox, true);
+  assert.equal(humanGateRequest.didSendTelegram, false);
+  assert.equal(humanGateRequest.didDispatchRuntime, false);
+  assert.equal(humanGateRequest.didUpdateWorkflowStatus, true);
+  assert.equal(humanGateRequest.didLinkPackage, true);
+  assert.equal(humanGateRequest.didWritePackageLink, true);
+  assert.equal(humanGateRequest.packageLinkReused, false);
+  assert.ok(humanGateRequest.humanGateId);
+  assert.ok(humanGateRequest.telegramOutboxId);
+  assert.equal(sqliteCount(dbFile, "protocol_objects", `object_id='${humanGateRequest.humanGateId}' AND object_type='human_gate_record' AND status='pending'`), 1);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${humanGateRequest.humanGateId}' AND status='active'`), humanGateRequest.humanGateButtonCount);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${humanGateRequest.humanGateId}' AND decision_status='approved' AND status='active'`), 2);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${humanGateRequest.humanGateId}' AND button_role='pause' AND status='active'`), 1);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${humanGateRequest.humanGateId}' AND button_role='terminate' AND status='active'`), 1);
+  assert.equal(sqliteCount(dbFile, "telegram_outbox", `outbox_id='${humanGateRequest.telegramOutboxId}' AND message_type='human_gate_request' AND status='queued'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_events", `event_type='human_gate.requested' AND human_gate_id='${humanGateRequest.humanGateId}'`), 1);
+  const linkedPackage = sqliteJson(dbFile, `
+SELECT payload_json AS payloadJson
+FROM workflow_v2_human_gate_packages
+  WHERE package_id='${humanGatePackage.humanGatePackage.packageId}'
+LIMIT 1;`)[0];
+  const linkedPackagePayloadJson = linkedPackage.payloadJson;
+  const linkedPackagePayload = JSON.parse(linkedPackage.payloadJson);
+  assert.equal(linkedPackagePayload.humanGateRequest.humanGateId, humanGateRequest.humanGateId);
+  assert.equal(linkedPackagePayload.humanGateRequest.telegramOutboxId, humanGateRequest.telegramOutboxId);
+  assert.equal(linkedPackagePayload.humanGateRequest.submissionKind, "final_artifact");
+  assert.equal(linkedPackagePayload.humanGateRequest.interactionType, "artifact_acceptance");
+  assert.equal(linkedPackagePayload.humanGateRequest.resumeContract.approved, "archive_final_artifact");
+  planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "waiting_human");
+
+  const replayedHumanGateRequest = await runAction(root, {
+    action: "workflow.v2.human_gate_request",
+    ...humanGateRequestInteractionInput
+  });
+  assert.equal(replayedHumanGateRequest.reusedStageGate, true);
+  assert.equal(replayedHumanGateRequest.didCreateHumanGate, false);
+  assert.equal(replayedHumanGateRequest.telegramOutboxDeduped, true);
+  assert.equal(replayedHumanGateRequest.didWritePackageLink, false);
+  assert.equal(replayedHumanGateRequest.packageLinkReused, true);
+  assert.equal(replayedHumanGateRequest.humanGateId, humanGateRequest.humanGateId);
+  assert.equal(replayedHumanGateRequest.telegramOutboxId, humanGateRequest.telegramOutboxId);
+  assert.equal(sqliteCount(dbFile, "protocol_objects", `object_id='${humanGateRequest.humanGateId}' AND object_type='human_gate_record'`), 1);
+  assert.equal(sqliteCount(dbFile, "telegram_outbox", `outbox_id='${humanGateRequest.telegramOutboxId}'`), 1);
+  const replayedLinkedPackage = sqliteJson(dbFile, `
+SELECT payload_json AS payloadJson
+FROM workflow_v2_human_gate_packages
+WHERE package_id='${humanGatePackage.humanGatePackage.packageId}'
+LIMIT 1;`)[0];
+  assert.equal(replayedLinkedPackage.payloadJson, linkedPackagePayloadJson);
+
+  const blockedLifecycleWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    workerRunId: "worker-v2-blocked-lifecycle",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='blocked', last_error='blocked by missing upstream artifact', lease_owner='', lease_until='', updated_at='2026-07-03T00:00:03.000Z'
+WHERE worker_run_id='${blockedLifecycleWorker.workerRun.workerRunId}';
+UPDATE workflow_session_runs
+SET status='failed', error='blocked by missing upstream artifact', updated_at='2026-07-03T00:00:03.000Z'
+WHERE run_id='${blockedLifecycleWorker.workerRun.sessionRunId}';`);
+  const lifecycleBlocked = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: blockedLifecycleWorker.workerRun.workerRunId
+  });
+  assert.equal(lifecycleBlocked.valid, true);
+  assert.equal(lifecycleBlocked.recommendation.action, "escalate_to_owner");
+  assert.equal(Boolean(lifecycleBlocked.signals.some((signal) => signal.code === "blocked_condition")), true);
+
+  const humanGateLifecycleWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    workerRunId: "worker-v2-needs-human-gate-lifecycle",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false },
+    payload: { outputSummary: "Worker output requires Human Gate review." }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-human-gate-lifecycle",
+    workerLimit: 1,
+    workerLeaseMs: 60_000
+  });
+  await runAction(root, {
+    action: "workflow.v2.manager_review.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    workerRunId: humanGateLifecycleWorker.workerRun.workerRunId,
+    reviewerAgent: "cat_body",
+    decision: "needs_human_gate",
+    summary: "Worker output needs Flashcat Human Gate decision."
+  });
+  const lifecycleNeedsHumanGate = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: humanGateLifecycleWorker.workerRun.workerRunId
+  });
+  assert.equal(lifecycleNeedsHumanGate.valid, true);
+  assert.equal(lifecycleNeedsHumanGate.recommendation.action, "human_gate_due");
+  assert.equal(Boolean(lifecycleNeedsHumanGate.signals.some((signal) => signal.code === "human_gate_required")), true);
+
+  const renewalWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    workerRunId: "worker-v2-renewal-source",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    ...v2WorkerDelegation({ contextBudgetTokens: 1200 }),
+    contextUsedTokens: 1180,
+    compactionCount: 3,
+    sourceContextRefs: ["info-v2-task-input"],
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false },
+    payload: { outputSummary: "Renewal source worker near context budget." }
+  });
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_body",
+    capabilities: { permissions: ["workflow.worker.lifecycle"] }
+  });
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_nose",
+    capabilities: { permissions: ["workflow.worker.lifecycle"] }
+  });
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_handoff.record",
+      workflowId,
+      workerRunId: renewalWorker.workerRun.workerRunId,
+      callerAgent: "cat_nose",
+      status: "accepted",
+      summary: "Unauthorized handoff attempt.",
+      artifactRef: "artifact://workflow-v2/unauthorized-handoff.json"
+    }),
+    /caller_agent_not_authorized/
+  );
+  const handoffPreview = await runAction(root, {
+    action: "workflow.v2.worker_handoff.preview",
+    workflowId,
+    workerRunId: renewalWorker.workerRun.workerRunId,
+    callerAgent: "cat_body",
+    handoffId: "handoff-v2-renewal",
+    handoffInfoId: "info-v2-renewal-handoff",
+    status: "accepted",
+    summary: "Accepted handoff package for same-class successor.",
+    reason: "context pressure reached renewal threshold",
+    artifactRef: "artifact://workflow-v2/renewal-handoff.json",
+    sourceContextRefs: ["info-v2-task-input"],
+    artifactRefs: ["artifact://workflow-v2/renewal-output.json"],
+    receiptRefs: ["receipt://workflow-v2/renewal-source"]
+  });
+  assert.equal(handoffPreview.valid, true);
+  assert.equal(handoffPreview.handoffPackage.status, "accepted");
+  assert.equal(handoffPreview.infoAction, "create_info_stack_item");
+  const handoffRecord = await runAction(root, {
+    action: "workflow.v2.worker_handoff.record",
+    workflowId,
+    workerRunId: renewalWorker.workerRun.workerRunId,
+    callerAgent: "cat_body",
+    handoffId: "handoff-v2-renewal",
+    handoffInfoId: "info-v2-renewal-handoff",
+    status: "accepted",
+    summary: "Accepted handoff package for same-class successor.",
+    reason: "context pressure reached renewal threshold",
+    artifactRef: "artifact://workflow-v2/renewal-handoff.json",
+    sourceContextRefs: ["info-v2-task-input"],
+    artifactRefs: ["artifact://workflow-v2/renewal-output.json"],
+    receiptRefs: ["receipt://workflow-v2/renewal-source"]
+  });
+  assert.equal(handoffRecord.handoff.status, "accepted");
+  let renewalSourceRow = sqliteJson(dbFile, `
+SELECT status, handoff_info_id AS handoffInfoId, lease_owner AS leaseOwner, lease_until AS leaseUntil
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='${renewalWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(renewalSourceRow.status, "handoff_required");
+  assert.equal(renewalSourceRow.handoffInfoId, "info-v2-renewal-handoff");
+  assert.equal(renewalSourceRow.leaseOwner, "");
+  assert.equal(renewalSourceRow.leaseUntil, "");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_handoffs", "handoff_id='handoff-v2-renewal' AND status='accepted'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", "info_id='info-v2-renewal-handoff' AND worker_run_id='worker-v2-renewal-source'"), 1);
+  const lifecycleAfterHandoff = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: renewalWorker.workerRun.workerRunId
+  });
+  assert.equal(lifecycleAfterHandoff.recommendation.action, "spawn_successor");
+  assert.equal(lifecycleAfterHandoff.recommendation.successorAllowed, true);
+
+  const foreignHandoffWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    workerRunId: "worker-v2-foreign-handoff-source",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: foreignHandoffWorker.workerRun.nodeId,
+    workerRunId: foreignHandoffWorker.workerRun.workerRunId,
+    infoId: "info-v2-foreign-handoff-placeholder",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/foreign-handoff-placeholder.json",
+    recipientAgent: "cat_body",
+    summary: "Foreign handoff placeholder for validator-safe fixture."
+  });
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='handoff_required', handoff_info_id='info-v2-foreign-handoff-placeholder', completed_at='2026-07-03T00:00:10.000Z', updated_at='2026-07-03T00:00:10.000Z'
+WHERE worker_run_id='${foreignHandoffWorker.workerRun.workerRunId}';
+UPDATE workflow_session_runs
+SET status='completed', completed_at='2026-07-03T00:00:10.000Z', updated_at='2026-07-03T00:00:10.000Z'
+WHERE run_id='${foreignHandoffWorker.workerRun.sessionRunId}';`);
+  const foreignHandoffPreview = await runAction(root, {
+    action: "workflow.v2.worker_handoff.preview",
+    workflowId,
+    workerRunId: foreignHandoffWorker.workerRun.workerRunId,
+    callerAgent: "cat_body",
+    handoffId: "handoff-v2-renewal",
+    handoffInfoId: "info-v2-foreign-handoff-attempt",
+    status: "accepted",
+    summary: "Preview must reject another worker handoff id.",
+    reason: "foreign handoff preview guard",
+    artifactRef: "artifact://workflow-v2/foreign-handoff-attempt.json"
+  });
+  assert.equal(foreignHandoffPreview.valid, false);
+  assert.equal(Boolean(foreignHandoffPreview.errors.some((item) => item.code === "handoff_id_conflict")), true);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_retire.record",
+      workflowId,
+      workerRunId: foreignHandoffWorker.workerRun.workerRunId,
+      callerAgent: "cat_body",
+      handoffId: "handoff-v2-renewal",
+      reason: "must not retire with another worker handoff"
+    }),
+    /handoff_not_found_for_worker/
+  );
+  const foreignSuccessorPreview = await runAction(root, {
+    action: "workflow.v2.worker_successor.preview",
+    workflowId,
+    sourceWorkerRunId: foreignHandoffWorker.workerRun.workerRunId,
+    successorWorkerRunId: "worker-v2-foreign-handoff-successor",
+    callerAgent: "cat_body",
+    handoffId: "handoff-v2-renewal",
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  assert.equal(foreignSuccessorPreview.valid, false);
+  assert.equal(Boolean(foreignSuccessorPreview.errors.some((item) => item.code === "handoff_not_found_for_worker")), true);
+
+  const staleHandoffWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    workerRunId: "worker-v2-stale-handoff-cas",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  sqliteExec(dbFile, `
+CREATE TRIGGER trigger_v2_stale_handoff_cas
+AFTER INSERT ON workflow_v2_worker_handoffs
+WHEN NEW.handoff_id='handoff-v2-stale-cas'
+BEGIN
+  UPDATE workflow_v2_worker_runs
+  SET status='cancelled', updated_at='2026-07-03T00:00:11.000Z'
+  WHERE worker_run_id=NEW.worker_run_id;
+END;`);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_handoff.record",
+      workflowId,
+      workerRunId: staleHandoffWorker.workerRun.workerRunId,
+      callerAgent: "cat_body",
+      handoffId: "handoff-v2-stale-cas",
+      handoffInfoId: "info-v2-stale-cas-handoff",
+      status: "accepted",
+      summary: "This handoff should hit commit-time CAS.",
+      reason: "simulate concurrent state drift",
+      artifactRef: "artifact://workflow-v2/stale-cas-handoff.json"
+    }),
+    /lost worker row before update/
+  );
+  sqliteExec(dbFile, `DROP TRIGGER trigger_v2_stale_handoff_cas;`);
+  const staleHandoffRow = sqliteJson(dbFile, `
+SELECT status, handoff_info_id AS handoffInfoId
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='${staleHandoffWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(staleHandoffRow.status, "queued");
+  assert.equal(staleHandoffRow.handoffInfoId, "");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_handoffs", "handoff_id='handoff-v2-stale-cas'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", "info_id='info-v2-stale-cas-handoff'"), 0);
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='cancelled', completed_at='2026-07-03T00:00:11.500Z', updated_at='2026-07-03T00:00:11.500Z'
+WHERE worker_run_id='${staleHandoffWorker.workerRun.workerRunId}';
+UPDATE workflow_session_runs
+SET status='cancelled', completed_at='2026-07-03T00:00:11.500Z', updated_at='2026-07-03T00:00:11.500Z'
+WHERE run_id='${staleHandoffWorker.workerRun.sessionRunId}';`);
+
+  const retireRecord = await runAction(root, {
+    action: "workflow.v2.worker_retire.record",
+    workflowId,
+    workerRunId: renewalWorker.workerRun.workerRunId,
+    callerAgent: "cat_body",
+    handoffId: "handoff-v2-renewal",
+    reason: "retire source after accepted handoff before successor spawn"
+  });
+  assert.equal(retireRecord.nextStatus, "retired");
+  renewalSourceRow = sqliteJson(dbFile, `
+SELECT status, handoff_info_id AS handoffInfoId, lease_owner AS leaseOwner, lease_until AS leaseUntil
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='${renewalWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(renewalSourceRow.status, "retired");
+  assert.equal(renewalSourceRow.handoffInfoId, "info-v2-renewal-handoff");
+  assert.equal(renewalSourceRow.leaseOwner, "");
+  assert.equal(renewalSourceRow.leaseUntil, "");
+  const lifecycleAfterRetire = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: renewalWorker.workerRun.workerRunId
+  });
+  assert.equal(lifecycleAfterRetire.recommendation.action, "spawn_successor");
+
+  const successorPreview = await runAction(root, {
+    action: "workflow.v2.worker_successor.preview",
+    workflowId,
+    sourceWorkerRunId: renewalWorker.workerRun.workerRunId,
+    successorWorkerRunId: "worker-v2-renewal-successor",
+    callerAgent: "cat_body",
+    nextRetryAt: "2999-01-01T00:00:00.000Z",
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  assert.equal(successorPreview.valid, true);
+  assert.equal(successorPreview.successorWorkerRun.workerRunId, "worker-v2-renewal-successor");
+  assert.equal(successorPreview.successorWorkerRun.parentWorkerRunId, renewalWorker.workerRun.workerRunId);
+  assert.equal(successorPreview.successorWorkerRun.supersedesWorkerRunId, renewalWorker.workerRun.workerRunId);
+  assert.equal(successorPreview.successorWorkerRun.taskInputInfoId, "info-v2-renewal-handoff");
+  assert.equal(successorPreview.successorWorkerRun.workerGeneration, renewalWorker.workerRun.workerGeneration + 1);
+  const successorCreate = await runAction(root, {
+    action: "workflow.v2.worker_successor.create",
+    workflowId,
+    sourceWorkerRunId: renewalWorker.workerRun.workerRunId,
+    successorWorkerRunId: "worker-v2-renewal-successor",
+    callerAgent: "cat_body",
+    nextRetryAt: "2999-01-01T00:00:00.000Z",
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  assert.equal(successorCreate.spawnResult.workerRun.status, "queued");
+  renewalSourceRow = sqliteJson(dbFile, `
+SELECT status, successor_worker_run_id AS successorWorkerRunId
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='${renewalWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(renewalSourceRow.status, "successor_spawned");
+  assert.equal(renewalSourceRow.successorWorkerRunId, "worker-v2-renewal-successor");
+  const renewalSuccessorRow = sqliteJson(dbFile, `
+SELECT status, parent_worker_run_id AS parentWorkerRunId, supersedes_worker_run_id AS supersedesWorkerRunId, worker_generation AS workerGeneration, task_input_info_id AS taskInputInfoId, next_retry_at AS nextRetryAt, source_context_refs_json AS sourceContextRefsJson
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='worker-v2-renewal-successor';`)[0];
+  assert.equal(renewalSuccessorRow.status, "queued");
+  assert.equal(renewalSuccessorRow.parentWorkerRunId, renewalWorker.workerRun.workerRunId);
+  assert.equal(renewalSuccessorRow.supersedesWorkerRunId, renewalWorker.workerRun.workerRunId);
+  assert.equal(Number(renewalSuccessorRow.workerGeneration), renewalWorker.workerRun.workerGeneration + 1);
+  assert.equal(renewalSuccessorRow.taskInputInfoId, "info-v2-renewal-handoff");
+  assert.equal(renewalSuccessorRow.nextRetryAt, "2999-01-01T00:00:00.000Z");
+  assert.equal(JSON.parse(renewalSuccessorRow.sourceContextRefsJson).includes("info-v2-renewal-handoff"), true);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_handoffs", "handoff_id='handoff-v2-renewal' AND status='superseded' AND successor_worker_run_id='worker-v2-renewal-successor'"), 1);
+  const renewalSourceSession = sqliteJson(dbFile, `
+SELECT status
+FROM workflow_session_runs
+WHERE run_id='${renewalWorker.workerRun.sessionRunId}';`)[0];
+  assert.equal(renewalSourceSession.status, "completed");
+
+  const staleSuccessorSource = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    workerRunId: "worker-v2-stale-successor-source",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.worker_handoff.record",
+    workflowId,
+    workerRunId: staleSuccessorSource.workerRun.workerRunId,
+    callerAgent: "cat_body",
+    handoffId: "handoff-v2-stale-successor",
+    handoffInfoId: "info-v2-stale-successor-handoff",
+    status: "accepted",
+    summary: "Accepted handoff for stale successor CAS.",
+    reason: "prepare successor CAS fixture",
+    artifactRef: "artifact://workflow-v2/stale-successor-handoff.json"
+  });
+  sqliteExec(dbFile, `
+CREATE TRIGGER trigger_v2_stale_successor_cas
+AFTER INSERT ON workflow_v2_worker_runs
+WHEN NEW.worker_run_id='worker-v2-stale-successor-candidate'
+BEGIN
+  UPDATE workflow_v2_worker_runs
+  SET status='cancelled', updated_at='2026-07-03T00:00:12.000Z'
+  WHERE worker_run_id='${staleSuccessorSource.workerRun.workerRunId}';
+END;`);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_successor.create",
+      workflowId,
+      sourceWorkerRunId: staleSuccessorSource.workerRun.workerRunId,
+      successorWorkerRunId: "worker-v2-stale-successor-candidate",
+      callerAgent: "cat_body",
+      providerModel: "openai-codex/gpt-5.5",
+      receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+      oauth: { expiryOk: true, refreshOk: true },
+      network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+    }),
+    /lost source worker before update/
+  );
+  sqliteExec(dbFile, `DROP TRIGGER trigger_v2_stale_successor_cas;`);
+  const staleSuccessorSourceRow = sqliteJson(dbFile, `
+SELECT status, successor_worker_run_id AS successorWorkerRunId
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='${staleSuccessorSource.workerRun.workerRunId}';`)[0];
+  assert.equal(staleSuccessorSourceRow.status, "handoff_required");
+  assert.equal(staleSuccessorSourceRow.successorWorkerRunId, "");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_handoffs", "handoff_id='handoff-v2-stale-successor' AND status='accepted' AND successor_worker_run_id=''"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "worker_run_id='worker-v2-stale-successor-candidate'"), 0);
+
+  const validation = await runAction(root, {
+    action: "workflow.v2.validate",
+    workflowId
+  });
+  assert.equal(validation.ok, true);
+  assert.equal(validation.status, "pass");
+  assert.equal(Boolean(validation.checks.some((check) => check.checkId === "worker_handoffs_match_worker_runs" && check.status === "pass")), true);
+
+  const badSessionWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    sessionId: "session-cat-body-worker",
+    workerRunId: "worker-v2-bad-session-claim",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false },
+    payload: { outputSummary: "This worker should not block the next worker when its session is missing." }
+  });
+  const healthyAfterBadWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    workerRunId: "worker-v2-after-bad-session",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false },
+    payload: { outputSummary: "Healthy worker after a bad session sync." }
+  });
+  sqliteExec(dbFile, `
+DELETE FROM workflow_agent_runs WHERE session_run_id='${badSessionWorker.workerRun.sessionRunId}';
+DELETE FROM workflow_session_runs WHERE run_id='${badSessionWorker.workerRun.sessionRunId}';`);
+  const badSessionTick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-bad-session-isolation",
+    workerLimit: 2,
+    workerLeaseMs: 60_000
+  });
+  assert.equal(Boolean(badSessionTick.workerResults.some((item) => item.workerRunId === badSessionWorker.workerRun.workerRunId && item.status === "session_sync_failed")), true);
+  assert.equal(Boolean(badSessionTick.workerResults.some((item) => item.workerRunId === healthyAfterBadWorker.workerRun.workerRunId && item.status === "submitted_for_review")), true);
+  const badSessionRow = sqliteJson(dbFile, `SELECT status, attempt, lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${badSessionWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(badSessionRow.status, "queued");
+  assert.equal(badSessionRow.attempt, 0);
+  assert.equal(badSessionRow.leaseOwner, "");
+  assert.equal(badSessionRow.leaseUntil, "");
+  sqliteExec(dbFile, `DELETE FROM workflow_v2_worker_runs WHERE worker_run_id='${badSessionWorker.workerRun.workerRunId}';`);
+
+  const submitSyncFailWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_nose",
+    workerRunId: "worker-v2-submit-session-sync-fail",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-submit-sync-fail",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-03T00:00:00.000Z"
+  });
+  const submitSyncFailLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${submitSyncFailWorker.workerRun.workerRunId}';`)[0];
+  sqliteExec(dbFile, `
+DELETE FROM workflow_agent_runs WHERE session_run_id='${submitSyncFailWorker.workerRun.sessionRunId}';
+DELETE FROM workflow_session_runs WHERE run_id='${submitSyncFailWorker.workerRun.sessionRunId}';`);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_result.submit",
+      workerRunId: submitSyncFailWorker.workerRun.workerRunId,
+      leaseOwner: submitSyncFailLease.leaseOwner,
+      leaseUntil: submitSyncFailLease.leaseUntil,
+      generatedAt: "2026-07-03T00:00:30.000Z",
+      outputInfoId: "info-v2-submit-sync-fail-output",
+      artifactRef: "artifact://workflow-v2/submit-sync-fail-output.json",
+      receipt: { adapter: "hermers", status: "completed" },
+      summary: "This output must be cleaned up when session patch fails."
+    }),
+    /session run patch failed/
+  );
+  const restoredSubmitSyncFail = sqliteJson(dbFile, `SELECT status, output_info_id AS outputInfoId, receipt_ref AS receiptRef, lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${submitSyncFailWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(restoredSubmitSyncFail.status, "running");
+  assert.equal(restoredSubmitSyncFail.outputInfoId, "");
+  assert.equal(restoredSubmitSyncFail.receiptRef, "");
+  assert.equal(restoredSubmitSyncFail.leaseOwner, submitSyncFailLease.leaseOwner);
+  assert.equal(restoredSubmitSyncFail.leaseUntil, submitSyncFailLease.leaseUntil);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", "info_id='info-v2-submit-sync-fail-output'"), 0);
+  sqliteExec(dbFile, `DELETE FROM workflow_v2_worker_runs WHERE worker_run_id='${submitSyncFailWorker.workerRun.workerRunId}';`);
+
+  const adapterWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_nose",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  const adapterClaim = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-adapter",
+    workerLimit: 1,
+    workerLeaseMs: 1_000,
+    generatedAt: "2026-07-03T00:00:00.000Z"
+  });
+  assert.equal(adapterClaim.workerResults[0].status, "leased_waiting_adapter");
+  let adapterRow = sqliteJson(dbFile, `SELECT status, attempt, lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${adapterWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(adapterRow.status, "running");
+  assert.equal(adapterRow.attempt, 1);
+  assert.equal(adapterRow.leaseOwner, "test-v2-adapter");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_adapter_job.record",
+      workerRunId: adapterWorker.workerRun.workerRunId,
+      leaseOwner: "wrong-owner",
+      leaseUntil: adapterRow.leaseUntil,
+      generatedAt: "2026-07-03T00:00:00.500Z"
+    }),
+    /lease_owner_mismatch/
+  );
+  const adapterJobPreview = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.preview",
+    workerRunId: adapterWorker.workerRun.workerRunId,
+    leaseOwner: adapterRow.leaseOwner,
+    leaseUntil: adapterRow.leaseUntil,
+    generatedAt: "2026-07-03T00:00:00.500Z"
+  });
+  assert.equal(adapterJobPreview.valid, true);
+  assert.equal(adapterJobPreview.manifest.schemaVersion, "workflow_v2_worker_adapter_job.v1");
+  assert.equal(adapterJobPreview.manifest.backend.hostAlias, "wsl-agents");
+  assert.equal(adapterJobPreview.manifest.backend.image, "flashcat/hermes-worker:20260704");
+  assert.equal(adapterJobPreview.manifest.backend.returnPath.directDatabaseWritesAllowed, false);
+  assert.equal(adapterJobPreview.manifest.context.hardLimitTokens, 64000);
+  assert.equal(adapterJobPreview.manifest.output.submitAction, "workflow.v2.worker_result.submit");
+  assert.equal(adapterJobPreview.manifest.output.failAction, "workflow.v2.worker_result.fail");
+  assert.equal(adapterJobPreview.manifest.sessionInput.input.workerRunId, adapterWorker.workerRun.workerRunId);
+  const adapterJobRecord = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: adapterWorker.workerRun.workerRunId,
+    leaseOwner: adapterRow.leaseOwner,
+    leaseUntil: adapterRow.leaseUntil,
+    generatedAt: "2026-07-03T00:00:00.500Z"
+  });
+  assert.equal(adapterJobRecord.valid, true);
+  assert.equal(adapterJobRecord.operation, "workflow.v2.worker_adapter_job.record");
+  const adapterJobManifest = JSON.parse(await fs.readFile(adapterJobRecord.artifact.artifactFile, "utf8"));
+  assert.equal(adapterJobManifest.adapterJobId, adapterJobRecord.adapterJobId);
+  assert.equal(adapterJobManifest.workerRunId, adapterWorker.workerRun.workerRunId);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", `info_id='${adapterJobRecord.adapterJobInfo.infoId}' AND worker_run_id='${adapterWorker.workerRun.workerRunId}'`), 1);
+  adapterRow = sqliteJson(dbFile, `SELECT status, lease_owner AS leaseOwner, lease_until AS leaseUntil, payload_json AS payloadJson FROM workflow_v2_worker_runs WHERE worker_run_id='${adapterWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(adapterRow.status, "running");
+  assert.equal(adapterRow.leaseOwner, "test-v2-adapter");
+  assert.equal(adapterRow.leaseUntil, adapterJobRecord.workerRun.leaseUntil);
+  const adapterPayload = JSON.parse(adapterRow.payloadJson || "{}");
+  assert.equal(adapterPayload.adapterJob.adapterJobInfoId, adapterJobRecord.adapterJobInfo.infoId);
+  assert.equal(adapterPayload.adapterJob.artifactRef, adapterJobRecord.artifact.artifactRef);
+
+  const adapterRetry = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-adapter",
+    retryDelayMs: 60_000,
+    generatedAt: "2026-07-03T00:00:02.000Z"
+  });
+  assert.equal(adapterRetry.expiredLeases[0].status, "retry_scheduled");
+  adapterRow = sqliteJson(dbFile, `SELECT status, attempt, next_retry_at AS nextRetryAt, lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${adapterWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(adapterRow.status, "retry_scheduled");
+  assert.equal(adapterRow.attempt, 1);
+  assert.equal(adapterRow.leaseOwner, "");
+  assert.equal(adapterRow.leaseUntil, "");
+  assert.ok(adapterRow.nextRetryAt);
+
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-adapter-second",
+    workerLimit: 1,
+    workerLeaseMs: 1_000,
+    generatedAt: "2026-07-03T00:01:03.000Z"
+  });
+  const adapterTimeout = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-adapter-second",
+    generatedAt: "2026-07-03T00:01:05.000Z"
+  });
+  assert.equal(adapterTimeout.expiredLeases[0].status, "timed_out");
+  adapterRow = sqliteJson(dbFile, `SELECT status, attempt, completed_at AS completedAt, last_error AS lastError FROM workflow_v2_worker_runs WHERE worker_run_id='${adapterWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(adapterRow.status, "timed_out");
+  assert.equal(adapterRow.attempt, 2);
+  assert.ok(adapterRow.completedAt);
+  assert.match(adapterRow.lastError, /lease expired/);
+
+  const submitWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_nose",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  const submitClaim = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-submit",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-03T00:02:00.000Z"
+  });
+  assert.equal(submitClaim.workerResults[0].status, "leased_waiting_adapter");
+  const submitLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${submitWorker.workerRun.workerRunId}';`)[0];
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_result.submit",
+      workerRunId: submitWorker.workerRun.workerRunId,
+      leaseOwner: "wrong-owner",
+      leaseUntil: submitLease.leaseUntil,
+      generatedAt: "2026-07-03T00:02:30.000Z",
+      artifactRef: "artifact://workflow-v2/submit-output.json",
+      receipt: { adapter: "hermers", status: "completed" },
+      summary: "Adapter output."
+    }),
+    /lease_owner_mismatch/
+  );
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    infoId: "info-v2-foreign-output",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/foreign-output.json",
+    recipientAgent: "cat_nose",
+    summary: "Foreign worker output that must not be overwritten."
+  });
+  const submitConflictPreview = await runAction(root, {
+    action: "workflow.v2.worker_result.submit.preview",
+    workerRunId: submitWorker.workerRun.workerRunId,
+    leaseOwner: submitLease.leaseOwner,
+    leaseUntil: submitLease.leaseUntil,
+    generatedAt: "2026-07-03T00:02:30.000Z",
+    outputInfoId: "info-v2-foreign-output",
+    artifactRef: "artifact://workflow-v2/submit-output.json",
+    receipt: { adapter: "hermers", status: "completed" },
+    summary: "Adapter output."
+  });
+  assert.equal(submitConflictPreview.valid, false);
+  assert.equal(Boolean(submitConflictPreview.errors.some((item) => item.code === "output_info_id_conflict")), true);
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    infoId: "info-v2-same-worker-stale-output",
+    workerRunId: submitWorker.workerRun.workerRunId,
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/same-worker-stale-output.json",
+    recipientAgent: "cat_nose",
+    summary: "Same worker stale output pointer that must not be overwritten before row binding."
+  });
+  const submitSameRunConflictPreview = await runAction(root, {
+    action: "workflow.v2.worker_result.submit.preview",
+    workerRunId: submitWorker.workerRun.workerRunId,
+    leaseOwner: submitLease.leaseOwner,
+    leaseUntil: submitLease.leaseUntil,
+    generatedAt: "2026-07-03T00:02:30.000Z",
+    outputInfoId: "info-v2-same-worker-stale-output",
+    artifactRef: "artifact://workflow-v2/submit-output.json",
+    receipt: { adapter: "hermers", status: "completed" },
+    summary: "Adapter output."
+  });
+  assert.equal(submitSameRunConflictPreview.valid, false);
+  assert.equal(Boolean(submitSameRunConflictPreview.errors.some((item) => item.code === "output_info_id_conflict")), true);
+  const submitPreview = await runAction(root, {
+    action: "workflow.v2.worker_result.submit.preview",
+    workerRunId: submitWorker.workerRun.workerRunId,
+    leaseOwner: submitLease.leaseOwner,
+    leaseUntil: submitLease.leaseUntil,
+    generatedAt: "2026-07-03T00:02:30.000Z",
+    artifactRef: "artifact://workflow-v2/submit-output.json",
+    receipt: { adapter: "hermers", status: "completed" },
+    summary: "Adapter output."
+  });
+  assert.equal(submitPreview.valid, true);
+  const submitResult = await runAction(root, {
+    action: "workflow.v2.worker_result.submit",
+    workerRunId: submitWorker.workerRun.workerRunId,
+    leaseOwner: submitLease.leaseOwner,
+    leaseUntil: submitLease.leaseUntil,
+    generatedAt: "2026-07-03T00:02:30.000Z",
+    artifactRef: "artifact://workflow-v2/submit-output.json",
+    receipt: { adapter: "hermers", status: "completed" },
+    summary: "Adapter output."
+  });
+  assert.equal(submitResult.valid, true);
+  let submitRow = sqliteJson(dbFile, `SELECT status, output_info_id AS outputInfoId, receipt_ref AS receiptRef, lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${submitWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(submitRow.status, "submitted_for_review");
+  assert.ok(submitRow.outputInfoId);
+  assert.ok(submitRow.receiptRef);
+  assert.equal(submitRow.leaseOwner, "");
+  assert.equal(submitRow.leaseUntil, "");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", `info_id='${submitRow.outputInfoId}' AND worker_run_id='${submitWorker.workerRun.workerRunId}'`), 1);
+
+  const failWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_nose",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-fail",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-03T00:03:00.000Z"
+  });
+  let failLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${failWorker.workerRun.workerRunId}';`)[0];
+  const failPreview = await runAction(root, {
+    action: "workflow.v2.worker_result.fail.preview",
+    workerRunId: failWorker.workerRun.workerRunId,
+    leaseOwner: failLease.leaseOwner,
+    leaseUntil: failLease.leaseUntil,
+    error: "temporary adapter failure",
+    retryDelayMs: 60_000,
+    generatedAt: "2026-07-03T00:03:05.000Z"
+  });
+  assert.equal(failPreview.valid, true);
+  assert.equal(failPreview.retry, true);
+  assert.equal(failPreview.nextStatus, "retry_scheduled");
+  await runAction(root, {
+    action: "workflow.v2.worker_result.fail",
+    workerRunId: failWorker.workerRun.workerRunId,
+    leaseOwner: failLease.leaseOwner,
+    leaseUntil: failLease.leaseUntil,
+    error: "temporary adapter failure",
+    retryDelayMs: 60_000,
+    generatedAt: "2026-07-03T00:03:05.000Z"
+  });
+  let failRow = sqliteJson(dbFile, `SELECT status, attempt, next_retry_at AS nextRetryAt, lease_owner AS leaseOwner, lease_until AS leaseUntil, completed_at AS completedAt, last_error AS lastError FROM workflow_v2_worker_runs WHERE worker_run_id='${failWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(failRow.status, "retry_scheduled");
+  assert.equal(failRow.attempt, 1);
+  assert.ok(failRow.nextRetryAt);
+  assert.equal(failRow.leaseOwner, "");
+  assert.equal(failRow.leaseUntil, "");
+  assert.equal(failRow.completedAt, "");
+  assert.match(failRow.lastError, /temporary adapter failure/);
+
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-fail-second",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-03T00:04:06.000Z"
+  });
+  failLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${failWorker.workerRun.workerRunId}';`)[0];
+  const failClaimedRow = sqliteJson(dbFile, `SELECT last_error AS lastError FROM workflow_v2_worker_runs WHERE worker_run_id='${failWorker.workerRun.workerRunId}';`)[0];
+  assert.match(failClaimedRow.lastError, /temporary adapter failure/);
+  await runAction(root, {
+    action: "workflow.v2.worker_result.fail",
+    workerRunId: failWorker.workerRun.workerRunId,
+    leaseOwner: failLease.leaseOwner,
+    leaseUntil: failLease.leaseUntil,
+    error: "permanent adapter failure",
+    retryDelayMs: 60_000,
+    generatedAt: "2026-07-03T00:04:10.000Z"
+  });
+  failRow = sqliteJson(dbFile, `SELECT status, attempt, next_retry_at AS nextRetryAt, completed_at AS completedAt, last_error AS lastError FROM workflow_v2_worker_runs WHERE worker_run_id='${failWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(failRow.status, "failed");
+  assert.equal(failRow.attempt, 2);
+  assert.equal(failRow.nextRetryAt, "");
+  assert.ok(failRow.completedAt);
+  assert.match(failRow.lastError, /permanent adapter failure/);
+
+  const noOutputWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.manager_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      workerRunId: noOutputWorker.workerRun.workerRunId,
+      reviewerAgent: "cat_body",
+      decision: "accepted",
+      summary: "This should not accept because no worker output exists."
+    }),
+    /requires worker status submitted_for_review/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_manager_reviews", `worker_run_id='${noOutputWorker.workerRun.workerRunId}' AND decision='accepted'`), 0);
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='cancelled', updated_at='2026-07-03T00:00:00.000Z'
+WHERE worker_run_id='${noOutputWorker.workerRun.workerRunId}';`);
+  sqliteExec(dbFile, `
+UPDATE workflow_session_runs
+SET status='cancelled', updated_at='2026-07-03T00:00:00.000Z', completed_at='2026-07-03T00:00:00.000Z'
+WHERE run_id='${noOutputWorker.workerRun.sessionRunId}';`);
+
+  const blockedWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.manager_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      workerRunId: blockedWorker.workerRun.workerRunId,
+      reviewerAgent: "cat_body",
+      decision: "blocked",
+      summary: "Manager blocks this worker before runtime dispatch."
+    }),
+    /manager review decision blocked is not allowed/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.manager_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      workerRunId: blockedWorker.workerRun.workerRunId,
+      reviewerAgent: "cat_body",
+      decision: "BLOCKED",
+      summary: "Case-variant blocked decision must also be rejected."
+    }),
+    /manager review decision blocked is not allowed/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_manager_reviews", `worker_run_id='${blockedWorker.workerRun.workerRunId}' AND decision='blocked'`), 0);
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='blocked', last_error='worker lifecycle blocker', updated_at='2026-07-03T00:10:00.000Z'
+WHERE worker_run_id='${blockedWorker.workerRun.workerRunId}';`);
+  sqliteExec(dbFile, `
+UPDATE workflow_session_runs
+SET status='failed', error='worker lifecycle blocker', completed_at='2026-07-03T00:10:01.000Z', updated_at='2026-07-03T00:10:01.000Z'
+WHERE run_id='${blockedWorker.workerRun.sessionRunId}';`);
+
+  const reviseWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false },
+    payload: { outputSummary: "Worker output intentionally needs revision." }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-revise",
+    workerLimit: 1
+  });
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET lease_owner='stale-review-lease', lease_until='2026-07-03T00:00:00.000Z'
+WHERE worker_run_id='${reviseWorker.workerRun.workerRunId}';`);
+  await runAction(root, {
+    action: "workflow.v2.manager_review.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    workerRunId: reviseWorker.workerRun.workerRunId,
+    reviewerAgent: "cat_body",
+    decision: "revise_required",
+    summary: "Manager requires revision."
+  });
+  const reviseRow = sqliteJson(dbFile, `SELECT status, lease_owner AS leaseOwner, lease_until AS leaseUntil, last_error AS lastError FROM workflow_v2_worker_runs WHERE worker_run_id='${reviseWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(reviseRow.status, "revise_required");
+  assert.equal(reviseRow.leaseOwner, "");
+  assert.equal(reviseRow.leaseUntil, "");
+  assert.match(reviseRow.lastError, /requires revision/);
+
+  const expiredSubmitWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_nose",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 1,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-expired-submit",
+    workerLimit: 1,
+    workerLeaseMs: 1000,
+    generatedAt: "2026-07-03T00:10:00.000Z"
+  });
+  const expiredSubmitLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${expiredSubmitWorker.workerRun.workerRunId}';`)[0];
+  const expiredSubmitPreview = await runAction(root, {
+    action: "workflow.v2.worker_result.submit.preview",
+    workerRunId: expiredSubmitWorker.workerRun.workerRunId,
+    leaseOwner: expiredSubmitLease.leaseOwner,
+    leaseUntil: expiredSubmitLease.leaseUntil,
+    generatedAt: "2026-07-03T00:10:02.000Z",
+    artifactRef: "artifact://workflow-v2/expired-submit-output.json",
+    receipt: { adapter: "hermers", status: "completed_after_expiry" },
+    summary: "Expired submit must be rejected."
+  });
+  assert.equal(expiredSubmitPreview.valid, false);
+  assert.equal(Boolean(expiredSubmitPreview.errors.some((item) => item.code === "lease_expired")), true);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_result.submit",
+      workerRunId: expiredSubmitWorker.workerRun.workerRunId,
+      leaseOwner: expiredSubmitLease.leaseOwner,
+      leaseUntil: expiredSubmitLease.leaseUntil,
+      generatedAt: "2026-07-03T00:10:02.000Z",
+      artifactRef: "artifact://workflow-v2/expired-submit-output.json",
+      receipt: { adapter: "hermers", status: "completed_after_expiry" },
+      summary: "Expired submit must be rejected."
+    }),
+    /lease_expired/
+  );
+
+  const expiredFailWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_nose",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 1,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-expired-fail",
+    workerLimit: 1,
+    workerLeaseMs: 1000,
+    generatedAt: "2026-07-03T00:11:00.000Z"
+  });
+  const expiredFailLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${expiredFailWorker.workerRun.workerRunId}';`)[0];
+  const expiredFailPreview = await runAction(root, {
+    action: "workflow.v2.worker_result.fail.preview",
+    workerRunId: expiredFailWorker.workerRun.workerRunId,
+    leaseOwner: expiredFailLease.leaseOwner,
+    leaseUntil: expiredFailLease.leaseUntil,
+    generatedAt: "2026-07-03T00:11:02.000Z",
+    error: "expired failure report"
+  });
+  assert.equal(expiredFailPreview.valid, false);
+  assert.equal(Boolean(expiredFailPreview.errors.some((item) => item.code === "lease_expired")), true);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_result.fail",
+      workerRunId: expiredFailWorker.workerRun.workerRunId,
+      leaseOwner: expiredFailLease.leaseOwner,
+      leaseUntil: expiredFailLease.leaseUntil,
+      generatedAt: "2026-07-03T00:11:02.000Z",
+      error: "expired failure report"
+    }),
+    /lease_expired/
+  );
+
+  const finalValid = await runAction(root, {
+    action: "workflow.v2.validate",
+    workflowId
+  });
+  assert.equal(finalValid.ok, true);
+  assert.equal(finalValid.status, "pass");
+
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_manager_reviews(review_id, workflow_id, plan_id, node_id, worker_run_id, reviewer_agent, decision, summary, findings_json, artifact_refs_json, receipt_refs_json, blocker_json, payload_json, created_at)
+VALUES ('review-v2-orphan-manager', '${workflowId}', 'plan-v2-kernel', '${worker.workerRun.nodeId}', '', 'cat_body', 'accepted', 'Validator should reject unbound manager reviews.', '[]', '[]', '[]', '{}', '{}', '2026-07-03T00:11:30.000Z');`);
+  const invalidOrphanManagerReview = await runAction(root, { action: "workflow.v2.validate", workflowId });
+  assert.equal(invalidOrphanManagerReview.ok, false);
+  assert.equal(Boolean(invalidOrphanManagerReview.failedChecks.includes("manager_reviews_match_worker_runs")), true);
+  sqliteExec(dbFile, `DELETE FROM workflow_v2_manager_reviews WHERE review_id='review-v2-orphan-manager';`);
+
+  sqliteExec(dbFile, `
+INSERT INTO workflow_session_runs(run_id, session_id, pack_version, workflow_id, task_id, dispatch_id, worker_id, status, input_json, worker_input_json, output_json, receipt_ref, error, started_at, completed_at, created_at, updated_at)
+VALUES ('session-v2-bad-json-input', 'session-cat-body-worker', 1, '${workflowId}', 'bad-json-node', '', 'bad-json-worker', 'queued', '{bad-json', '{}', '{}', '', '', '', '', '2026-07-03T00:11:35.000Z', '2026-07-03T00:11:35.000Z');`);
+  const invalidBadSessionJson = await runAction(root, { action: "workflow.v2.validate", workflowId });
+  assert.equal(invalidBadSessionJson.ok, false);
+  assert.equal(Boolean(invalidBadSessionJson.failedChecks.includes("v2_session_runs_have_worker_runs")), true);
+  sqliteExec(dbFile, `DELETE FROM workflow_session_runs WHERE run_id='session-v2-bad-json-input';`);
+
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='blocked', last_error='worker lifecycle blocker', updated_at='2026-07-03T00:11:59.000Z'
+WHERE worker_run_id='${blockedWorker.workerRun.workerRunId}';`);
+  sqliteExec(dbFile, `
+UPDATE workflow_session_runs
+SET status='queued', error='', completed_at='', updated_at='2026-07-03T00:12:00.000Z'
+WHERE run_id='${blockedWorker.workerRun.sessionRunId}';`);
+  const invalidBlockedDrift = await runAction(root, { action: "workflow.v2.validate", workflowId });
+  assert.equal(invalidBlockedDrift.ok, false);
+  assert.equal(Boolean(invalidBlockedDrift.failedChecks.includes("worker_runs_session_runs_match")), true);
+  sqliteExec(dbFile, `
+UPDATE workflow_session_runs
+SET status='failed', error='worker lifecycle blocker', completed_at='2026-07-03T00:12:01.000Z', updated_at='2026-07-03T00:12:01.000Z'
+WHERE run_id='${blockedWorker.workerRun.sessionRunId}';`);
+
+  sqliteExec(dbFile, `
+  INSERT INTO workflow_v2_worker_runs(worker_run_id, workflow_id, plan_id, node_id, manager_agent, worker_agent_id, session_id, session_run_id, runtime_backend, status, task_input_info_id, output_info_id, receipt_ref, payload_json, created_at, updated_at)
+  VALUES ('worker-v2-mismatch', 'wf-v2-wrong', 'plan-v2-kernel', 'missing-node', 'cat_body', 'worker-x', 'session-cat-body-worker', '', 'hermers_docker_worker', 'queued', 'info-v2-task-input', '', '', '{}', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z');`);
+  const invalid = await runAction(root, { action: "workflow.v2.validate" });
+  assert.equal(invalid.ok, false);
+  assert.equal(Boolean(invalid.failedChecks.includes("worker_runs_match_plan_node")), true);
+  assert.equal(Boolean(invalid.failedChecks.includes("worker_runs_require_valid_preflight")), true);
+  assert.equal(Boolean(invalid.failedChecks.includes("worker_runs_session_runs_match")), true);
+  sqliteExec(dbFile, `DELETE FROM workflow_v2_worker_runs WHERE worker_run_id='worker-v2-mismatch';`);
+  sqliteExec(dbFile, `
+UPDATE workflow_session_runs
+SET task_id='wrong-node-for-validator'
+WHERE run_id='${worker.workerRun.sessionRunId}';`);
+  const invalidSessionTask = await runAction(root, { action: "workflow.v2.validate", workflowId });
+  assert.equal(invalidSessionTask.ok, false);
+  assert.equal(Boolean(invalidSessionTask.failedChecks.includes("worker_runs_session_runs_match")), true);
+  sqliteExec(dbFile, `
+UPDATE workflow_session_runs
+SET task_id='${worker.workerRun.nodeId}', worker_id='wrong-worker-for-validator'
+WHERE run_id='${worker.workerRun.sessionRunId}';`);
+  const invalidSessionWorker = await runAction(root, { action: "workflow.v2.validate", workflowId });
+  assert.equal(invalidSessionWorker.ok, false);
+  assert.equal(Boolean(invalidSessionWorker.failedChecks.includes("worker_runs_session_runs_match")), true);
+  sqliteExec(dbFile, `
+UPDATE workflow_session_runs
+SET worker_id='${worker.workerRun.workerAgentId}'
+WHERE run_id='${worker.workerRun.sessionRunId}';`);
+  sqliteExec(dbFile, `
+INSERT INTO workflow_session_runs(run_id, session_id, pack_version, workflow_id, task_id, dispatch_id, worker_id, status, input_json, worker_input_json, output_json, receipt_ref, error, started_at, completed_at, created_at, updated_at)
+VALUES ('session-v2-orphan', 'session-cat-body-worker', 1, '${workflowId}', 'node-orphan', '', 'worker-orphan', 'queued', '{"schemaVersion":"workflow_v2_worker_session_input.v1"}', '{}', '{}', '', '', '', '', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z');`);
+  const invalidOrphanSession = await runAction(root, { action: "workflow.v2.validate", workflowId });
+  assert.equal(invalidOrphanSession.ok, false);
+  assert.equal(Boolean(invalidOrphanSession.failedChecks.includes("v2_session_runs_have_worker_runs")), true);
+  sqliteExec(dbFile, `DELETE FROM workflow_session_runs WHERE run_id='session-v2-orphan';`);
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_read_receipts(receipt_id, workflow_id, info_id, inbox_item_id, grant_id, reader_kind, reader_id, status, payload_json, created_at)
+VALUES ('read-v2-unlinked', '${workflowId}', 'info-v2-task-input', '', '', 'agent', 'cat_body', 'read', '{}', '2026-07-01T00:00:00.000Z');`);
+  const invalidReceipt = await runAction(root, { action: "workflow.v2.validate" });
+  assert.equal(Boolean(invalidReceipt.failedChecks.includes("read_receipts_match_info_inbox_grant")), true);
+
+  const partialRoot = await tempRoot("workflow-v2-partial-schema");
+  const partialDbFile = path.join(partialRoot, "tracking.db");
+  sqliteExec(partialDbFile, `
+CREATE TABLE workflow_v2_plans(plan_id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL);`);
+  const partialValidation = await runAction(partialRoot, { action: "workflow.v2.validate" });
+  assert.equal(partialValidation.ok, false);
+  assert.equal(partialValidation.status, "fail");
+  assert.equal(Boolean(partialValidation.missingSchema.some((item) => item.table === "workflow_v2_plans" && item.missingColumns.includes("workflow_state"))), true);
+  assert.equal(Boolean(partialValidation.checks.some((item) => item.status === "schema_gap")), true);
 }
 
 async function testWorkflowInterventionExecution() {
@@ -5467,21 +8471,24 @@ async function testWorkflowTaskDraftPurePreview() {
   assert.ok(Array.isArray(draft.spec.planSpecV2.evidencePolicy.artifactRefs));
   assert.equal(draft.spec.planSpecV2.resumePolicy.checkpointBeforeSideEffect, true);
   assert.ok(draft.spec.planSpecV2.failureRoutes.every((route) => route.routeId && route.match && route.action && route.ownerAgent));
-  assert.ok(draft.spec.planSpecV2.artifacts);
-  assert.equal(draft.spec.planSpecV2.audit.generatedBy, "workflow.task.draft");
-  assert.equal(draft.spec.planSpecV2.humanGatePolicy.required, true);
-  assert.equal(draft.spec.planSpecV2.humanGatePolicy.requiresOriginalWords, true);
+	  assert.ok(draft.spec.planSpecV2.artifacts);
+	  assert.equal(draft.spec.planSpecV2.audit.generatedBy, "workflow.task.draft");
+	  assert.equal(draft.spec.planSpecV2.humanGatePolicy.required, true);
+	  assert.equal(draft.spec.planSpecV2.humanGatePolicy.optionsMinimum, 2);
+	  assert.equal(draft.spec.planSpecV2.humanGatePolicy.optionsMaximum, 5);
+	  assert.equal(draft.spec.planSpecV2.humanGatePolicy.requiresOriginalWords, true);
   assert.equal(draft.spec.planSpecV2.humanGatePolicy.submitterAgent, "cat_claw");
   assert.equal(draft.spec.planSpecV2.evidencePolicy.rawLogsInPlan, false);
   assert.ok(draft.spec.participants.some((participant) => participant.agentId === "main"));
   assert.ok(draft.spec.participants.some((participant) => participant.agentId === "cat_claw"));
-  assert.ok(draft.spec.participants.some((participant) => participant.agentId === "cat_heart"));
-  assert.equal(draft.spec.appendix.template, "stock_longterm_tracking");
-  assert.equal(draft.spec.humanGateDraft.options.length, 3);
-  assert.ok(draft.spec.humanGateDraft.controls.some((control) => control.id === "pause_workflow"));
+	  assert.ok(draft.spec.participants.some((participant) => participant.agentId === "cat_heart"));
+	  assert.equal(draft.spec.appendix.template, "stock_longterm_tracking");
+	  assert.equal(draft.spec.humanGateDraft.options.length >= 2, true);
+	  assert.equal(draft.spec.humanGateDraft.options.length <= 5, true);
+	  assert.ok(draft.spec.humanGateDraft.controls.some((control) => control.id === "pause_workflow"));
   assert.ok(draft.spec.humanGateDraft.controls.some((control) => control.id === "terminate_workflow"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "cat_claw_secretary_present" && gate.status === "pass"));
-  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "three_options_required" && gate.status === "pass"));
+  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "approve_options_count_required" && gate.status === "pass"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "pause_terminate_controls_required" && gate.status === "pass"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "cat_claw_audit_before_human_gate" && gate.status === "pass"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "plan_spec_v2_required_ids" && gate.status === "pass"));
@@ -6513,6 +9520,324 @@ VALUES ('side-effect-permission-uncertain', 'workflow-permission-gate', 'test', 
   });
   assert.equal(canonicalForbidden.allowed, false);
   assert.equal(canonicalForbidden.reason, "action_forbidden_by_policy");
+}
+
+async function testWorkflowV2PermissionAndConsoleGate() {
+  const root = await tempRoot("workflow-v2-permission-console");
+  const dbFile = path.join(root, "tracking.db");
+  const bridgeDir = path.join(root, "bridge");
+
+  const previewPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.plan.preview"
+  });
+  assert.equal(previewPolicy.allowed, true);
+  assert.equal(previewPolicy.readOnly, true);
+  assert.equal(previewPolicy.requiredCapability, "read");
+  const readPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.info_stack.read"
+  });
+  assert.equal(readPolicy.allowed, true);
+  assert.equal(readPolicy.readOnly, true);
+  const controlPreviewPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.control_loop.preview"
+  });
+  assert.equal(controlPreviewPolicy.allowed, true);
+  assert.equal(controlPreviewPolicy.readOnly, true);
+  const lifecyclePreviewPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.worker_lifecycle.preview"
+  });
+  assert.equal(lifecyclePreviewPolicy.allowed, true);
+  assert.equal(lifecyclePreviewPolicy.readOnly, true);
+  const handoffPreviewPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.worker_handoff.preview"
+  });
+  assert.equal(handoffPreviewPolicy.allowed, true);
+  assert.equal(handoffPreviewPolicy.readOnly, true);
+  const successorPreviewPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.worker_successor.preview"
+  });
+  assert.equal(successorPreviewPolicy.allowed, true);
+  assert.equal(successorPreviewPolicy.readOnly, true);
+  const adapterRunnerPreviewPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.adapter_runner.preview"
+  });
+  assert.equal(adapterRunnerPreviewPolicy.allowed, true);
+  assert.equal(adapterRunnerPreviewPolicy.readOnly, true);
+
+  const writePolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.worker_spawn.create",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(writePolicy.allowed, false);
+  assert.equal(writePolicy.reason, "caller_not_registered");
+  assert.equal(writePolicy.requiredCapability, "workflow.worker.spawn");
+  const lifecycleWritePolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.worker_handoff.record",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(lifecycleWritePolicy.allowed, false);
+  assert.equal(lifecycleWritePolicy.requiredCapability, "workflow.worker.lifecycle");
+
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_body",
+    capabilities: { permissions: ["workflow.worker.spawn"] }
+  });
+  const allowedWritePolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.worker_spawn.create",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(allowedWritePolicy.allowed, true);
+  assert.equal(allowedWritePolicy.requiredCapability, "workflow.worker.spawn");
+  const tickPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.control_loop.tick",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(tickPolicy.allowed, false);
+  assert.equal(tickPolicy.requiredCapability, "workflow.worker.control_loop");
+  const resultWritePolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.worker_result.submit",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(resultWritePolicy.allowed, false);
+  assert.equal(resultWritePolicy.requiredCapability, "workflow.worker.result");
+  const adapterRunnerWritePolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.adapter_runner.drain",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(adapterRunnerWritePolicy.allowed, false);
+  assert.equal(adapterRunnerWritePolicy.requiredCapability, "workflow.worker.adapter_runner");
+  const lifecycleWritePolicyMissingCapability = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.worker_successor.create",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(lifecycleWritePolicyMissingCapability.allowed, false);
+  assert.equal(lifecycleWritePolicyMissingCapability.requiredCapability, "workflow.worker.lifecycle");
+
+  const consoleInfo = await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId: "wf-v2-console",
+    infoId: "info-v2-console-read",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/console-read.json",
+    recipientAgent: "cat_body",
+    summary: "Console read-only info item."
+  });
+  const gateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { readOnly: true });
+  const gatewayPreview = await gateway.handle({
+    action: "workflow.v2.plan.preview",
+    actor: "flashcat",
+    reason: "v2 plan preview token abc",
+    payload: {
+      workflowId: "wf-v2-console",
+      objective: "Preview via console gateway.",
+      ...v2PlanContract({ workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 } })
+    }
+  });
+  assert.equal(gatewayPreview.ok, true);
+  assert.equal(gatewayPreview.dryRun, true);
+  assert.equal(gatewayPreview.result.valid, true);
+  const gatewayControlPreview = await gateway.handle({
+    action: "workflow.v2.control_loop.preview",
+    actor: "flashcat",
+    reason: "v2 control loop preview",
+    payload: {
+      workflowId: "wf-v2-console"
+    }
+  });
+  assert.equal(gatewayControlPreview.ok, true);
+  assert.equal(gatewayControlPreview.result.status, "ok");
+  assert.equal(Number(gatewayControlPreview.result.counts.total || 0), 0);
+  const gatewayLifecyclePreview = await gateway.handle({
+    action: "workflow.v2.worker_lifecycle.preview",
+    actor: "flashcat",
+    reason: "v2 worker lifecycle preview",
+    payload: {
+      workerRunId: "missing-worker"
+    }
+  });
+  assert.equal(gatewayLifecyclePreview.ok, true);
+  assert.equal(gatewayLifecyclePreview.result.valid, false);
+  assert.equal(Boolean(gatewayLifecyclePreview.result.errors.some((item) => item.code === "worker_run_not_found")), true);
+  const gatewayHandoffPreview = await gateway.handle({
+    action: "workflow.v2.worker_handoff.preview",
+    actor: "flashcat",
+    reason: "v2 worker handoff preview",
+    payload: {
+      workerRunId: "missing-worker",
+      callerAgent: "cat_body",
+      summary: "Preview missing worker handoff.",
+      artifactRef: "artifact://workflow-v2/missing-handoff.json"
+    }
+  });
+  assert.equal(gatewayHandoffPreview.ok, true);
+  assert.equal(gatewayHandoffPreview.result.valid, false);
+  assert.equal(Boolean(gatewayHandoffPreview.result.errors.some((item) => item.code === "worker_run_not_found")), true);
+  const gatewayResultPreview = await gateway.handle({
+    action: "workflow.v2.worker_result.submit.preview",
+    actor: "flashcat",
+    reason: "v2 worker result preview",
+    payload: {
+      workerRunId: "missing-worker",
+      leaseOwner: "nobody",
+      leaseUntil: "2026-07-03T00:00:00.000Z",
+      artifactRef: "artifact://workflow-v2/missing-output.json",
+      receiptRef: "receipt://workflow-v2/missing"
+    }
+  });
+  assert.equal(gatewayResultPreview.ok, true);
+  assert.equal(gatewayResultPreview.result.valid, false);
+  assert.equal(Boolean(gatewayResultPreview.result.errors.some((item) => item.code === "worker_run_not_found")), true);
+  const gatewayAdapterRunnerPreview = await gateway.handle({
+    action: "workflow.v2.adapter_runner.preview",
+    actor: "flashcat",
+    reason: "v2 adapter runner preview",
+    payload: {
+      workflowId: "wf-v2-console"
+    }
+  });
+  assert.equal(gatewayAdapterRunnerPreview.ok, true);
+  assert.equal(gatewayAdapterRunnerPreview.result.count, 0);
+  const gatewayInfoRead = await gateway.handle({
+    action: "workflow.v2.info_stack.read",
+    actor: "flashcat",
+    reason: "v2 info stack read",
+    payload: {
+      infoId: "info-v2-console-read",
+      inboxItemId: consoleInfo.inboxItem.inboxItemId,
+      principalKind: "agent",
+      principalId: "cat_body"
+    }
+  });
+  assert.equal(gatewayInfoRead.ok, true);
+  assert.equal(gatewayInfoRead.result.item.infoId, "info-v2-console-read");
+  const gatewayValidate = await gateway.handle({
+    action: "workflow.v2.validate",
+    actor: "flashcat",
+    reason: "v2 validate read-only",
+    payload: {
+      workflowId: "wf-v2-console"
+    }
+  });
+  assert.equal(gatewayValidate.ok, true);
+  assert.equal(gatewayValidate.result.ok, true);
+
+  const rejectedWrite = await gateway.handle({
+    action: "workflow.v2.plan.create",
+    actor: "flashcat",
+    reason: "write remains opt-in",
+    payload: {
+      workflowId: "wf-v2-console",
+      objective: "This write should be rejected by default console gateway."
+    }
+  });
+  assert.equal(rejectedWrite.ok, false);
+  assert.equal(rejectedWrite.errorCode, "action_not_allowed");
+  const rejectedTick = await gateway.handle({
+    action: "workflow.v2.control_loop.tick",
+    actor: "flashcat",
+    reason: "tick remains opt-in",
+    payload: {
+      workflowId: "wf-v2-console"
+    }
+  });
+  assert.equal(rejectedTick.ok, false);
+  assert.equal(rejectedTick.errorCode, "action_not_allowed");
+  const rejectedResultSubmit = await gateway.handle({
+    action: "workflow.v2.worker_result.submit",
+    actor: "flashcat",
+    reason: "worker result remains opt-in",
+    payload: {
+      workerRunId: "missing-worker"
+    }
+  });
+  assert.equal(rejectedResultSubmit.ok, false);
+  assert.equal(rejectedResultSubmit.errorCode, "action_not_allowed");
+  const rejectedHandoffRecord = await gateway.handle({
+    action: "workflow.v2.worker_handoff.record",
+    actor: "flashcat",
+    reason: "worker handoff write remains opt-in",
+    payload: {
+      workerRunId: "missing-worker",
+      callerAgent: "cat_body",
+      summary: "This write should be rejected by console gateway.",
+      artifactRef: "artifact://workflow-v2/rejected-handoff.json"
+    }
+  });
+  assert.equal(rejectedHandoffRecord.ok, false);
+  assert.equal(rejectedHandoffRecord.errorCode, "action_not_allowed");
+  const rejectedRetireRecord = await gateway.handle({
+    action: "workflow.v2.worker_retire.record",
+    actor: "flashcat",
+    reason: "worker retire write remains opt-in",
+    payload: {
+      workerRunId: "missing-worker",
+      callerAgent: "cat_body",
+      reason: "This write should be rejected by console gateway."
+    }
+  });
+  assert.equal(rejectedRetireRecord.ok, false);
+  assert.equal(rejectedRetireRecord.errorCode, "action_not_allowed");
+  const rejectedSuccessorCreate = await gateway.handle({
+    action: "workflow.v2.worker_successor.create",
+    actor: "flashcat",
+    reason: "worker successor write remains opt-in",
+    payload: {
+      sourceWorkerRunId: "missing-worker",
+      callerAgent: "cat_body"
+    }
+  });
+  assert.equal(rejectedSuccessorCreate.ok, false);
+  assert.equal(rejectedSuccessorCreate.errorCode, "action_not_allowed");
+  const rejectedAdapterRunnerDrain = await gateway.handle({
+    action: "workflow.v2.adapter_runner.drain",
+    actor: "flashcat",
+    reason: "adapter runner drain remains opt-in",
+    payload: {
+      runnerId: "mock-console-runner"
+    }
+  });
+  assert.equal(rejectedAdapterRunnerDrain.ok, false);
+  assert.equal(rejectedAdapterRunnerDrain.errorCode, "action_not_allowed");
+
+  const rows = sqliteJson(dbFile, `
+SELECT action, status, dry_run AS dryRun, reason
+FROM workflow_operations
+WHERE action LIKE 'workflow.v2.%'
+ORDER BY created_at ASC;`);
+  assert.equal(rows.some((row) => row.action === "workflow.v2.plan.preview" && row.status === "completed" && row.dryRun === 1), true);
+  assert.equal(rows.some((row) => row.action === "workflow.v2.plan.create" && row.status === "rejected"), true);
+  assert.equal(rows.some((row) => row.action === "workflow.v2.control_loop.tick" && row.status === "rejected"), true);
+  assert.equal(rows.some((row) => row.action === "workflow.v2.worker_result.submit" && row.status === "rejected"), true);
+  assert.equal(rows.some((row) => row.action === "workflow.v2.worker_handoff.record" && row.status === "rejected"), true);
+  assert.equal(rows.some((row) => row.action === "workflow.v2.worker_retire.record" && row.status === "rejected"), true);
+  assert.equal(rows.some((row) => row.action === "workflow.v2.worker_successor.create" && row.status === "rejected"), true);
+  assert.equal(rows.some((row) => row.action === "workflow.v2.adapter_runner.drain" && row.status === "rejected"), true);
+  assert.equal(rows.some((row) => String(row.reason || "").includes("abc")), false);
 }
 
 async function testWorkflowSessionStoreCli() {
@@ -9251,6 +12576,10 @@ try {
     ["human_gate readiness legacy schema fallback", testHumanGateReadinessLegacySchemaFallback],
     ["workflow operations console audit", testWorkflowOperationsConsoleAudit],
     ["workflow intervention previews", testWorkflowInterventionPreviews],
+    ["workflow v2 adapter job manifest", testWorkflowV2AdapterJobManifest],
+    ["workflow v2 adapter runner drain", testWorkflowV2AdapterRunnerDrain],
+    ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
+    ["workflow v2 orchestration kernel", testWorkflowV2OrchestrationKernel],
     ["workflow intervention execution", testWorkflowInterventionExecution],
     ["workflow verification results", testWorkflowVerificationResults],
     ["control_loop job requeue", testControlLoopJobRequeue],
@@ -9274,6 +12603,7 @@ try {
     ["workflow event store", testWorkflowEventStore],
     ["automatic workflow events", testAutomaticWorkflowEvents],
     ["workflow permission gate", testWorkflowPermissionGate],
+    ["workflow v2 permission and console gate", testWorkflowV2PermissionAndConsoleGate],
     ["workflow session store", testWorkflowSessionStore],
     ["workflow session runs legacy schema migration", testWorkflowSessionRunsLegacySchemaMigration],
     ["workflow task draft pure preview", testWorkflowTaskDraftPurePreview],
@@ -9311,7 +12641,17 @@ try {
     ["cat_claw openclaw-only registry guard", testCatClawOpenClawOnlyRegistryGuard]
   ];
 
-  for (const [name, fn] of tests) {
+  const grepArg = process.argv.find((arg) => arg.startsWith("--grep="));
+  const grepIndex = process.argv.indexOf("--grep");
+  const grepText = String(grepArg ? grepArg.slice("--grep=".length) : (grepIndex >= 0 ? process.argv[grepIndex + 1] || "" : "")).trim();
+  const selectedTests = grepText
+    ? tests.filter(([name]) => name.toLowerCase().includes(grepText.toLowerCase()))
+    : tests;
+  if (!selectedTests.length) {
+    throw new Error(`no regression tests matched --grep ${JSON.stringify(grepText)}`);
+  }
+
+  for (const [name, fn] of selectedTests) {
     await fn();
     console.log(`ok - ${name}`);
   }
