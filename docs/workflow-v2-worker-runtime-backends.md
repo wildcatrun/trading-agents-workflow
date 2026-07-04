@@ -79,8 +79,9 @@ the workstation has significantly larger CPU, memory, and GPU capacity.
 
 ## Current Workflow Interface
 
-The local v2 control plane now exposes the adapter-job bridge, but not real
-runner execution:
+The local v2 control plane now exposes the adapter-job bridge and a bounded
+external-command runner protocol. It still does not start WSL, Docker, Hermers,
+Claude Code, Gateway, production queues, or model calls by itself:
 
 - `workflow.v2.control_loop.tick` can lease a non-local worker into `running`
   with status `leased_waiting_adapter`.
@@ -115,11 +116,26 @@ runner execution:
   Submit/fail calls that bind an `adapterJobId` must include both worker lease
   proof and the current adapter-job runner lease proof.
 - `workflow.v2.adapter_runner.preview` and `workflow.v2.adapter_runner.drain`
-  are now available as a local `mock` runner bridge. The drain action claims
-  due adapter jobs, reads the manifest artifact, writes a mock output artifact,
-  and returns through the governed submit/fail actions. It is a protocol smoke,
-  not a Docker, Hermers, Claude Code, WSL, Gateway, or model invocation. The
-  runner requires a stored manifest hash and fails closed on missing or
+  are available as local runner bridges. The default `mock` mode claims due
+  adapter jobs, reads the manifest artifact, writes a mock output artifact, and
+  returns through the governed submit/fail actions. The `external_command` mode
+  claims the same jobs but delegates execution to an explicitly configured local
+  command wrapper. That wrapper receives a request JSON file and output JSON
+  file path, then returns `success`, `fail`, or `release`. The workflow process
+  records the normalized output artifact and still performs all central DB
+  writes through governed submit/fail/release actions.
+- `external_command` mode is intended as the integration boundary where future Hermers and
+  Claude Code Docker wrappers can be attached. It is not itself a Docker,
+  Hermers, Claude Code, WSL, Gateway, or model invocation.
+- External runner commands are supplied only through environment configuration,
+  such as `TRADING_AGENTS_WORKFLOW_V2_HERMERS_DOCKER_WORKER_RUNNER_CMD`,
+  `TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD`, or the
+  generic `TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD`. Action payload fields
+  such as `runnerCommand` / `externalRunnerCommand` are rejected to avoid
+  caller-selected host command execution. Commands are executed with `execFile`,
+  not shell interpolation; command strings with spaces are rejected unless
+  supplied as a JSON array in the environment variable.
+- The runner requires a stored manifest hash and fails closed on missing or
   mismatched manifest hashes. Structural runner errors default to terminal
   adapter/worker failure unless retry is explicitly enabled.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
@@ -132,7 +148,7 @@ runner execution:
   through a much smaller active slot count.
 
 These actions still do not start Docker, Hermers, Claude Code, WSL, Gateway, or
-any model call.
+any model call unless a separately authorized wrapper command is configured.
 
 ## Authorized WSL Testbed State
 

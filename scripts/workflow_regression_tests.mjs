@@ -2850,6 +2850,179 @@ async function testWorkflowV2AdapterRunnerDrain() {
   assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${successWorker.workerRun.workerRunId}' AND status='submitted_for_review' AND lease_owner='' AND lease_until=''`), 1);
   assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${successWorker.workerRun.sessionRunId}' AND status='completed'`), 1);
 
+  const externalRunnerScript = path.join(root, "external-runner.mjs");
+  await fs.writeFile(externalRunnerScript, `
+import fs from "node:fs/promises";
+
+const [requestFile, outputFile] = process.argv.slice(2);
+const request = JSON.parse(await fs.readFile(requestFile, "utf8"));
+await fs.writeFile(outputFile, JSON.stringify({
+  status: "success",
+  summary: "External command worker completed " + request.adapterJob.workerRunId,
+  receipt: {
+    backend: request.runtimeBackend,
+    adapterJobId: request.adapterJob.adapterJobId,
+    workerRunId: request.adapterJob.workerRunId
+  }
+}, null, 2) + "\\n", "utf8");
+`, "utf8");
+  const externalWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-runner",
+    nodeId: "node-v2-runner",
+    managerAgent: "cat_body",
+    sessionId: "session-v2-runner-worker",
+    workerRunId: "worker-v2-runner-external",
+    taskInputInfoId: "info-v2-runner-task-input",
+    runtimeBackend: "claude_code_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-runner-external-worker",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-04T01:05:00.000Z"
+  });
+  const externalLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${externalWorker.workerRun.workerRunId}';`)[0];
+  await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: externalWorker.workerRun.workerRunId,
+    leaseOwner: externalLease.leaseOwner,
+    leaseUntil: externalLease.leaseUntil,
+    generatedAt: "2026-07-04T01:05:01.000Z"
+  });
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.adapter_runner.drain",
+      mode: "external_command",
+      runtimeBackend: "claude_code_docker_worker",
+      runnerCommand: [process.execPath, externalRunnerScript],
+      runnerId: "external-runner-input-command-rejected",
+      limit: 1,
+      leaseMs: 30_000,
+      generatedAt: "2026-07-04T01:05:02.000Z"
+    }),
+    /command must be configured by environment/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.adapter_runner.drain",
+      mode: "external_command",
+      runtimeBackend: "claude_code_docker_worker",
+      runnerId: "external-runner-missing-command",
+      limit: 1,
+      leaseMs: 30_000,
+      generatedAt: "2026-07-04T01:05:02.000Z"
+    }),
+    /requires TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `worker_run_id='${externalWorker.workerRun.workerRunId}' AND status='queued'`), 1);
+  const externalRunnerEnvKey = "TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD";
+  const previousExternalRunnerCommand = process.env[externalRunnerEnvKey];
+  process.env[externalRunnerEnvKey] = JSON.stringify([process.execPath, externalRunnerScript]);
+  const externalPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:05:02.000Z"
+  });
+  assert.equal(externalPreview.mode, "external_command");
+  assert.equal(externalPreview.runnerCommandRequired, true);
+  assert.equal(externalPreview.runnerCommandConfigured, true);
+  assert.equal(externalPreview.count, 1);
+  const externalDrain = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    runnerId: "external-runner-success",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T01:05:03.000Z"
+  });
+  assert.equal(externalDrain.mode, "external_command");
+  assert.equal(externalDrain.submittedCount, 1);
+  assert.equal(externalDrain.results[0].status, "submitted");
+  assert.equal(externalDrain.results[0].externalOutput.status, "success");
+  assert.equal(externalDrain.results[0].externalOutput.receipt.adapterRunner, "external_command");
+  assert.equal(externalDrain.results[0].submit.adapterJobUpdate.job.status, "completed");
+  assert.equal(Boolean(await pathExists(externalDrain.results[0].externalOutput.artifactFile)), true);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${externalWorker.workerRun.workerRunId}' AND status='submitted_for_review' AND lease_owner='' AND lease_until=''`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${externalWorker.workerRun.sessionRunId}' AND status='completed'`), 1);
+  if (previousExternalRunnerCommand === undefined) {
+    delete process.env[externalRunnerEnvKey];
+  } else {
+    process.env[externalRunnerEnvKey] = previousExternalRunnerCommand;
+  }
+
+  const badExternalRunnerScript = path.join(root, "external-runner-bad-output.mjs");
+  await fs.writeFile(badExternalRunnerScript, `
+process.stdout.write("not-json");
+`, "utf8");
+  const badExternalWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-runner",
+    nodeId: "node-v2-runner",
+    managerAgent: "cat_body",
+    sessionId: "session-v2-runner-worker",
+    workerRunId: "worker-v2-runner-external-bad-output",
+    taskInputInfoId: "info-v2-runner-task-input",
+    runtimeBackend: "claude_code_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-runner-external-bad-worker",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-04T01:06:00.000Z"
+  });
+  const badExternalLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${badExternalWorker.workerRun.workerRunId}';`)[0];
+  await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: badExternalWorker.workerRun.workerRunId,
+    leaseOwner: badExternalLease.leaseOwner,
+    leaseUntil: badExternalLease.leaseUntil,
+    generatedAt: "2026-07-04T01:06:01.000Z"
+  });
+  const previousBadExternalRunnerCommand = process.env[externalRunnerEnvKey];
+  process.env[externalRunnerEnvKey] = JSON.stringify([process.execPath, badExternalRunnerScript]);
+  const badExternalDrain = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    runnerId: "external-runner-bad-output",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T01:06:03.000Z"
+  });
+  assert.equal(badExternalDrain.submittedCount, 0);
+  assert.equal(badExternalDrain.failedCount, 1);
+  assert.equal(badExternalDrain.results[0].status, "error");
+  assert.match(badExternalDrain.results[0].error, /JSON|output/i);
+  assert.equal(badExternalDrain.results[0].failure.job.status, "failed");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${badExternalWorker.workerRun.workerRunId}' AND status='failed' AND lease_owner='' AND lease_until=''`), 1);
+  if (previousBadExternalRunnerCommand === undefined) {
+    delete process.env[externalRunnerEnvKey];
+  } else {
+    process.env[externalRunnerEnvKey] = previousBadExternalRunnerCommand;
+  }
+
   const failWorker = await runAction(root, {
     action: "workflow.v2.worker_spawn.create",
     workflowId,
@@ -3214,7 +3387,869 @@ ORDER BY adapter_job_id;`).map((row) => row.adapterJobId);
   assert.equal(adapterJobCheck?.status, "pass", JSON.stringify(validate.failedChecks));
 }
 
-async function testWorkflowV2OrchestrationKernel() {
+function v2KernelReceipt(overrides = {}) {
+  return { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "", ...overrides };
+}
+
+function v2KernelOAuth(overrides = {}) {
+  return { expiryOk: true, refreshOk: true, ...overrides };
+}
+
+function v2KernelNetwork(overrides = {}) {
+  return { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false, ...overrides };
+}
+
+function v2KernelManagerWorkerNode(plan) {
+  return plan.nodes.find((node) => node.nodeType === "manager_worker_spawn");
+}
+
+function v2KernelManagerPlanningNode(plan) {
+  return plan.nodes.find((node) => node.nodeType === "manager_planning");
+}
+
+async function setupWorkflowV2KernelPlanFixture(name = "workflow-v2-kernel-fixture") {
+  const root = await tempRoot(name);
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = "wf-v2-kernel";
+  const plan = await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    objective: "Persist v2 orchestration plan.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body", "cat_nose"],
+    ...v2PlanContract()
+  });
+  return { root, dbFile, workflowId, plan };
+}
+
+async function setupWorkflowV2KernelExecutionFixture(name = "workflow-v2-kernel-execution") {
+  const fixture = await setupWorkflowV2KernelPlanFixture(name);
+  const { root, workflowId, plan } = fixture;
+  for (const agent of [
+    { agentId: "cat_heart", runtime: "hermers", platform: "hermers", permissions: ["workflow.verify"] },
+    { agentId: "cat_nose", runtime: "hermers", platform: "hermers", permissions: ["workflow.verify"] },
+    { agentId: "cat_body", runtime: "hermers", platform: "hermers", permissions: ["workflow.verify", "workflow.worker.lifecycle", "cat_claw.audit"] },
+    { agentId: "main", runtime: "openclaw", platform: "openclaw", permissions: ["workflow.verify"] },
+    { agentId: "cat_claw", runtime: "openclaw", platform: "openclaw", permissions: ["cat_claw.audit", "human_gate.write"] }
+  ]) {
+    await runAction(root, {
+      action: "runtime.agent.upsert",
+      agentId: agent.agentId,
+      runtime: agent.runtime,
+      platform: agent.platform,
+      capabilities: { permissions: agent.permissions }
+    });
+  }
+  await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId: "session-cat-body-worker",
+    ownerAgent: "cat_body",
+    runtimeTarget: "hermers",
+    taskType: "development_worker",
+    purpose: "Preloaded worker context for cat_body manager spawned coding work.",
+    systemBrief: "Use only referenced artifacts and return structured output."
+  });
+  const info = await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: v2KernelManagerPlanningNode(plan).nodeId,
+    infoId: "info-v2-task-input",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/task-input.json",
+    recipientAgent: "cat_body",
+    summary: "Task input pointer for cat_body manager."
+  });
+  return { ...fixture, info };
+}
+
+function workflowV2KernelWorkerInput(fixture, overrides = {}) {
+  const runtimeBackend = overrides.runtimeBackend || "local_deterministic";
+  return {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: v2KernelManagerWorkerNode(fixture.plan).nodeId,
+    managerAgent: "cat_body",
+    sessionId: "session-cat-body-worker",
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend,
+    maxAttempts: 2,
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: v2KernelReceipt(),
+    oauth: v2KernelOAuth(),
+    network: v2KernelNetwork(),
+    ...overrides
+  };
+}
+
+async function setupWorkflowV2SubmittedWorkerFixture(name = "workflow-v2-submitted-worker", overrides = {}) {
+  const fixture = await setupWorkflowV2KernelExecutionFixture(name);
+  const worker = await runAction(fixture.root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-submitted",
+    ...overrides
+  }));
+  const tick = await runAction(fixture.root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId: fixture.workflowId,
+    claimOwner: "test-v2-focused-control-loop",
+    workerLeaseMs: 60_000
+  });
+  const completedWorker = sqliteJson(fixture.dbFile, `
+SELECT status, attempt, output_info_id AS outputInfoId, receipt_ref AS receiptRef, lease_owner AS leaseOwner, lease_until AS leaseUntil, completed_at AS completedAt
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
+  return { ...fixture, worker, tick, completedWorker };
+}
+
+async function setupWorkflowV2AcceptedWorkerFixture(name = "workflow-v2-accepted-worker") {
+  const fixture = await setupWorkflowV2SubmittedWorkerFixture(name);
+  const review = await runAction(fixture.root, {
+    action: "workflow.v2.manager_review.record",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel",
+    workerRunId: fixture.worker.workerRun.workerRunId,
+    reviewerAgent: "cat_body",
+    decision: "accepted",
+    summary: "Worker output accepted by manager."
+  });
+  return { ...fixture, review };
+}
+
+async function setupWorkflowV2GovernanceFixture(name = "workflow-v2-governance") {
+  const fixture = await setupWorkflowV2AcceptedWorkerFixture(name);
+  const ownerReview = await runAction(fixture.root, {
+    action: "workflow.v2.owner_review.record",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "cat_heart",
+    managerReviewIds: [fixture.review.review.reviewId],
+    decision: "accepted",
+    taskGroupRequired: true,
+    summary: "Task owner accepted manager artifact and requires compact task group review.",
+    artifactRefs: ["artifact://workflow-v2/owner-package.json"],
+    receiptRefs: ["receipt://workflow-v2/manager-review"]
+  });
+  const taskGroupPackage = await runAction(fixture.root, {
+    action: "workflow.v2.task_group_package.record",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "cat_heart",
+    ownerReviewId: ownerReview.ownerReview.reviewId,
+    taskGroupAgents: ["cat_heart", "cat_body"],
+    status: "ready",
+    summary: "Owner plus Cat Body task group package is ready for Cat Brain governance audit.",
+    evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
+  });
+  const catBrainAudit = await runAction(fixture.root, {
+    action: "workflow.v2.cat_brain_audit.record",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel",
+    taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
+    callerAgent: "main",
+    decision: "approved",
+    summary: "Cat Brain governance audit approved the evidence chain.",
+    evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
+  });
+  const catClawAudit = await runAction(fixture.root, {
+    action: "workflow.v2.cat_claw_audit.record",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel",
+    catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+    callerAgent: "cat_claw",
+    decision: "protocol_ready",
+    summary: "Cat Claw protocol audit passed; Human Gate package can be prepared.",
+    checks: ["options_present", "evidence_refs_present", "rollback_boundary_present"],
+    evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
+  });
+  return { ...fixture, ownerReview, taskGroupPackage, catBrainAudit, catClawAudit };
+}
+
+function workflowV2KernelHumanGateOptions() {
+  return [
+    {
+      optionId: "continue_current_package",
+      title: "方案 1：接受当前产出",
+      body: "接受 task owner、task group、猫之脑和猫爪已经复核过的当前产出包。",
+      summary: "按当前证据包接受本轮产出。",
+      prompt: "闪电猫批准后，workflow 进入收口归档，保留 artifact、receipt 和回滚边界。",
+      rollback: "如后续发现证据缺口，退回 task owner 重新汇总并恢复到上一 checkpoint。"
+    },
+    {
+      optionId: "return_to_manager_review",
+      title: "方案 2：退回经理补证",
+      body: "不接受当前产出，退回 manager 层补充 worker 证据、测试或回滚说明。",
+      summary: "退回 manager 层补齐证据后再提交。",
+      prompt: "task owner 将缺口退回相关 manager，manager 复核 worker 产出后重新提交。",
+      rollback: "补证仍不完整时，保持 workflow 在 review 状态并记录 blocker。"
+    }
+  ];
+}
+
+async function testWorkflowV2PlanAdvisoryAndCanonicalArtifact() {
+  const root = await tempRoot("workflow-v2-plan-focused");
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = "wf-v2-kernel";
+  const missingPatternPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "This plan intentionally omits orchestrationPattern.",
+    taskOwnerAgent: "cat_heart",
+    acceptanceCriteria: ["explicit acceptance exists"]
+  });
+  assert.equal(missingPatternPreview.valid, true);
+  assert.equal(Boolean(missingPatternPreview.advisoryChecks.some((item) => item.code === "orchestration_pattern_recommended")), true);
+  assert.equal(missingPatternPreview.recommendations.preferredPattern, "manager_worker");
+
+  const directOwnerPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "Direct owner plan should not auto-inject manager nodes.",
+    taskOwnerAgent: "cat_heart",
+    ...v2PlanContract({
+      orchestrationPattern: "direct_owner_execution",
+      orchestrationRationale: "This direct owner preview intentionally omits participantManagers and must stay owner-only.",
+      workerBudget: { maxWorkers: 0, concurrencyLimit: 0, maxWorkerContextTokens: 64000 }
+    })
+  });
+  assert.equal(directOwnerPreview.valid, true);
+  assert.deepEqual(directOwnerPreview.plan.participantManagers, []);
+  assert.equal(Boolean(directOwnerPreview.nodes.some((node) => node.nodeType === "manager_worker_spawn")), false);
+  assert.equal(Boolean(directOwnerPreview.nodes.some((node) => node.nodeType === "manager_review")), false);
+
+  const planPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "猫之心负责组织猫成员经理，分解任务并调度 worker 产出 artifacts。",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body", "cat_nose", "cat_eyes"],
+    ...v2PlanContract({
+      acceptanceCriteria: ["session repository is used", "worker output is reviewed"],
+      workerBudget: { maxWorkers: 12, concurrencyLimit: 4, maxWorkerContextTokens: 64000 }
+    })
+  });
+  assert.equal(planPreview.valid, true);
+  assert.equal(planPreview.dryRun, true);
+  assert.equal(planPreview.plan.workflowState, "draft");
+  assert.equal(planPreview.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
+  assert.equal(planPreview.planSpecV2.orchestration.pattern, "manager_worker");
+  assert.equal(planPreview.planSpecV2.acceptance.ownerReviewsManagerArtifacts, true);
+  assert.equal(Boolean(await pathExists(dbFile)), false);
+
+  const fixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-plan-canonical");
+  const plan = fixture.plan;
+  assert.equal(plan.plan.planId, "plan-v2-kernel");
+  assert.equal(plan.plan.workflowState, "planned");
+  assert.equal(plan.planSpecV2.artifacts.canonicalPlan.sourceOfTruth, true);
+  assert.equal(await pathExists(path.join(fixture.root, plan.artifacts.canonicalJson)), true);
+  const canonicalPlanSpecText = await fs.readFile(path.join(fixture.root, plan.artifacts.canonicalJson), "utf8");
+  const canonicalPlanSpec = JSON.parse(canonicalPlanSpecText);
+  assert.equal(canonicalPlanSpec.schemaVersion, "workflow_plan_spec.v2");
+  assert.equal(canonicalPlanSpec.orchestration.pattern, "manager_worker");
+  const storedPlanRow = sqliteJson(fixture.dbFile, "SELECT plan_revision AS planRevision, plan_spec_artifact_ref AS planSpecArtifactRef, plan_spec_artifact_hash AS planSpecArtifactHash, payload_json AS payloadJson FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(storedPlanRow.planSpecArtifactRef, plan.artifacts.canonicalJson);
+  assert.equal(Boolean(storedPlanRow.planSpecArtifactHash), true);
+  const storedPlanPayload = JSON.parse(storedPlanRow.payloadJson);
+  assert.equal(storedPlanPayload.planSpecV2ArtifactRef, plan.artifacts.canonicalJson);
+  assert.equal(Boolean(storedPlanPayload.planSpecV2Hash), true);
+
+  const legacyPlanRoot = await tempRoot("workflow-v2-plan-legacy-schema-focused");
+  const legacyPlanDbFile = path.join(legacyPlanRoot, "tracking.db");
+  sqliteExec(legacyPlanDbFile, "CREATE TABLE workflow_v2_plans(plan_id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL);");
+  const legacyPlan = await runAction(legacyPlanRoot, {
+    action: "workflow.v2.plan.create",
+    workflowId: "wf-v2-legacy-plan",
+    planId: "plan-v2-legacy-plan",
+    objective: "Migrate legacy v2 plan table before writing canonical JSON plan.",
+    taskOwnerAgent: "cat_heart",
+    ...v2PlanContract()
+  });
+  assert.equal(await pathExists(path.join(legacyPlanRoot, legacyPlan.artifacts.canonicalJson)), true);
+  const legacyPlanColumns = sqliteJson(legacyPlanDbFile, "PRAGMA table_info(workflow_v2_plans);").map((row) => row.name);
+  assert.equal(Boolean(legacyPlanColumns.includes("plan_revision")), true);
+  assert.equal(Boolean(legacyPlanColumns.includes("plan_spec_artifact_ref")), true);
+
+  const advisoryPlanRoot = await tempRoot("workflow-v2-plan-advisory-focused");
+  await runAction(advisoryPlanRoot, {
+    action: "workflow.v2.plan.create",
+    workflowId: "wf-v2-advisory-plan",
+    planId: "plan-v2-advisory",
+    objective: "Persist a lightweight plan before the orchestration pattern is fully known.",
+    taskOwnerAgent: "cat_heart",
+    acceptanceCriteria: ["owner can continue refining the plan"]
+  });
+  const advisoryPlanValidation = await runAction(advisoryPlanRoot, { action: "workflow.v2.validate" });
+  assert.equal(advisoryPlanValidation.ok, true, JSON.stringify(advisoryPlanValidation.failedChecks));
+  assert.equal(advisoryPlanValidation.failedChecks.includes("plans_anthropic_orchestration_contract"), false);
+  assert.equal(Boolean(advisoryPlanValidation.advisoryChecks.some((item) => item.checkId === "plans_anthropic_orchestration_contract" && item.status === "advisory")), true);
+}
+
+async function testWorkflowV2InfoStackAndSessionBinding() {
+  const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-info-focused");
+  const { root, dbFile, workflowId, info } = fixture;
+  assert.equal(info.infoItem.infoId, "info-v2-task-input");
+  assert.equal(info.notification.payloadMode, "pointer_only");
+  assert.equal(Boolean(info.notification.payload.readAction), true);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", "info_id='info-v2-task-input'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_notifications", "info_id='info-v2-task-input'"), 1);
+  const readInfo = await runAction(root, {
+    action: "workflow.v2.info_stack.read",
+    inboxItemId: info.inboxItem.inboxItemId,
+    principalKind: "agent",
+    principalId: "cat_body"
+  });
+  assert.equal(readInfo.item.infoId, "info-v2-task-input");
+  assert.equal(readInfo.item.contentStorage, "artifact_ref");
+  assert.equal(readInfo.receiptRecordAction, "workflow.v2.read_receipt.record");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.info_stack.read",
+      infoId: "info-v2-task-input",
+      principalKind: "agent",
+      principalId: "cat_body"
+    }),
+    /requires inboxItemId or grantId/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.read_receipt.record",
+      workflowId,
+      infoId: readInfo.item.infoId,
+      readerKind: "agent",
+      readerId: "cat_body"
+    }),
+    /requires inboxItemId or grantId/
+  );
+  await runAction(root, {
+    action: "workflow.v2.read_receipt.record",
+    workflowId,
+    infoId: readInfo.item.infoId,
+    inboxItemId: readInfo.access.inboxItemId,
+    grantId: readInfo.access.grantId,
+    readerKind: "agent",
+    readerId: "cat_body"
+  });
+  assert.equal(sqliteCount(dbFile, "workflow_v2_read_receipts", "info_id='info-v2-task-input'"), 1);
+
+  const sensitiveInline = await runAction(root, {
+    action: "workflow.v2.info_stack.preview",
+    workflowId,
+    classification: "sensitive",
+    contentStorage: "inline",
+    bodyText: "do not store this inline",
+    recipientAgent: "cat_body"
+  });
+  assert.equal(sensitiveInline.valid, false);
+  assert.equal(Boolean(sensitiveInline.errors.some((item) => item.code === "sensitive_inline_body_disallowed")), true);
+  const implicitInline = await runAction(root, {
+    action: "workflow.v2.info_stack.preview",
+    workflowId,
+    classification: "internal",
+    bodyText: "non-sensitive body still needs an artifact pointer"
+  });
+  assert.equal(implicitInline.valid, false);
+  assert.equal(Boolean(implicitInline.errors.some((item) => item.code === "content_ref_required")), true);
+  const pointerNotification = await runAction(root, {
+    action: "workflow.v2.notification.preview",
+    workflowId,
+    infoId: "info-v2-task-input",
+    payloadMode: "pointer_only",
+    notificationBody: "full body must not be embedded"
+  });
+  assert.equal(pointerNotification.valid, false);
+  assert.equal(Boolean(pointerNotification.errors.some((item) => item.code === "pointer_notification_body_disallowed")), true);
+}
+
+async function testWorkflowV2WorkerSpawnAndLifecycleGates() {
+  const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-worker-focused");
+  const { root, dbFile, workflowId, plan } = fixture;
+  const openclawWorker = await runAction(root, {
+    action: "workflow.v2.worker_backend.preflight",
+    workflowId,
+    backendId: "openclaw"
+  });
+  assert.equal(openclawWorker.valid, false);
+  assert.equal(Boolean(openclawWorker.errors.some((item) => item.code === "openclaw_worker_backend_disallowed")), true);
+  const emptyEvidence = await runAction(root, {
+    action: "workflow.v2.worker_backend.preflight",
+    workflowId,
+    backendId: "hermers_docker_worker",
+    receipt: {},
+    oauth: {},
+    network: {}
+  });
+  assert.equal(emptyEvidence.valid, false);
+  assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "model_receipt_missing_required_fields")), true);
+  assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "oauth_status_required")), true);
+  assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "network_policy_required")), true);
+
+  await assertRejectsMessage(
+    () => runAction(root, workflowV2KernelWorkerInput(fixture, {
+      workerRunId: "worker-v2-missing-session",
+      sessionId: "missing-session-pack",
+      preflightId: "preflight-v2-missing-session"
+    })),
+    /workflow session pack not found/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "worker_run_id='worker-v2-missing-session'"), 0);
+  await assertRejectsMessage(
+    () => runAction(root, workflowV2KernelWorkerInput(fixture, {
+      workerRunId: "worker-v2-invalid-start-status",
+      status: "running"
+    })),
+    /worker_spawn_status_must_be_queued/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId: "plan-v2-kernel",
+      nodeId: v2KernelManagerWorkerNode(plan).nodeId,
+      managerAgent: "cat_body",
+      sessionId: "session-cat-body-worker",
+      workerRunId: "worker-v2-missing-delegation",
+      taskInputInfoId: "info-v2-task-input",
+      runtimeBackend: "local_deterministic",
+      providerModel: "openai-codex/gpt-5.5",
+      receipt: v2KernelReceipt(),
+      oauth: v2KernelOAuth(),
+      network: v2KernelNetwork()
+    }),
+    /worker_objective_required/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, workflowV2KernelWorkerInput(fixture, {
+      workerRunId: "worker-v2-missing-context-budget",
+      contextBudgetTokens: undefined
+    })),
+    /worker_context_budget_required/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, workflowV2KernelWorkerInput(fixture, {
+      workerRunId: "worker-v2-too-large-context",
+      contextBudgetTokens: 64001
+    })),
+    /worker_context_budget_too_high/
+  );
+
+  const worker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-local-lifecycle",
+    contextBudgetTokens: 1000,
+    contextUsedTokens: 920,
+    compactionCount: 2,
+    sourceContextRefs: ["info-v2-task-input"],
+    payload: { outputSummary: "Deterministic worker output prepared for manager review." }
+  }));
+  assert.equal(worker.valid, true);
+  assert.equal(worker.sessionRun.status, "queued");
+  assert.equal(worker.workerRun.contextBudgetTokens, 1000);
+  assert.equal(worker.workerRun.contextUsedTokens, 920);
+  assert.equal(worker.workerRun.compactionCount, 2);
+  const lifecycleHighPressure = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: worker.workerRun.workerRunId,
+    contextPressureThreshold: 0.8,
+    maxCompactions: 2
+  });
+  assert.equal(lifecycleHighPressure.valid, true);
+  assert.equal(lifecycleHighPressure.recommendation.action, "handoff_required");
+  assert.equal(Boolean(lifecycleHighPressure.signals.some((signal) => signal.code === "context_pressure_high")), true);
+  assert.equal(Boolean(lifecycleHighPressure.signals.some((signal) => signal.code === "compaction_limit_reached")), true);
+  const queuePreview = await runAction(root, {
+    action: "workflow.v2.control_loop.preview",
+    workflowId
+  });
+  assert.equal(queuePreview.status, "ok");
+  assert.equal(Number(queuePreview.counts.due), 1);
+  const queueTick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-focused-control-loop",
+    workerLeaseMs: 60_000
+  });
+  assert.equal(queueTick.status, "ok");
+  assert.equal(queueTick.workerResults[0].status, "submitted_for_review");
+  assert.equal(await pathExists(queueTick.workerResults[0].artifactFile), true);
+}
+
+async function testWorkflowV2ReviewChainFocused() {
+  const fixture = await setupWorkflowV2SubmittedWorkerFixture("workflow-v2-review-focused");
+  const { root, dbFile, workflowId, worker } = fixture;
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.manager_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      workerRunId: worker.workerRun.workerRunId,
+      reviewerAgent: "cat_heart",
+      decision: "accepted",
+      summary: "Task owner must not accept a manager-owned worker through manager review."
+    }),
+    /reviewer_agent_not_worker_manager/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.manager_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      reviewerAgent: "cat_body",
+      decision: "accepted",
+      summary: "Manager review must be bound to a concrete worker run."
+    }),
+    /requires workerRunId/
+  );
+  const review = await runAction(root, {
+    action: "workflow.v2.manager_review.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    workerRunId: worker.workerRun.workerRunId,
+    reviewerAgent: "cat_body",
+    decision: "accepted",
+    summary: "Worker output accepted by manager."
+  });
+  assert.equal(review.review.decision, "accepted");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.owner_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      callerAgent: "cat_nose",
+      managerReviewIds: [review.review.reviewId],
+      decision: "accepted",
+      summary: "Unauthorized owner review."
+    }),
+    /caller_agent_not_authorized/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.owner_review.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      callerAgent: "cat_heart",
+      managerReviewIds: [review.review.reviewId],
+      decision: "blocked",
+      summary: "Owner review must not use blocked as a review decision."
+    }),
+    /blocked_decision_not_allowed/
+  );
+  const ownerReview = await runAction(root, {
+    action: "workflow.v2.owner_review.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "cat_heart",
+    managerReviewIds: [review.review.reviewId],
+    decision: "accepted",
+    taskGroupRequired: true,
+    summary: "Task owner accepted manager artifact and requires compact task group review.",
+    artifactRefs: ["artifact://workflow-v2/owner-package.json"],
+    receiptRefs: ["receipt://workflow-v2/manager-review"]
+  });
+  assert.equal(ownerReview.ownerReview.nextWorkflowState, "waiting_group_discussion");
+  let planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "waiting_group_discussion");
+  const taskGroupPackage = await runAction(root, {
+    action: "workflow.v2.task_group_package.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "cat_heart",
+    ownerReviewId: ownerReview.ownerReview.reviewId,
+    taskGroupAgents: ["cat_heart", "cat_body"],
+    status: "ready",
+    summary: "Owner plus Cat Body task group package is ready for Cat Brain governance audit.",
+    evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
+  });
+  assert.equal(taskGroupPackage.taskGroupPackage.status, "ready");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.cat_brain_audit.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
+      callerAgent: "cat_body",
+      decision: "approved",
+      summary: "Unauthorized Cat Brain audit."
+    }),
+    /caller_agent_not_authorized/
+  );
+  const catBrainAudit = await runAction(root, {
+    action: "workflow.v2.cat_brain_audit.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
+    callerAgent: "main",
+    decision: "approved",
+    summary: "Cat Brain governance audit approved the evidence chain."
+  });
+  assert.equal(catBrainAudit.catBrainAudit.decision, "approved");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.cat_claw_audit.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+      callerAgent: "catclaw",
+      decision: "protocol_ready",
+      summary: "Retired catclaw id must be rejected.",
+      evidenceRefs: ["artifact://workflow-v2/owner-package.json"]
+    }),
+    /retired agent id catclaw is invalid/
+  );
+  const catClawAudit = await runAction(root, {
+    action: "workflow.v2.cat_claw_audit.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+    callerAgent: "cat_claw",
+    decision: "protocol_ready",
+    summary: "Cat Claw protocol audit passed; Human Gate package can be prepared.",
+    evidenceRefs: ["artifact://workflow-v2/owner-package.json"]
+  });
+  assert.equal(catClawAudit.catClawAudit.decision, "protocol_ready");
+  planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "human_gate_request_due");
+}
+
+async function testWorkflowV2GovernanceHumanGateBridgeFocused() {
+  const fixture = await setupWorkflowV2GovernanceFixture("workflow-v2-hgate-focused");
+  const { root, dbFile, workflowId, catClawAudit } = fixture;
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.human_gate_package.record",
+      workflowId,
+      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      status: "submitted",
+      createdBy: "cat_claw"
+    }),
+    /human_gate_package_status_invalid/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.human_gate_package.record",
+      workflowId,
+      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      createdBy: "cat_claw"
+    }),
+    /human_gate_options_required/
+  );
+  const humanGatePackage = await runAction(root, {
+    action: "workflow.v2.human_gate_package.record",
+    workflowId,
+    sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+    createdBy: "cat_claw",
+    options: workflowV2KernelHumanGateOptions()
+  });
+  assert.equal(humanGatePackage.valid, true);
+  assert.equal(humanGatePackage.humanGatePackage.status, "cat_claw_audited");
+  assert.equal(humanGatePackage.humanGatePackage.options.length, 2);
+  const interactionInput = {
+    packageId: humanGatePackage.humanGatePackage.packageId,
+    callerAgent: "cat_claw",
+    submissionKind: "final_artifact",
+    interactionType: "artifact_acceptance",
+    responseSchema: {
+      required: ["buttonSelection", "flashcatOriginalWords"],
+      flashcatOriginalWordsRequired: true
+    },
+    resumeContract: {
+      approved: "archive_final_artifact",
+      rejected: "return_to_task_owner_revision"
+    }
+  };
+  const invalidHumanGateInteractionPreview = await runAction(root, {
+    action: "workflow.v2.human_gate_request.preview",
+    packageId: humanGatePackage.humanGatePackage.packageId,
+    callerAgent: "cat_claw",
+    interactionType: "freeform_unbound_chat"
+  });
+  assert.equal(invalidHumanGateInteractionPreview.eligible, false);
+  assert.equal(Boolean(invalidHumanGateInteractionPreview.violations.some((item) => item.code === "interaction_type_invalid")), true);
+  const fuzzyHumanGateSelectorPreview = await runAction(root, {
+    action: "workflow.v2.human_gate_request.preview",
+    workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "cat_claw"
+  });
+  assert.equal(fuzzyHumanGateSelectorPreview.eligible, false);
+  assert.equal(Boolean(fuzzyHumanGateSelectorPreview.violations.some((item) => item.code === "human_gate_package_selector_required")), true);
+  const humanGateRequestPreview = await runAction(root, {
+    action: "workflow.v2.human_gate_request.preview",
+    ...interactionInput
+  });
+  assert.equal(humanGateRequestPreview.eligible, true);
+  assert.equal(humanGateRequestPreview.writeReady, true);
+  assert.equal(humanGateRequestPreview.buttonSummary.planCount, 2);
+  assert.equal(humanGateRequestPreview.buttonSummary.hasPause, true);
+  assert.equal(humanGateRequestPreview.buttonSummary.hasTerminate, true);
+  const humanGateRequest = await runAction(root, {
+    action: "workflow.v2.human_gate_request",
+    ...interactionInput
+  });
+  assert.equal(humanGateRequest.didCreateHumanGate, true);
+  assert.equal(humanGateRequest.didCreateHumanGateButtons, true);
+  assert.equal(humanGateRequest.didCreateTelegramOutbox, true);
+  assert.equal(humanGateRequest.didSendTelegram, false);
+  assert.equal(sqliteCount(dbFile, "protocol_objects", `object_id='${humanGateRequest.humanGateId}' AND object_type='human_gate_record' AND status='pending'`), 1);
+  assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${humanGateRequest.humanGateId}' AND decision_status='approved' AND status='active'`), 2);
+  let planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "waiting_human");
+  const replayedHumanGateRequest = await runAction(root, {
+    action: "workflow.v2.human_gate_request",
+    ...interactionInput
+  });
+  assert.equal(replayedHumanGateRequest.reusedStageGate, true);
+  assert.equal(replayedHumanGateRequest.didCreateHumanGate, false);
+  assert.equal(replayedHumanGateRequest.telegramOutboxDeduped, true);
+  assert.equal(replayedHumanGateRequest.humanGateId, humanGateRequest.humanGateId);
+  assert.equal(replayedHumanGateRequest.telegramOutboxId, humanGateRequest.telegramOutboxId);
+  planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planState.workflowState, "waiting_human");
+}
+
+async function testWorkflowV2LifecycleRenewalAndValidatorFocused() {
+  const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-renewal-focused");
+  const { root, dbFile, workflowId } = fixture;
+  const blockedLifecycleWorker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-blocked-lifecycle"
+  }));
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='blocked', last_error='blocked by missing upstream artifact', lease_owner='', lease_until='', updated_at='2026-07-03T00:00:03.000Z'
+WHERE worker_run_id='${blockedLifecycleWorker.workerRun.workerRunId}';
+UPDATE workflow_session_runs
+SET status='failed', error='blocked by missing upstream artifact', updated_at='2026-07-03T00:00:03.000Z'
+WHERE run_id='${blockedLifecycleWorker.workerRun.sessionRunId}';`);
+  const lifecycleBlocked = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: blockedLifecycleWorker.workerRun.workerRunId
+  });
+  assert.equal(lifecycleBlocked.recommendation.action, "escalate_to_owner");
+  assert.equal(Boolean(lifecycleBlocked.signals.some((signal) => signal.code === "blocked_condition")), true);
+
+  const renewalWorker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-renewal-source",
+    contextBudgetTokens: 1200,
+    contextUsedTokens: 1180,
+    compactionCount: 3,
+    sourceContextRefs: ["info-v2-task-input"],
+    payload: { outputSummary: "Renewal source worker near context budget." }
+  }));
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_nose",
+    capabilities: { permissions: ["workflow.worker.lifecycle"] }
+  });
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.worker_handoff.record",
+      workflowId,
+      workerRunId: renewalWorker.workerRun.workerRunId,
+      callerAgent: "cat_nose",
+      status: "accepted",
+      summary: "Unauthorized handoff attempt.",
+      artifactRef: "artifact://workflow-v2/unauthorized-handoff.json"
+    }),
+    /caller_agent_not_authorized/
+  );
+  const handoffPreview = await runAction(root, {
+    action: "workflow.v2.worker_handoff.preview",
+    workflowId,
+    workerRunId: renewalWorker.workerRun.workerRunId,
+    callerAgent: "cat_body",
+    handoffId: "handoff-v2-renewal",
+    handoffInfoId: "info-v2-renewal-handoff",
+    status: "accepted",
+    summary: "Accepted handoff package for same-class successor.",
+    reason: "context pressure reached renewal threshold",
+    artifactRef: "artifact://workflow-v2/renewal-handoff.json",
+    sourceContextRefs: ["info-v2-task-input"],
+    artifactRefs: ["artifact://workflow-v2/renewal-output.json"],
+    receiptRefs: ["receipt://workflow-v2/renewal-source"]
+  });
+  assert.equal(handoffPreview.valid, true);
+  const handoffRecord = await runAction(root, {
+    action: "workflow.v2.worker_handoff.record",
+    workflowId,
+    workerRunId: renewalWorker.workerRun.workerRunId,
+    callerAgent: "cat_body",
+    handoffId: "handoff-v2-renewal",
+    handoffInfoId: "info-v2-renewal-handoff",
+    status: "accepted",
+    summary: "Accepted handoff package for same-class successor.",
+    reason: "context pressure reached renewal threshold",
+    artifactRef: "artifact://workflow-v2/renewal-handoff.json",
+    sourceContextRefs: ["info-v2-task-input"],
+    artifactRefs: ["artifact://workflow-v2/renewal-output.json"],
+    receiptRefs: ["receipt://workflow-v2/renewal-source"]
+  });
+  assert.equal(handoffRecord.handoff.status, "accepted");
+  const lifecycleAfterHandoff = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: renewalWorker.workerRun.workerRunId
+  });
+  assert.equal(lifecycleAfterHandoff.recommendation.action, "spawn_successor");
+  assert.equal(lifecycleAfterHandoff.recommendation.successorAllowed, true);
+  const retireRecord = await runAction(root, {
+    action: "workflow.v2.worker_retire.record",
+    workflowId,
+    workerRunId: renewalWorker.workerRun.workerRunId,
+    callerAgent: "cat_body",
+    handoffId: "handoff-v2-renewal",
+    reason: "retire source after accepted handoff before successor spawn"
+  });
+  assert.equal(retireRecord.nextStatus, "retired");
+  const successorCreate = await runAction(root, {
+    action: "workflow.v2.worker_successor.create",
+    workflowId,
+    sourceWorkerRunId: renewalWorker.workerRun.workerRunId,
+    successorWorkerRunId: "worker-v2-renewal-successor",
+    callerAgent: "cat_body",
+    nextRetryAt: "2999-01-01T00:00:00.000Z",
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: v2KernelReceipt(),
+    oauth: v2KernelOAuth(),
+    network: v2KernelNetwork()
+  });
+  assert.equal(successorCreate.spawnResult.workerRun.status, "queued");
+  const renewalSourceRow = sqliteJson(dbFile, `
+SELECT status, successor_worker_run_id AS successorWorkerRunId
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='${renewalWorker.workerRun.workerRunId}';`)[0];
+  assert.equal(renewalSourceRow.status, "successor_spawned");
+  assert.equal(renewalSourceRow.successorWorkerRunId, "worker-v2-renewal-successor");
+  const validation = await runAction(root, {
+    action: "workflow.v2.validate",
+    workflowId
+  });
+  assert.equal(validation.ok, true);
+  assert.equal(validation.status, "pass");
+
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_manager_reviews(review_id, workflow_id, plan_id, node_id, worker_run_id, reviewer_agent, decision, summary, findings_json, artifact_refs_json, receipt_refs_json, blocker_json, payload_json, created_at)
+VALUES ('review-v2-orphan-manager', '${workflowId}', 'plan-v2-kernel', '${v2KernelManagerWorkerNode(fixture.plan).nodeId}', '', 'cat_body', 'accepted', 'Validator should reject unbound manager reviews.', '[]', '[]', '[]', '{}', '{}', '2026-07-03T00:11:30.000Z');`);
+  const invalidOrphanManagerReview = await runAction(root, { action: "workflow.v2.validate", workflowId });
+  assert.equal(invalidOrphanManagerReview.ok, false);
+  assert.equal(Boolean(invalidOrphanManagerReview.failedChecks.includes("manager_reviews_match_worker_runs")), true);
+  sqliteExec(dbFile, `DELETE FROM workflow_v2_manager_reviews WHERE review_id='review-v2-orphan-manager';`);
+
+  sqliteExec(dbFile, `
+INSERT INTO workflow_session_runs(run_id, session_id, pack_version, workflow_id, task_id, dispatch_id, worker_id, status, input_json, worker_input_json, output_json, receipt_ref, error, started_at, completed_at, created_at, updated_at)
+VALUES ('session-v2-bad-json-input', 'session-cat-body-worker', 1, '${workflowId}', 'bad-json-node', '', 'bad-json-worker', 'queued', '{bad-json', '{}', '{}', '', '', '', '', '2026-07-03T00:11:35.000Z', '2026-07-03T00:11:35.000Z');`);
+  const invalidBadSessionJson = await runAction(root, { action: "workflow.v2.validate", workflowId });
+  assert.equal(invalidBadSessionJson.ok, false);
+  assert.equal(Boolean(invalidBadSessionJson.failedChecks.includes("v2_session_runs_have_worker_runs")), true);
+}
+
+// Legacy monolithic v2 integration scenario kept temporarily as a reference while
+// focused V2.1 tests replace it in the active regression list.
+async function legacyWorkflowV2OrchestrationKernelIntegration() {
   const root = await tempRoot("workflow-v2-kernel");
   const dbFile = path.join(root, "tracking.db");
   const workflowId = "wf-v2-kernel";
@@ -12579,7 +13614,12 @@ try {
     ["workflow v2 adapter job manifest", testWorkflowV2AdapterJobManifest],
     ["workflow v2 adapter runner drain", testWorkflowV2AdapterRunnerDrain],
     ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
-    ["workflow v2 orchestration kernel", testWorkflowV2OrchestrationKernel],
+    ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
+    ["workflow v2 info stack and session binding", testWorkflowV2InfoStackAndSessionBinding],
+    ["workflow v2 worker spawn and lifecycle gates", testWorkflowV2WorkerSpawnAndLifecycleGates],
+    ["workflow v2 review chain", testWorkflowV2ReviewChainFocused],
+    ["workflow v2 governance human gate bridge", testWorkflowV2GovernanceHumanGateBridgeFocused],
+    ["workflow v2 lifecycle renewal and validator", testWorkflowV2LifecycleRenewalAndValidatorFocused],
     ["workflow intervention execution", testWorkflowInterventionExecution],
     ["workflow verification results", testWorkflowVerificationResults],
     ["control_loop job requeue", testControlLoopJobRequeue],

@@ -1,7 +1,7 @@
 # Workflow v2 Implementation Status
 
-Status: local orchestration kernel plus v2 worker lifecycle and internal audit-chain slices implemented
-Updated: 2026-07-04
+Status: local orchestration kernel plus v2 worker lifecycle, audit-chain, and adapter-runner protocol slices implemented
+Updated: 2026-07-05
 Scope: `trading-agents-workflow`
 
 ## Summary
@@ -33,6 +33,11 @@ first executable kernel slice for manager/worker orchestration:
   task group package, Cat Brain governance audit, Cat Claw protocol audit, and
   Human Gate package preparation;
 - console action-gateway allowlist entries for safe previews and opt-in writes;
+- a `WORKFLOW_V2_ACTION_REGISTRY` that routes canonical `workflow.v2.*` actions
+  before the legacy non-v2 switch;
+- `src/workflow-v2/constants.js` and `src/workflow-v2/helpers.js` for v2
+  constants, normalization helpers, row summary mappers, lease/capacity helpers,
+  and shared validation objects;
 - regression coverage for the v2 kernel, permission gate, console gate, and
   workflow-id consistency validator.
 
@@ -81,6 +86,17 @@ allocation must avoid heavy monolithic worker prompts and should use
 information-stack pointers plus bounded artifacts. The smoke test did not run a
 real LLM task and is not connected to v2 worker queues, runtime adapters,
 production workflow state, or the central workflow database.
+
+2026-07-05 local adapter-runner update: `workflow.v2.adapter_runner.drain`
+keeps the existing `mock` runner mode and now also supports an
+`external_command` mode for future Hermers / Claude Code Docker wrapper
+integration. The local workflow process claims adapter jobs, writes a bounded
+request JSON file, invokes an explicitly configured command with `execFile`,
+expects a JSON output file or stdout JSON, records a normalized external output
+artifact, and returns success/fail/release through the governed
+`workflow.v2.worker_result.*` / adapter job actions. This is a local wrapper
+contract only: it does not start WSL, Docker, Hermers, Claude Code, Gateway, or
+production queues by itself.
 
 ## Implemented Actions
 
@@ -135,13 +151,37 @@ Local control-plane writes:
 - `workflow.v2.cat_claw_audit.record`
 - `workflow.v2.human_gate_package.record`
 
-The write actions record orchestration state only. They do not dispatch to
-Hermers, Claude Code, OpenClaw, Docker, or any external runtime.
+The write actions record orchestration state only. `workflow.v2.adapter_runner.drain`
+can invoke an explicitly configured local external runner command in
+`external_command` mode, but the workflow still owns the lease, artifact,
+receipt, submit/fail, and database writes. It does not directly start WSL,
+Docker, Hermers, Claude Code, OpenClaw, Gateway, or production queues unless a
+future authorized wrapper command is separately provided.
 
 `workflow.v2.control_loop.tick` is still local control-plane execution. It can
 lease v2 worker runs, expire stale leases, schedule retries, mark exhausted
 runs as `timed_out`, and run the deterministic local test backend. It does not
 start Hermers, Claude Code, Docker, WSL, Gateway, or production queues.
+
+`workflow.v2.adapter_runner.preview` and `workflow.v2.adapter_runner.drain`
+support two local modes:
+
+- `mock`, the default protocol smoke runner;
+- `external_command`, a bounded command-wrapper protocol intended for future
+  Hermers / Claude Code Docker runners.
+
+The external command is supplied only by backend-specific environment variables
+such as
+`TRADING_AGENTS_WORKFLOW_V2_HERMERS_DOCKER_WORKER_RUNNER_CMD` and
+`TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD`, or by the
+generic `TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD`. Action payload fields
+such as `runnerCommand` / `externalRunnerCommand` are rejected to avoid
+caller-selected host command execution. Commands are run through `execFile`;
+string commands with spaces are rejected unless supplied as a JSON array in the
+configured environment variable. The command receives request/output file paths
+as arguments by default and through environment variables. The command's output
+status is normalized to `success`, `fail`, or `release`, and missing/invalid
+output fails closed.
 
 `workflow.v2.worker_result.submit` and `workflow.v2.worker_result.fail` are
 adapter-facing control-plane writes. They require the current
@@ -334,14 +374,17 @@ Worker queue/control loop:
   output cannot terminalize the wrong adapter job. Runners should not update
   `workflow_v2_worker_runs` or the central workflow database directly.
 - `workflow.v2.adapter_runner.preview` and `workflow.v2.adapter_runner.drain`
-  provide the first local runner bridge. In this slice the runner mode is
-  `mock` only: it claims due adapter jobs, reads the manifest artifact, writes
-  a mock output artifact, then returns through `workflow.v2.worker_result.submit`
-  or `workflow.v2.worker_adapter_job.fail`. This proves the queue-to-runner-to-
-  worker/session closeout loop without starting Docker, Hermers, Claude Code,
-  WSL, Gateway, or any model call. Manifest hash is mandatory and must match
-  before the runner accepts the artifact. Runner-internal structural errors
-  default to terminal adapter/worker failure rather than retry loops; explicit
+  provide the first local runner bridge. The default runner mode is `mock`: it
+  claims due adapter jobs, reads the manifest artifact, writes a mock output
+  artifact, then returns through `workflow.v2.worker_result.submit` or
+  `workflow.v2.worker_adapter_job.fail`. The additional `external_command` mode
+  uses the same claim/manifest/lease/submit/fail path, but delegates the actual
+  worker execution to an explicitly configured command wrapper. That wrapper can
+  later point to Hermers or Claude Code Docker runners on `wsl-agents`, but this
+  repository slice itself does not start Docker, Hermers, Claude Code, WSL,
+  Gateway, or any model call. Manifest hash is mandatory and must match before
+  the runner accepts the artifact. Runner-internal structural errors default to
+  terminal adapter/worker failure rather than retry loops; explicit
   `internalErrorRetryAllowed=true` is required to retry internal runner errors.
 - Adapter runner preview/drain are now capacity-aware. `limit` is treated as a
   requested limit; the control plane computes `capacity.effectiveLimit` from
@@ -476,9 +519,11 @@ The following remain future slices and require separate authorization:
 
 - Cat Brain semantic check automation over manager artifacts;
 - Cat Claw package audit automation beyond current Human Gate package preview;
-- real Hermers worker adapter execution from recorded adapter job manifests;
-- real Claude Code worker adapter execution from recorded adapter job manifests;
-- non-mock `workflow.v2.adapter_runner.drain` backends;
+- actual `wsl-agents` Hermers Docker wrapper command wired to the
+  `external_command` runner contract;
+- actual `wsl-agents` Claude Code Docker wrapper command wired to the
+  `external_command` runner contract;
+- governed production/runtime service that polls v2 adapter jobs continuously;
 - production runtime drain integration for v2 worker runs;
 - single-transaction hardening for the session/preflight/worker insert chain
   in `workflow.v2.worker_spawn.create` beyond the current compensation cleanup
@@ -500,8 +545,8 @@ Execution order:
 2. mechanically split the v2 implementation out of `src/workflow.js` with no
    behavior change;
 3. replace the v2 action switch with a v2 action registry;
-4. resume real Hermers/Claude Code worker adapter work only after focused tests
-   and module routing are healthy.
+4. resume worker adapter work through a bounded external-command runner
+   protocol before wiring real WSL/Docker services.
 
 This order is intentional. Verification must become granular before the
 implementation is modularized; otherwise later runtime work cannot reliably
@@ -514,18 +559,50 @@ Implemented with regression coverage in `scripts/workflow_regression_tests.mjs`:
 - `workflow v2 adapter job manifest`
 - `workflow v2 adapter runner drain`
 - `workflow v2 adapter runner concurrency/recovery`
-- `workflow v2 orchestration kernel`
+- `workflow v2 plan advisory and canonical artifact`
+- `workflow v2 info stack and session binding`
+- `workflow v2 worker spawn and lifecycle gates`
+- `workflow v2 review chain`
+- `workflow v2 governance human gate bridge`
+- `workflow v2 lifecycle renewal and validator`
 - `workflow v2 permission and console gate`
 
 Latest focused verification passed:
 
 - `node --check src/workflow.js`
+- `node --check src/workflow-v2/constants.js`
+- `node --check src/workflow-v2/helpers.js`
 - `node --check scripts/workflow_regression_tests.mjs`
 - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter job manifest"`
 - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"`
 - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner concurrency/recovery"`
 - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 permission and console gate"`
 - `git diff --check -- src/workflow.js src/console/action-gateway.js scripts/workflow_regression_tests.mjs docs/workflow-v2-implementation-status.md docs/workflow-v2-worker-runtime-backends.md`
+
+2026-07-05 V2.1 focused regression split verification:
+
+- The previous monolithic `workflow v2 orchestration kernel` regression is no
+  longer registered in the active test list. Its function body is temporarily
+  retained as `legacyWorkflowV2OrchestrationKernelIntegration` for reference
+  while the focused tests replace it.
+- Passed individually:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 plan advisory and canonical artifact"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 info stack and session binding"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review chain"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 governance human gate bridge"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 lifecycle renewal and validator"`
+- Passed grouped v2 run:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
+
+2026-07-05 V2.2/V2.3/V2.4 local verification:
+
+- Passed `node --check src/workflow.js`.
+- Passed `node --check src/workflow-v2/constants.js`.
+- Passed `node --check src/workflow-v2/helpers.js`.
+- Passed `node --check scripts/workflow_regression_tests.mjs`.
+- Passed `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"` with the new `external_command` fake runner coverage.
+- Passed `node scripts/workflow_regression_tests.mjs --grep "workflow v2"` after the V2.2 module split, V2.3 action registry change, V2.4 external-command runner protocol, and documentation updates.
 
 2026-07-04 advisory-plan correction verification:
 

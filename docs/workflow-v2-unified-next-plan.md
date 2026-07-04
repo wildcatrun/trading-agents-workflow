@@ -1,6 +1,6 @@
 # Workflow v2 Unified Next Plan
 
-Status: proposed next development track
+Status: V2.1-V2.4 local development slice landed; independent review pending
 Created: 2026-07-05
 Scope: verification, modularization, and runtime-adapter preparation after the
 local v2 orchestration kernel slice
@@ -47,6 +47,8 @@ is healthy.
 
 ## Track V2.1: Split Verification First
 
+Status: landed locally on 2026-07-05.
+
 The first implementation step is to split the current long orchestration
 regression into focused tests. This should be a test-only change unless a test
 exposes an existing bug.
@@ -85,14 +87,19 @@ Target test slices:
 
 Acceptance criteria:
 
-- each slice can be run with `--grep`;
+- each slice can be run with `--grep`; landed.
 - each slice emits a clear pass/fail result within a reasonable local timeout;
+  landed for the initial focused set.
 - the previous long regression is either removed, reduced to a shallow smoke, or
-  marked as a deliberately long integration test;
+  marked as a deliberately long integration test; landed by removing it from the
+  active test list and retaining the old function as a temporary legacy
+  reference.
 - `docs/workflow-v2-implementation-status.md` records the new test names and the
-  last focused verification commands.
+  last focused verification commands; landed.
 
 ## Track V2.2: Mechanical V2 Module Split
+
+Status: first local split landed on 2026-07-05.
 
 After the focused tests pass, split the v2 implementation out of
 `src/workflow.js` with no intended behavior change.
@@ -153,12 +160,15 @@ Rules:
 
 Acceptance criteria:
 
-- `src/workflow.js` no longer owns v2 implementation details;
+- `src/workflow.js` no longer owns v2 constants and pure helper/summary
+  details; deeper DB/action modules remain future mechanical splits;
 - v2 exports continue to work through existing action names;
 - focused v2 tests pass after every module group;
 - `node --check` passes for all touched modules.
 
 ## Track V2.3: V2 Action Registry
+
+Status: landed locally on 2026-07-05.
 
 After the module split, replace the large v2 case block in `runWorkflowAction`
 with a registry owned by `src/workflow-v2/index.js`.
@@ -170,9 +180,14 @@ const result = await runWorkflowV2Action(rootDir, input, permissionDecision);
 if (result.handled) return result.value;
 ```
 
-The registry should map canonical action names to handlers and keep aliases in
-one place. This is a routing cleanup only; it should not change permission
-semantics or write behavior.
+The registry should map canonical action names to handlers. This is a routing
+cleanup only; it should not change permission semantics or write behavior.
+
+Local landed shape: `WORKFLOW_V2_ACTION_REGISTRY` now owns canonical
+`workflow.v2.*` handler dispatch and the old v2 case block has been removed
+from `runWorkflowAction`. The registry still lives in `src/workflow.js` until
+the remaining DB/action modules are split far enough to move it into
+`src/workflow-v2/index.js` without circular dependencies.
 
 Acceptance criteria:
 
@@ -182,6 +197,9 @@ Acceptance criteria:
 - validator and focused tests pass.
 
 ## Track V2.4: Runtime Adapter Work Resumes
+
+Status: local external-command runner protocol landed on 2026-07-05; real
+WSL/Docker execution remains a separate authorization gate.
 
 Only after V2.1-V2.3 are green should the mainline return to real worker backend
 implementation.
@@ -200,6 +218,27 @@ Acceptance criteria:
 - workers never write central workflow DB state directly;
 - worker output returns through `workflow.v2.worker_result.*`;
 - model fallback and OAuth failures fail closed according to preflight policy.
+
+Local landed shape:
+
+- `workflow.v2.adapter_runner.preview` reports `mode` and whether an external
+  runner command is configured.
+- `workflow.v2.adapter_runner.drain` supports the existing `mock` mode and a new
+  `external_command` mode.
+- `external_command` mode writes a bounded request JSON artifact for a wrapper
+  command, expects a JSON output file or stdout JSON, writes a normalized
+  external output artifact, and returns success/fail/release through the
+  governed adapter/worker result actions.
+- The command must be supplied through backend-specific environment variables
+  such as `TRADING_AGENTS_WORKFLOW_V2_HERMERS_DOCKER_WORKER_RUNNER_CMD` or
+  `TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD`, or through
+  the generic `TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD`.
+- Action payload fields such as `runnerCommand` / `externalRunnerCommand` are
+  rejected to avoid caller-selected host command execution.
+- Commands are executed with `execFile`, not shell interpolation; string
+  commands with spaces are rejected unless provided as a JSON array in the
+  configured environment variable.
+- No WSL/Docker container is started by this local slice.
 
 ## Documentation Rules
 

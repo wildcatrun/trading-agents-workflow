@@ -14,6 +14,64 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { WorkflowReadModel } from "./console/read-model.js";
 import { DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS } from "./control-loop-budget.js";
+import {
+  WORKFLOW_V2_ADAPTER_JOB_BACKENDS,
+  WORKFLOW_V2_ADAPTER_JOB_IMAGES,
+  WORKFLOW_V2_ADAPTER_JOB_STATUSES,
+  WORKFLOW_V2_CAT_BRAIN_AUDIT_DECISIONS,
+  WORKFLOW_V2_CAT_CLAW_AUDIT_DECISIONS,
+  WORKFLOW_V2_CONTENT_STORAGES,
+  WORKFLOW_V2_DISALLOWED_WORKER_BACKENDS,
+  WORKFLOW_V2_HUMAN_GATE_INTERACTION_TYPES,
+  WORKFLOW_V2_HUMAN_GATE_OPTION_KEYS,
+  WORKFLOW_V2_HUMAN_GATE_PACKAGE_STATUSES,
+  WORKFLOW_V2_HUMAN_GATE_SUBMISSION_KINDS,
+  WORKFLOW_V2_HANDOFF_RECORD_STATUSES,
+  WORKFLOW_V2_INFO_CLASSIFICATIONS,
+  WORKFLOW_V2_MAX_CONCURRENT_WORKERS,
+  WORKFLOW_V2_NODE_STATUSES,
+  WORKFLOW_V2_NOTIFICATION_CHANNELS,
+  WORKFLOW_V2_NOTIFICATION_PAYLOAD_MODES,
+  WORKFLOW_V2_ORCHESTRATION_PATTERNS,
+  WORKFLOW_V2_PLAN_STATUSES,
+  WORKFLOW_V2_REVIEW_DECISIONS,
+  WORKFLOW_V2_SENSITIVE_CLASSIFICATIONS,
+  WORKFLOW_V2_TASK_GROUP_PACKAGE_STATUSES,
+  WORKFLOW_V2_WORKER_BACKENDS,
+  WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS,
+  WORKFLOW_V2_WORKER_HANDOFF_STATUSES,
+  WORKFLOW_V2_WORKER_PATTERNS,
+  WORKFLOW_V2_WORKER_RUN_STATUSES,
+  WORKFLOW_V2_WORKFLOW_STATES,
+  WORKFLOW_V2_SUCCESSOR_SOURCE_STATUSES
+} from "./workflow-v2/constants.js";
+import {
+  workflowV2AdapterJobLeaseMs,
+  workflowV2AdapterJobRetryDelayMs,
+  workflowV2AdapterJobSummary,
+  workflowV2CapacityInt,
+  workflowV2CatBrainAuditSummary,
+  workflowV2CatClawAuditSummary,
+  workflowV2DefaultProviderConcurrency,
+  workflowV2ErrorMessage,
+  workflowV2HumanGatePackageSummary,
+  workflowV2JsonArray,
+  workflowV2JsonObject,
+  workflowV2ManagerReviewSummary,
+  workflowV2NonNegativeInt,
+  workflowV2NormalizeBackend,
+  workflowV2NormalizeEnum,
+  workflowV2OptionalNonNegativeInt,
+  workflowV2OwnerReviewSummary,
+  workflowV2PlanSummary,
+  workflowV2TaskGroupPackageSummary,
+  workflowV2UniqueTextArray,
+  workflowV2UniqueTextList,
+  workflowV2ValidationAdvisory,
+  workflowV2ValidationError,
+  workflowV2WorkerRunSummary,
+  workflowV2WorkerSessionRunInput
+} from "./workflow-v2/helpers.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -57,51 +115,6 @@ const WORKFLOW_TASK_STATUSES = new Set(["pending", "in_progress", "done", "block
 const WORKFLOW_TASK_PRIORITIES = new Set(["flash", "steer", "high", "normal", "low"]);
 const WORKFLOW_SESSION_PACK_STATUSES = new Set(["draft", "active", "disabled", "archived"]);
 const WORKFLOW_SESSION_RUN_STATUSES = new Set(["queued", "running", "completed", "failed", "cancelled"]);
-const WORKFLOW_V2_PLAN_STATUSES = new Set(["draft", "planned", "running", "reviewing", "waiting_human", "blocked", "completed", "cancelled"]);
-const WORKFLOW_V2_WORKFLOW_STATES = new Set(["draft", "planned", "active", "waiting_worker", "waiting_review", "waiting_manager", "waiting_group_discussion", "waiting_cat_brain_check", "waiting_cat_claw_audit", "human_gate_request_due", "waiting_human", "blocked", "completed", "terminated", "cancelled"]);
-const WORKFLOW_V2_NODE_STATUSES = new Set(["planned", "ready", "running", "reviewing", "blocked", "completed", "failed", "cancelled"]);
-const WORKFLOW_V2_WORKER_RUN_STATUSES = new Set(["queued", "retry_scheduled", "running", "submitted_for_review", "accepted", "rejected", "revise_required", "handoff_required", "retired", "successor_spawned", "blocked", "needs_human_gate", "failed", "timed_out", "cancelled"]);
-const WORKFLOW_V2_INFO_CLASSIFICATIONS = new Set(["public", "internal", "sensitive", "secret", "trading"]);
-const WORKFLOW_V2_SENSITIVE_CLASSIFICATIONS = new Set(["sensitive", "secret", "trading"]);
-const WORKFLOW_V2_CONTENT_STORAGES = new Set(["artifact_ref", "inline", "external_ref", "redacted"]);
-const WORKFLOW_V2_WORKER_BACKENDS = new Set(["hermers", "hermers_docker_worker", "claude_code", "claude_code_docker_worker", "codex", "mcp", "script", "local_deterministic"]);
-const WORKFLOW_V2_DISALLOWED_WORKER_BACKENDS = new Set(["openclaw", "openclaw_route_shell"]);
-const WORKFLOW_V2_ADAPTER_JOB_BACKENDS = new Set(["hermers_docker_worker", "claude_code_docker_worker"]);
-const WORKFLOW_V2_ADAPTER_JOB_IMAGES = {
-  hermers_docker_worker: "flashcat/hermes-worker:20260704",
-  claude_code_docker_worker: "flashcat/claude-code-worker:20260704"
-};
-const WORKFLOW_V2_ADAPTER_JOB_STATUSES = new Set(["queued", "retry_scheduled", "running", "completed", "failed", "cancelled"]);
-const WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS = 64_000;
-const WORKFLOW_V2_MAX_CONCURRENT_WORKERS = 200;
-const WORKFLOW_V2_ORCHESTRATION_PATTERNS = new Set([
-  "direct_owner_execution",
-  "owner_worker",
-  "owner_cto_review",
-  "manager_worker",
-  "parallel_manager_sections",
-  "evaluator_optimizer",
-  "autonomous_agent_loop"
-]);
-const WORKFLOW_V2_WORKER_PATTERNS = new Set([
-  "owner_worker",
-  "owner_cto_review",
-  "manager_worker",
-  "parallel_manager_sections",
-  "evaluator_optimizer",
-  "autonomous_agent_loop"
-]);
-const WORKFLOW_V2_NOTIFICATION_PAYLOAD_MODES = new Set(["pointer_only", "legacy_inline"]);
-const WORKFLOW_V2_NOTIFICATION_CHANNELS = new Set(["message_flow", "telegram", "openclaw_im", "local_codex", "workflow_inbox", "none"]);
-const WORKFLOW_V2_REVIEW_DECISIONS = new Set(["accepted", "revise_required", "rejected", "needs_human_gate"]);
-const WORKFLOW_V2_TASK_GROUP_PACKAGE_STATUSES = new Set(["draft", "ready", "revision_required", "cancelled"]);
-const WORKFLOW_V2_CAT_BRAIN_AUDIT_DECISIONS = new Set(["approved", "revision_required", "rejected", "needs_human_gate"]);
-const WORKFLOW_V2_CAT_CLAW_AUDIT_DECISIONS = new Set(["protocol_ready", "protocol_revision_required", "rejected"]);
-const WORKFLOW_V2_HUMAN_GATE_PACKAGE_STATUSES = new Set(["draft", "cat_claw_audited"]);
-const WORKFLOW_V2_HUMAN_GATE_SUBMISSION_KINDS = new Set(["plan_review", "task_output", "final_artifact", "release_gate", "incident_closeout", "scope_confirmation", "information_request"]);
-const WORKFLOW_V2_HUMAN_GATE_INTERACTION_TYPES = new Set(["approval", "artifact_acceptance", "review_feedback", "option_selection", "arbitration", "scope_confirmation", "release_gate", "information_request"]);
-const WORKFLOW_V2_HUMAN_GATE_OPTION_KEYS = ["A", "B", "C", "D", "E"];
-const WORKFLOW_V2_WORKER_HANDOFF_STATUSES = new Set(["draft", "recommended", "required", "accepted", "superseded", "cancelled"]);
 const WORKFLOW_SCHEDULE_STATUSES = new Set(["active", "paused", "disabled"]);
 const WORKFLOW_SCHEDULE_KINDS = new Set(["cron", "interval"]);
 const WORKFLOW_SCHEDULE_CONCURRENCY_POLICIES = new Set(["skip", "allow"]);
@@ -9556,55 +9569,6 @@ WHERE run_id=${sqlValue(runId)};`);
   return { ...next, dbFile: paths.dbFile };
 }
 
-function workflowV2JsonObject(value, fallback = {}) {
-  const parsed = parseJsonValue(value, fallback);
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
-}
-
-function workflowV2JsonArray(value, fallback = []) {
-  if (Array.isArray(value)) return value;
-  if (typeof value === "string") {
-    const text = value.trim();
-    if (!text) return fallback;
-    if (text.startsWith("[")) {
-      const parsed = parseJsonValue(text, fallback);
-      return Array.isArray(parsed) ? parsed : fallback;
-    }
-    return toList(text);
-  }
-  return fallback;
-}
-
-function workflowV2NormalizeEnum(value, allowed, fallback) {
-  const normalized = String(value || fallback || "").trim().toLowerCase().replace(/-/g, "_");
-  return allowed.has(normalized) ? normalized : fallback;
-}
-
-function workflowV2NormalizeBackend(value, fallback = "hermers_docker_worker") {
-  return String(value || fallback || "").trim().toLowerCase().replace(/-/g, "_");
-}
-
-function workflowV2NonNegativeInt(value, fallback = 0) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return Math.max(0, Math.floor(Number(fallback) || 0));
-  return Math.max(0, Math.floor(number));
-}
-
-function workflowV2OptionalNonNegativeInt(value) {
-  if (value === undefined || value === null || String(value).trim() === "") return null;
-  const number = Number(value);
-  if (!Number.isFinite(number)) return null;
-  return Math.max(0, Math.floor(number));
-}
-
-function workflowV2ValidationError(code, message, details = {}) {
-  return { code, message, ...details };
-}
-
-function workflowV2ValidationAdvisory(code, message, details = {}) {
-  return { code, message, severity: "advisory", ...details };
-}
-
 function workflowV2InputOrchestrationPattern(input = {}) {
   const payload = workflowV2JsonObject(input.payload, {});
   const orchestrationInput = workflowV2JsonObject(input.orchestration ?? input.orchestration_contract ?? payload.orchestration, {});
@@ -10616,38 +10580,6 @@ ON CONFLICT(preflight_id) DO UPDATE SET
   return { ...preview, operation: "workflow.v2.worker_backend_preflight.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
 }
 
-function workflowV2WorkerSessionRunInput(run = {}) {
-  return {
-    schemaVersion: "workflow_v2_worker_session_input.v1",
-    workflowId: run.workflowId || "",
-    planId: run.planId || "",
-    nodeId: run.nodeId || "",
-    workerRunId: run.workerRunId || "",
-    parentWorkerRunId: run.parentWorkerRunId || "",
-    supersedesWorkerRunId: run.supersedesWorkerRunId || "",
-    workerGeneration: workflowV2NonNegativeInt(run.workerGeneration, 0),
-    managerAgent: run.managerAgent || "",
-    workerAgentId: run.workerAgentId || "",
-    runtimeBackend: run.runtimeBackend || "",
-    taskInputInfoId: run.taskInputInfoId || "",
-    expectedOutputInfoId: run.outputInfoId || "",
-    handoffInfoId: run.handoffInfoId || "",
-    sourceContextRefs: workflowV2JsonArray(run.sourceContextRefs, []),
-    context: {
-      budgetTokens: workflowV2NonNegativeInt(run.contextBudgetTokens, 0),
-      usedTokens: workflowV2NonNegativeInt(run.contextUsedTokens, 0),
-      compactionCount: workflowV2NonNegativeInt(run.compactionCount, 0)
-    },
-    receiptRequired: true,
-    reviewRequired: true,
-    workerPayload: workflowV2JsonObject(run.payload, {})
-  };
-}
-
-function workflowV2ErrorMessage(error) {
-  return String(error?.message || error || "unknown error").slice(0, 2000);
-}
-
 async function workflowV2RestoreWorkerRunRow(paths, row = {}) {
   if (!row?.worker_run_id) return;
   await sqlite(paths.dbFile, `
@@ -10723,149 +10655,6 @@ SET workflow_id=${sqlValue(row.workflow_id || "")},
     payload_json=${sqlValue(row.payload_json || "{}")},
     created_at=${sqlValue(row.created_at || nowIso())}
 WHERE review_id=${sqlValue(id)};`);
-}
-
-function workflowV2UniqueTextList(value, fallback = []) {
-  const items = workflowV2JsonArray(value, fallback);
-  return Array.from(new Set(items.map((item) => String(item || "").trim()).filter(Boolean)));
-}
-
-function workflowV2PlanSummary(row = {}) {
-  if (!row) return null;
-  return {
-    planId: row.plan_id || "",
-    workflowId: row.workflow_id || "",
-    status: row.status || "",
-    workflowState: row.workflow_state || "",
-    taskOwnerAgent: row.task_owner_agent || "",
-    plannerAgent: row.planner_agent || "",
-    participantManagers: workflowV2JsonArray(row.participant_managers_json, []),
-    objective: row.objective || "",
-    createdBy: row.created_by || "",
-    createdAt: row.created_at || "",
-    updatedAt: row.updated_at || ""
-  };
-}
-
-function workflowV2ManagerReviewSummary(row = {}) {
-  if (!row) return null;
-  return {
-    reviewId: row.review_id || "",
-    workflowId: row.workflow_id || "",
-    planId: row.plan_id || "",
-    nodeId: row.node_id || "",
-    workerRunId: row.worker_run_id || "",
-    reviewerAgent: row.reviewer_agent || "",
-    decision: row.decision || "",
-    summary: row.summary || "",
-    findings: workflowV2JsonArray(row.findings_json, []),
-    artifactRefs: workflowV2JsonArray(row.artifact_refs_json, []),
-    receiptRefs: workflowV2JsonArray(row.receipt_refs_json, []),
-    blocker: workflowV2JsonObject(row.blocker_json, {}),
-    createdAt: row.created_at || ""
-  };
-}
-
-function workflowV2OwnerReviewSummary(row = {}) {
-  if (!row) return null;
-  return {
-    reviewId: row.review_id || "",
-    workflowId: row.workflow_id || "",
-    planId: row.plan_id || "",
-    ownerAgent: row.owner_agent || "",
-    decision: row.decision || "",
-    summary: row.summary || "",
-    managerReviewRefs: workflowV2JsonArray(row.manager_review_refs_json, []),
-    artifactRefs: workflowV2JsonArray(row.artifact_refs_json, []),
-    receiptRefs: workflowV2JsonArray(row.receipt_refs_json, []),
-    findings: workflowV2JsonArray(row.findings_json, []),
-    payload: workflowV2JsonObject(row.payload_json, {}),
-    createdBy: row.created_by || "",
-    createdAt: row.created_at || "",
-    updatedAt: row.updated_at || ""
-  };
-}
-
-function workflowV2TaskGroupPackageSummary(row = {}) {
-  if (!row) return null;
-  return {
-    packageId: row.package_id || "",
-    workflowId: row.workflow_id || "",
-    planId: row.plan_id || "",
-    ownerReviewId: row.owner_review_id || "",
-    taskOwnerAgent: row.task_owner_agent || "",
-    taskGroupAgents: workflowV2JsonArray(row.task_group_agents_json, []),
-    status: row.status || "",
-    summary: row.summary || "",
-    managerReviewRefs: workflowV2JsonArray(row.manager_review_refs_json, []),
-    ownerReviewRefs: workflowV2JsonArray(row.owner_review_refs_json, []),
-    artifactRefs: workflowV2JsonArray(row.artifact_refs_json, []),
-    evidenceRefs: workflowV2JsonArray(row.evidence_refs_json, []),
-    payload: workflowV2JsonObject(row.payload_json, {}),
-    createdBy: row.created_by || "",
-    createdAt: row.created_at || "",
-    updatedAt: row.updated_at || ""
-  };
-}
-
-function workflowV2CatBrainAuditSummary(row = {}) {
-  if (!row) return null;
-  return {
-    auditId: row.audit_id || "",
-    workflowId: row.workflow_id || "",
-    planId: row.plan_id || "",
-    taskGroupPackageId: row.task_group_package_id || "",
-    catBrainAgent: row.cat_brain_agent || "",
-    decision: row.decision || "",
-    scope: row.scope || "",
-    summary: row.summary || "",
-    findings: workflowV2JsonArray(row.findings_json, []),
-    evidenceRefs: workflowV2JsonArray(row.evidence_refs_json, []),
-    payload: workflowV2JsonObject(row.payload_json, {}),
-    createdBy: row.created_by || "",
-    createdAt: row.created_at || "",
-    updatedAt: row.updated_at || ""
-  };
-}
-
-function workflowV2CatClawAuditSummary(row = {}) {
-  if (!row) return null;
-  return {
-    auditId: row.audit_id || "",
-    workflowId: row.workflow_id || "",
-    planId: row.plan_id || "",
-    catBrainAuditId: row.cat_brain_audit_id || "",
-    catClawAgent: row.cat_claw_agent || "",
-    decision: row.decision || "",
-    summary: row.summary || "",
-    checks: workflowV2JsonArray(row.checks_json, []),
-    evidenceRefs: workflowV2JsonArray(row.evidence_refs_json, []),
-    payload: workflowV2JsonObject(row.payload_json, {}),
-    createdBy: row.created_by || "",
-    createdAt: row.created_at || "",
-    updatedAt: row.updated_at || ""
-  };
-}
-
-function workflowV2HumanGatePackageSummary(row = {}) {
-  if (!row) return null;
-  return {
-    packageId: row.package_id || "",
-    workflowId: row.workflow_id || "",
-    planId: row.plan_id || "",
-    sourceReviewId: row.source_review_id || "",
-    sourceCatClawAuditId: row.source_cat_claw_audit_id || "",
-    catBrainAgent: row.cat_brain_agent || "",
-    catClawAgent: row.cat_claw_agent || "",
-    status: row.status || "",
-    options: workflowV2JsonArray(row.options_json, []),
-    requiredControls: workflowV2JsonArray(row.required_controls_json, []),
-    evidenceRefs: workflowV2JsonArray(row.evidence_refs_json, []),
-    payload: workflowV2JsonObject(row.payload_json, {}),
-    createdBy: row.created_by || "",
-    createdAt: row.created_at || "",
-    updatedAt: row.updated_at || ""
-  };
 }
 
 async function workflowV2LoadPlanRow(paths, workflowId, planId) {
@@ -11278,44 +11067,6 @@ DELETE FROM workflow_session_runs WHERE run_id=${sqlValue(run.sessionRunId)};`);
     throw error;
   }
   return { ...preview, operation: "workflow.v2.worker_spawn.create", dryRun: false, previewOnly: false, sessionRun, dbFile: paths.dbFile };
-}
-
-function workflowV2WorkerRunSummary(row = {}) {
-  return {
-    workerRunId: row.worker_run_id || "",
-    workflowId: row.workflow_id || "",
-    planId: row.plan_id || "",
-    nodeId: row.node_id || "",
-    parentWorkerRunId: row.parent_worker_run_id || "",
-    supersedesWorkerRunId: row.supersedes_worker_run_id || "",
-    successorWorkerRunId: row.successor_worker_run_id || "",
-    workerGeneration: Number(row.worker_generation || 0),
-    managerAgent: row.manager_agent || "",
-    workerAgentId: row.worker_agent_id || "",
-    sessionId: row.session_id || "",
-    sessionRunId: row.session_run_id || "",
-    preflightId: row.preflight_id || "",
-    runtimeBackend: row.runtime_backend || "",
-    status: row.status || "",
-    attempt: Number(row.attempt || 0),
-    maxAttempts: Number(row.max_attempts || 1),
-    leaseOwner: row.lease_owner || "",
-    leaseUntil: row.lease_until || "",
-    nextRetryAt: row.next_retry_at || "",
-    taskInputInfoId: row.task_input_info_id || "",
-    outputInfoId: row.output_info_id || "",
-    handoffInfoId: row.handoff_info_id || "",
-    receiptRef: row.receipt_ref || "",
-    lastError: row.last_error || "",
-    contextBudgetTokens: Number(row.context_budget_tokens || 0),
-    contextUsedTokens: Number(row.context_used_tokens || 0),
-    compactionCount: Number(row.compaction_count || 0),
-    sourceContextRefs: workflowV2JsonArray(row.source_context_refs_json, []),
-    startedAt: row.started_at || "",
-    completedAt: row.completed_at || "",
-    createdAt: row.created_at || "",
-    updatedAt: row.updated_at || ""
-  };
 }
 
 const WORKFLOW_V2_WORKER_RUN_CONTROL_COLUMNS = [
@@ -12087,65 +11838,6 @@ function workflowV2AdapterBackendProfile(runtimeBackend = "", input = {}) {
   };
 }
 
-function workflowV2AdapterJobSummary(row = {}) {
-  if (!row?.adapter_job_id) return null;
-  return {
-    adapterJobId: row.adapter_job_id || "",
-    workflowId: row.workflow_id || "",
-    planId: row.plan_id || "",
-    nodeId: row.node_id || "",
-    workerRunId: row.worker_run_id || "",
-    sessionRunId: row.session_run_id || "",
-    runtimeBackend: row.runtime_backend || "",
-    workerAttempt: Number(row.worker_attempt || 0),
-    runnerAttempt: Number(row.runner_attempt || 0),
-    maxRunnerAttempts: Number(row.max_runner_attempts || 3),
-    status: row.status || "",
-    leaseOwner: row.lease_owner || "",
-    leaseUntil: row.lease_until || "",
-    nextRetryAt: row.next_retry_at || "",
-    runnerId: row.runner_id || "",
-    artifactRef: row.artifact_ref || "",
-    artifactId: row.artifact_id || "",
-    infoId: row.info_id || "",
-    manifestHash: row.manifest_hash || "",
-    runnerReceiptRef: row.runner_receipt_ref || "",
-    lastError: row.last_error || "",
-    payload: workflowV2JsonObject(row.payload_json, {}),
-    createdBy: row.created_by || "",
-    createdAt: row.created_at || "",
-    updatedAt: row.updated_at || "",
-    completedAt: row.completed_at || ""
-  };
-}
-
-function workflowV2AdapterJobLeaseMs(input = {}) {
-  const requested = Number(input.adapterJobLeaseMs || input.adapter_job_lease_ms || input.leaseMs || input.lease_ms || 300_000);
-  if (!Number.isFinite(requested)) return 300_000;
-  return Math.max(10_000, Math.min(60 * 60_000, Math.floor(requested)));
-}
-
-function workflowV2AdapterJobRetryDelayMs(input = {}, runnerAttempt = 0) {
-  const requested = Number(input.retryDelayMs ?? input.retry_delay_ms);
-  if (Number.isFinite(requested)) return Math.max(0, Math.min(60 * 60_000, Math.floor(requested)));
-  return Math.min(10 * 60_000, Math.max(10_000, 10_000 * Math.max(1, Number(runnerAttempt || 1))));
-}
-
-function workflowV2CapacityInt(candidates = [], fallback = 1, min = 0, max = 10_000) {
-  for (const candidate of candidates) {
-    if (candidate === undefined || candidate === null || candidate === "") continue;
-    const value = Number(candidate);
-    if (Number.isFinite(value)) return Math.max(min, Math.min(max, Math.floor(value)));
-  }
-  return Math.max(min, Math.min(max, Math.floor(Number(fallback) || 0)));
-}
-
-function workflowV2DefaultProviderConcurrency(providerModel = "", backendMaxActiveJobs = 200) {
-  const text = String(providerModel || "").toLowerCase();
-  if (/(iflytek|xunfei|xfyun)/.test(text)) return Math.min(3, backendMaxActiveJobs);
-  return backendMaxActiveJobs;
-}
-
 async function workflowV2AdapterRunnerCapacity(paths, input = {}, generatedAt = nowIso(), runtimeBackend = "") {
   const profile = workflowV2JsonObject(input.capacityProfile ?? input.capacity_profile ?? input.backendCapacity ?? input.backend_capacity, {});
   const requestedLimit = workflowV2CapacityInt([
@@ -12265,6 +11957,207 @@ async function workflowV2AdapterJobManifest(paths, job = {}) {
     throw new Error(`workflow v2 adapter job manifest hash mismatch: ${job.adapterJobId || job.adapter_job_id || ""}`);
   }
   return { manifest, artifactFile, manifestHash: actualHash };
+}
+
+function workflowV2AdapterRunnerMode(input = {}) {
+  const raw = firstText(input.mode, input.runnerMode, input.runner_mode, "mock");
+  const normalized = String(raw || "mock").trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "mock") return "mock";
+  if (["external", "external_command", "real", "docker", "docker_command", "hermers", "claude_code", "hermers_docker_worker", "claude_code_docker_worker"].includes(normalized)) {
+    return "external_command";
+  }
+  throw new Error(`workflow v2 adapter runner mode is not implemented: ${raw}`);
+}
+
+function workflowV2CommandArray(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  const text = String(value || "").trim();
+  if (!text) return [];
+  if (text.startsWith("[")) {
+    const parsed = workflowV2JsonArray(text, []);
+    return parsed.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  if (/\s/.test(text)) {
+    throw new Error("workflow v2 external runner command strings with spaces must be provided as a JSON array");
+  }
+  return [text];
+}
+
+function workflowV2InputRunnerCommandProvided(input = {}) {
+  return input.runnerCommand !== undefined
+    || input.runner_command !== undefined
+    || input.externalRunnerCommand !== undefined
+    || input.external_runner_command !== undefined;
+}
+
+function workflowV2ExternalRunnerCommand(input = {}, runtimeBackend = "") {
+  if (workflowV2InputRunnerCommandProvided(input)) {
+    throw new Error("workflow v2 external adapter runner command must be configured by environment, not action input");
+  }
+  const backendKey = String(runtimeBackend || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+  const backendEnvKey = backendKey ? `TRADING_AGENTS_WORKFLOW_V2_${backendKey}_RUNNER_CMD` : "";
+  const candidates = [
+    { source: backendEnvKey, value: backendEnvKey ? process.env[backendEnvKey] : "" },
+    { source: "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD", value: process.env.TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD }
+  ];
+  for (const candidate of candidates) {
+    if (candidate.value === undefined || candidate.value === null || candidate.value === "") continue;
+    const command = workflowV2CommandArray(candidate.value);
+    if (command.length) return { command, source: candidate.source };
+  }
+  throw new Error(`workflow v2 external adapter runner requires ${backendEnvKey || "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD"}`);
+}
+
+function workflowV2ExternalRunnerTimeoutMs(input = {}) {
+  const requested = Number(input.runnerTimeoutMs ?? input.runner_timeout_ms ?? input.timeoutMs ?? input.timeout_ms ?? 10 * 60_000);
+  if (!Number.isFinite(requested)) return 10 * 60_000;
+  return Math.max(1_000, Math.min(60 * 60_000, Math.floor(requested)));
+}
+
+async function workflowV2AdapterRunnerExternalFiles(paths, job = {}, generatedAt = nowIso()) {
+  const workflowId = job.workflowId || job.workflow_id || "workflow";
+  const adapterJobId = job.adapterJobId || job.adapter_job_id || safeId("adapter-job");
+  const runnerAttempt = workflowV2NonNegativeInt(job.runnerAttempt ?? job.runner_attempt, 0);
+  const artifactDir = path.join(paths.artifactsDir, "workflow-v2", cleanFileSegment(workflowId), "adapter-runner");
+  const filePrefix = `${cleanFileSegment(adapterJobId)}.${runnerAttempt}.${textHash(generatedAt).slice(0, 10)}`;
+  await fs.mkdir(artifactDir, { recursive: true });
+  return {
+    artifactDir,
+    requestFile: path.join(artifactDir, `${filePrefix}.runner-request.json`),
+    outputFile: path.join(artifactDir, `${filePrefix}.runner-output.json`),
+    artifactFile: path.join(artifactDir, `${filePrefix}.external-output.json`),
+    artifactRef: `artifact://workflow-v2/${cleanFileSegment(workflowId)}/adapter-runner/${filePrefix}.external-output.json`
+  };
+}
+
+function workflowV2ExternalRunnerStatus(output = {}) {
+  const raw = firstText(output.status, output.outcome, output.resultStatus, output.result_status);
+  if (!raw) throw new Error("workflow v2 external adapter runner output requires explicit status");
+  const normalized = String(raw).trim().toLowerCase().replace(/-/g, "_");
+  if (["success", "succeeded", "complete", "completed", "submit", "submitted"].includes(normalized)) return "success";
+  if (["fail", "failed", "failure", "terminal_fail", "terminal_failure"].includes(normalized)) return "fail";
+  if (["release", "retry", "retry_scheduled"].includes(normalized)) return "release";
+  throw new Error(`unsupported workflow v2 external adapter runner status: ${raw}`);
+}
+
+async function workflowV2ExternalRunnerOutput(files = {}, result = {}) {
+  if (await pathExists(files.outputFile)) {
+    const outputText = await fs.readFile(files.outputFile, "utf8");
+    const output = JSON.parse(outputText);
+    if (!output || typeof output !== "object" || Array.isArray(output)) {
+      throw new Error("workflow v2 external adapter runner output file must contain a JSON object");
+    }
+    return output;
+  }
+  const stdout = String(result.stdout || "").trim();
+  if (!stdout) {
+    throw new Error("workflow v2 external adapter runner did not write output JSON file or stdout JSON");
+  }
+  const output = JSON.parse(stdout);
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    throw new Error("workflow v2 external adapter runner stdout must contain a JSON object");
+  }
+  return output;
+}
+
+async function workflowV2AdapterRunnerExternalCommand(paths, job = {}, manifest = {}, manifestFile = "", input = {}, generatedAt = nowIso()) {
+  const runtimeBackend = workflowV2NormalizeBackend(job.runtimeBackend || job.runtime_backend || manifest.runtimeBackend || manifest.runtime_backend, "");
+  const runnerId = firstText(input.runnerId, input.runner_id, input.leaseOwner, input.lease_owner);
+  const commandConfig = workflowV2ExternalRunnerCommand(input, runtimeBackend);
+  const files = await workflowV2AdapterRunnerExternalFiles(paths, job, generatedAt);
+  const request = {
+    schemaVersion: "workflow_v2_external_adapter_runner_request.v1",
+    generatedAt,
+    runnerId,
+    adapterJob: job,
+    manifest,
+    manifestFile,
+    outputFile: files.outputFile,
+    runtimeBackend,
+    returnContract: {
+      outputJsonFile: files.outputFile,
+      outputStatusValues: ["success", "fail", "release"],
+      successRequiresSummary: true,
+      directDatabaseWritesAllowed: false
+    }
+  };
+  await writeJsonAtomic(files.requestFile, request);
+  const appendRequestOutputArgs = boolOption(input.appendRunnerIoArgs ?? input.append_runner_io_args, true);
+  const args = [
+    ...commandConfig.command.slice(1),
+    ...(appendRequestOutputArgs ? [files.requestFile, files.outputFile] : [])
+  ];
+  const env = {
+    ...process.env,
+    WORKFLOW_V2_ADAPTER_RUNNER_REQUEST_FILE: files.requestFile,
+    WORKFLOW_V2_ADAPTER_RUNNER_OUTPUT_FILE: files.outputFile,
+    WORKFLOW_V2_ADAPTER_JOB_ID: job.adapterJobId || job.adapter_job_id || "",
+    WORKFLOW_V2_WORKER_RUN_ID: job.workerRunId || job.worker_run_id || "",
+    WORKFLOW_V2_RUNTIME_BACKEND: runtimeBackend,
+    WORKFLOW_V2_RUNNER_ID: runnerId
+  };
+  const cwd = firstText(input.runnerCwd, input.runner_cwd, paths.root);
+  const timeout = workflowV2ExternalRunnerTimeoutMs(input);
+  const maxBuffer = Math.max(64 * 1024, Math.min(16 * 1024 * 1024, Number(input.runnerMaxBuffer ?? input.runner_max_buffer ?? 1024 * 1024) || 1024 * 1024));
+  const result = await execFileAsync(commandConfig.command[0], args, { cwd, env, timeout, maxBuffer });
+  const output = await workflowV2ExternalRunnerOutput(files, result);
+  const status = workflowV2ExternalRunnerStatus(output);
+  const summary = firstText(output.summary, output.outputSummary, output.output_summary, `External adapter runner output for ${job.workerRunId || job.worker_run_id || ""}`);
+  const captureCommandOutput = boolOption(input.captureCommandOutput ?? input.capture_command_output, false);
+  const artifactPayload = {
+    schemaVersion: "workflow_v2_adapter_runner_external_output.v1",
+    generatedAt,
+    runnerMode: "external_command",
+    runnerId,
+    adapterJobId: job.adapterJobId || job.adapter_job_id || "",
+    workerRunId: job.workerRunId || job.worker_run_id || "",
+    workflowId: job.workflowId || job.workflow_id || manifest.workflowId || "",
+    planId: job.planId || job.plan_id || manifest.planId || "",
+    nodeId: job.nodeId || job.node_id || manifest.nodeId || "",
+    runtimeBackend,
+    status,
+    summary,
+    command: {
+      source: commandConfig.source,
+      executable: commandConfig.command[0],
+      argsAppended: appendRequestOutputArgs,
+      timeoutMs: timeout
+    },
+    files: {
+      requestFile: files.requestFile,
+      outputFile: files.outputFile
+    },
+    output,
+    stdoutBytes: Buffer.byteLength(result.stdout || "", "utf8"),
+    stderrBytes: Buffer.byteLength(result.stderr || "", "utf8"),
+    ...(captureCommandOutput ? {
+      stdout: String(result.stdout || "").slice(0, 8000),
+      stderr: String(result.stderr || "").slice(0, 8000)
+    } : {})
+  };
+  await writeJsonAtomic(files.artifactFile, artifactPayload);
+  return {
+    status,
+    summary,
+    retryAllowed: boolOption(output.retryAllowed ?? output.retry_allowed, false),
+    artifactFile: files.artifactFile,
+    artifactRef: firstText(output.artifactRef, output.artifact_ref, files.artifactRef),
+    outputInfoId: firstText(output.outputInfoId, output.output_info_id, manifest.output?.expectedOutputInfoId, `${job.workerRunId || job.worker_run_id}.output`),
+    receipt: {
+      adapterRunner: "external_command",
+      runnerId,
+      adapterJobId: job.adapterJobId || job.adapter_job_id || "",
+      workerRunId: job.workerRunId || job.worker_run_id || "",
+      manifestFile,
+      requestFile: files.requestFile,
+      outputFile: files.outputFile,
+      outputArtifactRef: firstText(output.artifactRef, output.artifact_ref, files.artifactRef),
+      outputStatus: status,
+      runnerReceipt: workflowV2JsonObject(output.receipt ?? output.runnerReceipt ?? output.runner_receipt, {}),
+      generatedAt
+    },
+    rawOutput: output
+  };
 }
 
 function workflowV2AdapterRunnerOutcome(input = {}, job = {}, index = 0) {
@@ -13084,6 +12977,7 @@ export async function workflowV2AdapterRunnerPreview(rootDir, input = {}) {
   const runtimeBackend = input.runtimeBackend || input.runtime_backend
     ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
     : "";
+  const mode = workflowV2AdapterRunnerMode(input);
   const capacity = await workflowV2AdapterRunnerCapacity(paths, input, generatedAt, runtimeBackend);
   const backendClause = runtimeBackend ? `AND j.runtime_backend=${sqlValue(runtimeBackend)}` : "";
   const rows = await sqlite(paths.dbFile, `
@@ -13106,7 +13000,12 @@ LIMIT ${capacity.effectiveLimit};`, { json: true });
     previewOnly: true,
     generatedAt,
     runtimeBackend,
-    mode: "mock",
+    mode,
+    runnerCommandRequired: mode === "external_command",
+    runnerCommandConfigured: mode === "external_command" && !workflowV2InputRunnerCommandProvided(input)
+      ? Boolean(runtimeBackend && process.env[`TRADING_AGENTS_WORKFLOW_V2_${runtimeBackend.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_RUNNER_CMD`])
+        || Boolean(process.env.TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD)
+      : false,
     count: rows.length,
     dueCount: capacity.dueCount,
     capacity,
@@ -13119,12 +13018,14 @@ export async function workflowV2AdapterRunnerDrain(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
   const runnerId = firstText(input.runnerId, input.runner_id, input.leaseOwner, input.lease_owner, input.claimOwner, input.claim_owner, `mock-adapter-runner:${process.pid}`);
-  const mode = workflowV2NormalizeEnum(input.mode || input.runnerMode || input.runner_mode || "mock", new Set(["mock"]), "mock");
+  const mode = workflowV2AdapterRunnerMode(input);
   const stopOnError = boolOption(input.stopOnError ?? input.stop_on_error, false);
-  if (mode !== "mock") throw new Error(`workflow v2 adapter runner mode is not implemented: ${mode}`);
   const runtimeBackend = input.runtimeBackend || input.runtime_backend
     ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
     : "";
+  if (mode === "external_command") {
+    workflowV2ExternalRunnerCommand(input, runtimeBackend);
+  }
   const claim = await workflowV2WorkerAdapterJobClaim(paths.root, {
     ...input,
     runnerId,
@@ -13134,9 +13035,9 @@ export async function workflowV2AdapterRunnerDrain(rootDir, input = {}) {
   const results = [];
   for (let index = 0; index < claim.claimed.length; index += 1) {
     const job = claim.claimed[index];
-    const outcome = workflowV2AdapterRunnerOutcome(input, job, index);
+    const outcome = mode === "mock" ? workflowV2AdapterRunnerOutcome(input, job, index) : "external_command";
     try {
-      if (outcome === "release") {
+      if (mode === "mock" && outcome === "release") {
         const release = await workflowV2WorkerAdapterJobRelease(paths.root, {
           ...input,
           adapterJobId: job.adapterJobId,
@@ -13148,7 +13049,7 @@ export async function workflowV2AdapterRunnerDrain(rootDir, input = {}) {
         results.push({ adapterJobId: job.adapterJobId, workerRunId: job.workerRunId, outcome, status: "released", release });
         continue;
       }
-      if (outcome === "fail") {
+      if (mode === "mock" && outcome === "fail") {
         const failure = await workflowV2WorkerAdapterJobFail(paths.root, {
           ...input,
           adapterJobId: job.adapterJobId,
@@ -13171,6 +13072,58 @@ LIMIT 1;`, { json: true });
       if (!workerRow) throw new Error(`adapter runner worker row not found: ${job.workerRunId}`);
       if (workerRow.status !== "running") throw new Error(`adapter runner worker is not running: ${job.workerRunId} status=${workerRow.status || ""}`);
       if (Number(workerRow.attempt || 0) !== Number(job.workerAttempt || 0)) throw new Error(`adapter runner worker attempt mismatch: ${job.workerRunId}`);
+      if (mode === "external_command") {
+        const externalOutput = await workflowV2AdapterRunnerExternalCommand(paths, job, manifest, manifestFile, { ...input, runnerId }, generatedAt);
+        if (externalOutput.status === "release") {
+          const release = await workflowV2WorkerAdapterJobRelease(paths.root, {
+            ...input,
+            adapterJobId: job.adapterJobId,
+            runnerId,
+            leaseUntil: job.leaseUntil,
+            generatedAt,
+            reason: externalOutput.summary
+          });
+          results.push({ adapterJobId: job.adapterJobId, workerRunId: job.workerRunId, outcome: "release", status: "released", externalOutput, release });
+          continue;
+        }
+        if (externalOutput.status === "fail") {
+          const failure = await workflowV2WorkerAdapterJobFail(paths.root, {
+            ...input,
+            adapterJobId: job.adapterJobId,
+            runnerId,
+            leaseUntil: job.leaseUntil,
+            retryAllowed: externalOutput.retryAllowed,
+            error: externalOutput.summary,
+            generatedAt
+          });
+          results.push({ adapterJobId: job.adapterJobId, workerRunId: job.workerRunId, outcome: "fail", status: failure.job?.status || "failed", externalOutput, failure });
+          continue;
+        }
+        const submit = await workflowV2WorkerResultSubmit(paths.root, {
+          ...input,
+          workerRunId: job.workerRunId,
+          leaseOwner: workerRow.lease_owner || "",
+          leaseUntil: workerRow.lease_until || "",
+          adapterJobId: job.adapterJobId,
+          adapterJobLeaseOwner: runnerId,
+          adapterJobLeaseUntil: job.leaseUntil,
+          generatedAt,
+          outputInfoId: externalOutput.outputInfoId,
+          contentStorage: "artifact_ref",
+          artifactRef: externalOutput.artifactRef,
+          receipt: externalOutput.receipt,
+          summary: externalOutput.summary
+        });
+        results.push({
+          adapterJobId: job.adapterJobId,
+          workerRunId: job.workerRunId,
+          outcome: "success",
+          status: "submitted",
+          externalOutput,
+          submit
+        });
+        continue;
+      }
       const outputArtifact = await workflowV2AdapterRunnerMockOutput(paths, job, manifest, { ...input, runnerId }, generatedAt);
       try {
         const receipt = {
@@ -13267,21 +13220,6 @@ DELETE FROM workflow_v2_notifications WHERE info_id=${sqlValue(infoId)};
 DELETE FROM workflow_v2_access_grants WHERE info_id=${sqlValue(infoId)};
 DELETE FROM workflow_v2_inbox_items WHERE info_id=${sqlValue(infoId)};
 DELETE FROM workflow_v2_info_items WHERE info_id=${sqlValue(infoId)};`);
-}
-
-const WORKFLOW_V2_HANDOFF_RECORD_STATUSES = new Set(["recommended", "required", "accepted"]);
-const WORKFLOW_V2_SUCCESSOR_SOURCE_STATUSES = new Set(["handoff_required", "retired", "failed", "timed_out", "rejected", "revise_required"]);
-
-function workflowV2UniqueTextArray(values = []) {
-  const seen = new Set();
-  const result = [];
-  for (const value of values) {
-    const text = String(value || "").trim();
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    result.push(text);
-  }
-  return result;
 }
 
 async function workflowV2LoadWorkerLifecycleActor(rootDir, input = {}) {
@@ -27698,10 +27636,62 @@ ${pendingGates.length ? pendingGates.map((row) => `- ${row.gate_id} ${row.instru
   return { auditFile: filePath, staleThesisCount: staleThesis.length, missingThreeFaceCount: missingThreeFace.length, pendingGateCount: pendingGates.length };
 }
 
+export const WORKFLOW_V2_ACTION_REGISTRY = new Map([
+  ["workflow.v2.plan.preview", (rootDir, input) => workflowV2PlanPreview(rootDir, input)],
+  ["workflow.v2.plan.create", (rootDir, input) => workflowV2PlanCreate(rootDir, input)],
+  ["workflow.v2.info_stack.preview", (rootDir, input) => workflowV2InfoStackPreview(rootDir, input)],
+  ["workflow.v2.info_stack.record", (rootDir, input) => workflowV2InfoStackRecord(rootDir, input)],
+  ["workflow.v2.info_stack.read", (rootDir, input) => workflowV2InfoStackRead(rootDir, input)],
+  ["workflow.v2.read_receipt.record", (rootDir, input) => workflowV2ReadReceiptRecord(rootDir, input)],
+  ["workflow.v2.notification.preview", (rootDir, input) => workflowV2NotificationPreview(rootDir, input)],
+  ["workflow.v2.worker_backend.preflight", (rootDir, input) => workflowV2WorkerBackendPreflight(rootDir, input)],
+  ["workflow.v2.worker_backend_preflight.record", (rootDir, input) => workflowV2WorkerBackendPreflightRecord(rootDir, input)],
+  ["workflow.v2.worker_spawn.preview", (rootDir, input) => workflowV2WorkerSpawnPreview(rootDir, input)],
+  ["workflow.v2.worker_spawn.create", (rootDir, input) => workflowV2WorkerSpawnCreate(rootDir, input)],
+  ["workflow.v2.worker_lifecycle.preview", (rootDir, input) => workflowV2WorkerLifecyclePreview(rootDir, input)],
+  ["workflow.v2.worker_handoff.preview", (rootDir, input) => workflowV2WorkerHandoffPreview(rootDir, input)],
+  ["workflow.v2.worker_handoff.record", (rootDir, input) => workflowV2WorkerHandoffRecord(rootDir, input)],
+  ["workflow.v2.worker_retire.preview", (rootDir, input) => workflowV2WorkerRetirePreview(rootDir, input)],
+  ["workflow.v2.worker_retire.record", (rootDir, input) => workflowV2WorkerRetireRecord(rootDir, input)],
+  ["workflow.v2.worker_successor.preview", (rootDir, input) => workflowV2WorkerSuccessorPreview(rootDir, input)],
+  ["workflow.v2.worker_successor.create", (rootDir, input) => workflowV2WorkerSuccessorCreate(rootDir, input)],
+  ["workflow.v2.control_loop.preview", (rootDir, input) => workflowV2ControlLoopPreview(rootDir, input)],
+  ["workflow.v2.control_loop.tick", (rootDir, input) => workflowV2ControlLoopTick(rootDir, input)],
+  ["workflow.v2.worker_adapter_job.preview", (rootDir, input) => workflowV2WorkerAdapterJobPreview(rootDir, input)],
+  ["workflow.v2.worker_adapter_job.record", (rootDir, input) => workflowV2WorkerAdapterJobRecord(rootDir, input)],
+  ["workflow.v2.worker_adapter_job.list", (rootDir, input) => workflowV2WorkerAdapterJobList(rootDir, input)],
+  ["workflow.v2.worker_adapter_job.claim", (rootDir, input) => workflowV2WorkerAdapterJobClaim(rootDir, input)],
+  ["workflow.v2.worker_adapter_job.heartbeat", (rootDir, input) => workflowV2WorkerAdapterJobHeartbeat(rootDir, input)],
+  ["workflow.v2.worker_adapter_job.release", (rootDir, input) => workflowV2WorkerAdapterJobRelease(rootDir, input)],
+  ["workflow.v2.worker_adapter_job.fail", (rootDir, input) => workflowV2WorkerAdapterJobFail(rootDir, input)],
+  ["workflow.v2.adapter_runner.preview", (rootDir, input) => workflowV2AdapterRunnerPreview(rootDir, input)],
+  ["workflow.v2.adapter_runner.drain", (rootDir, input) => workflowV2AdapterRunnerDrain(rootDir, input)],
+  ["workflow.v2.worker_result.submit.preview", (rootDir, input) => workflowV2WorkerResultSubmitPreview(rootDir, input)],
+  ["workflow.v2.worker_result.submit", (rootDir, input) => workflowV2WorkerResultSubmit(rootDir, input)],
+  ["workflow.v2.worker_result.fail.preview", (rootDir, input) => workflowV2WorkerResultFailPreview(rootDir, input)],
+  ["workflow.v2.worker_result.fail", (rootDir, input) => workflowV2WorkerResultFail(rootDir, input)],
+  ["workflow.v2.manager_review.record", (rootDir, input) => workflowV2ManagerReviewRecord(rootDir, input)],
+  ["workflow.v2.owner_review.preview", (rootDir, input) => workflowV2OwnerReviewPreview(rootDir, input)],
+  ["workflow.v2.owner_review.record", (rootDir, input) => workflowV2OwnerReviewRecord(rootDir, input)],
+  ["workflow.v2.task_group_package.preview", (rootDir, input) => workflowV2TaskGroupPackagePreview(rootDir, input)],
+  ["workflow.v2.task_group_package.record", (rootDir, input) => workflowV2TaskGroupPackageRecord(rootDir, input)],
+  ["workflow.v2.cat_brain_audit.preview", (rootDir, input) => workflowV2CatBrainAuditPreview(rootDir, input)],
+  ["workflow.v2.cat_brain_audit.record", (rootDir, input) => workflowV2CatBrainAuditRecord(rootDir, input)],
+  ["workflow.v2.cat_claw_audit.preview", (rootDir, input) => workflowV2CatClawAuditPreview(rootDir, input)],
+  ["workflow.v2.cat_claw_audit.record", (rootDir, input) => workflowV2CatClawAuditRecord(rootDir, input)],
+  ["workflow.v2.human_gate_package.preview", (rootDir, input) => workflowV2HumanGatePackagePreview(rootDir, input)],
+  ["workflow.v2.human_gate_package.record", (rootDir, input) => workflowV2HumanGatePackageRecord(rootDir, input)],
+  ["workflow.v2.human_gate_request.preview", (rootDir, input) => workflowV2HumanGateRequestPreview(rootDir, input)],
+  ["workflow.v2.human_gate_request", (rootDir, input, permissionDecision) => workflowV2HumanGateRequest(rootDir, input, permissionDecision)],
+  ["workflow.v2.validate", (rootDir, input) => workflowV2Validate(rootDir, input)]
+]);
+
 export async function runWorkflowAction(rootDir, input = {}) {
   const requestedAction = String(input.action || "workflow.status");
   const action = canonicalWorkflowAction(requestedAction);
   const permissionDecision = await authorizeWorkflowAction(rootDir, input);
+  const workflowV2Handler = WORKFLOW_V2_ACTION_REGISTRY.get(action);
+  if (workflowV2Handler) return workflowV2Handler(rootDir, input, permissionDecision);
   switch (action) {
     case "workflow.init":
     case "trading_workflow.init":
@@ -27888,100 +27878,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.session.run.complete":
     case "session_run.complete":
       return workflowSessionRunComplete(rootDir, input);
-    case "workflow.v2.plan.preview":
-      return workflowV2PlanPreview(rootDir, input);
-    case "workflow.v2.plan.create":
-      return workflowV2PlanCreate(rootDir, input);
-    case "workflow.v2.info_stack.preview":
-      return workflowV2InfoStackPreview(rootDir, input);
-    case "workflow.v2.info_stack.record":
-      return workflowV2InfoStackRecord(rootDir, input);
-    case "workflow.v2.info_stack.read":
-      return workflowV2InfoStackRead(rootDir, input);
-    case "workflow.v2.read_receipt.record":
-      return workflowV2ReadReceiptRecord(rootDir, input);
-    case "workflow.v2.notification.preview":
-      return workflowV2NotificationPreview(rootDir, input);
-    case "workflow.v2.worker_backend.preflight":
-      return workflowV2WorkerBackendPreflight(rootDir, input);
-    case "workflow.v2.worker_backend_preflight.record":
-      return workflowV2WorkerBackendPreflightRecord(rootDir, input);
-    case "workflow.v2.worker_spawn.preview":
-      return workflowV2WorkerSpawnPreview(rootDir, input);
-    case "workflow.v2.worker_spawn.create":
-      return workflowV2WorkerSpawnCreate(rootDir, input);
-    case "workflow.v2.worker_lifecycle.preview":
-      return workflowV2WorkerLifecyclePreview(rootDir, input);
-    case "workflow.v2.worker_handoff.preview":
-      return workflowV2WorkerHandoffPreview(rootDir, input);
-    case "workflow.v2.worker_handoff.record":
-      return workflowV2WorkerHandoffRecord(rootDir, input);
-    case "workflow.v2.worker_retire.preview":
-      return workflowV2WorkerRetirePreview(rootDir, input);
-    case "workflow.v2.worker_retire.record":
-      return workflowV2WorkerRetireRecord(rootDir, input);
-    case "workflow.v2.worker_successor.preview":
-      return workflowV2WorkerSuccessorPreview(rootDir, input);
-    case "workflow.v2.worker_successor.create":
-      return workflowV2WorkerSuccessorCreate(rootDir, input);
-    case "workflow.v2.control_loop.preview":
-      return workflowV2ControlLoopPreview(rootDir, input);
-    case "workflow.v2.control_loop.tick":
-      return workflowV2ControlLoopTick(rootDir, input);
-    case "workflow.v2.worker_adapter_job.preview":
-      return workflowV2WorkerAdapterJobPreview(rootDir, input);
-    case "workflow.v2.worker_adapter_job.record":
-      return workflowV2WorkerAdapterJobRecord(rootDir, input);
-    case "workflow.v2.worker_adapter_job.list":
-      return workflowV2WorkerAdapterJobList(rootDir, input);
-    case "workflow.v2.worker_adapter_job.claim":
-      return workflowV2WorkerAdapterJobClaim(rootDir, input);
-    case "workflow.v2.worker_adapter_job.heartbeat":
-      return workflowV2WorkerAdapterJobHeartbeat(rootDir, input);
-    case "workflow.v2.worker_adapter_job.release":
-      return workflowV2WorkerAdapterJobRelease(rootDir, input);
-    case "workflow.v2.worker_adapter_job.fail":
-      return workflowV2WorkerAdapterJobFail(rootDir, input);
-    case "workflow.v2.adapter_runner.preview":
-      return workflowV2AdapterRunnerPreview(rootDir, input);
-    case "workflow.v2.adapter_runner.drain":
-      return workflowV2AdapterRunnerDrain(rootDir, input);
-    case "workflow.v2.worker_result.submit.preview":
-      return workflowV2WorkerResultSubmitPreview(rootDir, input);
-    case "workflow.v2.worker_result.submit":
-      return workflowV2WorkerResultSubmit(rootDir, input);
-    case "workflow.v2.worker_result.fail.preview":
-      return workflowV2WorkerResultFailPreview(rootDir, input);
-    case "workflow.v2.worker_result.fail":
-      return workflowV2WorkerResultFail(rootDir, input);
-    case "workflow.v2.manager_review.record":
-      return workflowV2ManagerReviewRecord(rootDir, input);
-    case "workflow.v2.owner_review.preview":
-      return workflowV2OwnerReviewPreview(rootDir, input);
-    case "workflow.v2.owner_review.record":
-      return workflowV2OwnerReviewRecord(rootDir, input);
-    case "workflow.v2.task_group_package.preview":
-      return workflowV2TaskGroupPackagePreview(rootDir, input);
-    case "workflow.v2.task_group_package.record":
-      return workflowV2TaskGroupPackageRecord(rootDir, input);
-    case "workflow.v2.cat_brain_audit.preview":
-      return workflowV2CatBrainAuditPreview(rootDir, input);
-    case "workflow.v2.cat_brain_audit.record":
-      return workflowV2CatBrainAuditRecord(rootDir, input);
-    case "workflow.v2.cat_claw_audit.preview":
-      return workflowV2CatClawAuditPreview(rootDir, input);
-    case "workflow.v2.cat_claw_audit.record":
-      return workflowV2CatClawAuditRecord(rootDir, input);
-    case "workflow.v2.human_gate_package.preview":
-      return workflowV2HumanGatePackagePreview(rootDir, input);
-    case "workflow.v2.human_gate_package.record":
-      return workflowV2HumanGatePackageRecord(rootDir, input);
-    case "workflow.v2.human_gate_request.preview":
-      return workflowV2HumanGateRequestPreview(rootDir, input);
-    case "workflow.v2.human_gate_request":
-      return workflowV2HumanGateRequest(rootDir, input, permissionDecision);
-    case "workflow.v2.validate":
-      return workflowV2Validate(rootDir, input);
     case "runtime.agent":
     case "runtime.agent.upsert":
       return runtimeAgentUpsert(rootDir, input);
