@@ -654,6 +654,29 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
   - `git diff --check`
 
+2026-07-05 V2.2 plan helper extraction follow-up:
+
+- Added `src/workflow-v2/plan.js` for v2 plan/delegation pure helpers.
+- Moved orchestration-pattern normalization, plan manager/node defaults,
+  `workflow_plan_spec.v2` construction, and worker delegation-contract
+  validation out of `src/workflow.js`.
+- Kept `workflow.v2.plan.preview/create` and the DB/artifact write path in
+  `src/workflow.js` for this slice, so the change remains mechanical and
+  avoids moving SQLite/artifact dependencies before the action modules are
+  ready.
+- Focused verification passed:
+  - `node --check src/workflow.js`
+  - `node --check src/workflow-v2/plan.js`
+  - `node --check src/workflow-v2/index.js`
+  - `node --check src/workflow-v2/constants.js`
+  - `node --check src/workflow-v2/helpers.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 plan advisory and canonical artifact"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
+- Grouped verification passed:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
+  - `git diff --check`
+
 2026-07-04 advisory-plan correction verification:
 
 - Passed `node --check src/workflow.js`.
