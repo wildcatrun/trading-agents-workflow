@@ -1,6 +1,6 @@
 # Workflow v2 Unified Next Plan
 
-Status: V2.1-V2.4 local development slice landed; independent review pending
+Status: V2.1-V2.4 local slice landed; independent review completed; deeper V2.2 split continuing
 Created: 2026-07-05
 Scope: verification, modularization, and runtime-adapter preparation after the
 local v2 orchestration kernel slice
@@ -33,7 +33,7 @@ future worker/runtime work measurable, reviewable, and reversible.
 
 ## Non-Goals
 
-This plan does not authorize:
+This plan did not originally authorize:
 
 - production database migration;
 - development-server checkout deployment;
@@ -42,8 +42,9 @@ This plan does not authorize:
 - Hermers, Claude Code, or model secret configuration changes;
 - real worker runtime queue connection.
 
-Those remain separate gates after the local validation and modularization track
-is healthy.
+The development-server active checkout was later aligned to GitHub on
+2026-07-05 under an explicit no-restart gate. The remaining items still require
+separate gates after the local validation and modularization track is healthy.
 
 ## Track V2.1: Split Verification First
 
@@ -99,7 +100,8 @@ Acceptance criteria:
 
 ## Track V2.2: Mechanical V2 Module Split
 
-Status: first local split landed on 2026-07-05.
+Status: first local split landed on 2026-07-05; deeper mechanical split remains
+in progress.
 
 After the focused tests pass, split the v2 implementation out of
 `src/workflow.js` with no intended behavior change.
@@ -185,9 +187,10 @@ cleanup only; it should not change permission semantics or write behavior.
 
 Local landed shape: `WORKFLOW_V2_ACTION_REGISTRY` now owns canonical
 `workflow.v2.*` handler dispatch and the old v2 case block has been removed
-from `runWorkflowAction`. The registry still lives in `src/workflow.js` until
-the remaining DB/action modules are split far enough to move it into
-`src/workflow-v2/index.js` without circular dependencies.
+from `runWorkflowAction`. The action-to-handler map and v2 dispatch helper now
+live in `src/workflow-v2/index.js`; `src/workflow.js` still injects the concrete
+handlers until the remaining DB/action modules are split far enough to avoid
+circular dependencies.
 
 Acceptance criteria:
 

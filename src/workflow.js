@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { WorkflowReadModel } from "./console/read-model.js";
 import { DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS } from "./control-loop-budget.js";
+import { createWorkflowV2ActionRegistry, runWorkflowV2Action } from "./workflow-v2/index.js";
 import {
   WORKFLOW_V2_ADAPTER_JOB_BACKENDS,
   WORKFLOW_V2_ADAPTER_JOB_IMAGES,
@@ -27636,62 +27637,62 @@ ${pendingGates.length ? pendingGates.map((row) => `- ${row.gate_id} ${row.instru
   return { auditFile: filePath, staleThesisCount: staleThesis.length, missingThreeFaceCount: missingThreeFace.length, pendingGateCount: pendingGates.length };
 }
 
-export const WORKFLOW_V2_ACTION_REGISTRY = new Map([
-  ["workflow.v2.plan.preview", (rootDir, input) => workflowV2PlanPreview(rootDir, input)],
-  ["workflow.v2.plan.create", (rootDir, input) => workflowV2PlanCreate(rootDir, input)],
-  ["workflow.v2.info_stack.preview", (rootDir, input) => workflowV2InfoStackPreview(rootDir, input)],
-  ["workflow.v2.info_stack.record", (rootDir, input) => workflowV2InfoStackRecord(rootDir, input)],
-  ["workflow.v2.info_stack.read", (rootDir, input) => workflowV2InfoStackRead(rootDir, input)],
-  ["workflow.v2.read_receipt.record", (rootDir, input) => workflowV2ReadReceiptRecord(rootDir, input)],
-  ["workflow.v2.notification.preview", (rootDir, input) => workflowV2NotificationPreview(rootDir, input)],
-  ["workflow.v2.worker_backend.preflight", (rootDir, input) => workflowV2WorkerBackendPreflight(rootDir, input)],
-  ["workflow.v2.worker_backend_preflight.record", (rootDir, input) => workflowV2WorkerBackendPreflightRecord(rootDir, input)],
-  ["workflow.v2.worker_spawn.preview", (rootDir, input) => workflowV2WorkerSpawnPreview(rootDir, input)],
-  ["workflow.v2.worker_spawn.create", (rootDir, input) => workflowV2WorkerSpawnCreate(rootDir, input)],
-  ["workflow.v2.worker_lifecycle.preview", (rootDir, input) => workflowV2WorkerLifecyclePreview(rootDir, input)],
-  ["workflow.v2.worker_handoff.preview", (rootDir, input) => workflowV2WorkerHandoffPreview(rootDir, input)],
-  ["workflow.v2.worker_handoff.record", (rootDir, input) => workflowV2WorkerHandoffRecord(rootDir, input)],
-  ["workflow.v2.worker_retire.preview", (rootDir, input) => workflowV2WorkerRetirePreview(rootDir, input)],
-  ["workflow.v2.worker_retire.record", (rootDir, input) => workflowV2WorkerRetireRecord(rootDir, input)],
-  ["workflow.v2.worker_successor.preview", (rootDir, input) => workflowV2WorkerSuccessorPreview(rootDir, input)],
-  ["workflow.v2.worker_successor.create", (rootDir, input) => workflowV2WorkerSuccessorCreate(rootDir, input)],
-  ["workflow.v2.control_loop.preview", (rootDir, input) => workflowV2ControlLoopPreview(rootDir, input)],
-  ["workflow.v2.control_loop.tick", (rootDir, input) => workflowV2ControlLoopTick(rootDir, input)],
-  ["workflow.v2.worker_adapter_job.preview", (rootDir, input) => workflowV2WorkerAdapterJobPreview(rootDir, input)],
-  ["workflow.v2.worker_adapter_job.record", (rootDir, input) => workflowV2WorkerAdapterJobRecord(rootDir, input)],
-  ["workflow.v2.worker_adapter_job.list", (rootDir, input) => workflowV2WorkerAdapterJobList(rootDir, input)],
-  ["workflow.v2.worker_adapter_job.claim", (rootDir, input) => workflowV2WorkerAdapterJobClaim(rootDir, input)],
-  ["workflow.v2.worker_adapter_job.heartbeat", (rootDir, input) => workflowV2WorkerAdapterJobHeartbeat(rootDir, input)],
-  ["workflow.v2.worker_adapter_job.release", (rootDir, input) => workflowV2WorkerAdapterJobRelease(rootDir, input)],
-  ["workflow.v2.worker_adapter_job.fail", (rootDir, input) => workflowV2WorkerAdapterJobFail(rootDir, input)],
-  ["workflow.v2.adapter_runner.preview", (rootDir, input) => workflowV2AdapterRunnerPreview(rootDir, input)],
-  ["workflow.v2.adapter_runner.drain", (rootDir, input) => workflowV2AdapterRunnerDrain(rootDir, input)],
-  ["workflow.v2.worker_result.submit.preview", (rootDir, input) => workflowV2WorkerResultSubmitPreview(rootDir, input)],
-  ["workflow.v2.worker_result.submit", (rootDir, input) => workflowV2WorkerResultSubmit(rootDir, input)],
-  ["workflow.v2.worker_result.fail.preview", (rootDir, input) => workflowV2WorkerResultFailPreview(rootDir, input)],
-  ["workflow.v2.worker_result.fail", (rootDir, input) => workflowV2WorkerResultFail(rootDir, input)],
-  ["workflow.v2.manager_review.record", (rootDir, input) => workflowV2ManagerReviewRecord(rootDir, input)],
-  ["workflow.v2.owner_review.preview", (rootDir, input) => workflowV2OwnerReviewPreview(rootDir, input)],
-  ["workflow.v2.owner_review.record", (rootDir, input) => workflowV2OwnerReviewRecord(rootDir, input)],
-  ["workflow.v2.task_group_package.preview", (rootDir, input) => workflowV2TaskGroupPackagePreview(rootDir, input)],
-  ["workflow.v2.task_group_package.record", (rootDir, input) => workflowV2TaskGroupPackageRecord(rootDir, input)],
-  ["workflow.v2.cat_brain_audit.preview", (rootDir, input) => workflowV2CatBrainAuditPreview(rootDir, input)],
-  ["workflow.v2.cat_brain_audit.record", (rootDir, input) => workflowV2CatBrainAuditRecord(rootDir, input)],
-  ["workflow.v2.cat_claw_audit.preview", (rootDir, input) => workflowV2CatClawAuditPreview(rootDir, input)],
-  ["workflow.v2.cat_claw_audit.record", (rootDir, input) => workflowV2CatClawAuditRecord(rootDir, input)],
-  ["workflow.v2.human_gate_package.preview", (rootDir, input) => workflowV2HumanGatePackagePreview(rootDir, input)],
-  ["workflow.v2.human_gate_package.record", (rootDir, input) => workflowV2HumanGatePackageRecord(rootDir, input)],
-  ["workflow.v2.human_gate_request.preview", (rootDir, input) => workflowV2HumanGateRequestPreview(rootDir, input)],
-  ["workflow.v2.human_gate_request", (rootDir, input, permissionDecision) => workflowV2HumanGateRequest(rootDir, input, permissionDecision)],
-  ["workflow.v2.validate", (rootDir, input) => workflowV2Validate(rootDir, input)]
-]);
+export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
+  workflowV2PlanPreview,
+  workflowV2PlanCreate,
+  workflowV2InfoStackPreview,
+  workflowV2InfoStackRecord,
+  workflowV2InfoStackRead,
+  workflowV2ReadReceiptRecord,
+  workflowV2NotificationPreview,
+  workflowV2WorkerBackendPreflight,
+  workflowV2WorkerBackendPreflightRecord,
+  workflowV2WorkerSpawnPreview,
+  workflowV2WorkerSpawnCreate,
+  workflowV2WorkerLifecyclePreview,
+  workflowV2WorkerHandoffPreview,
+  workflowV2WorkerHandoffRecord,
+  workflowV2WorkerRetirePreview,
+  workflowV2WorkerRetireRecord,
+  workflowV2WorkerSuccessorPreview,
+  workflowV2WorkerSuccessorCreate,
+  workflowV2ControlLoopPreview,
+  workflowV2ControlLoopTick,
+  workflowV2WorkerAdapterJobPreview,
+  workflowV2WorkerAdapterJobRecord,
+  workflowV2WorkerAdapterJobList,
+  workflowV2WorkerAdapterJobClaim,
+  workflowV2WorkerAdapterJobHeartbeat,
+  workflowV2WorkerAdapterJobRelease,
+  workflowV2WorkerAdapterJobFail,
+  workflowV2AdapterRunnerPreview,
+  workflowV2AdapterRunnerDrain,
+  workflowV2WorkerResultSubmitPreview,
+  workflowV2WorkerResultSubmit,
+  workflowV2WorkerResultFailPreview,
+  workflowV2WorkerResultFail,
+  workflowV2ManagerReviewRecord,
+  workflowV2OwnerReviewPreview,
+  workflowV2OwnerReviewRecord,
+  workflowV2TaskGroupPackagePreview,
+  workflowV2TaskGroupPackageRecord,
+  workflowV2CatBrainAuditPreview,
+  workflowV2CatBrainAuditRecord,
+  workflowV2CatClawAuditPreview,
+  workflowV2CatClawAuditRecord,
+  workflowV2HumanGatePackagePreview,
+  workflowV2HumanGatePackageRecord,
+  workflowV2HumanGateRequestPreview,
+  workflowV2HumanGateRequest,
+  workflowV2Validate
+});
 
 export async function runWorkflowAction(rootDir, input = {}) {
   const requestedAction = String(input.action || "workflow.status");
   const action = canonicalWorkflowAction(requestedAction);
   const permissionDecision = await authorizeWorkflowAction(rootDir, input);
-  const workflowV2Handler = WORKFLOW_V2_ACTION_REGISTRY.get(action);
-  if (workflowV2Handler) return workflowV2Handler(rootDir, input, permissionDecision);
+  const workflowV2Result = await runWorkflowV2Action(WORKFLOW_V2_ACTION_REGISTRY, action, rootDir, input, permissionDecision);
+  if (workflowV2Result.handled) return workflowV2Result.value;
   switch (action) {
     case "workflow.init":
     case "trading_workflow.init":

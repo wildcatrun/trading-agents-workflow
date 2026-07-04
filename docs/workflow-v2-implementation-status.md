@@ -34,7 +34,9 @@ first executable kernel slice for manager/worker orchestration:
   Human Gate package preparation;
 - console action-gateway allowlist entries for safe previews and opt-in writes;
 - a `WORKFLOW_V2_ACTION_REGISTRY` that routes canonical `workflow.v2.*` actions
-  before the legacy non-v2 switch;
+  before the legacy non-v2 switch, with the action-to-handler map now owned by
+  `src/workflow-v2/index.js` and concrete handlers still injected from
+  `src/workflow.js`;
 - `src/workflow-v2/constants.js` and `src/workflow-v2/helpers.js` for v2
   constants, normalization helpers, row summary mappers, lease/capacity helpers,
   and shared validation objects;
@@ -528,8 +530,8 @@ The following remain future slices and require separate authorization:
 - single-transaction hardening for the session/preflight/worker insert chain
   in `workflow.v2.worker_spawn.create` beyond the current compensation cleanup
   and validator detection;
-- production database migration or development-server checkout deployment;
-- OpenClaw Gateway reload/restart;
+- production database migration;
+- OpenClaw Gateway reload/restart or live Gateway code reload verification;
 - secret injection or OAuth device pairing;
 - `wsl-models` model/GPU API smoke.
 
@@ -547,6 +549,13 @@ Execution order:
 3. replace the v2 action switch with a v2 action registry;
 4. resume worker adapter work through a bounded external-command runner
    protocol before wiring real WSL/Docker services.
+
+2026-07-05 correction: the local slice has been pushed and the development
+server active checkout has been fast-forwarded to the GitHub commit under a
+no-restart gate. This is an on-disk checkout alignment only. OpenClaw Gateway
+was not reloaded or restarted, and no production workflow state root, Docker
+worker, Hermers/Claude Code wrapper, model call, or real v2 worker queue was
+used for the smoke.
 
 This order is intentional. Verification must become granular before the
 implementation is modularized; otherwise later runtime work cannot reliably
@@ -603,6 +612,47 @@ Latest focused verification passed:
 - Passed `node --check scripts/workflow_regression_tests.mjs`.
 - Passed `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"` with the new `external_command` fake runner coverage.
 - Passed `node scripts/workflow_regression_tests.mjs --grep "workflow v2"` after the V2.2 module split, V2.3 action registry change, V2.4 external-command runner protocol, and documentation updates.
+
+2026-07-05 independent review and server no-restart smoke:
+
+- Independent subagent review completed with three material findings:
+  external runner output initially failed open to success, payload-provided
+  runner commands allowed caller-selected host execution, and missing runner
+  configuration could claim work before failing. All three findings were fixed
+  before commit.
+- Committed and pushed GitHub `main` at
+  `582fc8ede95c304a247ec98abcdd605fbb8185e3`.
+- Development-server active checkout
+  `/home/flashcat/.openclaw/plugin-dev/trading-agents-workflow.git-checkout`
+  was fast-forwarded to the same commit with no Gateway reload/restart.
+- Server-side syntax checks passed:
+  - `node --check src/workflow.js`
+  - `node --check src/workflow-v2/constants.js`
+  - `node --check src/workflow-v2/helpers.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+- Server-side temporary-root smoke passed for
+  `workflow.v2.adapter_runner.preview` using
+  `/home/flashcat/multi-agent-hedge-fund-framework/ops-artifacts/codex-working/20260705T000000-workflow-v2-server-smoke/smoke-root`.
+  The result returned zero jobs as expected for an empty temporary database.
+  This was not a Hermers/Claude Code worker smoke.
+
+2026-07-05 V2.2 registry extraction follow-up:
+
+- Added `src/workflow-v2/index.js` as the v2 action registry module.
+- Moved the canonical action-to-handler-name map and v2 dispatch helper out of
+  `src/workflow.js`.
+- Kept concrete v2 action implementations in `src/workflow.js` for this slice;
+  the registry is built by injecting handlers to avoid circular imports while
+  deeper DB/action modules are still colocated.
+- Passed:
+  - `node --check src/workflow.js`
+  - `node --check src/workflow-v2/index.js`
+  - `node --check src/workflow-v2/constants.js`
+  - `node --check src/workflow-v2/helpers.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 permission and console gate"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
+  - `git diff --check`
 
 2026-07-04 advisory-plan correction verification:
 
