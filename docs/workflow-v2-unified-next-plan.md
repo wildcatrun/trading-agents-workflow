@@ -100,8 +100,9 @@ Acceptance criteria:
 
 ## Track V2.2: Mechanical V2 Module Split
 
-Status: constants/helpers, v2 registry, and plan pure-helper splits landed on
-2026-07-05; deeper DB/action module split remains in progress.
+Status: constants/helpers, v2 registry, plan pure-helper, and info-stack
+preview splits landed on 2026-07-05; deeper DB/action module split remains in
+progress.
 
 After the focused tests pass, split the v2 implementation out of
 `src/workflow.js` with no intended behavior change.
@@ -163,8 +164,8 @@ Rules:
 Acceptance criteria:
 
 - `src/workflow.js` no longer owns v2 constants, shared helper/summary details,
-  the v2 registry map, or plan/delegation pure helpers; deeper DB/action modules
-  remain future mechanical splits;
+  the v2 registry map, plan/delegation pure helpers, or info-stack preview
+  bodies; deeper DB/action modules remain future mechanical splits;
 - v2 exports continue to work through existing action names;
 - focused v2 tests pass after every module group;
 - `node --check` passes for all touched modules.

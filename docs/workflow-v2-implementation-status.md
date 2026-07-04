@@ -677,6 +677,27 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
   - `git diff --check`
 
+2026-07-05 V2.2 info-stack preview extraction follow-up:
+
+- Added `src/workflow-v2/info-stack.js` for v2 notification preview,
+  info-stack preview, and info item row materialization.
+- Kept `workflow.v2.info_stack.record`, `workflow.v2.info_stack.read`, and
+  `workflow.v2.read_receipt.record` in `src/workflow.js` for this slice, so
+  SQLite read/write behavior remains colocated while the preview/summary body
+  moves out.
+- The module receives `workflowPaths`, `firstText`, `safeId`, `textHash`,
+  `parseJsonValue`, and related local helpers by dependency injection to avoid
+  circular imports and avoid duplicating root/path policy.
+- Focused verification passed:
+  - `node --check src/workflow.js`
+  - `node --check src/workflow-v2/info-stack.js`
+  - `node --check src/workflow-v2/plan.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 info stack and session binding"`
+- Grouped verification passed:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
+  - `git diff --check`
+
 2026-07-04 advisory-plan correction verification:
 
 - Passed `node --check src/workflow.js`.
