@@ -23,6 +23,7 @@ import {
   PERMISSION_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
   RESEARCH_ACTION_REGISTRY,
+  SCHEDULE_ACTION_REGISTRY,
   SIDE_EFFECT_ACTION_REGISTRY,
   STATUS_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
@@ -52,6 +53,11 @@ import {
   workflowPermissionCheck,
   workflowReadiness,
   workflowRuntimeAgents,
+  workflowScheduleDisable,
+  workflowScheduleList,
+  workflowSchedulePause,
+  workflowScheduleResume,
+  workflowScheduleUpsert,
   workflowStatus,
   workflowTopology,
   tradeProposal
@@ -80,6 +86,10 @@ import {
   RESEARCH_ACTION_HANDLER_NAMES,
   createResearchActionRegistry
 } from "../src/research-actions.js";
+import {
+  SCHEDULE_ACTION_HANDLER_NAMES,
+  createScheduleActionRegistry
+} from "../src/schedule-actions.js";
 import {
   SIDE_EFFECT_ACTION_HANDLER_NAMES,
   createSideEffectActionRegistry
@@ -9807,6 +9817,87 @@ async function testPermissionExtractedActionContracts() {
   assert.equal(explain.dbFile, check.dbFile);
 }
 
+async function testScheduleExtractedActionContracts() {
+  const expectedHandlers = {
+    "workflow.schedule.upsert": "workflowScheduleUpsert",
+    "workflow.scheduler.upsert": "workflowScheduleUpsert",
+    "workflow.schedule.list": "workflowScheduleList",
+    "workflow.schedules": "workflowScheduleList",
+    "workflow.scheduler.list": "workflowScheduleList",
+    "workflow.schedule.pause": "workflowSchedulePause",
+    "workflow.scheduler.pause": "workflowSchedulePause",
+    "workflow.schedule.resume": "workflowScheduleResume",
+    "workflow.scheduler.resume": "workflowScheduleResume",
+    "workflow.schedule.disable": "workflowScheduleDisable",
+    "workflow.scheduler.disable": "workflowScheduleDisable"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(SCHEDULE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted schedule registry`);
+    assert.equal(SCHEDULE_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof workflowScheduleUpsert, "function");
+  assert.equal(typeof workflowScheduleList, "function");
+  assert.equal(typeof workflowSchedulePause, "function");
+  assert.equal(typeof workflowScheduleResume, "function");
+  assert.equal(typeof workflowScheduleDisable, "function");
+  const directRegistry = createScheduleActionRegistry({
+    workflowScheduleDisable,
+    workflowScheduleList,
+    workflowSchedulePause,
+    workflowScheduleResume,
+    workflowScheduleUpsert
+  });
+  assert.equal(directRegistry.get("workflow.scheduler.upsert"), workflowScheduleUpsert);
+  assert.equal(directRegistry.get("workflow.schedules"), workflowScheduleList);
+  assert.equal(directRegistry.get("workflow.scheduler.pause"), workflowSchedulePause);
+  assert.equal(directRegistry.get("workflow.scheduler.resume"), workflowScheduleResume);
+  assert.equal(directRegistry.get("workflow.scheduler.disable"), workflowScheduleDisable);
+
+  const root = await tempRoot("schedule-extracted-contracts");
+  const nextRunAt = "2099-01-01T00:00:00.000Z";
+  const upserted = await runAction(root, {
+    action: "workflow.scheduler.upsert",
+    scheduleId: "schedule-extracted-contract",
+    runtime: "openclaw",
+    agentId: "main",
+    prompt: "schedule extracted action contract",
+    scheduleKind: "interval",
+    intervalSeconds: 3600,
+    nextRunAt,
+    payload: { contract: true }
+  });
+  assert.equal(upserted.schedule.scheduleId, "schedule-extracted-contract");
+  assert.equal(upserted.schedule.status, "active");
+  assert.equal(upserted.schedule.nextRunAt, nextRunAt);
+  assert.deepEqual(upserted.schedule.payload, { contract: true });
+
+  const listed = await runAction(root, {
+    action: "workflow.schedules",
+    scheduleId: "schedule-extracted-contract"
+  });
+  assert.equal(listed.count, 1);
+  assert.equal(listed.schedules[0].scheduleId, "schedule-extracted-contract");
+  assert.equal(listed.dbFile, upserted.dbFile);
+
+  const paused = await runAction(root, {
+    action: "workflow.scheduler.pause",
+    scheduleId: "schedule-extracted-contract"
+  });
+  assert.equal(paused.schedule.status, "paused");
+  const resumed = await runAction(root, {
+    action: "workflow.schedule.resume",
+    scheduleId: "schedule-extracted-contract"
+  });
+  assert.equal(resumed.schedule.status, "active");
+  assert.equal(resumed.schedule.nextRunAt, nextRunAt);
+  const disabled = await runAction(root, {
+    action: "workflow.scheduler.disable",
+    scheduleId: "schedule-extracted-contract"
+  });
+  assert.equal(disabled.schedule.status, "disabled");
+  assert.equal(sqliteCount(upserted.dbFile, "workflow_schedules", "schedule_id='schedule-extracted-contract' AND status='disabled'"), 1);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -16259,6 +16350,7 @@ try {
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],
     ["permission extracted action contracts", testPermissionExtractedActionContracts],
+    ["schedule extracted action contracts", testScheduleExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
