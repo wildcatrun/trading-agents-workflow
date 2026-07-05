@@ -62,6 +62,11 @@ import { createWorkflowV2PlanActionHandlers } from "./workflow-v2/plan-actions.j
 import { createWorkflowTemplateActionHandlers } from "./workflow-v2/template-actions.js";
 import { createWorkflowV2ValidateActionHandlers } from "./workflow-v2/validate-actions.js";
 import {
+  createCatClawActionHandlers,
+  createCatClawActionRegistry,
+  runCatClawAction
+} from "./cat-claw-actions.js";
+import {
   createMessageFlowActionHandlers,
   createMessageFlowActionRegistry,
   runMessageFlowAction
@@ -21364,47 +21369,6 @@ export async function workflowControlLoopTick(rootDir, input = {}) {
   }
 }
 
-export async function cat_clawAudit(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const staleDays = Number(input.staleDays || input.stale_days || 30);
-  const cutoff = new Date(Date.now() - staleDays * 86400000).toISOString();
-  const staleThesis = await sqlite(paths.dbFile, `
-SELECT i.instrument_id, i.asset_type, i.symbol, t.thesis_status, t.thesis_path, t.updated_at
-FROM instruments i
-LEFT JOIN tracking_states t ON t.instrument_id=i.instrument_id
-WHERE t.thesis_path IS NULL OR t.updated_at < ${sqlValue(cutoff)}
-ORDER BY i.instrument_id;`, { json: true });
-  const missingThreeFace = await sqlite(paths.dbFile, `
-SELECT i.instrument_id, i.asset_type, i.symbol, t.radar_zone, t.retail_heat_score, t.news_catalyst_score, t.fundamental_score
-FROM instruments i
-LEFT JOIN tracking_states t ON t.instrument_id=i.instrument_id
-WHERE t.radar_zone IN ('bright','dark','overheated')
-  AND (t.retail_heat_score IS NULL OR t.news_catalyst_score IS NULL OR t.fundamental_score IS NULL)
-ORDER BY i.instrument_id;`, { json: true });
-  const pendingGates = await sqlite(paths.dbFile, `
-SELECT gate_id, instrument_id, gate_type, status, summary, human_gate_required, created_at
-FROM review_gates
-WHERE status='pending' OR human_gate_required=1
-ORDER BY created_at DESC;`, { json: true });
-  const filePath = path.join(paths.indexDir, `cat_claw-audit-${dailyKey()}.md`);
-  const content = `# Cat Claw Workflow Audit ${dailyKey()}
-
-## Stale Thesis
-
-${staleThesis.length ? staleThesis.map((row) => `- ${row.instrument_id} updated_at=${row.updated_at || "none"}`).join("\n") : "- none"}
-
-## Missing Three-Face Inputs
-
-${missingThreeFace.length ? missingThreeFace.map((row) => `- ${row.instrument_id} zone=${row.radar_zone} retail=${row.retail_heat_score} news=${row.news_catalyst_score} fundamental=${row.fundamental_score}`).join("\n") : "- none"}
-
-## Pending Gates
-
-${pendingGates.length ? pendingGates.map((row) => `- ${row.gate_id} ${row.instrument_id || ""} ${row.gate_type} status=${row.status} human_gate=${row.human_gate_required}`).join("\n") : "- none"}
-`;
-  await fs.writeFile(filePath, content, "utf8");
-  return { auditFile: filePath, staleThesisCount: staleThesis.length, missingThreeFaceCount: missingThreeFace.length, pendingGateCount: pendingGates.length };
-}
-
 export const INCIDENT_ACTION_HANDLERS = createIncidentActionHandlers({
   appendWorkflowEvent,
   ensureWorkflowLayout,
@@ -21424,6 +21388,17 @@ export const INCIDENT_ACTION_REGISTRY = createIncidentActionRegistry(INCIDENT_AC
 export const {
   incidentState
 } = INCIDENT_ACTION_HANDLERS;
+
+export const CAT_CLAW_ACTION_HANDLERS = createCatClawActionHandlers({
+  dailyKey,
+  ensureWorkflowLayout
+});
+
+export const CAT_CLAW_ACTION_REGISTRY = createCatClawActionRegistry(CAT_CLAW_ACTION_HANDLERS);
+
+export const {
+  cat_clawAudit
+} = CAT_CLAW_ACTION_HANDLERS;
 
 export const RESEARCH_ACTION_HANDLERS = createResearchActionHandlers({
   clampScore,
@@ -21663,6 +21638,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (incidentResult.handled) return incidentResult.value;
   const researchResult = await runResearchAction(RESEARCH_ACTION_REGISTRY, action, rootDir, input);
   if (researchResult.handled) return researchResult.value;
+  const catClawResult = await runCatClawAction(CAT_CLAW_ACTION_REGISTRY, action, rootDir, input);
+  if (catClawResult.handled) return catClawResult.value;
   switch (action) {
     case "workflow.init":
     case "trading_workflow.init":
@@ -21915,8 +21892,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return workflowIncidentCloseoutArtifact(rootDir, input, permissionDecision);
     case "workflow.incident.closeout.human_gate_request":
       return workflowIncidentCloseoutHumanGateRequest(rootDir, input, permissionDecision);
-    case "cat_claw.audit":
-      return cat_clawAudit(rootDir, input);
     default:
       throw new Error(`unknown workflow action: ${requestedAction}${requestedAction === action ? "" : ` (canonical: ${action})`}`);
   }

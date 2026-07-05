@@ -16,6 +16,7 @@ import {
 } from "../src/control-loop-budget.js";
 import { runAction as runActionRaw } from "../src/core.js";
 import {
+  CAT_CLAW_ACTION_REGISTRY,
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
@@ -24,6 +25,7 @@ import {
   SIDE_EFFECT_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
+  cat_clawAudit,
   humanGateInbox,
   incidentState,
   messageFlowList,
@@ -44,6 +46,10 @@ import {
   thesisUpdate,
   tradeProposal
 } from "../src/workflow.js";
+import {
+  CAT_CLAW_ACTION_HANDLER_NAMES,
+  createCatClawActionRegistry
+} from "../src/cat-claw-actions.js";
 import {
   HUMAN_GATE_ACTION_HANDLER_NAMES,
   createHumanGateActionRegistry
@@ -9531,6 +9537,57 @@ LIMIT 1;`)[0];
   assert.equal(tracking.last_review_at, "2026-06-05");
 }
 
+async function testCatClawExtractedActionContracts() {
+  assert.equal(CAT_CLAW_ACTION_REGISTRY.has("cat_claw.audit"), true);
+  assert.equal(CAT_CLAW_ACTION_HANDLER_NAMES["cat_claw.audit"], "cat_clawAudit");
+  assert.equal(typeof cat_clawAudit, "function");
+  const directRegistry = createCatClawActionRegistry({ cat_clawAudit });
+  assert.equal(directRegistry.get("cat_claw.audit"), cat_clawAudit);
+
+  const root = await tempRoot("cat-claw-extracted-contracts");
+  await runAction(root, {
+    action: "instrument.upsert",
+    assetType: "stock",
+    symbol: "AAPL",
+    name: "Apple Inc."
+  });
+  await runAction(root, {
+    action: "radar.update",
+    assetType: "stock",
+    symbol: "AAPL",
+    scoreId: "radar-cat-claw-extracted-contract",
+    radarZone: "bright",
+    retailHeatScore: 82,
+    newsCatalystScore: 74,
+    summary: "Cat Claw audit missing three-face contract.",
+    researchState: "active"
+  });
+  await runAction(root, {
+    action: "gate.review",
+    assetType: "stock",
+    symbol: "AAPL",
+    gateId: "gate-cat-claw-extracted-contract",
+    gateType: "research_review",
+    status: "pending",
+    summary: "Cat Claw audit pending gate contract.",
+    humanGateRequired: true
+  });
+
+  const audit = await runAction(root, {
+    action: "cat_claw.audit",
+    staleDays: 30
+  });
+  assert.equal(audit.staleThesisCount, 1);
+  assert.equal(audit.missingThreeFaceCount, 1);
+  assert.equal(audit.pendingGateCount, 1);
+  assert.equal(await pathExists(audit.auditFile), true);
+  const content = await fs.readFile(audit.auditFile, "utf8");
+  assert.equal(content.includes("# Cat Claw Workflow Audit"), true);
+  assert.equal(content.includes("stock:AAPL"), true);
+  assert.equal(content.includes("gate-cat-claw-extracted-contract"), true);
+  assert.equal(content.includes("fundamental=null"), true);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -15979,6 +16036,7 @@ try {
     ["side_effect extracted action contracts", testSideEffectExtractedActionContracts],
     ["incident state extracted action contracts", testIncidentStateExtractedActionContracts],
     ["research extracted action contracts", testResearchExtractedActionContracts],
+    ["cat_claw extracted action contracts", testCatClawExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
