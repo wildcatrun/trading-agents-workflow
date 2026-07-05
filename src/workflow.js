@@ -77,6 +77,11 @@ import {
   runHumanGateAction
 } from "./human-gate-actions.js";
 import {
+  createTradeActionHandlers,
+  createTradeActionRegistry,
+  runTradeAction
+} from "./trade-actions.js";
+import {
   LEGACY_TRACKING_DB,
   LEGACY_WORKFLOW_ROOT,
   WORKFLOW_CONTROL_PLANE_DB,
@@ -13853,28 +13858,6 @@ ON CONFLICT(object_id) DO UPDATE SET
   return { objectId, objectType, status, instrumentId: instrument?.instrumentId || null, path: path.join(paths.root, relPath), relativePath: relPath, hash, dbFile: paths.dbFile };
 }
 
-export async function tradeProposal(rootDir, input) {
-  return protocolRecord(rootDir, {
-    ...input,
-    objectType: "trade_proposal",
-    objectId: input.proposalId || input.proposal_id || input.objectId || input.object_id,
-    status: input.status || "proposed",
-    sourceSystem: input.sourceSystem || input.source_system || "openclaw_hermers",
-    sourceAgent: input.sourceAgent || input.source_agent || input.createdBy || input.from || "cat_heart",
-    payload: {
-      thesisId: input.thesisId || input.thesis_id || "",
-      memoId: input.memoId || input.memo_id || "",
-      side: input.side || "",
-      quantity: input.quantity || "",
-      orderType: input.orderType || input.order_type || "",
-      priceConstraints: parseJsonValue(input.priceConstraints || input.price_constraints, input.priceConstraints || input.price_constraints || {}),
-      riskLimits: parseJsonValue(input.riskLimits || input.risk_limits, input.riskLimits || input.risk_limits || {}),
-      rationale: input.rationale || input.summary || input.text || "",
-      raw: parseJsonValue(input.payload, input.payload || {})
-    }
-  });
-}
-
 export async function riskDecision(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const statusRaw = String(input.status || "pending").trim();
@@ -21802,6 +21785,17 @@ export const {
   humanGateInbox
 } = HUMAN_GATE_ACTION_HANDLERS;
 
+export const TRADE_ACTION_HANDLERS = createTradeActionHandlers({
+  parseJsonValue,
+  protocolRecord
+});
+
+export const TRADE_ACTION_REGISTRY = createTradeActionRegistry(TRADE_ACTION_HANDLERS);
+
+export const {
+  tradeProposal
+} = TRADE_ACTION_HANDLERS;
+
 export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2PlanPreview,
   workflowV2PlanCreate,
@@ -21878,6 +21872,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (telegramOutboxResult.handled) return telegramOutboxResult.value;
   const humanGateResult = await runHumanGateAction(HUMAN_GATE_ACTION_REGISTRY, action, rootDir, input);
   if (humanGateResult.handled) return humanGateResult.value;
+  const tradeResult = await runTradeAction(TRADE_ACTION_REGISTRY, action, rootDir, input);
+  if (tradeResult.handled) return tradeResult.value;
   switch (action) {
     case "workflow.init":
     case "trading_workflow.init":
@@ -22112,8 +22108,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "protocol.record":
     case "protocol.object":
       return protocolRecord(rootDir, input);
-    case "trade.proposal":
-      return tradeProposal(rootDir, input);
     case "risk.decision":
       return riskDecision(rootDir, input);
     case "human_gate.record":

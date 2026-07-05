@@ -19,6 +19,7 @@ import {
   HUMAN_GATE_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
+  TRADE_ACTION_REGISTRY,
   humanGateInbox,
   messageFlowList,
   messageFlowReconcile,
@@ -27,12 +28,17 @@ import {
   telegramOutboxDelivery,
   telegramOutboxDeliveryPreview,
   telegramOutboxRequeueExecutionPackagePreview,
-  telegramOutboxRequeuePreview
+  telegramOutboxRequeuePreview,
+  tradeProposal
 } from "../src/workflow.js";
 import {
   HUMAN_GATE_ACTION_HANDLER_NAMES,
   createHumanGateActionRegistry
 } from "../src/human-gate-actions.js";
+import {
+  TRADE_ACTION_HANDLER_NAMES,
+  createTradeActionRegistry
+} from "../src/trade-actions.js";
 
 const createdRoots = [];
 const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
@@ -8929,6 +8935,54 @@ VALUES ('button-hgate-inbox-contract-a', 'token-hgate-inbox-contract-a', 'hgate-
   assert.equal(gatewayInbox.result.items[0].sourceId, "hgate-inbox-contract");
 }
 
+async function testTradeProposalExtractedActionContracts() {
+  assert.equal(TRADE_ACTION_REGISTRY.has("trade.proposal"), true);
+  assert.equal(TRADE_ACTION_HANDLER_NAMES["trade.proposal"], "tradeProposal");
+  assert.equal(typeof tradeProposal, "function");
+  const directRegistry = createTradeActionRegistry({ tradeProposal });
+  assert.equal(directRegistry.get("trade.proposal"), tradeProposal);
+
+  const root = await tempRoot("trade-proposal-extracted-contracts");
+  const proposal = await runAction(root, {
+    action: "trade.proposal",
+    proposalId: "proposal-extracted-contract",
+    assetType: "crypto",
+    symbol: "ETH/USDT",
+    side: "sell",
+    quantity: "2",
+    orderType: "limit",
+    priceConstraints: { minPrice: 2500 },
+    riskLimits: { maxNotional: 5000 },
+    rationale: "Trade proposal extracted action contract.",
+    payload: { apiKey: "should-not-persist", note: "regression" }
+  });
+
+  assert.equal(proposal.objectId, "proposal-extracted-contract");
+  assert.equal(proposal.objectType, "trade_proposal");
+  assert.equal(proposal.status, "proposed");
+  assert.equal(proposal.instrumentId, "crypto:ETH/USDT");
+  assert.equal(await pathExists(proposal.path), true);
+
+  const rows = sqliteJson(proposal.dbFile, `
+SELECT object_id, object_type, status, source_system, source_agent, payload_json
+FROM protocol_objects
+WHERE object_id='proposal-extracted-contract'
+LIMIT 1;`);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].object_type, "trade_proposal");
+  assert.equal(rows[0].status, "proposed");
+  assert.equal(rows[0].source_system, "openclaw_hermers");
+  assert.equal(rows[0].source_agent, "cat_heart");
+  const payload = JSON.parse(rows[0].payload_json);
+  assert.equal(payload.payload.side, "sell");
+  assert.equal(payload.payload.quantity, "2");
+  assert.equal(payload.payload.orderType, "limit");
+  assert.deepEqual(payload.payload.priceConstraints, { minPrice: 2500 });
+  assert.deepEqual(payload.payload.riskLimits, { maxNotional: 5000 });
+  assert.equal(payload.payload.raw.apiKey, "[redacted]");
+  assert.equal(payload.payload.raw.note, "regression");
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -15372,6 +15426,7 @@ try {
     ["message_flow extracted action contracts", testMessageFlowExtractedActionContracts],
     ["telegram.outbox extracted action contracts", testTelegramOutboxExtractedActionContracts],
     ["human_gate inbox extracted action contracts", testHumanGateInboxExtractedActionContracts],
+    ["trade proposal extracted action contracts", testTradeProposalExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
