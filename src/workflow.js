@@ -67,6 +67,11 @@ import {
   runCatClawAction
 } from "./cat-claw-actions.js";
 import {
+  createEventActionHandlers,
+  createEventActionRegistry,
+  runEventAction
+} from "./event-actions.js";
+import {
   createMessageFlowActionHandlers,
   createMessageFlowActionRegistry,
   runMessageFlowAction
@@ -8616,11 +8621,6 @@ WHERE status IN ('active','mitigating','monitoring')
   }, permissionDecision);
 }
 
-export async function workflowEventAppend(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  return appendWorkflowEvent(paths, input);
-}
-
 async function appendWorkflowEvent(paths, input = {}) {
   const record = workflowEventRecordFromInput(input);
   const duplicateFilters = [`event_id=${sqlValue(record.eventId)}`];
@@ -8680,8 +8680,7 @@ function workflowEventWhere(input = {}) {
   return filters.length ? `WHERE ${filters.join(" AND ")}` : "";
 }
 
-export async function workflowEventList(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function workflowEventListSnapshot(paths, input = {}) {
   const requestedLimit = Number(input.limit || 100);
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(1000, Math.trunc(requestedLimit))) : 100;
   const order = String(input.order || input.sort || "").toLowerCase() === "asc" ? "ASC" : "DESC";
@@ -8692,10 +8691,6 @@ ${where}
 ORDER BY created_at ${order}, event_id ${order}
 LIMIT ${limit};`, { json: true });
   return { count: rows.length, events: rows.map(workflowEventFromRow), dbFile: paths.dbFile };
-}
-
-export async function workflowEventTimeline(rootDir, input = {}) {
-  return workflowEventList(rootDir, { ...input, order: "asc" });
 }
 
 function runtimeEventPayload(input = {}) {
@@ -21182,6 +21177,20 @@ export const {
   workflowScheduleUpsert
 } = SCHEDULE_ACTION_HANDLERS;
 
+export const EVENT_ACTION_HANDLERS = createEventActionHandlers({
+  appendWorkflowEvent,
+  ensureWorkflowLayout,
+  workflowEventListSnapshot
+});
+
+export const EVENT_ACTION_REGISTRY = createEventActionRegistry(EVENT_ACTION_HANDLERS);
+
+export const {
+  workflowEventAppend,
+  workflowEventList,
+  workflowEventTimeline
+} = EVENT_ACTION_HANDLERS;
+
 export const RESEARCH_ACTION_HANDLERS = createResearchActionHandlers({
   clampScore,
   cleanFileSegment,
@@ -21430,6 +21439,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (permissionResult.handled) return permissionResult.value;
   const scheduleResult = await runScheduleAction(SCHEDULE_ACTION_REGISTRY, action, rootDir, input);
   if (scheduleResult.handled) return scheduleResult.value;
+  const eventResult = await runEventAction(EVENT_ACTION_REGISTRY, action, rootDir, input);
+  if (eventResult.handled) return eventResult.value;
   switch (action) {
     case "workflow.run.upsert":
     case "workflow.initiative.upsert":
@@ -21519,9 +21530,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.context_checkpoint":
     case "context.checkpoint":
       return workflowCheckpoint(rootDir, input);
-    case "workflow.event.append":
-    case "workflow.events.append":
-      return workflowEventAppend(rootDir, input);
     case "workflow.runtime_event.record":
     case "workflow.runtime.event.record":
       return workflowRuntimeEventRecord(rootDir, input);
@@ -21540,14 +21548,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.evaluation.run":
     case "workflow.goal.evaluate":
       return workflowEvaluate(rootDir, input, permissionDecision);
-    case "workflow.event.list":
-    case "workflow.events":
-    case "workflow.events.list":
-      return workflowEventList(rootDir, input);
-    case "workflow.event.timeline":
-    case "workflow.timeline":
-    case "workflow.events.timeline":
-      return workflowEventTimeline(rootDir, input);
     case "workflow.runtime_event.list":
     case "workflow.runtime.event.list":
       return workflowRuntimeEventList(rootDir, input);

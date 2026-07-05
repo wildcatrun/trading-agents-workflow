@@ -17,6 +17,7 @@ import {
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
+  EVENT_ACTION_REGISTRY,
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
@@ -48,6 +49,9 @@ import {
   telegramOutboxRequeueExecutionPackagePreview,
   telegramOutboxRequeuePreview,
   thesisUpdate,
+  workflowEventAppend,
+  workflowEventList,
+  workflowEventTimeline,
   workflowHealth,
   workflowInit,
   workflowPermissionCheck,
@@ -66,6 +70,10 @@ import {
   CAT_CLAW_ACTION_HANDLER_NAMES,
   createCatClawActionRegistry
 } from "../src/cat-claw-actions.js";
+import {
+  EVENT_ACTION_HANDLER_NAMES,
+  createEventActionRegistry
+} from "../src/event-actions.js";
 import {
   HUMAN_GATE_ACTION_HANDLER_NAMES,
   createHumanGateActionRegistry
@@ -9898,6 +9906,99 @@ async function testScheduleExtractedActionContracts() {
   assert.equal(sqliteCount(upserted.dbFile, "workflow_schedules", "schedule_id='schedule-extracted-contract' AND status='disabled'"), 1);
 }
 
+async function testEventExtractedActionContracts() {
+  const expectedHandlers = {
+    "workflow.event.append": "workflowEventAppend",
+    "workflow.events.append": "workflowEventAppend",
+    "workflow.event.list": "workflowEventList",
+    "workflow.events": "workflowEventList",
+    "workflow.events.list": "workflowEventList",
+    "workflow.event.timeline": "workflowEventTimeline",
+    "workflow.timeline": "workflowEventTimeline",
+    "workflow.events.timeline": "workflowEventTimeline"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(EVENT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted event registry`);
+    assert.equal(EVENT_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof workflowEventAppend, "function");
+  assert.equal(typeof workflowEventList, "function");
+  assert.equal(typeof workflowEventTimeline, "function");
+  const directRegistry = createEventActionRegistry({
+    workflowEventAppend,
+    workflowEventList,
+    workflowEventTimeline
+  });
+  assert.equal(directRegistry.get("workflow.events.append"), workflowEventAppend);
+  assert.equal(directRegistry.get("workflow.events"), workflowEventList);
+  assert.equal(directRegistry.get("workflow.timeline"), workflowEventTimeline);
+
+  const root = await tempRoot("event-extracted-contracts");
+  const first = await runAction(root, {
+    action: "workflow.events.append",
+    eventId: "event-extracted-created",
+    eventType: "workflow.created",
+    workflowId: "event-extracted",
+    traceId: "trace-event-extracted",
+    actor: "local_codex",
+    sourceRuntime: "local_codex",
+    nextState: "active",
+    idempotencyKey: "event-extracted-created",
+    createdAt: "2099-01-01T00:00:01.000Z",
+    payload: {
+      summary: "event extracted action contract",
+      callbackToken: "must-not-persist"
+    }
+  });
+  assert.equal(first.eventId, "event-extracted-created");
+  assert.equal(first.eventType, "workflow.created");
+  assert.equal(first.payload.callbackToken, "[redacted]");
+
+  const second = await runAction(root, {
+    action: "workflow.event.append",
+    eventId: "event-extracted-dispatch",
+    eventType: "dispatch.created",
+    workflowId: "event-extracted",
+    traceId: "trace-event-extracted",
+    dispatchId: "dispatch-event-extracted",
+    nextState: "queued",
+    createdAt: "2099-01-01T00:00:02.000Z",
+    payload: { dispatchId: "dispatch-event-extracted" }
+  });
+  assert.equal(second.dispatchId, "dispatch-event-extracted");
+  const duplicate = await runAction(root, {
+    action: "workflow.event.append",
+    eventId: "event-extracted-created",
+    eventType: "workflow.created",
+    workflowId: "event-extracted",
+    traceId: "trace-event-extracted",
+    actor: "local_codex",
+    sourceRuntime: "local_codex",
+    nextState: "active",
+    idempotencyKey: "event-extracted-created",
+    createdAt: "2099-01-01T00:00:01.000Z",
+    payload: {
+      summary: "event extracted action contract",
+      callbackToken: "must-not-persist"
+    }
+  });
+  assert.equal(duplicate.deduped, true);
+
+  const list = await runAction(root, {
+    action: "workflow.events.list",
+    workflowId: "event-extracted",
+    limit: 10
+  });
+  assert.deepEqual(list.events.map((event) => event.eventType), ["dispatch.created", "workflow.created"]);
+  const timeline = await runAction(root, {
+    action: "workflow.events.timeline",
+    traceId: "trace-event-extracted",
+    limit: 10
+  });
+  assert.deepEqual(timeline.events.map((event) => event.eventType), ["workflow.created", "dispatch.created"]);
+  assert.equal(sqliteCount(first.dbFile, "workflow_events", "workflow_id='event-extracted'"), 2);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -16351,6 +16452,7 @@ try {
     ["status extracted action contracts", testStatusExtractedActionContracts],
     ["permission extracted action contracts", testPermissionExtractedActionContracts],
     ["schedule extracted action contracts", testScheduleExtractedActionContracts],
+    ["event extracted action contracts", testEventExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
