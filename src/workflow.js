@@ -112,6 +112,11 @@ import {
   runResearchAction
 } from "./research-actions.js";
 import {
+  createRuntimeEventActionHandlers,
+  createRuntimeEventActionRegistry,
+  runRuntimeEventAction
+} from "./runtime-event-actions.js";
+import {
   createScheduleActionHandlers,
   createScheduleActionRegistry,
   runScheduleAction
@@ -9097,8 +9102,7 @@ VALUES (${sqlValue(record.eventId)}, ${sqlValue(record.eventType)}, ${sqlValue(r
   };
 }
 
-export async function workflowRuntimeEventRecord(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function workflowRuntimeEventRecordCore(paths, input = {}) {
   return appendRuntimeSemanticEvent(paths, input);
 }
 
@@ -9129,8 +9133,7 @@ function workflowRuntimeEventWhere(input = {}) {
   return filters.length ? `WHERE ${filters.join(" AND ")}` : "";
 }
 
-export async function workflowRuntimeEventList(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function workflowRuntimeEventListSnapshot(paths, input = {}) {
   const requestedLimit = Number(input.limit || 100);
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(1000, Math.trunc(requestedLimit))) : 100;
   const order = String(input.order || input.sort || "").toLowerCase() === "asc" ? "ASC" : "DESC";
@@ -9149,8 +9152,7 @@ LIMIT ${limit};`, { json: true });
   };
 }
 
-export async function workflowRuntimeCurrentState(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function workflowRuntimeCurrentStateSnapshot(paths, input = {}) {
   const filters = [];
   const fieldMap = [
     ["runtime", input.runtime],
@@ -21191,6 +21193,21 @@ export const {
   workflowEventTimeline
 } = EVENT_ACTION_HANDLERS;
 
+export const RUNTIME_EVENT_ACTION_HANDLERS = createRuntimeEventActionHandlers({
+  appendRuntimeSemanticEvent: workflowRuntimeEventRecordCore,
+  ensureWorkflowLayout,
+  workflowRuntimeCurrentStateSnapshot,
+  workflowRuntimeEventListSnapshot
+});
+
+export const RUNTIME_EVENT_ACTION_REGISTRY = createRuntimeEventActionRegistry(RUNTIME_EVENT_ACTION_HANDLERS);
+
+export const {
+  workflowRuntimeCurrentState,
+  workflowRuntimeEventList,
+  workflowRuntimeEventRecord
+} = RUNTIME_EVENT_ACTION_HANDLERS;
+
 export const RESEARCH_ACTION_HANDLERS = createResearchActionHandlers({
   clampScore,
   cleanFileSegment,
@@ -21441,6 +21458,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (scheduleResult.handled) return scheduleResult.value;
   const eventResult = await runEventAction(EVENT_ACTION_REGISTRY, action, rootDir, input);
   if (eventResult.handled) return eventResult.value;
+  const runtimeEventResult = await runRuntimeEventAction(RUNTIME_EVENT_ACTION_REGISTRY, action, rootDir, input);
+  if (runtimeEventResult.handled) return runtimeEventResult.value;
   switch (action) {
     case "workflow.run.upsert":
     case "workflow.initiative.upsert":
@@ -21530,9 +21549,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.context_checkpoint":
     case "context.checkpoint":
       return workflowCheckpoint(rootDir, input);
-    case "workflow.runtime_event.record":
-    case "workflow.runtime.event.record":
-      return workflowRuntimeEventRecord(rootDir, input);
     case "workflow.verification.record":
     case "workflow.verifier_refuter.record":
     case "workflow.verifier-refuter.record":
@@ -21548,12 +21564,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.evaluation.run":
     case "workflow.goal.evaluate":
       return workflowEvaluate(rootDir, input, permissionDecision);
-    case "workflow.runtime_event.list":
-    case "workflow.runtime.event.list":
-      return workflowRuntimeEventList(rootDir, input);
-    case "workflow.runtime_current_state":
-    case "workflow.runtime.current":
-      return workflowRuntimeCurrentState(rootDir, input);
     case "workflow.session_pack.upsert":
     case "workflow.session.pack.upsert":
     case "session_pack.upsert":

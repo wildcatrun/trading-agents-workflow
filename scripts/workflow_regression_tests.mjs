@@ -24,6 +24,7 @@ import {
   PERMISSION_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
   RESEARCH_ACTION_REGISTRY,
+  RUNTIME_EVENT_ACTION_REGISTRY,
   SCHEDULE_ACTION_REGISTRY,
   SIDE_EFFECT_ACTION_REGISTRY,
   STATUS_ACTION_REGISTRY,
@@ -57,6 +58,9 @@ import {
   workflowPermissionCheck,
   workflowReadiness,
   workflowRuntimeAgents,
+  workflowRuntimeCurrentState,
+  workflowRuntimeEventList,
+  workflowRuntimeEventRecord,
   workflowScheduleDisable,
   workflowScheduleList,
   workflowSchedulePause,
@@ -94,6 +98,10 @@ import {
   RESEARCH_ACTION_HANDLER_NAMES,
   createResearchActionRegistry
 } from "../src/research-actions.js";
+import {
+  RUNTIME_EVENT_ACTION_HANDLER_NAMES,
+  createRuntimeEventActionRegistry
+} from "../src/runtime-event-actions.js";
 import {
   SCHEDULE_ACTION_HANDLER_NAMES,
   createScheduleActionRegistry
@@ -9999,6 +10007,115 @@ async function testEventExtractedActionContracts() {
   assert.equal(sqliteCount(first.dbFile, "workflow_events", "workflow_id='event-extracted'"), 2);
 }
 
+async function testRuntimeEventExtractedActionContracts() {
+  const expectedHandlers = {
+    "workflow.runtime_event.record": "workflowRuntimeEventRecord",
+    "workflow.runtime.event.record": "workflowRuntimeEventRecord",
+    "workflow.runtime-event.record": "workflowRuntimeEventRecord",
+    "runtime.semantic.event": "workflowRuntimeEventRecord",
+    "runtime.semantic.record": "workflowRuntimeEventRecord",
+    "workflow.runtime_event.list": "workflowRuntimeEventList",
+    "workflow.runtime.event.list": "workflowRuntimeEventList",
+    "workflow.runtime-events": "workflowRuntimeEventList",
+    "workflow.runtime.events": "workflowRuntimeEventList",
+    "workflow.runtime_current_state": "workflowRuntimeCurrentState",
+    "workflow.runtime_event.current": "workflowRuntimeCurrentState",
+    "workflow.runtime.current": "workflowRuntimeCurrentState",
+    "workflow.runtime_current": "workflowRuntimeCurrentState",
+    "runtime.current_state": "workflowRuntimeCurrentState"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(RUNTIME_EVENT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted runtime event registry`);
+    assert.equal(RUNTIME_EVENT_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof workflowRuntimeEventRecord, "function");
+  assert.equal(typeof workflowRuntimeEventList, "function");
+  assert.equal(typeof workflowRuntimeCurrentState, "function");
+  const directRegistry = createRuntimeEventActionRegistry({
+    workflowRuntimeCurrentState,
+    workflowRuntimeEventList,
+    workflowRuntimeEventRecord
+  });
+  assert.equal(directRegistry.get("workflow.runtime.event.record"), workflowRuntimeEventRecord);
+  assert.equal(directRegistry.get("workflow.runtime.event.list"), workflowRuntimeEventList);
+  assert.equal(directRegistry.get("workflow.runtime.current"), workflowRuntimeCurrentState);
+  assert.equal(directRegistry.get("runtime.semantic.event"), workflowRuntimeEventRecord);
+  assert.equal(directRegistry.get("workflow.runtime-events"), workflowRuntimeEventList);
+  assert.equal(directRegistry.get("runtime.current_state"), workflowRuntimeCurrentState);
+
+  const root = await tempRoot("runtime-event-extracted-contracts");
+  const workflowId = "runtime-event-extracted";
+  const recorded = await runAction(root, {
+    action: "workflow.runtime.event.record",
+    eventType: "semantic_ack",
+    eventTime: "2099-01-01T00:00:01.000Z",
+    workflowId,
+    taskId: "task-runtime-event-extracted",
+    dispatchId: "dispatch-runtime-event-extracted",
+    traceId: "trace-runtime-event-extracted",
+    runtime: "hermers",
+    agentId: "cat_body",
+    runtimeRunId: "runtime-run-event-extracted",
+    stage: "runtime_event_extracted_contract",
+    idempotencyKey: "runtime-event-extracted-semantic-ack",
+    payload: {
+      summary: "runtime event extracted action contract",
+      callbackToken: "must-not-persist"
+    }
+  });
+  assert.equal(recorded.schemaVersion, "workflow_runtime_semantic_event.v1");
+  assert.equal(recorded.event.eventType, "semantic_ack");
+  assert.equal(recorded.event.runtime, "hermers");
+  assert.equal(recorded.event.agentId, "cat_body");
+  assert.equal(recorded.event.payload.callbackToken, "[redacted]");
+  assert.equal(recorded.currentState.status, "working");
+  assert.equal(recorded.currentState.activeDispatchId, "dispatch-runtime-event-extracted");
+
+  const duplicate = await runAction(root, {
+    action: "workflow.runtime_event.record",
+    eventType: "semantic_ack",
+    eventTime: "2099-01-01T00:00:01.000Z",
+    workflowId,
+    taskId: "task-runtime-event-extracted",
+    dispatchId: "dispatch-runtime-event-extracted",
+    traceId: "trace-runtime-event-extracted",
+    runtime: "hermers",
+    agentId: "cat_body",
+    runtimeRunId: "runtime-run-event-extracted",
+    stage: "runtime_event_extracted_contract",
+    idempotencyKey: "runtime-event-extracted-semantic-ack",
+    payload: {
+      summary: "runtime event extracted action contract",
+      callbackToken: "must-not-persist"
+    }
+  });
+  assert.equal(duplicate.event.deduped, true);
+
+  const listed = await runAction(root, {
+    action: "workflow.runtime.event.list",
+    workflowId,
+    runtime: "hermers",
+    agentId: "cat_body",
+    order: "asc"
+  });
+  assert.equal(listed.schemaVersion, "workflow_runtime_semantic_events.v1");
+  assert.equal(listed.count, 1);
+  assert.equal(listed.events[0].eventType, "semantic_ack");
+  assert.equal(JSON.stringify(listed.events).includes("must-not-persist"), false);
+
+  const current = await runAction(root, {
+    action: "workflow.runtime.current",
+    workflowId,
+    runtime: "hermers",
+    agentId: "cat_body"
+  });
+  assert.equal(current.schemaVersion, "workflow_runtime_current_state.v1");
+  assert.equal(current.count, 1);
+  assert.equal(current.states[0].activeDispatchId, "dispatch-runtime-event-extracted");
+  assert.equal(current.states[0].semanticAckAt, "2099-01-01T00:00:01.000Z");
+  assert.equal(sqliteCount(recorded.dbFile, "runtime_semantic_events", "workflow_id='runtime-event-extracted'"), 1);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -16453,6 +16570,7 @@ try {
     ["permission extracted action contracts", testPermissionExtractedActionContracts],
     ["schedule extracted action contracts", testScheduleExtractedActionContracts],
     ["event extracted action contracts", testEventExtractedActionContracts],
+    ["runtime event extracted action contracts", testRuntimeEventExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
