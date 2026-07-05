@@ -261,6 +261,35 @@ Local landed shape:
   configured environment variable.
 - No WSL/Docker container is started by this local slice.
 
+## Track V2.5: Workflow Self-Evolution
+
+Status: design package drafted on 2026-07-05; implementation requires separate
+Flashcat authorization.
+
+The self-evolution layer should turn successful `workflow_plan_spec.v2` runs
+into governed reusable templates, evaluate template versions, and promote or
+roll back defaults without creating a second workflow engine.
+
+Design package:
+
+- `skills/workflow-self-evolution/SKILL.md`
+- `docs/workflow-v2-self-evolution-skill.md`
+- `docs/workflow-v2-self-evolution-implementation-plan.md`
+
+Design target:
+
+- templates are governed JSON artifacts, not arbitrary JavaScript scripts;
+- template registry DB rows index artifact refs, versions, permissions, evals,
+  scores, and promotion state;
+- template instantiation must pass through `workflow.v2.plan.preview/create`;
+- existing worker lifecycle, autonomous-loop, evaluator, owner review, Cat
+  Brain, Cat Claw, Human Gate, and side-effect gates remain authoritative;
+- reward scores guide promotion but cannot override policy or Human Gate.
+
+Initial implementation, if authorized, should start with pure helper/schema
+validation only. It should not migrate the development-server database, deploy
+to the active checkout, restart Gateway, or enable default template selection.
+
 ## Documentation Rules
 
 Every slice should update the docs in the same patch set as the code/test
