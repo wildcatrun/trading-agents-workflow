@@ -77,6 +77,11 @@ import {
   runHumanGateAction
 } from "./human-gate-actions.js";
 import {
+  createProtocolActionHandlers,
+  createProtocolActionRegistry,
+  runProtocolAction
+} from "./protocol-actions.js";
+import {
   createTradeActionHandlers,
   createTradeActionRegistry,
   runTradeAction
@@ -13815,49 +13820,6 @@ ${conflictUpdate}`);
   return { agentKey: saved.agentKey, runtime: rows[0]?.runtime || runtime, agentId: saved.agentId, platform: saved.platform, executionAdapter: saved.executionAdapter, imIngressOwner: saved.imIngressOwner, imIngressAdapter: saved.imIngressAdapter, workflowIngressAdapter: saved.workflowIngressAdapter, imIdentity: saved.imIdentity, executionIdentity: saved.executionIdentity, returnPolicy: saved.returnPolicy, canReceiveDispatch: saved.canReceiveDispatch, canStartWorkflow: saved.canStartWorkflow, gatewayProxyAllowed: saved.gatewayProxyAllowed, snapshotFile: exported.snapshotFile, snapshotGeneratedAt: exported.snapshotGeneratedAt };
 }
 
-export async function protocolRecord(rootDir, input) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  let instrument = null;
-  if (input.symbol || input.instrumentId || input.instrument_id) instrument = await upsertInstrumentRecord(paths, input);
-  const objectTypeRaw = String(input.objectType || input.object_type || "generic").trim();
-  const objectType = PROTOCOL_OBJECT_TYPES.has(objectTypeRaw) ? objectTypeRaw : "generic";
-  const objectId = input.objectId || input.object_id || safeId(objectType.replace(/_/g, "-"));
-  const status = String(input.status || "recorded").trim();
-  if (objectType === "human_gate_record" && input[INTERNAL_HUMAN_GATE_RECORD] !== true) {
-    throw new Error("human_gate_record writes are button-first only; use human_gate.request to create pending gates and human_gate.button_callback or human_gate.feedback to close them");
-  }
-  const sourceSystem = String(input.sourceSystem || input.source_system || input.source || "openclaw").trim();
-  const sourceAgent = String(input.sourceAgent || input.source_agent || input.createdBy || input.from || "cat_claw").trim();
-  const payload = {
-    objectId,
-    objectType,
-    status,
-    instrumentId: instrument?.instrumentId || input.instrumentId || input.instrument_id || null,
-    sourceSystem,
-    sourceAgent,
-    summary: input.summary || input.text || "",
-    payload: redactSensitiveForPersistence(parseJsonValue(input.payload, input.payload || {})),
-    createdAt: input.createdAt || input.created_at || nowIso()
-  };
-  const hash = jsonHash(payload);
-  const relPath = await writeJsonArtifact(paths.root, path.join(paths.protocolDir, objectType), objectId, { ...payload, hash });
-  await sqlite(paths.dbFile, `
-INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
-VALUES (${sqlValue(objectId)}, ${sqlValue(objectType)}, ${sqlValue(status)}, ${sqlValue(instrument?.instrumentId || input.instrumentId || input.instrument_id || null)}, ${sqlValue(sourceSystem)}, ${sqlValue(sourceAgent)}, ${sqlValue(input.parentObjectId || input.parent_object_id || "")}, ${sqlValue(relPath)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(hash)}, ${sqlValue(payload.createdAt)}, ${sqlValue(nowIso())})
-ON CONFLICT(object_id) DO UPDATE SET
-  object_type=excluded.object_type,
-  status=excluded.status,
-  instrument_id=excluded.instrument_id,
-  source_system=excluded.source_system,
-  source_agent=excluded.source_agent,
-  parent_object_id=excluded.parent_object_id,
-  path=excluded.path,
-  payload_json=excluded.payload_json,
-  hash=excluded.hash,
-  updated_at=excluded.updated_at;`);
-  return { objectId, objectType, status, instrumentId: instrument?.instrumentId || null, path: path.join(paths.root, relPath), relativePath: relPath, hash, dbFile: paths.dbFile };
-}
-
 export async function riskDecision(rootDir, input) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const statusRaw = String(input.status || "pending").trim();
@@ -21785,6 +21747,25 @@ export const {
   humanGateInbox
 } = HUMAN_GATE_ACTION_HANDLERS;
 
+export const PROTOCOL_ACTION_HANDLERS = createProtocolActionHandlers({
+  ensureWorkflowLayout,
+  jsonHash,
+  nowIso,
+  parseJsonValue,
+  redactSensitiveForPersistence,
+  safeId,
+  upsertInstrumentRecord,
+  writeJsonArtifact,
+  INTERNAL_HUMAN_GATE_RECORD,
+  PROTOCOL_OBJECT_TYPES
+});
+
+export const PROTOCOL_ACTION_REGISTRY = createProtocolActionRegistry(PROTOCOL_ACTION_HANDLERS);
+
+export const {
+  protocolRecord
+} = PROTOCOL_ACTION_HANDLERS;
+
 export const TRADE_ACTION_HANDLERS = createTradeActionHandlers({
   parseJsonValue,
   protocolRecord
@@ -21872,6 +21853,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (telegramOutboxResult.handled) return telegramOutboxResult.value;
   const humanGateResult = await runHumanGateAction(HUMAN_GATE_ACTION_REGISTRY, action, rootDir, input);
   if (humanGateResult.handled) return humanGateResult.value;
+  const protocolResult = await runProtocolAction(PROTOCOL_ACTION_REGISTRY, action, rootDir, input);
+  if (protocolResult.handled) return protocolResult.value;
   const tradeResult = await runTradeAction(TRADE_ACTION_REGISTRY, action, rootDir, input);
   if (tradeResult.handled) return tradeResult.value;
   switch (action) {
@@ -22105,9 +22088,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return meetingResume(rootDir, input);
     case "meeting.disperse":
       return meetingDisperse(rootDir, input);
-    case "protocol.record":
-    case "protocol.object":
-      return protocolRecord(rootDir, input);
     case "risk.decision":
       return riskDecision(rootDir, input);
     case "human_gate.record":

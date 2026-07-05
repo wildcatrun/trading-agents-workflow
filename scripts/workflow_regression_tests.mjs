@@ -18,11 +18,13 @@ import { runAction as runActionRaw } from "../src/core.js";
 import {
   HUMAN_GATE_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
+  PROTOCOL_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
   humanGateInbox,
   messageFlowList,
   messageFlowReconcile,
+  protocolRecord,
   messageFlowSend,
   telegramOutbox,
   telegramOutboxDelivery,
@@ -35,6 +37,10 @@ import {
   HUMAN_GATE_ACTION_HANDLER_NAMES,
   createHumanGateActionRegistry
 } from "../src/human-gate-actions.js";
+import {
+  PROTOCOL_ACTION_HANDLER_NAMES,
+  createProtocolActionRegistry
+} from "../src/protocol-actions.js";
 import {
   TRADE_ACTION_HANDLER_NAMES,
   createTradeActionRegistry
@@ -8935,6 +8941,73 @@ VALUES ('button-hgate-inbox-contract-a', 'token-hgate-inbox-contract-a', 'hgate-
   assert.equal(gatewayInbox.result.items[0].sourceId, "hgate-inbox-contract");
 }
 
+async function testProtocolRecordExtractedActionContracts() {
+  for (const action of [
+    "protocol.record",
+    "protocol.object"
+  ]) {
+    assert.equal(PROTOCOL_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted protocol registry`);
+    assert.equal(PROTOCOL_ACTION_HANDLER_NAMES[action], "protocolRecord", `${action} should map to the extracted protocolRecord handler`);
+  }
+  assert.equal(typeof protocolRecord, "function");
+  const directRegistry = createProtocolActionRegistry({ protocolRecord });
+  assert.equal(directRegistry.get("protocol.record"), protocolRecord);
+  assert.equal(directRegistry.get("protocol.object"), protocolRecord);
+
+  const root = await tempRoot("protocol-record-extracted-contracts");
+  const record = await runAction(root, {
+    action: "protocol.object",
+    objectId: "evidence-pack-extracted-contract",
+    objectType: "evidence_pack",
+    status: "recorded",
+    sourceSystem: "regression",
+    parentObjectId: "wf-protocol-extracted-contract",
+    summary: "Protocol record extracted action contract.",
+    payload: {
+      apiKey: "should-not-persist",
+      nested: {
+        token: "nested-secret",
+        note: "safe"
+      }
+    },
+    createdAt: "2026-06-03T00:00:00.000Z"
+  });
+
+  assert.equal(record.objectId, "evidence-pack-extracted-contract");
+  assert.equal(record.objectType, "evidence_pack");
+  assert.equal(record.status, "recorded");
+  assert.equal(record.instrumentId, null);
+  assert.equal(await pathExists(record.path), true);
+
+  const rows = sqliteJson(record.dbFile, `
+SELECT object_id, object_type, status, source_system, source_agent, parent_object_id, payload_json
+FROM protocol_objects
+WHERE object_id='evidence-pack-extracted-contract'
+LIMIT 1;`);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].object_type, "evidence_pack");
+  assert.equal(rows[0].source_system, "regression");
+  assert.equal(rows[0].source_agent, "cat_claw");
+  assert.equal(rows[0].parent_object_id, "wf-protocol-extracted-contract");
+  const payload = JSON.parse(rows[0].payload_json);
+  assert.equal(payload.summary, "Protocol record extracted action contract.");
+  assert.equal(payload.createdAt, "2026-06-03T00:00:00.000Z");
+  assert.equal(payload.payload.apiKey, "[redacted]");
+  assert.equal(payload.payload.nested.token, "[redacted]");
+  assert.equal(payload.payload.nested.note, "safe");
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "protocol.record",
+      objectId: "blocked-human-gate-record",
+      objectType: "human_gate_record",
+      payload: { summary: "should be blocked" }
+    }),
+    /human_gate_record writes are button-first only/
+  );
+  assert.equal(sqliteCount(record.dbFile, "protocol_objects", "object_id='blocked-human-gate-record'"), 0);
+}
+
 async function testTradeProposalExtractedActionContracts() {
   assert.equal(TRADE_ACTION_REGISTRY.has("trade.proposal"), true);
   assert.equal(TRADE_ACTION_HANDLER_NAMES["trade.proposal"], "tradeProposal");
@@ -15426,6 +15499,7 @@ try {
     ["message_flow extracted action contracts", testMessageFlowExtractedActionContracts],
     ["telegram.outbox extracted action contracts", testTelegramOutboxExtractedActionContracts],
     ["human_gate inbox extracted action contracts", testHumanGateInboxExtractedActionContracts],
+    ["protocol record extracted action contracts", testProtocolRecordExtractedActionContracts],
     ["trade proposal extracted action contracts", testTradeProposalExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
