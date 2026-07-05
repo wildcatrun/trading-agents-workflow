@@ -17,9 +17,15 @@ import {
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   MESSAGE_FLOW_ACTION_REGISTRY,
+  TELEGRAM_OUTBOX_ACTION_REGISTRY,
   messageFlowList,
   messageFlowReconcile,
-  messageFlowSend
+  messageFlowSend,
+  telegramOutbox,
+  telegramOutboxDelivery,
+  telegramOutboxDeliveryPreview,
+  telegramOutboxRequeueExecutionPackagePreview,
+  telegramOutboxRequeuePreview
 } from "../src/workflow.js";
 
 const createdRoots = [];
@@ -8706,6 +8712,135 @@ async function testMessageFlowExtractedActionContracts() {
   assert.equal(Array.isArray(reconciled.incidents), true);
 }
 
+async function testTelegramOutboxExtractedActionContracts() {
+  for (const action of [
+    "telegram.outbox.delivery.preview",
+    "telegram.outbox.preview_delivery",
+    "telegram.outbox.delivery-preview",
+    "workflow.telegram.outbox.delivery.preview",
+    "telegram.outbox.requeue.preview",
+    "telegram.outbox.preview_requeue",
+    "telegram.outbox.requeue-preview",
+    "telegram.outbox.resend.preview",
+    "telegram.outbox.redelivery.preview",
+    "workflow.telegram.outbox.requeue.preview",
+    "telegram.outbox.requeue.execution_package.preview",
+    "telegram.outbox.requeue.package.preview",
+    "telegram.outbox.requeue.execution-package.preview",
+    "telegram.outbox.resend.package.preview",
+    "telegram.outbox.redelivery.package.preview",
+    "workflow.telegram.outbox.requeue.package.preview",
+    "telegram.outbox.delivery",
+    "telegram.outbox.deliver",
+    "telegram.outbox.delivery.execute",
+    "workflow.telegram.outbox.delivery",
+    "telegram.outbox"
+  ]) {
+    assert.equal(TELEGRAM_OUTBOX_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted telegram.outbox registry`);
+  }
+  assert.equal(typeof telegramOutboxDeliveryPreview, "function");
+  assert.equal(typeof telegramOutboxRequeuePreview, "function");
+  assert.equal(typeof telegramOutboxRequeueExecutionPackagePreview, "function");
+  assert.equal(typeof telegramOutboxDelivery, "function");
+  assert.equal(typeof telegramOutbox, "function");
+
+  const root = await tempRoot("telegram-outbox-extracted-contracts");
+  const init = await runAction(root, { action: "workflow.init" });
+  const dbFile = init.dbFile;
+  const bridgeDir = path.join(root, "bridge");
+  const gateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { readOnly: true });
+  const writeGateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { allowWrites: true });
+  const createdAt = "2026-06-01T00:00:00.000Z";
+  sqliteExec(dbFile, `
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES
+  ('outbox-extracted-contract-queued', 'workflow-outbox-contract', 'private', '8390724843', 'internal_notice', 'queued', 'telegram outbox extracted contract body', '{"account":"cat_claw"}', '${createdAt}', '${createdAt}'),
+  ('outbox-extracted-contract-sent', 'workflow-outbox-contract', 'private', '8390724843', 'internal_notice', 'sent', 'telegram outbox extracted sent body', '{"account":"cat_claw","delivery":{"channel":"telegram","account":"cat_claw","target":"8390724843","deliveredAt":"${createdAt}","receipts":[{"ok":true,"message_id":"sent-contract"}]}}', '${createdAt}', '${createdAt}');`);
+
+  const preview = await runAction(root, {
+    action: "workflow.telegram.outbox.delivery.preview",
+    outboxId: "outbox-extracted-contract-queued",
+    deliveryOperatorReason: "registry contract preview"
+  });
+  assert.equal(preview.schemaVersion, "telegram_outbox_delivery_preview.v1");
+  assert.equal(preview.action, "telegram.outbox.delivery.preview");
+  assert.equal(preview.readOnly, true);
+  assert.equal(preview.writeBoundary, "preview_only");
+  assert.equal(preview.outboxId, "outbox-extracted-contract-queued");
+  assert.equal(preview.eligible, true);
+  assert.equal(preview.claimEligible, true);
+  assert.equal(preview.executionPolicy.governanceReady, true);
+  assert.equal(preview.wouldUpdate.telegramOutboxStatus, "delivering_then_sent_or_failed");
+
+  const gatewayPreviewAlias = await gateway.handle({
+    action: "telegram.outbox.preview_delivery",
+    actor: "flashcat",
+    reason: "registry contract gateway preview alias",
+    payload: {
+      outboxId: "outbox-extracted-contract-queued",
+      deliveryOperatorReason: "registry contract gateway preview"
+    }
+  });
+  assert.equal(gatewayPreviewAlias.ok, true);
+  assert.equal(gatewayPreviewAlias.action, "telegram.outbox.delivery.preview");
+  assert.equal(gatewayPreviewAlias.dryRun, true);
+  assert.equal(gatewayPreviewAlias.result.schemaVersion, "telegram_outbox_delivery_preview.v1");
+  assert.equal(gatewayPreviewAlias.result.outboxId, "outbox-extracted-contract-queued");
+
+  const packagePreview = await runAction(root, {
+    action: "workflow.telegram.outbox.requeue.package.preview",
+    outboxId: "outbox-extracted-contract-queued",
+    requeueOperatorReason: "registry contract package preview"
+  });
+  assert.equal(packagePreview.schemaVersion, "telegram_outbox_requeue_execution_package_preview.v1");
+  assert.equal(packagePreview.action, "telegram.outbox.requeue.execution_package.preview");
+  assert.equal(packagePreview.readOnly, true);
+  assert.equal(packagePreview.writeBoundary, "preview_only");
+  assert.equal(packagePreview.futureExecutionAction, "telegram.outbox.delivery");
+  assert.equal(packagePreview.didSendTelegram, false);
+  assert.equal(packagePreview.didCreateHumanGate, false);
+  assert.equal(packagePreview.didTouchTradingState, false);
+
+  const listed = await runAction(root, {
+    action: "telegram.outbox",
+    status: "queued"
+  });
+  assert.equal(listed.status, "queued");
+  assert.equal(listed.count, 1);
+  assert.equal(listed.rows[0].outbox_id, "outbox-extracted-contract-queued");
+
+  const replay = await runAction(root, {
+    action: "telegram.outbox.deliver",
+    outboxId: "outbox-extracted-contract-sent",
+    idempotencyKey: "outbox-extracted-contract-replay",
+    deliveryOperatorReason: "registry contract idempotent replay",
+    catClawAuditId: "audit-outbox-extracted-contract"
+  });
+  assert.equal(replay.schemaVersion, "telegram_outbox_delivery_result.v1");
+  assert.equal(replay.action, "telegram.outbox.delivery");
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(replay.didSendTelegram, false);
+  assert.equal(replay.didUpdateOutbox, false);
+  assert.equal(replay.receiptCount, 1);
+
+  const gatewayWriteAliasReplay = await writeGateway.handle({
+    action: "telegram.outbox.delivery.execute",
+    actor: "flashcat",
+    reason: "registry contract gateway write alias",
+    payload: {
+      outboxId: "outbox-extracted-contract-sent",
+      idempotencyKey: "outbox-extracted-contract-gateway-replay",
+      deliveryOperatorReason: "registry contract gateway idempotent replay",
+      catClawAuditId: "audit-outbox-extracted-contract"
+    }
+  });
+  assert.equal(gatewayWriteAliasReplay.ok, true);
+  assert.equal(gatewayWriteAliasReplay.action, "telegram.outbox.delivery");
+  assert.equal(gatewayWriteAliasReplay.result.schemaVersion, "telegram_outbox_delivery_result.v1");
+  assert.equal(gatewayWriteAliasReplay.result.idempotentReplay, true);
+  assert.equal(gatewayWriteAliasReplay.result.didSendTelegram, false);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -15147,6 +15282,7 @@ try {
     ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["message_flow extracted action contracts", testMessageFlowExtractedActionContracts],
+    ["telegram.outbox extracted action contracts", testTelegramOutboxExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
