@@ -372,6 +372,16 @@ export function createConsoleServer(options = {}) {
       if (req.method === "GET" && pathname === "/api/runtime-current-state") {
         return json(res, 200, await readModel.runtimeCurrentState(Object.fromEntries(url.searchParams)));
       }
+      if (req.method === "GET" && pathname === "/api/templates") {
+        return json(res, 200, await readModel.templateList(Object.fromEntries(url.searchParams)));
+      }
+      if (req.method === "GET" && pathname === "/api/templates/stats") {
+        return json(res, 200, await readModel.templateStats(Object.fromEntries(url.searchParams)));
+      }
+      const templateMatch = pathname.match(/^\/api\/templates\/([^/]+)$/);
+      if (req.method === "GET" && templateMatch) {
+        return json(res, 200, await readModel.templateDetail(decodeURIComponent(templateMatch[1]), Object.fromEntries(url.searchParams)));
+      }
       const workflowMatch = pathname.match(/^\/api\/workflows\/([^/]+)(?:\/([^/]+))?$/);
       if (req.method === "GET" && workflowMatch) {
         const workflowId = decodeURIComponent(workflowMatch[1]);

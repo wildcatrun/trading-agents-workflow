@@ -23,6 +23,7 @@ The plugin exposes a local Codex `trading-agents-workflow` MCP server with ops-o
 - `workflow_latest_jsonl`: latest lines from local or remote workflow JSONL logs.
 - `workflow_runtime_agents`: runtime agent registry from the local or remote workflow control-plane database (`workflow_control_plane.db`; legacy `tracking.db` is compatibility-only).
 - `workflow_receipts`, `workflow_message_flows`, `workflow_incidents`, and `workflow_reconcile_dry_run`: read receipt and incident surfaces.
+- `workflow_template_search`, `workflow_template_get`, and `workflow_template_stats`: read-only workflow v2 template registry, eval, score, and rollback-target visibility.
 - `workflow_message_flow_send`: the limited mutating MCP surface; it should route governed notices through the core/CLI workflow path.
 
 Hermers profiles use `scripts/trading_agents_workflow_hermes_mcp.py`, which is intentionally smaller:

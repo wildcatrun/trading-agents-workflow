@@ -194,6 +194,67 @@ function v2WorkerDelegation(overrides = {}) {
   };
 }
 
+function workflowTemplateSpec(overrides = {}) {
+  const templateId = overrides.templateId || "template.workflow.v2.regression.engineering";
+  const version = overrides.version || 1;
+  const riskTier = overrides.riskTier || "medium";
+  const planSpecSkeleton = overrides.planSpecSkeleton || {
+    workflowId: "{{workflowId}}",
+    planId: "{{planId}}",
+    objective: "{{objective}}",
+    taskOwnerAgent: "cat_heart",
+    plannerAgent: "main",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract({
+      orchestrationPattern: "manager_worker",
+      orchestrationRationale: "Template fixture uses manager-worker orchestration and still delegates plan admission to workflow.v2.plan.create.",
+      workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 },
+      acceptanceCriteria: ["template variables are filled", "worker output is reviewed before acceptance"]
+    }),
+    nodes: [
+      {
+        nodeId: "{{planId}}.spawn",
+        nodeType: "manager_worker_spawn",
+        ownerAgent: "cat_body",
+        payload: {
+          domainOwnership: "implementation",
+          expectedArtifacts: ["artifact://{{planId}}/implementation"],
+          reviewPolicy: "manager review required before owner acceptance"
+        }
+      },
+      {
+        nodeId: "{{planId}}.review",
+        nodeType: "manager_review",
+        ownerAgent: "cat_body",
+        dependsOn: ["{{planId}}.spawn"]
+      }
+    ]
+  };
+  return {
+    schemaVersion: "workflow_template_spec.v1",
+    templateId,
+    version,
+    status: overrides.status || "candidate",
+    title: overrides.title || "Regression manager-worker workflow template",
+    description: overrides.description || "Reusable regression template; token=template-secret must be redacted on read surfaces.",
+    ownerAgent: "main",
+    tags: overrides.tags || ["regression", "workflow-v2"],
+    triggers: { shouldUse: ["medium-risk engineering workflow"], shouldNotUse: ["live trading"] },
+    variables: overrides.variables || [
+      { name: "workflowId", type: "string", required: true },
+      { name: "planId", type: "string", required: true },
+      { name: "objective", type: "string", required: true }
+    ],
+    riskPolicy: { riskTier },
+    permissionPolicy: { allowedCapabilities: ["workflow.write", "workflow.verify"] },
+    planSpecSkeleton,
+    evalPolicy: { requiredComparableArms: ["baseline", "previous_version", "candidate_version"] },
+    promotionPolicy: { minEvalCount: 1, autoPromote: false },
+    rollbackPolicy: { restorePreviousDefault: true },
+    audit: { createdBy: "local_codex", ...overrides.audit }
+  };
+}
+
 function planButtons() {
   return [
     {
@@ -3981,6 +4042,339 @@ async function testWorkflowV2PlanAdvisoryAndCanonicalArtifact() {
   assert.equal(advisoryPlanValidation.ok, true, JSON.stringify(advisoryPlanValidation.failedChecks));
   assert.equal(advisoryPlanValidation.failedChecks.includes("plans_anthropic_orchestration_contract"), false);
   assert.equal(Boolean(advisoryPlanValidation.advisoryChecks.some((item) => item.checkId === "plans_anthropic_orchestration_contract" && item.status === "advisory")), true);
+}
+
+async function testWorkflowTemplateSelfEvolution() {
+  const root = await tempRoot("workflow-template-self-evolution");
+  const dbFile = path.join(root, "tracking.db");
+  const templateId = "template.workflow.v2.regression.engineering";
+
+  const malformedPreview = await runAction(root, {
+    action: "workflow.template.preview",
+    templateSpec: {
+      schemaVersion: "workflow_template_spec.v1",
+      templateId: "template.workflow.v2.bad",
+      version: 1,
+      status: "candidate",
+      ownerAgent: "main",
+      variables: [{ name: "api_key", type: "string", required: true }],
+      planSpecSkeleton: {}
+    }
+  });
+  assert.equal(malformedPreview.valid, false);
+  assert.equal(Boolean(malformedPreview.errors.some((item) => item.code === "title_required")), true);
+  assert.equal(Boolean(malformedPreview.errors.some((item) => item.code === "sensitive_variable_disallowed")), true);
+  assert.equal(await pathExists(dbFile), false);
+
+  const validPreview = await runAction(root, {
+    action: "workflow.template.preview",
+    templateSpec: workflowTemplateSpec(),
+    variables: {
+      workflowId: "wf-template-preview",
+      planId: "plan-template-preview",
+      objective: "Preview a reusable template without writing workflow state."
+    }
+  });
+  assert.equal(validPreview.valid, true);
+  assert.equal(validPreview.planPreview.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
+  assert.equal(validPreview.planPreviewInput.workflowId, "wf-template-preview");
+  assert.equal(await pathExists(dbFile), false);
+
+  const candidate = await runAction(root, {
+    action: "workflow.template.record_candidate",
+    templateSpec: { ...workflowTemplateSpec(), status: "active" },
+    sourceWorkflowId: "wf-template-source",
+    sourcePlanId: "plan-template-source"
+  });
+  assert.equal(candidate.status, "candidate");
+  assert.equal(candidate.templateId, templateId);
+  assert.equal(candidate.version, 1);
+  assert.equal(await pathExists(path.join(root, candidate.artifact.artifactRef)), true);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_template_specs", `template_id='${templateId}'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_template_versions", `template_id='${templateId}' AND version=1 AND status='candidate'`), 1);
+  assert.equal(sqliteCount(dbFile, "artifact_index", `artifact_id='${candidate.artifact.artifactId}' AND kind='workflow_template_spec_json'`), 1);
+  sqliteExec(dbFile, `UPDATE workflow_v2_template_versions SET artifact_ref='${root}-outside/v1.json' WHERE template_id='${templateId}' AND version=1;`);
+  await assertRejectsMessage(
+    () => runAction(root, { action: "workflow.template.get", templateId }),
+    /template artifact_ref must be relative/
+  );
+  sqliteExec(dbFile, `UPDATE workflow_v2_template_versions SET artifact_ref='${candidate.artifact.artifactRef}' WHERE template_id='${templateId}' AND version=1;`);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.template.record_candidate",
+      templateSpec: { ...workflowTemplateSpec(), description: "same version with a different hash" }
+    }),
+    /append-only/
+  );
+
+  const instantiated = await runAction(root, {
+    action: "workflow.template.instantiate.record",
+    templateId,
+    version: 1,
+    variables: {
+      workflowId: "wf-template-instantiated",
+      planId: "plan-template-instantiated",
+      objective: "Instantiate through workflow.v2.plan.create and preserve hard gates."
+    }
+  });
+  assert.equal(instantiated.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
+  assert.equal(instantiated.plan.planId, "plan-template-instantiated");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_plans", "plan_id='plan-template-instantiated'"), 1);
+  assert.equal(JSON.stringify(instantiated.plan.payload).includes("template.workflow.v2.regression.engineering"), true);
+
+  const badTemplateId = "template.workflow.v2.regression.bad-hardgate";
+  await runAction(root, {
+    action: "workflow.template.record_candidate",
+    templateSpec: workflowTemplateSpec({
+      templateId: badTemplateId,
+      title: "Bad hard gate template",
+      planSpecSkeleton: {
+        workflowId: "{{workflowId}}",
+        planId: "{{planId}}",
+        objective: "{{objective}}",
+        taskOwnerAgent: "cat_heart",
+        participantManagers: ["cat_body"],
+        ...v2PlanContract({ orchestrationPattern: "manager_worker" }),
+        nodes: [
+          { nodeId: "{{planId}}.spawn", nodeType: "manager_worker_spawn", ownerAgent: "cat_body", payload: {} },
+          { nodeId: "{{planId}}.review", nodeType: "manager_review", ownerAgent: "cat_body", dependsOn: ["{{planId}}.spawn"] }
+        ]
+      }
+    })
+  });
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.template.instantiate.record",
+      templateId: badTemplateId,
+      version: 1,
+      variables: {
+        workflowId: "wf-template-hardgate",
+        planId: "plan-template-hardgate",
+        objective: "This should fail existing v2 executable node hard gates."
+      }
+    }),
+    /workflow v2 executable plan hard gate failed/
+  );
+
+  const invalidEvalPreview = await runAction(root, {
+    action: "workflow.template.eval.preview",
+    templateId,
+    version: 1,
+    fixtureSnapshot: { caseId: "duplicate-roots" },
+    arms: [
+      { kind: "baseline", isolatedRoot: "/tmp/same" },
+      { kind: "previous_version", isolatedRoot: "/tmp/same" },
+      { kind: "candidate_version", isolatedRoot: "/tmp/candidate" }
+    ],
+    metrics: {}
+  });
+  assert.equal(invalidEvalPreview.valid, false);
+  assert.equal(Boolean(invalidEvalPreview.errors.some((item) => item.code === "isolated_roots_must_be_distinct")), true);
+
+  const evalResult = await runAction(root, {
+    action: "workflow.template.eval.record",
+    templateId,
+    version: 1,
+    fixtureSnapshot: { caseId: "template-regression", immutable: true, token: "eval-secret" },
+    arms: [
+      { kind: "baseline", isolatedRoot: "/tmp/template-baseline" },
+      { kind: "previous_version", isolatedRoot: "/tmp/template-previous" },
+      { kind: "candidate_version", isolatedRoot: "/tmp/template-candidate" }
+    ],
+    metrics: {
+      planGatePassRate: 1,
+      executionSuccessRate: 1,
+      receiptCompletenessRate: 1,
+      evaluatorAcceptRate: 1,
+      ownerRevisionRate: 0,
+      humanGateReturnRate: 0,
+      duplicateWorkRate: 0,
+      toolFeedbackCompleteness: 1,
+      sideEffectUncertainRate: 0,
+      freshnessViolationRate: 0,
+      rollbackReadinessRate: 1
+    },
+    evidenceRefs: ["artifact://template/eval"]
+  });
+  assert.equal(evalResult.scoreCannotPromote, true);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_template_evals", `template_id='${templateId}' AND version=1`), 1);
+  assert.equal(sqliteJson(dbFile, `SELECT active_version AS activeVersion FROM workflow_v2_template_specs WHERE template_id='${templateId}' LIMIT 1;`)[0].activeVersion, 0);
+  assert.equal(await pathExists(path.join(root, evalResult.fixture.artifactRef)), true);
+  assert.equal((await fs.readFile(path.join(root, evalResult.fixture.artifactRef), "utf8")).includes("eval-secret"), false);
+
+  await runAction(root, {
+    action: "workflow.template.promote.record",
+    templateId,
+    version: 1,
+    targetStatus: "default",
+    catBrainAuditId: "brain-template-v1",
+    catClawAuditId: "claw-template-v1",
+    evidenceRefs: ["artifact://template/eval"]
+  });
+  assert.equal(sqliteJson(dbFile, `SELECT default_version AS defaultVersion FROM workflow_v2_template_specs WHERE template_id='${templateId}' LIMIT 1;`)[0].defaultVersion, 1);
+
+  await runAction(root, {
+    action: "workflow.template.record_candidate",
+    templateSpec: workflowTemplateSpec({ version: 2, riskTier: "P0", title: "High risk default candidate" })
+  });
+  await assert.rejects(
+    runAction(root, {
+      action: "workflow.template.promote.record",
+      templateId,
+      version: 2,
+      targetStatus: "active",
+      catBrainAuditId: "brain-template-v2-no-eval",
+      catClawAuditId: "claw-template-v2-no-eval"
+    }),
+    /workflow template promotion blocked: eval_evidence/
+  );
+  await runAction(root, {
+    action: "workflow.template.eval.record",
+    templateId,
+    version: 2,
+    fixtureSnapshot: { caseId: "template-regression-v2", immutable: true },
+    arms: [
+      { kind: "baseline", isolatedRoot: "/tmp/template-baseline-v2" },
+      { kind: "previous_version", isolatedRoot: "/tmp/template-previous-v2" },
+      { kind: "candidate_version", isolatedRoot: "/tmp/template-candidate-v2" }
+    ],
+    metrics: {
+      planGatePassRate: 1,
+      executionSuccessRate: 1,
+      receiptCompletenessRate: 1,
+      evaluatorAcceptRate: 1,
+      ownerRevisionRate: 0,
+      humanGateReturnRate: 0,
+      duplicateWorkRate: 0,
+      toolFeedbackCompleteness: 1,
+      sideEffectUncertainRate: 0,
+      freshnessViolationRate: 0,
+      rollbackReadinessRate: 1
+    }
+  });
+  const highRiskPromotionPreview = await runAction(root, {
+    action: "workflow.template.promote.preview",
+    templateId,
+    version: 2,
+    targetStatus: "default",
+    catBrainAuditId: "brain-template-v2",
+    catClawAuditId: "claw-template-v2"
+  });
+  assert.equal(highRiskPromotionPreview.valid, false);
+  assert.equal(Boolean(highRiskPromotionPreview.requirements.some((item) => item.type === "human_gate")), true);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.template.promote.record",
+      templateId,
+      version: 2,
+      targetStatus: "default",
+      catBrainAuditId: "brain-template-v2",
+      catClawAuditId: "claw-template-v2"
+    }),
+    /workflow template promotion blocked: human_gate/
+  );
+  const promotedV2 = await runAction(root, {
+    action: "workflow.template.promote.record",
+    templateId,
+    version: 2,
+    targetStatus: "default",
+    catBrainAuditId: "brain-template-v2",
+    catClawAuditId: "claw-template-v2",
+    humanGateId: "hg-template-v2"
+  });
+  assert.equal(promotedV2.previousVersion, 1);
+  assert.equal(sqliteJson(dbFile, `SELECT default_version AS defaultVersion FROM workflow_v2_template_specs WHERE template_id='${templateId}' LIMIT 1;`)[0].defaultVersion, 2);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.template.rollback.record",
+      templateId,
+      rollbackToVersion: 1
+    }),
+    /workflow template rollback blocked: rollback_reason,cat_brain_review,cat_claw_audit,human_gate/
+  );
+  const rollback = await runAction(root, {
+    action: "workflow.template.rollback.record",
+    templateId,
+    rollbackToVersion: 1,
+    rollbackReason: "restore previous approved template after high-risk candidate validation",
+    catBrainAuditId: "brain-template-rollback",
+    catClawAuditId: "claw-template-rollback",
+    humanGateId: "hg-template-rollback"
+  });
+  assert.equal(rollback.rollbackVersion, 1);
+  assert.equal(rollback.artifactsDeleted, false);
+  assert.equal(sqliteJson(dbFile, `SELECT default_version AS defaultVersion FROM workflow_v2_template_specs WHERE template_id='${templateId}' LIMIT 1;`)[0].defaultVersion, 1);
+  assert.equal(await pathExists(path.join(root, "artifacts/workflow-v2/templates/template.workflow.v2.regression.engineering/v2.json")), true);
+
+  const sourcePlan = await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId: "wf-template-extract-source",
+    planId: "plan-template-extract-source",
+    objective: "Source workflow for extraction.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract()
+  });
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_owner_reviews(review_id, workflow_id, plan_id, owner_agent, decision, summary, manager_review_refs_json, artifact_refs_json, receipt_refs_json, findings_json, payload_json, created_by, created_at, updated_at)
+VALUES ('owner-review-template-extract', 'wf-template-extract-source', 'plan-template-extract-source', 'cat_heart', 'accepted', 'owner accepted extraction source', '[]', '[]', '[]', '[]', '{}', 'main', '2026-07-05T00:00:00.000Z', '2026-07-05T00:00:00.000Z');
+INSERT INTO side_effect_ledger(side_effect_id, trace_id, workflow_id, dispatch_id, idempotency_key, owner_agent, side_effect_type, status, input_hash, output_hash, artifact_ref, payload_json, created_at, updated_at)
+VALUES ('side-effect-template-uncertain', '', 'wf-template-extract-source', '', 'side-effect-template-uncertain', 'main', 'file_write', 'uncertain', '', '', '', '{}', '2026-07-05T00:00:00.000Z', '2026-07-05T00:00:00.000Z');
+`);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.template.extract.preview",
+      workflowId: "wf-template-extract-source",
+      templateId: "template.workflow.v2.extracted.regression"
+    }),
+    /unresolved side-effect uncertainty/
+  );
+  sqliteExec(dbFile, "UPDATE side_effect_ledger SET status='resolved' WHERE side_effect_id='side-effect-template-uncertain';");
+  const extracted = await runAction(root, {
+    action: "workflow.template.extract.record",
+    workflowId: "wf-template-extract-source",
+    templateId: "template.workflow.v2.extracted.regression",
+    title: "Extracted regression template"
+  });
+  assert.equal(extracted.extractedStatus, "candidate");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_template_versions", "template_id='template.workflow.v2.extracted.regression' AND status='candidate'"), 1);
+  assert.equal(sourcePlan.plan.planId, "plan-template-extract-source");
+
+  const readModel = new WorkflowReadModel({ dbFile });
+  const templateList = await readModel.templateList({ q: "regression" });
+  assert.equal(templateList.schemaVersion, "workflow_template_console_list.v1");
+  assert.equal(templateList.templates.some((item) => item.templateId === templateId && item.defaultVersion === 1), true);
+  const templateDetail = await readModel.templateDetail(templateId);
+  assert.equal(templateDetail.schemaVersion, "workflow_template_console_detail.v1");
+  assert.equal(templateDetail.versions.length >= 2, true);
+  assert.equal(templateDetail.evals.length >= 2, true);
+  assert.equal(JSON.stringify(templateDetail).includes("template-secret"), false);
+  assert.equal(JSON.stringify(templateDetail).includes("eval-secret"), false);
+  const templateStats = await readModel.templateStats({ templateId });
+  assert.equal(templateStats.schemaVersion, "workflow_template_console_stats.v1");
+  assert.equal(templateStats.stats[0].rollbackTargetVersion >= 1, true);
+
+  const mcpRequest = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "workflow_template_get",
+      arguments: { source: "local", template_id: templateId }
+    }
+  };
+  const mcpOutput = execFileSync("python3", [path.resolve("scripts/trading_agents_workflow_mcp.py")], {
+    cwd: process.cwd(),
+    input: `${JSON.stringify(mcpRequest)}\n`,
+    encoding: "utf8",
+    env: { ...process.env, TRADING_AGENTS_WORKFLOW_ROOT: root }
+  }).trim();
+  const mcpResponse = JSON.parse(mcpOutput.split("\n").at(-1));
+  assert.equal(mcpResponse.result.structuredContent.found, true);
+  assert.equal(JSON.stringify(mcpResponse).includes("template-secret"), false);
+  assert.equal(JSON.stringify(mcpResponse).includes("eval-secret"), false);
 }
 
 async function testWorkflowV2InfoStackAndSessionBinding() {
@@ -14420,6 +14814,7 @@ try {
     ["workflow v2 adapter runner drain", testWorkflowV2AdapterRunnerDrain],
     ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
+    ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],
     ["workflow v2 info stack and session binding", testWorkflowV2InfoStackAndSessionBinding],
     ["workflow v2 worker spawn and lifecycle gates", testWorkflowV2WorkerSpawnAndLifecycleGates],
     ["workflow v2 autonomous loop runtime enforcement", testWorkflowV2AutonomousLoopRuntimeEnforcement],

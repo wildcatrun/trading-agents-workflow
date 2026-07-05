@@ -5801,6 +5801,201 @@ LIMIT ${deadLetterScanLimit};`) : [];
     };
   }
 
+  async templateList(query = {}) {
+    if (!(await tableExists(this.paths.dbFile, "workflow_v2_template_specs"))) {
+      return { schemaVersion: "workflow_template_console_list.v1", status: "missing_schema", count: 0, templates: [] };
+    }
+    const q = normalizeSearchQuery(query.q || query.query || "").toLowerCase();
+    const limit = clampLimit(query.limit, 100, 500);
+    const filters = [];
+    if (q) {
+      const needle = sqlValue(q);
+      filters.push(`(instr(lower(s.template_id), ${needle}) > 0 OR instr(lower(s.title), ${needle}) > 0 OR instr(lower(s.description), ${needle}) > 0 OR instr(lower(s.tags_json), ${needle}) > 0)`);
+    }
+    if (query.status) filters.push(`(s.family_status=${sqlValue(query.status)} OR latest.status=${sqlValue(query.status)})`);
+    if (query.ownerAgent || query.owner_agent) filters.push(`s.owner_agent=${sqlValue(query.ownerAgent || query.owner_agent)}`);
+    if (query.riskTier || query.risk_tier) filters.push(`s.risk_tier=${sqlValue(query.riskTier || query.risk_tier)}`);
+    const rows = await sqlite(this.paths.dbFile, `
+SELECT s.template_id, s.family_status, s.owner_agent, s.title, s.description, s.risk_tier, s.tags_json, s.default_version, s.active_version, s.updated_at,
+       latest.version AS latest_version, latest.status AS latest_status, latest.artifact_ref, latest.artifact_hash,
+       st.reward_score, st.eval_count, st.last_eval_at, st.rollback_target_version
+FROM workflow_v2_template_specs s
+LEFT JOIN workflow_v2_template_versions latest
+  ON latest.template_id=s.template_id
+  AND latest.version=(SELECT MAX(v.version) FROM workflow_v2_template_versions v WHERE v.template_id=s.template_id)
+LEFT JOIN workflow_v2_template_stats st ON st.template_id=s.template_id
+${filters.length ? `WHERE ${filters.map((item) => `(${item})`).join(" AND ")}` : ""}
+ORDER BY s.updated_at DESC
+LIMIT ${sqlValue(limit)};`);
+    return {
+      schemaVersion: "workflow_template_console_list.v1",
+      status: "ok",
+      count: rows.length,
+      templates: rows.map((row) => ({
+        templateId: redactText(row.template_id || ""),
+        title: redactText(row.title || ""),
+        description: redactText(compactText(row.description || "", 220)),
+        ownerAgent: redactText(row.owner_agent || ""),
+        familyStatus: row.family_status || "",
+        latestStatus: row.latest_status || "",
+        riskTier: row.risk_tier || "",
+        tags: redactConsoleValue(parseJson(row.tags_json, [])),
+        defaultVersion: toInt(row.default_version),
+        activeVersion: toInt(row.active_version),
+        latestVersion: toInt(row.latest_version),
+        score: row.reward_score === null || row.reward_score === undefined ? null : Number(row.reward_score),
+        evalCount: toInt(row.eval_count),
+        lastEvalAt: row.last_eval_at || "",
+        rollbackTargetVersion: toInt(row.rollback_target_version),
+        artifactRef: redactText(row.artifact_ref || ""),
+        artifactHash: row.artifact_hash || "",
+        updatedAt: row.updated_at || ""
+      }))
+    };
+  }
+
+  async templateStats(query = {}) {
+    if (!(await tableExists(this.paths.dbFile, "workflow_v2_template_stats"))) {
+      return { schemaVersion: "workflow_template_console_stats.v1", status: "missing_schema", count: 0, stats: [] };
+    }
+    const templateId = String(query.templateId || query.template_id || "").trim();
+    const where = templateId ? `WHERE st.template_id=${sqlValue(templateId)}` : "";
+    const rows = await sqlite(this.paths.dbFile, `
+SELECT st.*, s.title, s.family_status, s.risk_tier, s.default_version, s.active_version
+FROM workflow_v2_template_stats st
+LEFT JOIN workflow_v2_template_specs s ON s.template_id=st.template_id
+${where}
+ORDER BY st.updated_at DESC
+LIMIT ${sqlValue(clampLimit(query.limit, 100, 500))};`);
+    return {
+      schemaVersion: "workflow_template_console_stats.v1",
+      status: "ok",
+      count: rows.length,
+      stats: rows.map((row) => ({
+        templateId: redactText(row.template_id || ""),
+        title: redactText(row.title || ""),
+        familyStatus: row.family_status || "",
+        riskTier: row.risk_tier || "",
+        version: toInt(row.version),
+        score: row.reward_score === null || row.reward_score === undefined ? null : Number(row.reward_score),
+        evalCount: toInt(row.eval_count),
+        lastEvalAt: row.last_eval_at || "",
+        defaultVersion: toInt(row.default_version),
+        activeVersion: toInt(row.active_version),
+        rollbackTargetVersion: toInt(row.rollback_target_version),
+        metrics: redactConsoleValue(parseJson(row.metrics_json, {})),
+        updatedAt: row.updated_at || ""
+      }))
+    };
+  }
+
+  async templateDetail(templateId, query = {}) {
+    const id = String(templateId || query.templateId || query.template_id || "").trim();
+    if (!id) return { schemaVersion: "workflow_template_console_detail.v1", status: "missing_template_id", found: false };
+    if (!(await tableExists(this.paths.dbFile, "workflow_v2_template_specs"))) {
+      return { schemaVersion: "workflow_template_console_detail.v1", status: "missing_schema", found: false, templateId: id };
+    }
+    const familyRows = await sqlite(this.paths.dbFile, `SELECT * FROM workflow_v2_template_specs WHERE template_id=${sqlValue(id)} LIMIT 1;`);
+    const family = familyRows[0];
+    if (!family) return { schemaVersion: "workflow_template_console_detail.v1", status: "not_found", found: false, templateId: id };
+    const versionLimit = clampLimit(query.versionLimit || query.version_limit, 50, 200);
+    const evalLimit = clampLimit(query.evalLimit || query.eval_limit, 50, 200);
+    const eventLimit = clampLimit(query.eventLimit || query.event_limit, 80, 300);
+    const versions = await sqlite(this.paths.dbFile, `
+SELECT *
+FROM workflow_v2_template_versions
+WHERE template_id=${sqlValue(id)}
+ORDER BY version DESC
+LIMIT ${sqlValue(versionLimit)};`);
+    const evals = await sqlite(this.paths.dbFile, `
+SELECT *
+FROM workflow_v2_template_evals
+WHERE template_id=${sqlValue(id)}
+ORDER BY created_at DESC
+LIMIT ${sqlValue(evalLimit)};`);
+    const statsRows = await sqlite(this.paths.dbFile, `SELECT * FROM workflow_v2_template_stats WHERE template_id=${sqlValue(id)} LIMIT 1;`);
+    const events = await sqlite(this.paths.dbFile, `
+SELECT *
+FROM workflow_v2_template_events
+WHERE template_id=${sqlValue(id)}
+ORDER BY created_at DESC
+LIMIT ${sqlValue(eventLimit)};`);
+    return {
+      schemaVersion: "workflow_template_console_detail.v1",
+      status: "ok",
+      found: true,
+      templateId: redactText(id),
+      family: {
+        templateId: redactText(family.template_id || ""),
+        familyStatus: family.family_status || "",
+        ownerAgent: redactText(family.owner_agent || ""),
+        title: redactText(family.title || ""),
+        description: redactText(family.description || ""),
+        riskTier: family.risk_tier || "",
+        tags: redactConsoleValue(parseJson(family.tags_json, [])),
+        allowedCapabilities: redactConsoleValue(parseJson(family.allowed_capabilities_json, [])),
+        defaultVersion: toInt(family.default_version),
+        activeVersion: toInt(family.active_version),
+        payload: redactConsoleValue(parseJson(family.payload_json, {})),
+        createdAt: family.created_at || "",
+        updatedAt: family.updated_at || ""
+      },
+      versions: versions.map((row) => ({
+        templateId: redactText(row.template_id || ""),
+        version: toInt(row.version),
+        status: row.status || "",
+        artifactRef: redactText(row.artifact_ref || ""),
+        artifactHash: row.artifact_hash || "",
+        sourceWorkflowId: redactText(row.source_workflow_id || ""),
+        sourcePlanId: redactText(row.source_plan_id || ""),
+        promotionState: row.promotion_state || "",
+        payloadHash: row.payload_hash || "",
+        payload: redactConsoleValue(parseJson(row.payload_json, {})),
+        createdBy: redactText(row.created_by || ""),
+        createdAt: row.created_at || ""
+      })),
+      stats: statsRows[0] ? {
+        version: toInt(statsRows[0].version),
+        score: statsRows[0].reward_score === null || statsRows[0].reward_score === undefined ? null : Number(statsRows[0].reward_score),
+        evalCount: toInt(statsRows[0].eval_count),
+        lastEvalAt: statsRows[0].last_eval_at || "",
+        rollbackTargetVersion: toInt(statsRows[0].rollback_target_version),
+        metrics: redactConsoleValue(parseJson(statsRows[0].metrics_json, {})),
+        updatedAt: statsRows[0].updated_at || ""
+      } : null,
+      evals: evals.map((row) => ({
+        evalId: redactText(row.eval_id || ""),
+        version: toInt(row.version),
+        arm: row.arm || "",
+        fixtureArtifactRef: redactText(row.fixture_artifact_ref || ""),
+        fixtureHash: row.fixture_hash || "",
+        isolatedRoot: redactText(row.isolated_root || ""),
+        metrics: redactConsoleValue(parseJson(row.metrics_json, {})),
+        rewardScore: row.reward_score === null || row.reward_score === undefined ? null : Number(row.reward_score),
+        safetyFreeze: Boolean(Number(row.safety_freeze || 0)),
+        evidenceRefs: redactConsoleValue(parseJson(row.evidence_refs_json, [])),
+        payload: redactConsoleValue(parseJson(row.payload_json, {})),
+        createdBy: redactText(row.created_by || ""),
+        createdAt: row.created_at || ""
+      })),
+      events: events.map((row) => ({
+        eventId: redactText(row.event_id || ""),
+        version: toInt(row.version),
+        eventType: row.event_type || "",
+        previousVersion: toInt(row.previous_version),
+        nextVersion: toInt(row.next_version),
+        status: row.status || "",
+        actor: redactText(row.actor || ""),
+        humanGateId: redactText(row.human_gate_id || ""),
+        catBrainAuditId: redactText(row.cat_brain_audit_id || ""),
+        catClawAuditId: redactText(row.cat_claw_audit_id || ""),
+        evidenceRefs: redactConsoleValue(parseJson(row.evidence_refs_json, [])),
+        payload: redactConsoleValue(parseJson(row.payload_json, {})),
+        createdAt: row.created_at || ""
+      }))
+    };
+  }
+
   async readinessLatest() {
     if (!(await tableExists(this.paths.dbFile, "readiness_snapshots"))) return null;
     const rows = await sqlite(this.paths.dbFile, `

@@ -1,6 +1,6 @@
 # Workflow v2 Implementation Status
 
-Status: local orchestration kernel plus v2 worker lifecycle, audit-chain, and adapter-runner protocol slices implemented
+Status: local orchestration kernel plus v2 worker lifecycle, audit-chain, adapter-runner protocol, and template self-evolution slices implemented
 Updated: 2026-07-05
 Scope: `trading-agents-workflow`
 
@@ -40,11 +40,35 @@ first executable kernel slice for manager/worker orchestration:
 - `src/workflow-v2/constants.js` and `src/workflow-v2/helpers.js` for v2
   constants, normalization helpers, row summary mappers, lease/capacity helpers,
   and shared validation objects;
+- `src/workflow-v2/template.js` for `workflow_template_spec.v1`
+  normalization, validation, instantiation helpers, reward scoring, high-risk
+  detection, and redacted summaries;
+- local template registry/evaluation/promotion actions under
+  `workflow.template.*`, with template instantiation delegated back to
+  `workflow.v2.plan.preview/create`;
+- read-only console API routes and local Codex MCP tools for template
+  search/detail/stats visibility;
 - regression coverage for the v2 kernel, permission gate, console gate, and
   workflow-id consistency validator.
 
 This implementation is a local control-plane kernel. It does not start worker
 runtimes, Docker, WSL services, Gateway services, or production workflow queues.
+
+2026-07-05 local template self-evolution update: workflow v2 now has a local
+template layer above the existing plan rails. Canonical reusable templates are
+`workflow_template_spec.v1` JSON artifacts stored under
+`artifacts/workflow-v2/templates/<templateId>/v<version>.json`; instantiated
+plans remain `workflow_plan_spec.v2` and are persisted only through
+`workflow.v2.plan.create`. Template candidate recording writes registry rows,
+canonical artifacts, and artifact index entries. Evaluation writes immutable
+fixture artifacts plus append-only eval rows; reward scores update a summary
+cache but cannot promote a template. Promotion and rollback update family
+pointers and append events without deleting artifacts. High-risk default
+promotion requires Human Gate evidence in addition to Cat Brain/Cat Claw review
+evidence. Extraction from successful workflows always starts as `candidate` and
+refuses unresolved side-effect uncertainty. This local slice did not restart
+Gateway, sync the development-server active checkout, or enable automatic
+template selection for live workflows.
 
 2026-07-03 design correction: worker lifecycle renewal is now part of the v2
 design target, based on Anthropic's orchestrator-workers, multi-agent Research,
@@ -126,6 +150,14 @@ Read-only / preview:
 - `workflow.v2.cat_brain_audit.preview`
 - `workflow.v2.cat_claw_audit.preview`
 - `workflow.v2.validate`
+- `workflow.template.preview`
+- `workflow.template.search`
+- `workflow.template.get`
+- `workflow.template.instantiate.preview`
+- `workflow.template.eval.preview`
+- `workflow.template.stats.refresh`
+- `workflow.template.promote.preview`
+- `workflow.template.extract.preview`
 
 Local control-plane writes:
 
@@ -152,6 +184,12 @@ Local control-plane writes:
 - `workflow.v2.cat_brain_audit.record`
 - `workflow.v2.cat_claw_audit.record`
 - `workflow.v2.human_gate_package.record`
+- `workflow.template.record_candidate`
+- `workflow.template.instantiate.record`
+- `workflow.template.eval.record`
+- `workflow.template.promote.record`
+- `workflow.template.rollback.record`
+- `workflow.template.extract.record`
 
 The write actions record orchestration state only. `workflow.v2.adapter_runner.drain`
 can invoke an explicitly configured local external runner command in
@@ -215,6 +253,11 @@ The runtime schema now creates and migrates these v2 tables idempotently:
 - `workflow_v2_notifications`
 - `workflow_v2_human_gate_packages`
 - `workflow_v2_backend_preflights`
+- `workflow_v2_template_specs`
+- `workflow_v2_template_versions`
+- `workflow_v2_template_evals`
+- `workflow_v2_template_stats`
+- `workflow_v2_template_events`
 
 The local runtime migration now includes the minimal lifecycle subset: worker
 lineage fields, context budget/usage fields, compaction count, source context

@@ -235,6 +235,40 @@ def as_str_list(value: Any) -> list[str]:
     return [str(value).strip()]
 
 
+def redact_value(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value.replace("tawhg:", "tawhg:<redacted-prefix>")
+        for marker in ("token", "secret", "password", "api_key", "access_key", "refresh"):
+            lowered = text.lower()
+            index = lowered.find(marker)
+            if index >= 0:
+                return text[: index + len(marker)] + "=[redacted]"
+        return text
+    if isinstance(value, list):
+        return [redact_value(item) for item in value]
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(marker in lowered for marker in ("token", "secret", "password", "api_key", "access_key", "refresh", "callback")):
+                redacted[key] = "[redacted]"
+            else:
+                redacted[key] = redact_value(item)
+        return redacted
+    return value
+
+
+def parse_json_field(value: Any, fallback: Any) -> Any:
+    if value in (None, ""):
+        return fallback
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except json.JSONDecodeError:
+        return fallback
+
+
 def workflow_db_path(source: str) -> str:
     if source == "local":
         return str(workflow_db_file(local_state_root()))
@@ -639,6 +673,160 @@ def message_flows(args: dict[str, Any]) -> dict[str, Any]:
     )
     payload = {"source": source, "database": workflow_db_path(source), "limit": limit, "messageFlows": rows}
     audit({"event": "message_flows", "source": source, "count": len(rows.get("rows", []))})
+    return payload
+
+
+def workflow_template_search(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    limit = max(1, min(int(args.get("limit") or 50), 200))
+    q = str(args.get("q") or args.get("query") or "").strip().lower()
+    status = str(args.get("status") or "").strip()
+    owner = str(args.get("owner_agent") or args.get("ownerAgent") or "").strip()
+    risk_tier = str(args.get("risk_tier") or args.get("riskTier") or "").strip()
+    if not table_columns(source, "workflow_v2_template_specs"):
+        return {"source": source, "database": workflow_db_path(source), "exists": False, "templates": []}
+    where: list[str] = []
+    params: list[Any] = []
+    if q:
+        where.append("(instr(lower(s.template_id), ?) > 0 OR instr(lower(s.title), ?) > 0 OR instr(lower(s.description), ?) > 0 OR instr(lower(s.tags_json), ?) > 0)")
+        params.extend([q, q, q, q])
+    if status:
+        where.append("(s.family_status = ? OR latest.status = ?)")
+        params.extend([status, status])
+    if owner:
+        where.append("s.owner_agent = ?")
+        params.append(owner)
+    if risk_tier:
+        where.append("s.risk_tier = ?")
+        params.append(risk_tier)
+    sql = (
+        "SELECT s.template_id, s.family_status, s.owner_agent, s.title, s.description, s.risk_tier, s.tags_json, "
+        "s.default_version, s.active_version, s.updated_at, "
+        "latest.version AS latest_version, latest.status AS latest_status, latest.artifact_ref, latest.artifact_hash, "
+        "st.reward_score, st.eval_count, st.last_eval_at, st.rollback_target_version "
+        "FROM workflow_v2_template_specs s "
+        "LEFT JOIN workflow_v2_template_versions latest ON latest.template_id=s.template_id "
+        "AND latest.version=(SELECT MAX(v.version) FROM workflow_v2_template_versions v WHERE v.template_id=s.template_id) "
+        "LEFT JOIN workflow_v2_template_stats st ON st.template_id=s.template_id "
+    )
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY s.updated_at DESC LIMIT ?"
+    params.append(limit)
+    result = db_query(source, sql, params)
+    templates = []
+    for row in result.get("rows", []):
+        templates.append(redact_value({
+            "templateId": row.get("template_id", ""),
+            "title": row.get("title", ""),
+            "description": row.get("description", ""),
+            "ownerAgent": row.get("owner_agent", ""),
+            "familyStatus": row.get("family_status", ""),
+            "latestStatus": row.get("latest_status", ""),
+            "riskTier": row.get("risk_tier", ""),
+            "tags": parse_json_field(row.get("tags_json"), []),
+            "defaultVersion": row.get("default_version") or 0,
+            "activeVersion": row.get("active_version") or 0,
+            "latestVersion": row.get("latest_version") or 0,
+            "score": row.get("reward_score"),
+            "evalCount": row.get("eval_count") or 0,
+            "lastEvalAt": row.get("last_eval_at", ""),
+            "rollbackTargetVersion": row.get("rollback_target_version") or 0,
+            "artifactRef": row.get("artifact_ref", ""),
+            "artifactHash": row.get("artifact_hash", ""),
+            "updatedAt": row.get("updated_at", ""),
+        }))
+    payload = {"source": source, "database": workflow_db_path(source), "exists": True, "limit": limit, "templates": templates, "queryOk": result.get("ok"), "error": result.get("error")}
+    audit({"event": "workflow_template_search", "source": source, "count": len(templates)})
+    return payload
+
+
+def workflow_template_stats(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    template_id = str(args.get("template_id") or args.get("templateId") or "").strip()
+    limit = max(1, min(int(args.get("limit") or 50), 200))
+    if not table_columns(source, "workflow_v2_template_stats"):
+        return {"source": source, "database": workflow_db_path(source), "exists": False, "stats": []}
+    sql = (
+        "SELECT st.*, s.title, s.family_status, s.risk_tier, s.default_version, s.active_version "
+        "FROM workflow_v2_template_stats st "
+        "LEFT JOIN workflow_v2_template_specs s ON s.template_id=st.template_id"
+    )
+    params: list[Any] = []
+    if template_id:
+        sql += " WHERE st.template_id = ?"
+        params.append(template_id)
+    sql += " ORDER BY st.updated_at DESC LIMIT ?"
+    params.append(limit)
+    result = db_query(source, sql, params)
+    stats = []
+    for row in result.get("rows", []):
+        stats.append(redact_value({
+            "templateId": row.get("template_id", ""),
+            "title": row.get("title", ""),
+            "familyStatus": row.get("family_status", ""),
+            "riskTier": row.get("risk_tier", ""),
+            "version": row.get("version") or 0,
+            "score": row.get("reward_score"),
+            "evalCount": row.get("eval_count") or 0,
+            "lastEvalAt": row.get("last_eval_at", ""),
+            "defaultVersion": row.get("default_version") or 0,
+            "activeVersion": row.get("active_version") or 0,
+            "rollbackTargetVersion": row.get("rollback_target_version") or 0,
+            "metrics": parse_json_field(row.get("metrics_json"), {}),
+            "updatedAt": row.get("updated_at", ""),
+        }))
+    payload = {"source": source, "database": workflow_db_path(source), "exists": True, "stats": stats, "queryOk": result.get("ok"), "error": result.get("error")}
+    audit({"event": "workflow_template_stats", "source": source, "count": len(stats)})
+    return payload
+
+
+def workflow_template_get(args: dict[str, Any]) -> dict[str, Any]:
+    source = str(args.get("source") or "local").strip()
+    template_id = str(args.get("template_id") or args.get("templateId") or "").strip()
+    if not template_id:
+        raise ValueError("template_id is required")
+    if not table_columns(source, "workflow_v2_template_specs"):
+        return {"source": source, "database": workflow_db_path(source), "exists": False, "found": False, "templateId": template_id}
+    family_result = db_query(source, "SELECT * FROM workflow_v2_template_specs WHERE template_id = ? LIMIT 1", [template_id])
+    family = family_result.get("rows", [None])[0] if family_result.get("rows") else None
+    if not family:
+        return {"source": source, "database": workflow_db_path(source), "exists": True, "found": False, "templateId": template_id}
+    version_limit = max(1, min(int(args.get("version_limit") or args.get("versionLimit") or 50), 200))
+    eval_limit = max(1, min(int(args.get("eval_limit") or args.get("evalLimit") or 50), 200))
+    event_limit = max(1, min(int(args.get("event_limit") or args.get("eventLimit") or 80), 300))
+    versions = db_query(
+        source,
+        "SELECT * FROM workflow_v2_template_versions WHERE template_id = ? ORDER BY version DESC LIMIT ?",
+        [template_id, version_limit],
+    ).get("rows", [])
+    evals = db_query(
+        source,
+        "SELECT * FROM workflow_v2_template_evals WHERE template_id = ? ORDER BY created_at DESC LIMIT ?",
+        [template_id, eval_limit],
+    ).get("rows", [])
+    stats = db_query(
+        source,
+        "SELECT * FROM workflow_v2_template_stats WHERE template_id = ? LIMIT 1",
+        [template_id],
+    ).get("rows", [])
+    events = db_query(
+        source,
+        "SELECT * FROM workflow_v2_template_events WHERE template_id = ? ORDER BY created_at DESC LIMIT ?",
+        [template_id, event_limit],
+    ).get("rows", [])
+    payload = {
+        "source": source,
+        "database": workflow_db_path(source),
+        "exists": True,
+        "found": True,
+        "family": redact_value({**family, "tags": parse_json_field(family.get("tags_json"), []), "payload": parse_json_field(family.get("payload_json"), {})}),
+        "versions": redact_value([{**row, "payload": parse_json_field(row.get("payload_json"), {})} for row in versions]),
+        "stats": redact_value([{**row, "metrics": parse_json_field(row.get("metrics_json"), {})} for row in stats]),
+        "evals": redact_value([{**row, "metrics": parse_json_field(row.get("metrics_json"), {}), "evidenceRefs": parse_json_field(row.get("evidence_refs_json"), [])} for row in evals]),
+        "events": redact_value([{**row, "evidenceRefs": parse_json_field(row.get("evidence_refs_json"), []), "payload": parse_json_field(row.get("payload_json"), {})} for row in events]),
+    }
+    audit({"event": "workflow_template_get", "source": source, "template_id": template_id})
     return payload
 
 
@@ -1150,6 +1338,55 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "workflow_template_search": {
+        "description": "Read-only search over workflow v2 template registry rows, versions, and cached stats.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "q": {"type": "string"},
+                "query": {"type": "string"},
+                "status": {"type": "string"},
+                "owner_agent": {"type": "string"},
+                "ownerAgent": {"type": "string"},
+                "risk_tier": {"type": "string"},
+                "riskTier": {"type": "string"},
+                "limit": {"type": "number"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "workflow_template_get": {
+        "description": "Read-only template detail including family row, versions, evals, stats, and events.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "template_id": {"type": "string"},
+                "templateId": {"type": "string"},
+                "version_limit": {"type": "number"},
+                "versionLimit": {"type": "number"},
+                "eval_limit": {"type": "number"},
+                "evalLimit": {"type": "number"},
+                "event_limit": {"type": "number"},
+                "eventLimit": {"type": "number"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "workflow_template_stats": {
+        "description": "Read-only workflow v2 template stats cache, including score, eval count, and rollback target.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["local", "remote"]},
+                "template_id": {"type": "string"},
+                "templateId": {"type": "string"},
+                "limit": {"type": "number"},
+            },
+            "additionalProperties": False,
+        },
+    },
     "workflow_message_flow_send": {
         "description": "Create governed message_flow dispatches for agent-to-agent notices through trading-agents-workflow. Mutates workflow state.",
         "inputSchema": {
@@ -1441,6 +1678,12 @@ def handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
                 payload = receipts(arguments)
             elif name == "workflow_message_flows":
                 payload = message_flows(arguments)
+            elif name == "workflow_template_search":
+                payload = workflow_template_search(arguments)
+            elif name == "workflow_template_get":
+                payload = workflow_template_get(arguments)
+            elif name == "workflow_template_stats":
+                payload = workflow_template_stats(arguments)
             elif name == "workflow_message_flow_send":
                 payload = message_flow_send(arguments)
             elif name == "workflow_task_draft":

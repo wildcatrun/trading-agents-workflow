@@ -45,7 +45,21 @@ export const WORKFLOW_V2_ACTION_HANDLER_NAMES = {
   "workflow.v2.human_gate_package.record": "workflowV2HumanGatePackageRecord",
   "workflow.v2.human_gate_request.preview": "workflowV2HumanGateRequestPreview",
   "workflow.v2.human_gate_request": "workflowV2HumanGateRequest",
-  "workflow.v2.validate": "workflowV2Validate"
+  "workflow.v2.validate": "workflowV2Validate",
+  "workflow.template.preview": "workflowTemplatePreview",
+  "workflow.template.record_candidate": "workflowTemplateRecordCandidate",
+  "workflow.template.search": "workflowTemplateSearch",
+  "workflow.template.get": "workflowTemplateGet",
+  "workflow.template.instantiate.preview": "workflowTemplateInstantiatePreview",
+  "workflow.template.instantiate.record": "workflowTemplateInstantiateRecord",
+  "workflow.template.eval.preview": "workflowTemplateEvalPreview",
+  "workflow.template.eval.record": "workflowTemplateEvalRecord",
+  "workflow.template.stats.refresh": "workflowTemplateStatsRefresh",
+  "workflow.template.promote.preview": "workflowTemplatePromotePreview",
+  "workflow.template.promote.record": "workflowTemplatePromoteRecord",
+  "workflow.template.rollback.record": "workflowTemplateRollbackRecord",
+  "workflow.template.extract.preview": "workflowTemplateExtractPreview",
+  "workflow.template.extract.record": "workflowTemplateExtractRecord"
 };
 
 export function createWorkflowV2ActionRegistry(handlers = {}) {

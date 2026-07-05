@@ -263,8 +263,9 @@ Local landed shape:
 
 ## Track V2.5: Workflow Self-Evolution
 
-Status: design package drafted on 2026-07-05; implementation requires separate
-Flashcat authorization.
+Status: design package drafted and local implementation slice landed on
+2026-07-05. No development-server active checkout sync, Gateway restart, or
+automatic live template selection has been performed.
 
 The self-evolution layer should turn successful `workflow_plan_spec.v2` runs
 into governed reusable templates, evaluate template versions, and promote or
@@ -276,7 +277,7 @@ Design package:
 - `docs/workflow-v2-self-evolution-skill.md`
 - `docs/workflow-v2-self-evolution-implementation-plan.md`
 
-Design target:
+Local landed shape:
 
 - templates are governed JSON artifacts, not arbitrary JavaScript scripts;
 - template registry DB rows index artifact refs, versions, permissions, evals,
@@ -285,10 +286,21 @@ Design target:
 - existing worker lifecycle, autonomous-loop, evaluator, owner review, Cat
   Brain, Cat Claw, Human Gate, and side-effect gates remain authoritative;
 - reward scores guide promotion but cannot override policy or Human Gate.
+- canonical template artifacts live under
+  `artifacts/workflow-v2/templates/<templateId>/v<version>.json`;
+- actions are exposed under `workflow.template.*` for preview, candidate
+  recording, search/get, instantiation, eval, stats refresh, promotion,
+  rollback, and extraction;
+- console API and local Codex MCP expose read-only template search/detail/stats;
+- extraction starts as `candidate` and refuses unresolved side-effect
+  uncertainty;
+- high-risk default promotion requires Human Gate evidence.
 
-Initial implementation, if authorized, should start with pure helper/schema
-validation only. It should not migrate the development-server database, deploy
-to the active checkout, restart Gateway, or enable default template selection.
+Remaining work:
+
+- sync only through Git/GitHub and `git pull --ff-only` after local review;
+- do not enable automatic default template selection for live workflows until
+  separate rollout evidence and Human Gate approval exist.
 
 ## Documentation Rules
 

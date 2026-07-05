@@ -791,3 +791,83 @@ CREATE INDEX idx_mixed_dispatches_retry ON mixed_meeting_dispatches(status, next
 CREATE INDEX idx_side_effects_idempotency ON side_effect_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';
 CREATE INDEX idx_incident_states_status ON incident_states(status, updated_at DESC);
 CREATE INDEX idx_readiness_snapshots_checked ON readiness_snapshots(checked_at DESC);
+CREATE TABLE workflow_v2_template_specs (
+  template_id TEXT PRIMARY KEY,
+  family_status TEXT NOT NULL DEFAULT 'active',
+  owner_agent TEXT NOT NULL DEFAULT 'main',
+  title TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  risk_tier TEXT NOT NULL DEFAULT 'medium',
+  tags_json TEXT NOT NULL DEFAULT '[]',
+  allowed_capabilities_json TEXT NOT NULL DEFAULT '[]',
+  default_version INTEGER NOT NULL DEFAULT 0,
+  active_version INTEGER NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE workflow_v2_template_versions (
+  template_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'candidate',
+  artifact_ref TEXT NOT NULL,
+  artifact_hash TEXT NOT NULL,
+  source_workflow_id TEXT NOT NULL DEFAULT '',
+  source_plan_id TEXT NOT NULL DEFAULT '',
+  source_plan_artifact_ref TEXT NOT NULL DEFAULT '',
+  source_plan_artifact_hash TEXT NOT NULL DEFAULT '',
+  promotion_state TEXT NOT NULL DEFAULT 'candidate',
+  payload_hash TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(template_id, version)
+);
+CREATE TABLE workflow_v2_template_evals (
+  eval_id TEXT PRIMARY KEY,
+  template_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  arm TEXT NOT NULL DEFAULT 'candidate_version',
+  fixture_artifact_ref TEXT NOT NULL DEFAULT '',
+  fixture_hash TEXT NOT NULL DEFAULT '',
+  isolated_root TEXT NOT NULL DEFAULT '',
+  metrics_json TEXT NOT NULL DEFAULT '{}',
+  reward_score REAL,
+  safety_freeze INTEGER NOT NULL DEFAULT 0,
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE workflow_v2_template_stats (
+  template_id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL DEFAULT 0,
+  reward_score REAL,
+  eval_count INTEGER NOT NULL DEFAULT 0,
+  last_eval_at TEXT NOT NULL DEFAULT '',
+  rollback_target_version INTEGER NOT NULL DEFAULT 0,
+  metrics_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE workflow_v2_template_events (
+  event_id TEXT PRIMARY KEY,
+  template_id TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  event_type TEXT NOT NULL,
+  previous_version INTEGER NOT NULL DEFAULT 0,
+  next_version INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT '',
+  actor TEXT NOT NULL DEFAULT '',
+  human_gate_id TEXT NOT NULL DEFAULT '',
+  cat_brain_audit_id TEXT NOT NULL DEFAULT '',
+  cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_workflow_v2_template_specs_status ON workflow_v2_template_specs(family_status, updated_at DESC);
+CREATE INDEX idx_workflow_v2_template_specs_owner ON workflow_v2_template_specs(owner_agent, updated_at DESC);
+CREATE INDEX idx_workflow_v2_template_versions_status ON workflow_v2_template_versions(status, created_at DESC);
+CREATE INDEX idx_workflow_v2_template_versions_artifact ON workflow_v2_template_versions(artifact_hash);
+CREATE INDEX idx_workflow_v2_template_evals_template ON workflow_v2_template_evals(template_id, version, created_at DESC);
+CREATE INDEX idx_workflow_v2_template_events_template ON workflow_v2_template_events(template_id, created_at DESC);
