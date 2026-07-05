@@ -19,6 +19,7 @@ import {
   HUMAN_GATE_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
+  SIDE_EFFECT_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
   humanGateInbox,
@@ -26,6 +27,7 @@ import {
   messageFlowReconcile,
   protocolRecord,
   messageFlowSend,
+  sideEffectRecord,
   telegramOutbox,
   telegramOutboxDelivery,
   telegramOutboxDeliveryPreview,
@@ -41,6 +43,10 @@ import {
   PROTOCOL_ACTION_HANDLER_NAMES,
   createProtocolActionRegistry
 } from "../src/protocol-actions.js";
+import {
+  SIDE_EFFECT_ACTION_HANDLER_NAMES,
+  createSideEffectActionRegistry
+} from "../src/side-effect-actions.js";
 import {
   TRADE_ACTION_HANDLER_NAMES,
   createTradeActionRegistry
@@ -9056,6 +9062,116 @@ LIMIT 1;`);
   assert.equal(payload.payload.raw.note, "regression");
 }
 
+async function testSideEffectExtractedActionContracts() {
+  for (const action of [
+    "side_effect.record",
+    "side_effect.ledger"
+  ]) {
+    assert.equal(SIDE_EFFECT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted side_effect registry`);
+    assert.equal(SIDE_EFFECT_ACTION_HANDLER_NAMES[action], "sideEffectRecord", `${action} should map to the extracted sideEffectRecord handler`);
+  }
+  assert.equal(typeof sideEffectRecord, "function");
+  const directRegistry = createSideEffectActionRegistry({ sideEffectRecord });
+  assert.equal(directRegistry.get("side_effect.record"), sideEffectRecord);
+  assert.equal(directRegistry.get("side_effect.ledger"), sideEffectRecord);
+
+  const root = await tempRoot("side-effect-extracted-contracts");
+  const result = await runAction(root, {
+    action: "side_effect.ledger",
+    sideEffectId: "side-effect-extracted-contract",
+    workflowId: "wf-side-effect-extracted",
+    traceId: "trace-side-effect-extracted",
+    dispatchId: "dispatch-side-effect-extracted",
+    idempotencyKey: "idem-side-effect-extracted",
+    ownerAgent: "cat_claw",
+    sideEffectType: "external_notification",
+    status: "confirmed",
+    artifactRef: "artifact://side-effect-extracted",
+    outputHash: "sha256:known-output",
+    payload: {
+      apiSecret: "should-not-persist",
+      nested: {
+        token: "nested-secret",
+        note: "safe"
+      }
+    }
+  });
+
+  assert.equal(result.sideEffectId, "side-effect-extracted-contract");
+  assert.equal(result.sideEffectType, "external_notification");
+  assert.equal(result.status, "confirmed");
+
+  const ledgerRows = sqliteJson(result.dbFile, `
+SELECT side_effect_id, workflow_id, trace_id, dispatch_id, idempotency_key, owner_agent, side_effect_type, status, artifact_ref, output_hash, payload_json
+FROM side_effect_ledger
+WHERE side_effect_id='side-effect-extracted-contract'
+LIMIT 1;`);
+  assert.equal(ledgerRows.length, 1);
+  assert.equal(ledgerRows[0].workflow_id, "wf-side-effect-extracted");
+  assert.equal(ledgerRows[0].trace_id, "trace-side-effect-extracted");
+  assert.equal(ledgerRows[0].dispatch_id, "dispatch-side-effect-extracted");
+  assert.equal(ledgerRows[0].idempotency_key, "idem-side-effect-extracted");
+  assert.equal(ledgerRows[0].owner_agent, "cat_claw");
+  assert.equal(ledgerRows[0].side_effect_type, "external_notification");
+  assert.equal(ledgerRows[0].status, "confirmed");
+  assert.equal(ledgerRows[0].artifact_ref, "artifact://side-effect-extracted");
+  assert.equal(ledgerRows[0].output_hash, "sha256:known-output");
+  const payload = JSON.parse(ledgerRows[0].payload_json);
+  assert.equal(payload.apiSecret, "[redacted]");
+  assert.equal(payload.nested.token, "[redacted]");
+  assert.equal(payload.nested.note, "safe");
+
+  const eventRows = sqliteJson(result.dbFile, `
+SELECT event_type, workflow_id, trace_id, dispatch_id, actor, source_agent, next_state, artifact_ref, payload_json
+FROM workflow_events
+WHERE event_type='side_effect.recorded' AND side_effect_id='side-effect-extracted-contract'
+LIMIT 1;`);
+  assert.equal(eventRows.length, 1);
+  assert.equal(eventRows[0].workflow_id, "wf-side-effect-extracted");
+  assert.equal(eventRows[0].trace_id, "trace-side-effect-extracted");
+  assert.equal(eventRows[0].dispatch_id, "dispatch-side-effect-extracted");
+  assert.equal(eventRows[0].actor, "cat_claw");
+  assert.equal(eventRows[0].source_agent, "cat_claw");
+  assert.equal(eventRows[0].next_state, "confirmed");
+  assert.equal(eventRows[0].artifact_ref, "artifact://side-effect-extracted");
+  const eventPayload = JSON.parse(eventRows[0].payload_json);
+  assert.equal(eventPayload.sideEffectType, "external_notification");
+  assert.equal(eventPayload.outputHash, "sha256:known-output");
+  assert.equal(JSON.stringify(eventPayload).includes("should-not-persist"), false);
+  assert.equal(JSON.stringify(eventPayload).includes("nested-secret"), false);
+
+  const retryResult = await runAction(root, {
+    action: "side_effect.record",
+    sideEffectId: "side-effect-extracted-contract",
+    workflowId: "wf-side-effect-extracted",
+    traceId: "trace-side-effect-extracted",
+    dispatchId: "dispatch-side-effect-extracted",
+    ownerAgent: "cat_claw",
+    sideEffectType: "external_notification",
+    status: "resolved",
+    payload: {
+      apiSecret: "retry-secret",
+      nested: {
+        token: "retry-token"
+      }
+    }
+  });
+  assert.equal(retryResult.status, "resolved");
+  assert.equal(sqliteCount(result.dbFile, "side_effect_ledger", "side_effect_id='side-effect-extracted-contract'"), 1);
+  const retryRows = sqliteJson(result.dbFile, `
+SELECT status, artifact_ref, output_hash, payload_json
+FROM side_effect_ledger
+WHERE side_effect_id='side-effect-extracted-contract'
+LIMIT 1;`);
+  assert.equal(retryRows[0].status, "resolved");
+  assert.equal(retryRows[0].artifact_ref, "artifact://side-effect-extracted");
+  assert.equal(retryRows[0].output_hash, "sha256:known-output");
+  const retryPayload = JSON.parse(retryRows[0].payload_json);
+  assert.equal(retryPayload.apiSecret, "[redacted]");
+  assert.equal(retryPayload.nested.token, "[redacted]");
+  assert.equal(sqliteCount(result.dbFile, "workflow_events", "event_type='side_effect.recorded' AND side_effect_id='side-effect-extracted-contract'"), 2);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -15501,6 +15617,7 @@ try {
     ["human_gate inbox extracted action contracts", testHumanGateInboxExtractedActionContracts],
     ["protocol record extracted action contracts", testProtocolRecordExtractedActionContracts],
     ["trade proposal extracted action contracts", testTradeProposalExtractedActionContracts],
+    ["side_effect extracted action contracts", testSideEffectExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
