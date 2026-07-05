@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { buildConsoleConfig, workflowChildPayload } from "../src/console/server.js";
+import { buildConsoleConfig, createConsoleServer, operatorActionSignatureOk, workflowChildPayload } from "../src/console/server.js";
 import { WorkflowActionGateway } from "../src/console/action-gateway.js";
 import { WorkflowReadModel } from "../src/console/read-model.js";
 import { kanbanPreviewActionModel } from "../static/console/preview-actions.js";
@@ -3545,6 +3545,207 @@ function workflowV2KernelWorkerInput(fixture, overrides = {}) {
     network: v2KernelNetwork(),
     ...overrides
   };
+}
+
+async function testWorkflowV2ExtractedActionContracts() {
+  const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-extracted-action-contracts");
+  const { root, dbFile, workflowId } = fixture;
+  const workflowModule = await import("../src/workflow.js");
+  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowV2Validate"]) {
+    assert.equal(typeof workflowModule[exportName], "function", `${exportName} should remain a public workflow.js export`);
+  }
+  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.v2.validate"]) {
+    assert.equal(workflowModule.WORKFLOW_V2_ACTION_REGISTRY.has(action), true, `${action} should remain registered`);
+  }
+
+  const worker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-extracted-contract",
+    contextBudgetTokens: 1000,
+    payload: { outputSummary: "Deterministic extracted-action contract output." }
+  }));
+  assert.equal(worker.valid, true);
+  const generatedAt = "2026-07-05T00:00:00.000Z";
+  const preview = await runAction(root, {
+    action: "workflow.v2.control_loop.preview",
+    workflowId,
+    generatedAt,
+    limit: 5
+  });
+  assert.deepEqual(Object.keys(preview).sort(), [
+    "counts",
+    "dbFile",
+    "dryRun",
+    "generatedAt",
+    "ok",
+    "operation",
+    "previewOnly",
+    "runnableWorkers",
+    "status"
+  ].sort());
+  assert.equal(preview.operation, "workflow.v2.control_loop.preview");
+  assert.equal(preview.dryRun, true);
+  assert.equal(preview.previewOnly, true);
+  assert.equal(preview.status, "ok");
+  assert.equal(preview.ok, true);
+  assert.equal(preview.generatedAt, generatedAt);
+  assert.deepEqual(Object.keys(preview.counts).sort(), [
+    "due",
+    "expired_leases",
+    "invalid_preflight",
+    "queued",
+    "retry_scheduled",
+    "running",
+    "submitted_for_review",
+    "terminal",
+    "total"
+  ].sort());
+  assert.equal(Number(preview.counts.due), 1);
+  assert.equal(preview.runnableWorkers.length, 1);
+  assert.deepEqual(Object.keys(preview.runnableWorkers[0]).sort(), [
+    "attempt",
+    "completedAt",
+    "compactionCount",
+    "contextBudgetTokens",
+    "contextUsedTokens",
+    "createdAt",
+    "handoffInfoId",
+    "lastError",
+    "leaseOwner",
+    "leaseUntil",
+    "managerAgent",
+    "maxAttempts",
+    "nextRetryAt",
+    "nodeId",
+    "outputInfoId",
+    "parentWorkerRunId",
+    "planId",
+    "preflightId",
+    "receiptRef",
+    "runtimeBackend",
+    "sessionId",
+    "sessionRunId",
+    "sourceContextRefs",
+    "startedAt",
+    "status",
+    "successorWorkerRunId",
+    "supersedesWorkerRunId",
+    "taskInputInfoId",
+    "updatedAt",
+    "workerAgentId",
+    "workerGeneration",
+    "workerRunId",
+    "workflowId"
+  ].sort());
+  assert.equal(preview.runnableWorkers[0].workerRunId, worker.workerRun.workerRunId);
+  assert.equal(preview.runnableWorkers[0].runtimeBackend, "local_deterministic");
+
+  const dryRunTick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    generatedAt,
+    dryRun: true
+  });
+  assert.equal(dryRunTick.operation, "workflow.v2.control_loop.preview");
+  assert.equal(dryRunTick.previewOnly, true);
+  assert.equal(Number(dryRunTick.counts.due), 1);
+
+  const tick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-extracted-contract",
+    workerLeaseMs: 60_000,
+    generatedAt
+  });
+  assert.deepEqual(Object.keys(tick).sort(), [
+    "claimedWorkers",
+    "counts",
+    "dbFile",
+    "dryRun",
+    "expiredLeases",
+    "generatedAt",
+    "ok",
+    "operation",
+    "previewOnly",
+    "status",
+    "workerResults"
+  ].sort());
+  assert.equal(tick.operation, "workflow.v2.control_loop.tick");
+  assert.equal(tick.status, "ok");
+  assert.equal(tick.ok, true);
+  assert.equal(tick.dryRun, false);
+  assert.equal(tick.previewOnly, false);
+  assert.equal(tick.generatedAt, generatedAt);
+  assert.deepEqual(tick.expiredLeases, []);
+  assert.equal(tick.claimedWorkers.length, 1);
+  assert.equal(tick.claimedWorkers[0].workerRunId, worker.workerRun.workerRunId);
+  assert.equal(tick.claimedWorkers[0].status, "running");
+  assert.equal(tick.claimedWorkers[0].leaseOwner, "test-v2-extracted-contract");
+  assert.equal(tick.workerResults.length, 1);
+  assert.deepEqual(Object.keys(tick.workerResults[0]).sort(), [
+    "artifactFile",
+    "artifactRef",
+    "autonomousLoop",
+    "outputInfoId",
+    "receiptRef",
+    "status",
+    "workerRunId"
+  ].sort());
+  assert.equal(tick.workerResults[0].workerRunId, worker.workerRun.workerRunId);
+  assert.equal(tick.workerResults[0].status, "submitted_for_review");
+  assert.equal(tick.workerResults[0].autonomousLoop, null);
+  assert.equal(await pathExists(tick.workerResults[0].artifactFile), true);
+  assert.equal(Number(tick.counts.due), 0);
+  const workerRow = sqliteJson(dbFile, `
+SELECT status, attempt, output_info_id AS outputInfoId, receipt_ref AS receiptRef, lease_owner AS leaseOwner, lease_until AS leaseUntil, completed_at AS completedAt
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='${worker.workerRun.workerRunId}'
+LIMIT 1;`)[0];
+  assert.equal(workerRow.status, "submitted_for_review");
+  assert.equal(workerRow.attempt, 1);
+  assert.equal(workerRow.outputInfoId, tick.workerResults[0].outputInfoId);
+  assert.equal(workerRow.receiptRef, tick.workerResults[0].receiptRef);
+  assert.equal(workerRow.leaseOwner, "");
+  assert.equal(workerRow.leaseUntil, "");
+  assert.equal(workerRow.completedAt, generatedAt);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", `info_id='${tick.workerResults[0].outputInfoId}' AND worker_run_id='${worker.workerRun.workerRunId}'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${worker.workerRun.sessionRunId}' AND status='completed' AND receipt_ref='${tick.workerResults[0].receiptRef}'`), 1);
+
+  const validate = await runAction(root, {
+    action: "workflow.v2.validate",
+    workflowId
+  });
+  assert.deepEqual(Object.keys(validate).sort(), [
+    "advisoryChecks",
+    "advisoryCount",
+    "advisoryFindings",
+    "checks",
+    "dbFile",
+    "dryRun",
+    "failedChecks",
+    "missingSchema",
+    "ok",
+    "operation",
+    "previewOnly",
+    "schema",
+    "status"
+  ].sort());
+  assert.equal(validate.operation, "workflow.v2.validate");
+  assert.equal(validate.dryRun, true);
+  assert.equal(validate.previewOnly, true);
+  assert.equal(validate.status, "pass");
+  assert.equal(validate.ok, true);
+  assert.deepEqual(validate.failedChecks, []);
+  assert.deepEqual(validate.missingSchema, []);
+  assert.equal(validate.schema.workflow_v2_worker_runs.exists, true);
+  assert.equal(validate.schema.workflow_v2_worker_runs.requiredColumnsPresent, true);
+  for (const checkId of [
+    "worker_runs_require_valid_preflight",
+    "worker_runs_session_runs_match",
+    "worker_run_control_lifecycle_fields",
+    "worker_run_output_info_exists"
+  ]) {
+    assert.equal(validate.checks.find((item) => item.checkId === checkId)?.status, "pass", `${checkId} should pass`);
+  }
 }
 
 async function setupWorkflowV2SubmittedWorkerFixture(name = "workflow-v2-submitted-worker", overrides = {}) {
@@ -14145,9 +14346,52 @@ async function testWorkflowConsoleConfigOperatorPolicyModes() {
 
   const allowWritesConfig = buildConsoleConfig(paths, { readOnly: false, allowWrites: true, serverTime: "2026-01-01T00:00:00.000Z" });
   assert.equal(allowWritesConfig.actionMode, "allowlisted");
-  assert.equal(allowWritesConfig.operatorPolicy.writeActions, "allowlisted_by_gateway");
+  assert.equal(allowWritesConfig.operatorPolicy.writeActions, "allowlisted_by_gateway_with_signed_operator_action");
+  assert.equal(allowWritesConfig.operatorPolicy.signedOperatorAction, "required_for_api_actions");
+  assert.equal(allowWritesConfig.securityBoundaries.some((row) => row.key === "token_required_for_non_loopback_or_writes"), true);
+  assert.equal(allowWritesConfig.securityBoundaries.some((row) => row.key === "signed_operator_action" && row.status === "enforced"), true);
   assert.equal(allowWritesConfig.allowedViews.includes("active"), true);
   assert.equal(allowWritesConfig.allowedConsoleViews.includes("operations"), true);
+
+  const securityRoot = await tempRoot("console-security-fail-closed");
+  assert.throws(
+    () => createConsoleServer({ rootDir: securityRoot, host: "0.0.0.0", readOnly: true, allowWrites: false }),
+    /WORKFLOW_CONSOLE_TOKEN is required/
+  );
+  assert.throws(
+    () => createConsoleServer({ rootDir: securityRoot, host: "127.0.0.1", readOnly: false, allowWrites: true }),
+    /WORKFLOW_CONSOLE_TOKEN is required/
+  );
+  assert.throws(
+    () => createConsoleServer({ rootDir: securityRoot, host: "127.0.0.1", readOnly: false, allowWrites: true, token: "test-token" }),
+    /WORKFLOW_CONSOLE_OPERATOR_SIGNING_SECRET is required/
+  );
+  const securedServer = createConsoleServer({
+    rootDir: securityRoot,
+    host: "127.0.0.1",
+    readOnly: false,
+    allowWrites: true,
+    token: "test-token",
+    operatorSigningSecret: "test-signing-secret"
+  });
+  assert.equal(securedServer.options.token, "test-token");
+  assert.equal(securedServer.options.operatorSigningSecret, "test-signing-secret");
+  const body = JSON.stringify({ action: "workflow.v2.validate", payload: {} });
+  assert.equal(operatorActionSignatureOk({ headers: {} }, securedServer.options, body).error, "operator_signature_required");
+  const timestamp = new Date().toISOString();
+  const signature = createHmac("sha256", "test-signing-secret").update(`${timestamp}.${body}`).digest("hex");
+  assert.equal(operatorActionSignatureOk({
+    headers: {
+      "x-workflow-operator-timestamp": timestamp,
+      "x-workflow-operator-signature": `sha256=${signature}`
+    }
+  }, securedServer.options, body).ok, true);
+  assert.equal(operatorActionSignatureOk({
+    headers: {
+      "x-workflow-operator-timestamp": timestamp,
+      "x-workflow-operator-signature": "sha256=0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }, securedServer.options, body).error, "operator_signature_mismatch");
 
   const evidenceRoot = await tempRoot("console-release-quality-evidence");
   const evidenceDir = path.join(evidenceRoot, "artifacts", "console-release-quality");
@@ -14816,6 +15060,7 @@ try {
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],
     ["workflow v2 info stack and session binding", testWorkflowV2InfoStackAndSessionBinding],
+    ["workflow v2 extracted action contracts", testWorkflowV2ExtractedActionContracts],
     ["workflow v2 worker spawn and lifecycle gates", testWorkflowV2WorkerSpawnAndLifecycleGates],
     ["workflow v2 autonomous loop runtime enforcement", testWorkflowV2AutonomousLoopRuntimeEnforcement],
     ["workflow v2 evaluator optimizer contract", testWorkflowV2EvaluatorOptimizerContractFocused],
