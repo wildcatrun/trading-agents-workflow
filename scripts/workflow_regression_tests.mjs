@@ -24,6 +24,7 @@ import {
   RESEARCH_ACTION_REGISTRY,
   SIDE_EFFECT_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
+  TOPOLOGY_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
   cat_clawAudit,
   humanGateInbox,
@@ -44,6 +45,8 @@ import {
   telegramOutboxRequeueExecutionPackagePreview,
   telegramOutboxRequeuePreview,
   thesisUpdate,
+  workflowRuntimeAgents,
+  workflowTopology,
   tradeProposal
 } from "../src/workflow.js";
 import {
@@ -70,6 +73,10 @@ import {
   SIDE_EFFECT_ACTION_HANDLER_NAMES,
   createSideEffectActionRegistry
 } from "../src/side-effect-actions.js";
+import {
+  TOPOLOGY_ACTION_HANDLER_NAMES,
+  createTopologyActionRegistry
+} from "../src/topology-actions.js";
 import {
   TRADE_ACTION_HANDLER_NAMES,
   createTradeActionRegistry
@@ -9588,6 +9595,73 @@ async function testCatClawExtractedActionContracts() {
   assert.equal(content.includes("fundamental=null"), true);
 }
 
+async function testTopologyExtractedActionContracts() {
+  const expectedHandlers = {
+    "workflow.topology": "workflowTopology",
+    "trading_workflow.topology": "workflowTopology",
+    "workflow.runtime_agents": "workflowRuntimeAgents",
+    "workflow.runtime-agents": "workflowRuntimeAgents",
+    "workflow.runtime.registry": "workflowRuntimeAgents"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(TOPOLOGY_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted topology registry`);
+    assert.equal(TOPOLOGY_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof workflowTopology, "function");
+  assert.equal(typeof workflowRuntimeAgents, "function");
+  const directRegistry = createTopologyActionRegistry({ workflowRuntimeAgents, workflowTopology });
+  assert.equal(directRegistry.get("trading_workflow.topology"), workflowTopology);
+  assert.equal(directRegistry.get("workflow.runtime.registry"), workflowRuntimeAgents);
+
+  const root = await tempRoot("topology-extracted-contracts");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "Cat Brain",
+    role: "governance",
+    status: "active",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "openclaw_native",
+    endpointRef: "openclaw-agent:main"
+  });
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    displayName: "Cat Ears",
+    role: "research",
+    status: "active",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "acp",
+    endpointRef: "hermers-profile:catears"
+  });
+
+  const topology = await runAction(root, { action: "trading_workflow.topology" });
+  assert.equal(topology.workflowSchemaVersion, topology.schemaVersion);
+  assert.equal(topology.topology.serverB.agents.includes("main"), true);
+  assert.equal(topology.topology.serverB.agents.includes("cat_ears"), true);
+  assert.equal(topology.runtimeRegistry.openclaw.some((agent) => agent.agentId === "main"), true);
+  assert.equal(topology.runtimeRegistry.hermers.some((agent) => agent.agentId === "cat_ears"), true);
+  assert.equal(topology.blockedPath, "Telegram/IM/plaintext commands cannot create ready_for_trading_core intents.");
+
+  const registry = await runAction(root, { action: "workflow.runtime.registry" });
+  assert.equal(registry.count >= 2, true);
+  assert.equal(registry.derivedScopes.activeOpenClawAgentIds.includes("main"), true);
+  assert.equal(registry.derivedScopes.activeOpenClawAgentIds.includes("cat_ears"), false);
+  const hyphenAliasRegistry = await runAction(root, { action: "workflow.runtime-agents" });
+  assert.equal(hyphenAliasRegistry.derivedScopes.activeOpenClawAgentIds.includes("main"), true);
+  assert.equal(await pathExists(registry.snapshotFile), true);
+  const snapshot = JSON.parse(await fs.readFile(registry.snapshotFile, "utf8"));
+  assert.equal(snapshot.source.authority, "trading-agents-workflow.runtime_agents");
+  assert.equal(snapshot.records.some((agent) => agent.agentId === "main" && agent.platform === "openclaw"), true);
+  assert.equal(snapshot.records.some((agent) => agent.agentId === "cat_ears" && agent.platform === "hermers"), true);
+  assert.equal(typeof snapshot.checksum, "string");
+  assert.ok(snapshot.checksum.length > 0);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -16037,6 +16111,7 @@ try {
     ["incident state extracted action contracts", testIncidentStateExtractedActionContracts],
     ["research extracted action contracts", testResearchExtractedActionContracts],
     ["cat_claw extracted action contracts", testCatClawExtractedActionContracts],
+    ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
