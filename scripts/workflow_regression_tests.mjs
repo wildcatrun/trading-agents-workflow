@@ -20,6 +20,7 @@ import {
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
+  PERMISSION_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
   RESEARCH_ACTION_REGISTRY,
   SIDE_EFFECT_ACTION_REGISTRY,
@@ -48,6 +49,7 @@ import {
   thesisUpdate,
   workflowHealth,
   workflowInit,
+  workflowPermissionCheck,
   workflowReadiness,
   workflowRuntimeAgents,
   workflowStatus,
@@ -66,6 +68,10 @@ import {
   INCIDENT_ACTION_HANDLER_NAMES,
   createIncidentActionRegistry
 } from "../src/incident-actions.js";
+import {
+  PERMISSION_ACTION_HANDLER_NAMES,
+  createPermissionActionRegistry
+} from "../src/permission-actions.js";
 import {
   PROTOCOL_ACTION_HANDLER_NAMES,
   createProtocolActionRegistry
@@ -9748,6 +9754,59 @@ async function testStatusExtractedActionContracts() {
   assert.equal(healthAlias.dbFile, init.dbFile);
 }
 
+async function testPermissionExtractedActionContracts() {
+  const expectedHandlers = {
+    "workflow.permission.check": "workflowPermissionCheck",
+    "workflow.permission.explain": "workflowPermissionCheck"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(PERMISSION_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted permission registry`);
+    assert.equal(PERMISSION_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof workflowPermissionCheck, "function");
+  const directRegistry = createPermissionActionRegistry({ workflowPermissionCheck });
+  assert.equal(directRegistry.get("workflow.permission.check"), workflowPermissionCheck);
+  assert.equal(directRegistry.get("workflow.permission.explain"), workflowPermissionCheck);
+
+  const root = await tempRoot("permission-extracted-contracts");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "hermers",
+    runtime: "hermers",
+    agentId: "cat_body",
+    displayName: "猫之体",
+    workflowIngressAdapter: "acp",
+    endpointRef: "hermers-profile:catbody",
+    capabilities: { mode: "message_only" }
+  });
+
+  const check = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "runtime.agent.upsert",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers",
+    sourceSystem: "hermers_mcp"
+  });
+  assert.equal(check.allowed, false);
+  assert.equal(check.action, "runtime.agent.upsert");
+  assert.equal(check.reason, "registry_write_local_codex_only");
+  assert.equal(check.policyOutcome, "deny");
+  assert.equal(await pathExists(check.dbFile), true);
+
+  const explain = await runAction(root, {
+    action: "workflow.permission.explain",
+    targetAction: "workflow.status",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers",
+    sourceSystem: "hermers_mcp"
+  });
+  assert.equal(explain.allowed, true);
+  assert.equal(explain.action, "workflow.status");
+  assert.equal(explain.requiredCapability, "read");
+  assert.equal(explain.caller.agentId, "cat_body");
+  assert.equal(explain.dbFile, check.dbFile);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -16199,6 +16258,7 @@ try {
     ["cat_claw extracted action contracts", testCatClawExtractedActionContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],
+    ["permission extracted action contracts", testPermissionExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],

@@ -72,6 +72,11 @@ import {
   runMessageFlowAction
 } from "./message-flow-actions.js";
 import {
+  createPermissionActionHandlers,
+  createPermissionActionRegistry,
+  runPermissionAction
+} from "./permission-actions.js";
+import {
   createTelegramOutboxActionHandlers,
   createTelegramOutboxActionRegistry,
   runTelegramOutboxAction
@@ -1997,12 +2002,6 @@ async function authorizeWorkflowAction(rootDir, input = {}) {
     throw new Error(`workflow policy blocked: action=${decision.action} policyOutcome=${decision.policyOutcome || "unknown"} requirements=${(decision.requirements || []).map((item) => item.type).join(",") || "none"}`);
   }
   return decision;
-}
-
-export async function workflowPermissionCheck(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const decision = await evaluateWorkflowPermission(paths, input);
-  return { ...decision, dbFile: paths.dbFile };
 }
 
 function assertRuntimeAgentRegistrationAllowed(runtime, agentId, registry = {}) {
@@ -21253,6 +21252,17 @@ export const {
   workflowStatus
 } = STATUS_ACTION_HANDLERS;
 
+export const PERMISSION_ACTION_HANDLERS = createPermissionActionHandlers({
+  ensureWorkflowLayout,
+  evaluateWorkflowPermission
+});
+
+export const PERMISSION_ACTION_REGISTRY = createPermissionActionRegistry(PERMISSION_ACTION_HANDLERS);
+
+export const {
+  workflowPermissionCheck
+} = PERMISSION_ACTION_HANDLERS;
+
 export const RESEARCH_ACTION_HANDLERS = createResearchActionHandlers({
   clampScore,
   cleanFileSegment,
@@ -21497,10 +21507,9 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (topologyResult.handled) return topologyResult.value;
   const statusResult = await runStatusAction(STATUS_ACTION_REGISTRY, action, rootDir, input);
   if (statusResult.handled) return statusResult.value;
+  const permissionResult = await runPermissionAction(PERMISSION_ACTION_REGISTRY, action, rootDir, input);
+  if (permissionResult.handled) return permissionResult.value;
   switch (action) {
-    case "workflow.permission.check":
-    case "workflow.permission.explain":
-      return workflowPermissionCheck(rootDir, input);
     case "workflow.run.upsert":
     case "workflow.initiative.upsert":
       return workflowRunUpsert(rootDir, input);
