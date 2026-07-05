@@ -64,7 +64,7 @@ References:
    create uncontrolled conversation branches.
 2. Keep each worker task bounded with a clear objective, output schema, allowed
    tools, artifact contract, and stop condition.
-3. Treat repeated context compaction as a risk signal, not as free infinite
+3. Treat the first context compaction as a renewal signal, not as free infinite
    memory.
 4. Persist outputs, evidence, plans, and summaries outside the worker chat
    context before spawning successors.
@@ -111,9 +111,9 @@ renewal states:
 A manager or kernel lifecycle check may require handoff when any of these
 signals appears:
 
-- context budget is near the configured threshold;
+- context budget reaches the default `0.81` pressure threshold;
 - runtime reports conversation truncation, compaction, or context exhaustion;
-- `compaction_count` exceeds the worker blueprint policy;
+- `compaction_count` reaches the default `1` compaction limit;
 - the worker has made multiple correction loops without convergence;
 - manager review finds repeated misunderstanding of the task boundary;
 - runtime or tool failures make the current session state unreliable;
@@ -122,10 +122,11 @@ signals appears:
 - Cat Brain requires a cleaner evidence chain before further work;
 - Flashcat steering changes the task objective or constraints.
 
-Thresholds are policy, not hardcoded constants. A low-risk research worker may
-allow more compaction than a trading or production-deploy worker. A coding
-worker should prefer earlier renewal when the worktree diff and tests are the
-source of truth and the chat context is no longer clean.
+The default policy is intentionally conservative for all worker classes:
+`contextPressureThreshold=0.81` and `maxCompactions=1`. When either threshold is
+met, the lifecycle check should recommend `handoff_required`; an accepted
+handoff package then becomes the input for a same-class successor worker. These
+limits are global worker lifecycle policy rather than per-call tuning knobs.
 
 ## Handoff Package
 

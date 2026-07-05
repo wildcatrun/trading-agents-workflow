@@ -254,6 +254,17 @@ pattern/rationale/budget does not invalidate a lightweight plan; it is reported
 through `advisoryChecks` in preview/validation so the owner and Cat Brain can
 refine the simplest effective pattern without turning internal planning into a
 Human-Gate-style blocker.
+The 2026-07-05 Anthropic reference refresh also added plan-node advisory checks:
+manager-worker and parallel-section nodes should carry domain ownership,
+expected artifacts, and review policy; parallel sections should be distinct;
+evaluator-optimizer plans should expose a separate review path; autonomous-loop
+nodes should carry iteration caps, tool/environment feedback checkpoints, and
+stop conditions. Generated default manager-worker nodes now include the
+ownership/artifact/review-policy payload fields by default. These checks are
+now hard gates at executable boundaries: non-draft `workflow.v2.plan.create`
+rejects unresolved plan-node structure gaps, while draft plan persistence
+remains advisory; `workflow.v2.worker_spawn.preview/create` also rejects worker
+dispatch from a persisted plan that still violates these executable-node gates.
 The alignment audit is maintained in
 `docs/workflow-v2-anthropic-alignment-audit.md`.
 
@@ -429,6 +440,11 @@ Worker lifecycle preview:
 - It reports context pressure ratio, compaction count, lifecycle signals, and a
   recommendation such as `continue`, `review_due`, `handoff_required`,
   `spawn_successor`, `escalate_to_owner`, `human_gate_due`, or `no_action`.
+- The default renewal policy is global for all workers:
+  `contextPressureThreshold=0.81` and `maxCompactions=1`. Reaching either
+  threshold recommends `handoff_required`; once the handoff is accepted, the
+  lifecycle path can spawn a same-class successor worker. These values are not
+  per-call override knobs in the local lifecycle preview path.
 - It returns the responsible authority set as owner/manager, not Human Gate.
 - It can draft a handoff package preview, but it does not write the handoff row,
   retire a worker, or spawn a successor.
@@ -718,6 +734,101 @@ Latest focused verification passed:
 - Grouped verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
   - `git diff --check`
+
+2026-07-05 Anthropic plan-node alignment follow-up:
+
+- Refreshed official Anthropic/Claude Code references for multi-agent Research,
+  subagents, agent teams, dynamic workflows, worktrees, hooks, and goals.
+- Added plan-node advisory coverage for manager-worker/parallel/evaluator/
+  autonomous-loop structure in `workflow.v2.plan.preview`.
+- Added default manager-worker node payload fields for domain ownership,
+  expected artifacts, and manager review policy.
+- Independent subagent review found one medium gap: explicit `manager_worker`
+  plans with no `manager_worker_spawn` node did not receive a structure
+  advisory. The gap is fixed by `manager_worker_spawn_node_recommended`, with
+  regression coverage for the missing-spawn case, a clean explicit node set, and
+  canonical plan-spec expected-artifact persistence.
+- Upgraded the plan-node structure checks from advisory-only to executable hard
+  gates:
+  - non-draft plan admission rejects unresolved manager-worker, parallel
+    section, evaluator-optimizer, and autonomous-loop node gaps;
+  - draft plan persistence remains allowed while the owner is still shaping the
+    plan;
+  - worker spawn preview/create re-checks persisted plan hard gates before
+    dispatch.
+- Focused verification passed locally:
+  - `node --check src/workflow.js`
+  - `node --check src/workflow-v2/index.js`
+  - `node --check src/workflow-v2/plan.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 plan advisory and canonical artifact"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
+
+2026-07-05 autonomous-loop runtime control-loop enforcement:
+
+- Reused the existing v2 runtime tables instead of adding a second loop engine:
+  `workflow_v2_plan_nodes` stores loop node state, `workflow_v2_worker_runs`
+  supplies the persisted iteration count, and `workflow_v2_info_items` carries
+  tool/environment feedback evidence.
+- `workflow.v2.worker_spawn.preview/create` now gates
+  `autonomous_agent_loop` nodes at runtime:
+  - blocks the next spawn once existing non-cancelled worker runs reach the
+    declared `maxIterations`/`iterationCap`;
+  - blocks the next spawn while the previous iteration is still queued/running;
+  - requires feedback info-stack evidence recorded after the previous iteration
+    and bound to both the previous worker run and a declared feedback checkpoint
+    before iteration 2+;
+  - blocks new spawns once the loop node is terminal;
+  - records `iterationCount`, `nextIteration`, `maxIterations`, and feedback
+    evidence in the worker payload/session input.
+- `workflow.v2.control_loop.tick` and `workflow.v2.worker_result.submit` now
+  terminalize autonomous-loop nodes through the existing result path when
+  explicit `stopConditionSatisfied` evidence is present. The node is marked
+  `completed` with output info and receipt pointers, and later spawns fail with
+  `autonomous_loop_terminal`.
+- `workflow.v2.validate` now includes an `autonomous_loop_iteration_caps` check
+  so persisted historical drift above the declared cap is visible.
+- Focused verification passed locally:
+  - `node --check src/workflow.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 autonomous loop runtime enforcement"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
+  - `git diff --check`
+- Remaining orchestration hardening after this slice: expose evaluator receipts
+  more clearly in read-model/UI surfaces and carry the contract through external
+  runtime adapter manifests.
+
+2026-07-05 evaluator-optimizer contract hardening:
+
+- Added first-class evaluator contract gates without adding a parallel review
+  table or state machine.
+- `workflow.v2.plan.preview/create` now requires executable
+  `evaluator_optimizer` plans to declare:
+  - producer output schema/contract or expected artifacts;
+  - evaluator input binding to the producer;
+  - rubric/schema;
+  - review artifact contract;
+  - `accepted` / `rejected` / `needs_revision` decision states.
+- `workflow.v2.manager_review.record` now treats the accepted/rejected/revision
+  manager review as the evaluator receipt for evaluator-optimizer plans. It
+  writes a normalized `evaluatorReceipt` into
+  `workflow_v2_manager_reviews.payload_json`, bound to producer output,
+  evaluator input, rubric, review artifact, review receipt, and decision state.
+  The receipt must match the reviewed worker run, node, and output info id.
+- `workflow.v2.owner_review.preview/record` now rejects evaluator-optimizer
+  owner acceptance if the referenced accepted manager review is not a structured
+  evaluator receipt. `allowNoManagerReviews` is not allowed to bypass evaluator
+  receipt requirements for this pattern. This keeps acceptance on existing
+  owner/manager review rails while preventing loose producer text from being
+  consumed directly.
+- `workflow.v2.validate` now includes
+  `evaluator_optimizer_manager_reviews_have_receipts`.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/plan.js`
+  - `node --check src/workflow.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 plan advisory and canonical artifact"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 evaluator optimizer contract"`
 
 2026-07-04 advisory-plan correction verification:
 

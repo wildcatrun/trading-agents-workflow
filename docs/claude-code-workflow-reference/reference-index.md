@@ -1,7 +1,7 @@
 # Reference Index
 
 Created: 2026-05-31
-Last reviewed: 2026-06-03
+Last reviewed: 2026-07-05
 
 This file tracks Claude Code workflow-related public references. Update it when
 Claude Code publishes new workflow documentation, release notes, bundled
@@ -26,6 +26,7 @@ workflow examples, API references, or observability/control-plane behavior.
 - URL: https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code
 - Stability: `official-preview`
 - Reviewed: 2026-06-03
+  Re-checked: 2026-07-05
 - Key observations:
   - Dynamic workflows orchestrate many subagents from a JavaScript script that
     Claude writes and the runtime executes in the background.
@@ -38,6 +39,13 @@ workflow examples, API references, or observability/control-plane behavior.
     restart a selected running agent, and save a run's script as a command.
   - Workflows have limits: no mid-run user input except permission prompts,
     bounded concurrency, and bounded total agents per run.
+  - Current docs show saved workflows as JavaScript files under
+    `.claude/workflows/`, with `agent()` for one subagent and `pipeline()` for
+    per-item fan-out.
+  - Workflow scripts coordinate agents but do not directly use shell or
+    filesystem access; agents perform reads, writes, and commands.
+  - Current documented runtime limits include up to 16 concurrent agents and
+    1,000 total agents per run.
   - Public launch and follow-up posts describe long-running parallel work,
     saved progress, resume after interruption, and patterns such as
     fan-out-and-synthesize, adversarial verification, tournament, and loop
@@ -53,6 +61,7 @@ workflow examples, API references, or observability/control-plane behavior.
 - Stability: `official-contract` for release facts, `official-preview` for
   preview features.
 - Reviewed: 2026-05-31
+  Re-checked: 2026-07-05
 - Key observations:
   - Claude Code 2.1.154 introduced Dynamic workflows publicly as a research
     preview.
@@ -70,6 +79,11 @@ workflow examples, API references, or observability/control-plane behavior.
   - Subagents can be specialized with descriptions, prompts, model choices,
     tool limits, permission modes, hooks, skills, MCP servers, and memory.
   - Claude decides when to delegate based on the subagent description.
+  - Current docs distinguish subagents from agent teams: use subagents for
+    focused isolated work that returns a summary; use teams when workers need
+    direct communication and shared task coordination.
+  - Nested subagents are supported with a fixed depth limit, and each subagent
+    starts with fresh isolated context unless explicitly forked.
 - Adaptation permission:
   - Use for role definition, scoped tool access, verifier/refuter nodes, and
     cost-aware agent selection.
@@ -79,11 +93,19 @@ workflow examples, API references, or observability/control-plane behavior.
 - URL: https://code.claude.com/docs/en/agent-teams
 - Stability: `official-context` / experimental.
 - Reviewed: 2026-05-31
+  Re-checked: 2026-07-05
 - Key observations:
   - A lead coordinates teammates, shared tasks, direct teammate messaging, task
     assignment, and result synthesis.
   - Best use cases include parallel research, review, competing hypotheses, and
     cross-layer ownership.
+  - Current docs describe agent teams as experimental and disabled by default.
+  - Team coordination uses a lead, teammates, a shared task list, and mailbox
+    messaging. Tasks can be pending, in progress, completed, and dependency
+    blocked.
+  - Team guidance recommends 3-5 teammates for most workflows, sufficiently
+    sized self-contained tasks, distinct file ownership for coding work, and
+    monitoring/steering instead of unattended long runs.
 - Adaptation permission:
   - Use for fan-out/fan-in, reducer tasks, conflict surfacing, and parallel
     review design.
@@ -94,9 +116,12 @@ workflow examples, API references, or observability/control-plane behavior.
 - URL: https://code.claude.com/docs/en/goal
 - Stability: `official-context`
 - Reviewed: 2026-05-31
+  Re-checked: 2026-07-05
 - Key observations:
   - `/goal` keeps Claude working until a completion condition is met.
   - A separate lightweight evaluator checks completion after each turn.
+  - Current docs position `/goal` as a session-scoped evaluator, distinct from
+    interval loops and Stop hooks.
 - Adaptation permission:
   - Use for workflow-level acceptance evaluators that are independent from the
     executing agent.

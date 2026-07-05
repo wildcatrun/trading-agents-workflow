@@ -29,6 +29,8 @@ import {
   WORKFLOW_V2_HANDOFF_RECORD_STATUSES,
   WORKFLOW_V2_INFO_CLASSIFICATIONS,
   WORKFLOW_V2_MAX_CONCURRENT_WORKERS,
+  WORKFLOW_V2_DEFAULT_CONTEXT_PRESSURE_THRESHOLD,
+  WORKFLOW_V2_DEFAULT_MAX_COMPACTIONS,
   WORKFLOW_V2_NODE_STATUSES,
   WORKFLOW_V2_NOTIFICATION_CHANNELS,
   WORKFLOW_V2_NOTIFICATION_PAYLOAD_MODES,
@@ -81,6 +83,9 @@ import {
   workflowV2HasExplicitPlanManagers,
   workflowV2InputOrchestrationPattern,
   workflowV2PlanManagers,
+  workflowV2PlanNeedsExecutableNodeHardGate,
+  workflowV2PlanNodeHardGateErrors,
+  workflowV2PlanNodeAdvisories,
   workflowV2PlanOrchestrationAdvisories,
   workflowV2PlanOrchestrationContract,
   workflowV2PlanSpecArtifact,
@@ -720,6 +725,13 @@ const WORKFLOW_POLICY_HARD_GATE_ACTIONS = new Set([
   "workflow.incident.closeout.artifact",
   "workflow.incident.closeout.human_gate_request",
   "telegram.outbox.delivery"
+]);
+
+const WORKFLOW_V2_AUTONOMOUS_LOOP_NODE_TYPES = new Set([
+  "autonomous_loop",
+  "agent_loop",
+  "manager_worker_spawn",
+  "task"
 ]);
 
 function nowIso() {
@@ -9602,7 +9614,7 @@ export async function workflowV2PlanPreview(rootDir, input = {}) {
     : workflowV2PlanManagers(input);
   const acceptanceCriteria = workflowV2JsonArray(input.acceptanceCriteria ?? input.acceptance_criteria, []);
   const orchestration = workflowV2PlanOrchestrationContract(input, participantManagers);
-  const advisoryChecks = workflowV2PlanOrchestrationAdvisories(orchestration, acceptanceCriteria);
+  const orchestrationAdvisories = workflowV2PlanOrchestrationAdvisories(orchestration, acceptanceCriteria);
   const plan = {
     planId,
     workflowId,
@@ -9657,6 +9669,10 @@ export async function workflowV2PlanPreview(rootDir, input = {}) {
       payload: workflowV2JsonObject(item.payload, {})
     };
   }) || workflowV2DefaultPlanNodes(plan, input);
+  const advisoryChecks = [
+    ...orchestrationAdvisories,
+    ...workflowV2PlanNodeAdvisories(orchestration, nodes)
+  ];
   const planSpecV2 = workflowV2PlanSpecArtifact(plan, nodes, input);
   return {
     operation: "workflow.v2.plan.preview",
@@ -9703,6 +9719,12 @@ export async function workflowV2PlanCreate(rootDir, input = {}) {
     status: workflowV2NormalizeEnum(input.status, WORKFLOW_V2_PLAN_STATUSES, "planned"),
     workflowState: workflowV2NormalizeEnum(input.workflowState || input.workflow_state, WORKFLOW_V2_WORKFLOW_STATES, "planned")
   };
+  const planNodeHardGateErrors = workflowV2PlanNeedsExecutableNodeHardGate(plan)
+    ? workflowV2PlanNodeHardGateErrors(workflowV2PlanOrchestrationContract(plan, plan.participantManagers), preview.nodes)
+    : [];
+  if (planNodeHardGateErrors.length) {
+    throw new Error(`workflow v2 executable plan hard gate failed: ${planNodeHardGateErrors.map((item) => item.code).join(",")}`);
+  }
   const artifactId = cleanFileSegment(firstText(input.artifactId, input.artifact_id, `${plan.planId}.workflow_plan_spec.v2`));
   const artifactDir = path.join(paths.artifactsDir, "workflow-v2", cleanFileSegment(plan.workflowId), "plans");
   const planSpecFilePath = path.join(artifactDir, `${artifactId}.json`);
@@ -10139,6 +10161,717 @@ WHERE workflow_id=${sqlValue(workflowId)}
   AND plan_id=${sqlValue(planId)};`);
 }
 
+async function workflowV2PlanOrchestrationPattern(paths, workflowId = "", planId = "") {
+  const row = await workflowV2LoadPlanRow(paths, workflowId, planId);
+  const payload = workflowV2JsonObject(row?.payload_json, {});
+  const orchestration = workflowV2JsonObject(payload.orchestration, {});
+  return firstText(orchestration.pattern, payload.orchestrationPattern, payload.orchestration_pattern);
+}
+
+async function workflowV2PersistedPlanNodeHardGateErrors(paths, workflowId = "", planId = "") {
+  if (!workflowId || !planId || !fileExistsSync(paths.dbFile)) return [];
+  const planRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_plans
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId)}
+LIMIT 1;`, { json: true });
+  const planRow = planRows[0];
+  if (!planRow) return [];
+  const payload = workflowV2JsonObject(planRow.payload_json, {});
+  const orchestration = workflowV2JsonObject(payload.orchestration, {});
+  const participantManagers = workflowV2JsonArray(planRow.participant_managers_json, []);
+  const contract = workflowV2PlanOrchestrationContract({
+    orchestration,
+    orchestrationPattern: orchestration.pattern,
+    orchestrationRationale: orchestration.rationale,
+    complexityTier: orchestration.complexityTier,
+    taskGroupRequired: orchestration.taskGroupRequired,
+    workerBudget: workflowV2JsonObject(orchestration.workerBudget, {})
+  }, participantManagers);
+  const nodeRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_plan_nodes
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId)}
+ORDER BY created_at ASC, node_id ASC;`, { json: true });
+  const nodes = nodeRows.map((row) => ({
+    nodeId: row.node_id || "",
+    planId: row.plan_id || "",
+    workflowId: row.workflow_id || "",
+    parentNodeId: row.parent_node_id || "",
+    nodeType: row.node_type || "",
+    status: row.status || "",
+    ownerAgent: row.owner_agent || "",
+    runtimeBackend: row.runtime_backend || "",
+    sessionId: row.session_id || "",
+    dependsOn: workflowV2JsonArray(row.depends_on_json, []),
+    inputInfoId: row.input_info_id || "",
+    outputInfoId: row.output_info_id || "",
+    payload: workflowV2JsonObject(row.payload_json, {})
+  }));
+  return workflowV2PlanNodeHardGateErrors(contract, nodes);
+}
+
+function workflowV2PayloadText(payload = {}, ...keys) {
+  const object = workflowV2JsonObject(payload, {});
+  const values = [];
+  for (const key of keys) {
+    const camelKey = key.includes("_") ? key.replace(/_([a-z])/g, (_, char) => char.toUpperCase()) : key;
+    values.push(object[key], object[camelKey]);
+  }
+  return firstText(...values);
+}
+
+function workflowV2PayloadList(payload = {}, ...keys) {
+  const object = workflowV2JsonObject(payload, {});
+  for (const key of keys) {
+    const camelKey = key.includes("_") ? key.replace(/_([a-z])/g, (_, char) => char.toUpperCase()) : key;
+    const list = workflowV2JsonArray(object[key] ?? object[camelKey], null);
+    if (Array.isArray(list)) return workflowV2UniqueTextArray(list);
+  }
+  return [];
+}
+
+function workflowV2PayloadPositiveInt(payload = {}, ...keys) {
+  const object = workflowV2JsonObject(payload, {});
+  for (const key of keys) {
+    const camelKey = key.includes("_") ? key.replace(/_([a-z])/g, (_, char) => char.toUpperCase()) : key;
+    const value = object[key] ?? object[camelKey];
+    if (value !== undefined && value !== null && value !== "" && workflowV2NonNegativeInt(value, 0) > 0) {
+      return workflowV2NonNegativeInt(value, 0);
+    }
+  }
+  return 0;
+}
+
+async function workflowV2AutonomousLoopNodeSpec(paths, workflowId = "", planId = "", nodeId = "") {
+  if (!workflowId || !planId || !nodeId || !fileExistsSync(paths.dbFile)) return { active: false };
+  const rows = await sqlite(paths.dbFile, `
+SELECT
+  p.workflow_id AS workflow_id,
+  p.plan_id AS plan_id,
+  p.payload_json AS plan_payload_json,
+  n.node_id AS node_id,
+  n.node_type AS node_type,
+  n.status AS node_status,
+  n.output_info_id AS node_output_info_id,
+  n.payload_json AS node_payload_json
+FROM workflow_v2_plan_nodes n
+JOIN workflow_v2_plans p ON p.workflow_id=n.workflow_id AND p.plan_id=n.plan_id
+WHERE n.workflow_id=${sqlValue(workflowId)}
+  AND n.plan_id=${sqlValue(planId)}
+  AND n.node_id=${sqlValue(nodeId)}
+LIMIT 1;`, { json: true });
+  const row = rows[0] || null;
+  if (!row) return { active: false };
+  const planPayload = workflowV2JsonObject(row.plan_payload_json, {});
+  const orchestration = workflowV2JsonObject(planPayload.orchestration, {});
+  const pattern = firstText(orchestration.pattern, planPayload.orchestrationPattern, planPayload.orchestration_pattern);
+  const nodeType = String(row.node_type || "").trim();
+  const nodePayload = workflowV2JsonObject(row.node_payload_json, {});
+  if (pattern !== "autonomous_agent_loop" || !WORKFLOW_V2_AUTONOMOUS_LOOP_NODE_TYPES.has(nodeType)) {
+    return { active: false, pattern, nodeType, row };
+  }
+  const maxIterations = workflowV2PayloadPositiveInt(nodePayload, "maxIterations", "max_iterations", "iterationCap", "iteration_cap");
+  const feedbackCheckpoints = workflowV2PayloadList(nodePayload, "toolFeedbackCheckpoints", "tool_feedback_checkpoints", "environmentFeedbackCheckpoints", "environment_feedback_checkpoints");
+  const stopCondition = workflowV2PayloadText(nodePayload, "stopCondition", "stop_condition");
+  const stopConditions = workflowV2PayloadList(nodePayload, "stopConditions", "stop_conditions");
+  return {
+    active: true,
+    workflowId,
+    planId,
+    nodeId,
+    nodeType,
+    nodeStatus: row.node_status || "",
+    nodeOutputInfoId: row.node_output_info_id || "",
+    nodePayload,
+    pattern,
+    maxIterations,
+    feedbackCheckpoints,
+    stopCondition,
+    stopConditions,
+    row
+  };
+}
+
+async function workflowV2AutonomousLoopIterationStats(paths, spec = {}) {
+  if (!spec.active || !fileExistsSync(paths.dbFile)) return { iterationCount: 0, workerRunIds: [] };
+  const rows = await sqlite(paths.dbFile, `
+SELECT worker_run_id, status, output_info_id, receipt_ref, completed_at, created_at, updated_at
+FROM workflow_v2_worker_runs
+WHERE workflow_id=${sqlValue(spec.workflowId)}
+  AND plan_id=${sqlValue(spec.planId)}
+  AND node_id=${sqlValue(spec.nodeId)}
+  AND status!='cancelled'
+ORDER BY created_at ASC, worker_run_id ASC;`, { json: true });
+  return {
+    iterationCount: rows.length,
+    workerRunIds: rows.map((row) => row.worker_run_id || "").filter(Boolean),
+    latestWorkerRun: rows[rows.length - 1] || null
+  };
+}
+
+function workflowV2TimestampAtOrAfter(candidate = "", threshold = "") {
+  if (!threshold) return true;
+  if (!candidate) return false;
+  const candidateTime = Date.parse(candidate);
+  const thresholdTime = Date.parse(threshold);
+  if (Number.isFinite(candidateTime) && Number.isFinite(thresholdTime)) return candidateTime >= thresholdTime;
+  return String(candidate) >= String(threshold);
+}
+
+function workflowV2AutonomousLoopFeedbackCheckpointAt(stats = {}) {
+  const latest = stats.latestWorkerRun || {};
+  return firstText(latest.completed_at, latest.updated_at, latest.created_at);
+}
+
+function workflowV2AutonomousLoopInputPayload(input = {}) {
+  const payload = workflowV2JsonObject(input.payload, {});
+  const loop = workflowV2JsonObject(input.autonomousLoop ?? input.autonomous_loop ?? payload.autonomousLoop ?? payload.autonomous_loop, {});
+  return { payload, loop };
+}
+
+function workflowV2AutonomousLoopTextRefs(...values) {
+  const refs = [];
+  for (const value of values) {
+    refs.push(...workflowV2JsonArray(value, value === undefined || value === null ? [] : [value]));
+  }
+  return workflowV2UniqueTextArray(refs);
+}
+
+function workflowV2AutonomousLoopFeedbackRefs(input = {}) {
+  const { payload, loop } = workflowV2AutonomousLoopInputPayload(input);
+  return {
+    infoIds: workflowV2AutonomousLoopTextRefs(
+      input.toolFeedbackInfoId,
+      input.tool_feedback_info_id,
+      input.toolFeedbackInfoIds,
+      input.tool_feedback_info_ids,
+      input.environmentFeedbackInfoId,
+      input.environment_feedback_info_id,
+      input.environmentFeedbackInfoIds,
+      input.environment_feedback_info_ids,
+      input.feedbackInfoId,
+      input.feedback_info_id,
+      input.feedbackInfoIds,
+      input.feedback_info_ids,
+      payload.toolFeedbackInfoId,
+      payload.tool_feedback_info_id,
+      payload.environmentFeedbackInfoId,
+      payload.environment_feedback_info_id,
+      payload.feedbackInfoId,
+      payload.feedback_info_id,
+      loop.toolFeedbackInfoId,
+      loop.tool_feedback_info_id,
+      loop.environmentFeedbackInfoId,
+      loop.environment_feedback_info_id,
+      loop.feedbackInfoId,
+      loop.feedback_info_id,
+      loop.feedbackInfoIds,
+      loop.feedback_info_ids
+    ),
+    receiptRefs: workflowV2AutonomousLoopTextRefs(
+      input.toolFeedbackReceiptRef,
+      input.tool_feedback_receipt_ref,
+      input.toolFeedbackReceiptRefs,
+      input.tool_feedback_receipt_refs,
+      input.environmentFeedbackReceiptRef,
+      input.environment_feedback_receipt_ref,
+      input.environmentFeedbackReceiptRefs,
+      input.environment_feedback_receipt_refs,
+      input.feedbackReceiptRef,
+      input.feedback_receipt_ref,
+      input.feedbackReceiptRefs,
+      input.feedback_receipt_refs,
+      payload.toolFeedbackReceiptRef,
+      payload.tool_feedback_receipt_ref,
+      payload.environmentFeedbackReceiptRef,
+      payload.environment_feedback_receipt_ref,
+      payload.feedbackReceiptRef,
+      payload.feedback_receipt_ref,
+      loop.toolFeedbackReceiptRef,
+      loop.tool_feedback_receipt_ref,
+      loop.environmentFeedbackReceiptRef,
+      loop.environment_feedback_receipt_ref,
+      loop.feedbackReceiptRef,
+      loop.feedback_receipt_ref,
+      loop.feedbackReceiptRefs,
+      loop.feedback_receipt_refs
+    )
+  };
+}
+
+function workflowV2AutonomousLoopInfoPayloadHasFeedback(payload = {}) {
+  const object = workflowV2JsonObject(payload, {});
+  const loop = workflowV2JsonObject(object.autonomousLoop ?? object.autonomous_loop, {});
+  return boolOption(object.autonomousLoopFeedback ?? object.autonomous_loop_feedback, false)
+    || boolOption(object.toolFeedback ?? object.tool_feedback, false)
+    || boolOption(object.environmentFeedback ?? object.environment_feedback, false)
+    || boolOption(loop.feedback ?? loop.hasFeedback ?? loop.has_feedback, false)
+    || Boolean(firstText(
+      object.feedbackKind,
+      object.feedback_kind,
+      object.toolFeedbackKind,
+      object.tool_feedback_kind,
+      object.environmentFeedbackKind,
+      object.environment_feedback_kind,
+      loop.feedbackKind,
+      loop.feedback_kind,
+      loop.toolFeedbackKind,
+      loop.tool_feedback_kind,
+      loop.environmentFeedbackKind,
+      loop.environment_feedback_kind
+    ));
+}
+
+function workflowV2AutonomousLoopPayloadFeedbackLineage(payload = {}) {
+  const object = workflowV2JsonObject(payload, {});
+  const loop = workflowV2JsonObject(object.autonomousLoop ?? object.autonomous_loop, {});
+  return firstText(
+    object.sourceWorkerRunId,
+    object.source_worker_run_id,
+    object.feedbackSourceWorkerRunId,
+    object.feedback_source_worker_run_id,
+    object.workerRunId,
+    object.worker_run_id,
+    loop.sourceWorkerRunId,
+    loop.source_worker_run_id,
+    loop.feedbackSourceWorkerRunId,
+    loop.feedback_source_worker_run_id,
+    loop.workerRunId,
+    loop.worker_run_id
+  );
+}
+
+function workflowV2AutonomousLoopPayloadFeedbackCheckpoint(payload = {}) {
+  const object = workflowV2JsonObject(payload, {});
+  const loop = workflowV2JsonObject(object.autonomousLoop ?? object.autonomous_loop, {});
+  return firstText(
+    object.feedbackCheckpoint,
+    object.feedback_checkpoint,
+    object.checkpoint,
+    object.checkpointKey,
+    object.checkpoint_key,
+    object.feedbackKind,
+    object.feedback_kind,
+    object.toolFeedbackKind,
+    object.tool_feedback_kind,
+    object.environmentFeedbackKind,
+    object.environment_feedback_kind,
+    loop.feedbackCheckpoint,
+    loop.feedback_checkpoint,
+    loop.checkpoint,
+    loop.checkpointKey,
+    loop.checkpoint_key,
+    loop.feedbackKind,
+    loop.feedback_kind,
+    loop.toolFeedbackKind,
+    loop.tool_feedback_kind,
+    loop.environmentFeedbackKind,
+    loop.environment_feedback_kind
+  );
+}
+
+function workflowV2AutonomousLoopFeedbackMatchesPreviousWorker(row = {}, payload = {}, stats = {}) {
+  const latestWorkerRunId = firstText(stats.latestWorkerRun?.worker_run_id);
+  if (!latestWorkerRunId) return false;
+  return row.worker_run_id === latestWorkerRunId
+    || workflowV2AutonomousLoopPayloadFeedbackLineage(payload) === latestWorkerRunId;
+}
+
+function workflowV2AutonomousLoopFeedbackMatchesCheckpoint(spec = {}, payload = {}) {
+  const checkpoints = workflowV2UniqueTextArray(spec.feedbackCheckpoints || []);
+  if (!checkpoints.length) return true;
+  return checkpoints.includes(workflowV2AutonomousLoopPayloadFeedbackCheckpoint(payload));
+}
+
+function workflowV2AutonomousLoopFeedbackRowIssue(row = {}, spec = {}, stats = {}, checkpointAt = "") {
+  const payload = workflowV2JsonObject(row.payload_json, {});
+  if (!workflowV2TimestampAtOrAfter(firstText(row.updated_at, row.created_at), checkpointAt)) return "stale";
+  if (!workflowV2AutonomousLoopInfoPayloadHasFeedback(payload)) return "not_feedback";
+  if (!workflowV2AutonomousLoopFeedbackMatchesPreviousWorker(row, payload, stats)) return "lineage_mismatch";
+  if (!workflowV2AutonomousLoopFeedbackMatchesCheckpoint(spec, payload)) return "checkpoint_mismatch";
+  return "";
+}
+
+async function workflowV2AutonomousLoopFeedbackEvidence(paths, spec = {}, input = {}, stats = {}) {
+  const iterationCount = workflowV2NonNegativeInt(stats.iterationCount, 0);
+  if (!spec.active || iterationCount <= 0) return { required: false, present: true, evidence: [] };
+  const refs = workflowV2AutonomousLoopFeedbackRefs(input);
+  const checkpointAt = workflowV2AutonomousLoopFeedbackCheckpointAt(stats);
+  const evidence = [];
+  const missingInfoIds = [];
+  const staleInfoIds = [];
+  const invalidInfoIds = [];
+  const lineageMismatchInfoIds = [];
+  const checkpointMismatchInfoIds = [];
+  for (const infoId of refs.infoIds) {
+    const rows = await sqlite(paths.dbFile, `
+SELECT info_id, workflow_id, plan_id, node_id, worker_run_id, summary, payload_json, created_at, updated_at
+FROM workflow_v2_info_items
+WHERE info_id=${sqlValue(infoId)}
+LIMIT 1;`, { json: true });
+    const row = rows[0] || null;
+    if (!row || row.workflow_id !== spec.workflowId || row.plan_id !== spec.planId || row.node_id !== spec.nodeId) {
+      missingInfoIds.push(infoId);
+    } else {
+      const issue = workflowV2AutonomousLoopFeedbackRowIssue(row, spec, stats, checkpointAt);
+      if (!issue) {
+        evidence.push({ kind: "info_item", infoId, workerRunId: row.worker_run_id || "", summary: row.summary || "" });
+      } else if (issue === "stale") {
+        staleInfoIds.push(infoId);
+      } else if (issue === "lineage_mismatch") {
+        lineageMismatchInfoIds.push(infoId);
+      } else if (issue === "checkpoint_mismatch") {
+        checkpointMismatchInfoIds.push(infoId);
+      } else {
+        invalidInfoIds.push(infoId);
+      }
+    }
+  }
+  if (evidence.length) {
+    return {
+      required: true,
+      present: true,
+      evidence,
+      missingInfoIds,
+      staleInfoIds,
+      invalidInfoIds,
+      lineageMismatchInfoIds,
+      checkpointMismatchInfoIds,
+      checkpointAt,
+      receiptRefs: refs.receiptRefs
+    };
+  }
+  const rows = await sqlite(paths.dbFile, `
+SELECT info_id, worker_run_id, summary, payload_json, created_at, updated_at
+FROM workflow_v2_info_items
+WHERE workflow_id=${sqlValue(spec.workflowId)}
+  AND plan_id=${sqlValue(spec.planId)}
+  AND node_id=${sqlValue(spec.nodeId)}
+  AND (created_at >= ${sqlValue(checkpointAt)} OR updated_at >= ${sqlValue(checkpointAt)})
+ORDER BY created_at DESC, info_id DESC;`, { json: true });
+  for (const row of rows) {
+    if (
+      workflowV2AutonomousLoopInfoPayloadHasFeedback(row.payload_json)
+      && workflowV2AutonomousLoopFeedbackMatchesPreviousWorker(row, workflowV2JsonObject(row.payload_json, {}), stats)
+      && workflowV2AutonomousLoopFeedbackMatchesCheckpoint(spec, workflowV2JsonObject(row.payload_json, {}))
+    ) {
+      evidence.push({ kind: "info_item", infoId: row.info_id || "", workerRunId: row.worker_run_id || "", summary: row.summary || "" });
+      break;
+    }
+  }
+  return {
+    required: true,
+    present: evidence.length > 0,
+    evidence,
+    missingInfoIds,
+    staleInfoIds,
+    invalidInfoIds,
+    lineageMismatchInfoIds,
+    checkpointMismatchInfoIds,
+    checkpointAt,
+    receiptRefs: refs.receiptRefs
+  };
+}
+
+async function workflowV2AutonomousLoopSpawnGate(paths, workflowId = "", planId = "", nodeId = "", input = {}) {
+  const spec = await workflowV2AutonomousLoopNodeSpec(paths, workflowId, planId, nodeId);
+  if (!spec.active) return { active: false, errors: [], state: null };
+  const stats = await workflowV2AutonomousLoopIterationStats(paths, spec);
+  const errors = [];
+  const latestStatus = String(stats.latestWorkerRun?.status || "").trim();
+  if (["completed", "cancelled", "failed"].includes(spec.nodeStatus)) {
+    errors.push(workflowV2ValidationError("autonomous_loop_terminal", "autonomous_agent_loop node is already terminal and cannot spawn another iteration", {
+      workflowId,
+      planId,
+      nodeId,
+      nodeStatus: spec.nodeStatus
+    }));
+  }
+  if (spec.maxIterations > 0 && stats.iterationCount >= spec.maxIterations) {
+    errors.push(workflowV2ValidationError("autonomous_loop_iteration_cap_reached", "autonomous_agent_loop reached maxIterations and cannot spawn another iteration", {
+      workflowId,
+      planId,
+      nodeId,
+      iterationCount: stats.iterationCount,
+      maxIterations: spec.maxIterations
+    }));
+  }
+  if (stats.iterationCount > 0 && ["queued", "retry_scheduled", "running"].includes(latestStatus)) {
+    errors.push(workflowV2ValidationError("autonomous_loop_previous_iteration_open", "autonomous_agent_loop cannot spawn the next iteration while the previous iteration is still open", {
+      workflowId,
+      planId,
+      nodeId,
+      iterationCount: stats.iterationCount,
+      latestWorkerRunId: stats.latestWorkerRun?.worker_run_id || "",
+      latestStatus
+    }));
+  }
+  const feedback = await workflowV2AutonomousLoopFeedbackEvidence(paths, spec, input, stats);
+  if (!feedback.present) {
+    errors.push(workflowV2ValidationError("autonomous_loop_feedback_required", "autonomous_agent_loop requires tool/environment feedback evidence before the next iteration", {
+      workflowId,
+      planId,
+      nodeId,
+      iterationCount: stats.iterationCount,
+      feedbackCheckpoints: spec.feedbackCheckpoints,
+      feedbackCheckpointAt: feedback.checkpointAt || "",
+      missingInfoIds: feedback.missingInfoIds || [],
+      staleInfoIds: feedback.staleInfoIds || [],
+      invalidInfoIds: feedback.invalidInfoIds || [],
+      lineageMismatchInfoIds: feedback.lineageMismatchInfoIds || [],
+      checkpointMismatchInfoIds: feedback.checkpointMismatchInfoIds || [],
+      receiptRefs: feedback.receiptRefs || []
+    }));
+  }
+  return {
+    active: true,
+    errors,
+    state: {
+      pattern: spec.pattern,
+      nodeType: spec.nodeType,
+      iterationCount: stats.iterationCount,
+      nextIteration: stats.iterationCount + 1,
+      maxIterations: spec.maxIterations,
+      feedbackRequired: feedback.required,
+      feedbackEvidence: feedback.evidence || [],
+      stopCondition: spec.stopCondition,
+      stopConditions: spec.stopConditions
+    }
+  };
+}
+
+function workflowV2AutonomousLoopStopConditionSatisfied(input = {}, workerPayload = {}) {
+  const { payload, loop } = workflowV2AutonomousLoopInputPayload(input);
+  const workerLoop = workflowV2JsonObject(workerPayload.autonomousLoop ?? workerPayload.autonomous_loop, {});
+  return boolOption(input.stopConditionSatisfied ?? input.stop_condition_satisfied, false)
+    || boolOption(input.autonomousLoopStopSatisfied ?? input.autonomous_loop_stop_satisfied, false)
+    || boolOption(payload.stopConditionSatisfied ?? payload.stop_condition_satisfied, false)
+    || boolOption(payload.autonomousLoopStopSatisfied ?? payload.autonomous_loop_stop_satisfied, false)
+    || boolOption(loop.stopConditionSatisfied ?? loop.stop_condition_satisfied, false)
+    || boolOption(loop.stopSatisfied ?? loop.stop_satisfied, false)
+    || boolOption(workerLoop.stopConditionSatisfied ?? workerLoop.stop_condition_satisfied, false)
+    || boolOption(workerLoop.stopSatisfied ?? workerLoop.stop_satisfied, false);
+}
+
+async function workflowV2AutonomousLoopMaybeTerminalizeNode(paths, row = {}, input = {}, timestamp = nowIso()) {
+  const workflowId = firstText(row.workflow_id, row.workflowId);
+  const planId = firstText(row.plan_id, row.planId);
+  const nodeId = firstText(row.node_id, row.nodeId);
+  const workerRunId = firstText(row.worker_run_id, row.workerRunId);
+  const workerPayload = workflowV2JsonObject(row.payload_json ?? row.payload, {});
+  const spec = await workflowV2AutonomousLoopNodeSpec(paths, workflowId, planId, nodeId);
+  if (!spec.active || !workflowV2AutonomousLoopStopConditionSatisfied(input, workerPayload)) return null;
+  const outputInfoId = firstText(input.outputInfoId, input.output_info_id, row.output_info_id, row.outputInfoId);
+  const receiptRef = firstText(input.receiptRef, input.receipt_ref, row.receipt_ref, row.receiptRef);
+  const nextPayload = {
+    ...spec.nodePayload,
+    autonomousLoopRuntime: {
+      ...workflowV2JsonObject(spec.nodePayload.autonomousLoopRuntime ?? spec.nodePayload.autonomous_loop_runtime, {}),
+      stopConditionSatisfied: true,
+      terminalWorkerRunId: workerRunId,
+      terminalOutputInfoId: outputInfoId,
+      terminalReceiptRef: receiptRef,
+      terminalizedAt: timestamp
+    }
+  };
+  const changed = await sqliteChangeCount(paths.dbFile, `
+UPDATE workflow_v2_plan_nodes
+SET status='completed',
+    output_info_id=${sqlValue(outputInfoId || spec.nodeOutputInfoId || "")},
+    payload_json=${sqlValue(JSON.stringify(nextPayload))},
+    updated_at=${sqlValue(timestamp)}
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId)}
+  AND node_id=${sqlValue(nodeId)}
+  AND status NOT IN ('completed','cancelled','failed');`);
+  return {
+    terminalized: changed === 1,
+    workflowId,
+    planId,
+    nodeId,
+    workerRunId,
+    status: "completed",
+    outputInfoId: outputInfoId || spec.nodeOutputInfoId || "",
+    receiptRef
+  };
+}
+
+function workflowV2EvaluatorDecisionStateForReview(decision = "") {
+  const text = String(decision || "").trim().toLowerCase().replace(/-/g, "_");
+  if (text === "revise_required") return "needs_revision";
+  return text;
+}
+
+function workflowV2EvaluatorDecisionStates(value) {
+  return workflowV2UniqueTextArray(workflowV2JsonArray(value, []))
+    .map(workflowV2EvaluatorDecisionStateForReview)
+    .filter(Boolean);
+}
+
+function workflowV2HasStructuredEvaluatorValue(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value) && value.length > 0) return true;
+    if (typeof value === "object" && Object.keys(value).length > 0) return true;
+    if (String(value).trim()) return true;
+  }
+  return false;
+}
+
+function workflowV2EvaluatorReceiptPayload(input = {}, review = {}, worker = {}) {
+  const payload = workflowV2JsonObject(review.payload, {});
+  const evaluator = workflowV2JsonObject(
+    input.evaluatorReceipt
+      ?? input.evaluator_receipt
+      ?? input.evaluatorContract
+      ?? input.evaluator_contract
+      ?? payload.evaluatorReceipt
+      ?? payload.evaluator_receipt
+      ?? payload.evaluatorContract
+      ?? payload.evaluator_contract
+      ?? payload.evaluator,
+    {}
+  );
+  const producerOutputInfoId = firstText(
+    input.producerOutputInfoId,
+    input.producer_output_info_id,
+    evaluator.producerOutputInfoId,
+    evaluator.producer_output_info_id,
+    worker.output_info_id
+  );
+  const evaluatorInputInfoId = firstText(
+    input.evaluatorInputInfoId,
+    input.evaluator_input_info_id,
+    evaluator.evaluatorInputInfoId,
+    evaluator.evaluator_input_info_id,
+    evaluator.inputInfoId,
+    evaluator.input_info_id
+  );
+  const reviewArtifactRef = firstText(
+    input.reviewArtifactRef,
+    input.review_artifact_ref,
+    evaluator.reviewArtifactRef,
+    evaluator.review_artifact_ref,
+    evaluator.reviewArtifact,
+    evaluator.review_artifact,
+    review.artifactRefs?.[0]
+  );
+  const reviewReceiptRef = firstText(
+    input.reviewReceiptRef,
+    input.review_receipt_ref,
+    evaluator.reviewReceiptRef,
+    evaluator.review_receipt_ref,
+    review.receiptRefs?.[0]
+  );
+  const decisionState = workflowV2EvaluatorDecisionStateForReview(firstText(
+    input.decisionState,
+    input.decision_state,
+    evaluator.decisionState,
+    evaluator.decision_state,
+    review.decision
+  ));
+  const decisionStates = workflowV2EvaluatorDecisionStates(
+    input.decisionStates
+      ?? input.decision_states
+      ?? evaluator.decisionStates
+      ?? evaluator.decision_states
+      ?? ["accepted", "rejected", "needs_revision"]
+  );
+  return {
+    schemaVersion: firstText(evaluator.schemaVersion, evaluator.schema_version, "workflow_v2_evaluator_receipt.v1"),
+    producerNodeId: firstText(input.producerNodeId, input.producer_node_id, evaluator.producerNodeId, evaluator.producer_node_id, worker.node_id),
+    producerWorkerRunId: firstText(input.producerWorkerRunId, input.producer_worker_run_id, evaluator.producerWorkerRunId, evaluator.producer_worker_run_id, worker.worker_run_id),
+    producerOutputInfoId,
+    evaluatorInputInfoId,
+    rubric: evaluator.rubric ?? evaluator.rubricSchema ?? evaluator.rubric_schema ?? input.rubric ?? input.rubricSchema ?? input.rubric_schema,
+    reviewArtifactRef,
+    reviewReceiptRef,
+    decisionState,
+    decisionStates
+  };
+}
+
+function workflowV2EvaluatorReceiptErrors(receipt = {}, review = {}, worker = {}) {
+  const errors = [];
+  if (!receipt.producerOutputInfoId) {
+    errors.push(workflowV2ValidationError("evaluator_producer_output_required", "evaluator review requires producerOutputInfoId bound to the producer output"));
+  }
+  if (!receipt.evaluatorInputInfoId) {
+    errors.push(workflowV2ValidationError("evaluator_input_required", "evaluator review requires evaluatorInputInfoId"));
+  }
+  if (!workflowV2HasStructuredEvaluatorValue(receipt.rubric)) {
+    errors.push(workflowV2ValidationError("evaluator_rubric_required", "evaluator review requires rubric/rubricSchema"));
+  }
+  if (!receipt.reviewArtifactRef) {
+    errors.push(workflowV2ValidationError("evaluator_review_artifact_required", "evaluator review requires a review artifact reference"));
+  }
+  if (!receipt.reviewReceiptRef) {
+    errors.push(workflowV2ValidationError("evaluator_review_receipt_required", "evaluator review requires a review receipt reference"));
+  }
+  const states = new Set(receipt.decisionStates || []);
+  for (const required of ["accepted", "rejected", "needs_revision"]) {
+    if (!states.has(required)) {
+      errors.push(workflowV2ValidationError("evaluator_decision_states_required", "evaluator review requires accepted/rejected/needs_revision decision states", { missingState: required }));
+    }
+  }
+  if (!receipt.decisionState || !states.has(receipt.decisionState)) {
+    errors.push(workflowV2ValidationError("evaluator_decision_state_required", "evaluator review decisionState must be one of the declared evaluator decision states", {
+      decisionState: receipt.decisionState,
+      decision: review.decision || ""
+    }));
+  }
+  if (worker.worker_run_id && receipt.producerWorkerRunId !== worker.worker_run_id) {
+    errors.push(workflowV2ValidationError("evaluator_producer_worker_mismatch", "evaluator receipt producerWorkerRunId must match the reviewed worker run", {
+      producerWorkerRunId: receipt.producerWorkerRunId,
+      workerRunId: worker.worker_run_id
+    }));
+  }
+  if (worker.node_id && receipt.producerNodeId !== worker.node_id) {
+    errors.push(workflowV2ValidationError("evaluator_producer_node_mismatch", "evaluator receipt producerNodeId must match the reviewed worker node", {
+      producerNodeId: receipt.producerNodeId,
+      nodeId: worker.node_id
+    }));
+  }
+  if (worker.output_info_id && receipt.producerOutputInfoId !== worker.output_info_id) {
+    errors.push(workflowV2ValidationError("evaluator_producer_output_mismatch", "evaluator receipt producerOutputInfoId must match the reviewed worker outputInfoId", {
+      producerOutputInfoId: receipt.producerOutputInfoId,
+      outputInfoId: worker.output_info_id
+    }));
+  }
+  if (worker.output_info_id && receipt.evaluatorInputInfoId !== worker.output_info_id) {
+    errors.push(workflowV2ValidationError("evaluator_input_output_mismatch", "evaluator receipt evaluatorInputInfoId must consume the reviewed worker outputInfoId", {
+      evaluatorInputInfoId: receipt.evaluatorInputInfoId,
+      outputInfoId: worker.output_info_id
+    }));
+  }
+  return errors;
+}
+
+function workflowV2ManagerReviewHasEvaluatorReceipt(row = {}) {
+  const payload = workflowV2JsonObject(row.payload_json ?? row.payload, {});
+  const receipt = workflowV2JsonObject(payload.evaluatorReceipt ?? payload.evaluator_receipt, {});
+  const states = new Set(workflowV2EvaluatorDecisionStates(receipt.decisionStates ?? receipt.decision_states));
+  const producerWorkerRunId = firstText(receipt.producerWorkerRunId, receipt.producer_worker_run_id);
+  const producerNodeId = firstText(receipt.producerNodeId, receipt.producer_node_id);
+  const producerOutputInfoId = firstText(receipt.producerOutputInfoId, receipt.producer_output_info_id);
+  const evaluatorInputInfoId = firstText(receipt.evaluatorInputInfoId, receipt.evaluator_input_info_id);
+  return receipt.schemaVersion === "workflow_v2_evaluator_receipt.v1"
+    && producerWorkerRunId === row.worker_run_id
+    && producerNodeId === row.node_id
+    && Boolean(producerOutputInfoId)
+    && producerOutputInfoId === evaluatorInputInfoId
+    && workflowV2HasStructuredEvaluatorValue(receipt.rubric)
+    && Boolean(receipt.reviewArtifactRef || receipt.review_artifact_ref)
+    && Boolean(receipt.reviewReceiptRef || receipt.review_receipt_ref)
+    && states.has("accepted")
+    && states.has("rejected")
+    && states.has("needs_revision")
+    && workflowV2EvaluatorDecisionStateForReview(receipt.decisionState ?? receipt.decision_state) === workflowV2EvaluatorDecisionStateForReview(row.decision);
+}
+
 async function workflowV2AcceptedManagerReviewRows(paths, workflowId, planId, reviewIds = []) {
   if (!workflowId || !planId || !fileExistsSync(paths.dbFile)) {
     return { rows: [], missingIds: reviewIds, nonAcceptedIds: [] };
@@ -10361,6 +11094,9 @@ export async function workflowV2WorkerSpawnPreview(rootDir, input = {}) {
   if (!nodeId) errors.push(workflowV2ValidationError("node_id_required", "worker spawn requires nodeId"));
   if (!sessionId) errors.push(workflowV2ValidationError("session_id_required", "worker spawn requires sessionId/sessionTemplateId from session repository"));
   if (!taskInputInfoId) errors.push(workflowV2ValidationError("task_input_info_id_required", "worker spawn requires taskInputInfoId pointer"));
+  errors.push(...await workflowV2PersistedPlanNodeHardGateErrors(paths, workflowId, planId));
+  const autonomousLoopGate = await workflowV2AutonomousLoopSpawnGate(paths, workflowId, planId, nodeId, input);
+  errors.push(...autonomousLoopGate.errors);
   const preflight = await workflowV2WorkerBackendPreflight(rootDir, { ...input, backendId: runtimeBackend, workflowId });
   errors.push(...preflight.errors);
   const preflightId = firstText(input.preflightId, input.preflight_id, preflight.preflight.preflightId);
@@ -10382,6 +11118,8 @@ export async function workflowV2WorkerSpawnPreview(rootDir, input = {}) {
   const contextBudgetTokens = workflowV2NonNegativeInt(contextBudgetRaw, 0);
   const delegation = workflowV2WorkerDelegationContract({ ...input, contextBudgetTokens });
   errors.push(...workflowV2ValidateWorkerDelegationContract(delegation, contextBudgetTokens, { explicitContextBudget }));
+  const inputPayload = workflowV2JsonObject(input.payload, {});
+  const inputAutonomousLoopPayload = workflowV2JsonObject(inputPayload.autonomousLoop ?? inputPayload.autonomous_loop, {});
   const workerRun = {
     workerRunId,
     workflowId,
@@ -10415,8 +11153,14 @@ export async function workflowV2WorkerSpawnPreview(rootDir, input = {}) {
     startedAt: firstText(input.startedAt, input.started_at),
     completedAt: firstText(input.completedAt, input.completed_at),
     payload: {
-      ...workflowV2JsonObject(input.payload, {}),
-      delegation
+      ...inputPayload,
+      delegation,
+      ...(autonomousLoopGate.state ? {
+        autonomousLoop: {
+          ...inputAutonomousLoopPayload,
+          ...autonomousLoopGate.state
+        }
+      } : {})
     }
   };
   return {
@@ -10437,6 +11181,7 @@ export async function workflowV2WorkerSpawnPreview(rootDir, input = {}) {
       input: workflowV2WorkerSessionRunInput(workerRun)
     },
     backendPreflight: preflight.preflight,
+    autonomousLoopGate,
     reviewRequired: true,
     dbFile: paths.dbFile,
     writes: []
@@ -10605,10 +11350,8 @@ async function workflowV2WorkerLifecycleSchema(dbFile) {
   };
 }
 
-function workflowV2ContextPressureThreshold(input = {}) {
-  const threshold = Number(input.contextPressureThreshold ?? input.context_pressure_threshold ?? 0.82);
-  if (!Number.isFinite(threshold)) return 0.82;
-  return Math.max(0.1, Math.min(1, threshold));
+function workflowV2ContextPressureThreshold() {
+  return WORKFLOW_V2_DEFAULT_CONTEXT_PRESSURE_THRESHOLD;
 }
 
 export async function workflowV2WorkerLifecyclePreview(rootDir, input = {}) {
@@ -10703,7 +11446,7 @@ LIMIT 1;`, { json: true });
   const budget = workflowV2NonNegativeInt(input.contextBudgetTokens ?? input.context_budget_tokens, row.context_budget_tokens || 0);
   const used = workflowV2NonNegativeInt(input.contextUsedTokens ?? input.context_used_tokens, row.context_used_tokens || 0);
   const compactionCount = workflowV2NonNegativeInt(input.compactionCount ?? input.compaction_count, row.compaction_count || 0);
-  const maxCompactions = Math.max(1, Math.min(20, workflowV2NonNegativeInt(input.maxCompactions ?? input.max_compactions, 2)));
+  const maxCompactions = WORKFLOW_V2_DEFAULT_MAX_COMPACTIONS;
   const threshold = workflowV2ContextPressureThreshold(input);
   const contextPressureRatio = budget > 0 ? used / budget : null;
   const signals = [];
@@ -11151,13 +11894,24 @@ WHERE worker_run_id=${sqlValue(row.worker_run_id)}
     await fs.rm(artifactFile, { force: true });
     return { workerRunId: row.worker_run_id, status: "session_sync_failed", error: workflowV2ErrorMessage(error) };
   }
+  const autonomousLoop = await workflowV2AutonomousLoopMaybeTerminalizeNode(paths, {
+    ...row,
+    output_info_id: outputInfoId,
+    receipt_ref: receiptRef,
+    payload_json: JSON.stringify(nextPayload)
+  }, {
+    ...input,
+    outputInfoId,
+    receiptRef
+  }, generatedAt);
   return {
     workerRunId: row.worker_run_id,
     status: "submitted_for_review",
     outputInfoId,
     artifactRef,
     artifactFile,
-    receiptRef
+    receiptRef,
+    autonomousLoop
   };
 }
 
@@ -13448,6 +14202,16 @@ FROM workflow_v2_worker_runs
 WHERE worker_run_id=${sqlValue(row.workerRunId)}
 LIMIT 1;`, { json: true });
   const currentPayload = workflowV2JsonObject(currentRows[0]?.payload_json, {});
+  const nextPayload = {
+    ...currentPayload,
+    adapterResult: {
+      submittedAt: now,
+      receiptRef: preview.receiptRef,
+      outputInfoId: preview.outputInfoId,
+      receipt,
+      payload
+    }
+  };
   const changed = await sqliteChangeCount(paths.dbFile, `
 UPDATE workflow_v2_worker_runs
 SET status='submitted_for_review',
@@ -13456,16 +14220,7 @@ SET status='submitted_for_review',
     lease_owner='',
     lease_until='',
     next_retry_at='',
-    payload_json=${sqlValue(JSON.stringify({
-      ...currentPayload,
-      adapterResult: {
-        submittedAt: now,
-        receiptRef: preview.receiptRef,
-        outputInfoId: preview.outputInfoId,
-        receipt,
-        payload
-      }
-    }))},
+    payload_json=${sqlValue(JSON.stringify(nextPayload))},
     completed_at=${sqlValue(now)},
     updated_at=${sqlValue(now)}
 WHERE worker_run_id=${sqlValue(row.workerRunId)}
@@ -13501,6 +14256,16 @@ WHERE worker_run_id=${sqlValue(row.workerRunId)}
     }
     throw error;
   }
+  const autonomousLoop = await workflowV2AutonomousLoopMaybeTerminalizeNode(paths, {
+    ...rawRow,
+    output_info_id: preview.outputInfoId,
+    receipt_ref: preview.receiptRef,
+    payload_json: JSON.stringify(nextPayload)
+  }, {
+    ...input,
+    outputInfoId: preview.outputInfoId,
+    receiptRef: preview.receiptRef
+  }, now);
   return {
     ...preview,
     operation: "workflow.v2.worker_result.submit",
@@ -13508,6 +14273,7 @@ WHERE worker_run_id=${sqlValue(row.workerRunId)}
     previewOnly: false,
     outputInfo: outputInfo.infoItem,
     adapterJobUpdate,
+    autonomousLoop,
     dbFile: paths.dbFile
   };
 }
@@ -13631,6 +14397,7 @@ export async function workflowV2ManagerReviewRecord(rootDir, input = {}) {
   let nextLastError = "";
   let workerSessionRunId = "";
   let previousWorkerRow = null;
+  let reviewWorkerRow = null;
   const existingReviewRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_manager_reviews WHERE review_id=${sqlValue(review.reviewId)} LIMIT 1;`, { json: true });
   const previousReviewRow = existingReviewRows[0] || null;
   if (review.workerRunId) {
@@ -13642,6 +14409,7 @@ LIMIT 1;`, { json: true });
     const worker = workerRows[0];
     if (!worker) throw new Error(`workflow v2 manager review worker run not found: ${review.workerRunId}`);
     previousWorkerRow = worker;
+    reviewWorkerRow = worker;
     if (review.workflowId && worker.workflow_id !== review.workflowId) throw new Error("workflow v2 manager review workflowId does not match worker run");
     if (review.planId && worker.plan_id !== review.planId) throw new Error("workflow v2 manager review planId does not match worker run");
     if (review.nodeId && worker.node_id !== review.nodeId) throw new Error("workflow v2 manager review nodeId does not match worker run");
@@ -13664,6 +14432,18 @@ LIMIT 1;`, { json: true });
       throw new Error(`workflow v2 manager review decision ${decision} requires worker output_info_id, receipt_ref, and completed_at`);
     }
     nextLastError = ["rejected", "revise_required"].includes(workerStatus) ? review.summary : "";
+  }
+  const planPattern = await workflowV2PlanOrchestrationPattern(paths, review.workflowId, review.planId);
+  if (planPattern === "evaluator_optimizer") {
+    const evaluatorReceipt = workflowV2EvaluatorReceiptPayload(input, review, reviewWorkerRow || {});
+    const evaluatorErrors = workflowV2EvaluatorReceiptErrors(evaluatorReceipt, review, reviewWorkerRow || {});
+    if (evaluatorErrors.length) {
+      throw new Error(`workflow v2 evaluator review is invalid: ${evaluatorErrors.map((item) => item.code).join(",")}`);
+    }
+    review.payload = {
+      ...review.payload,
+      evaluatorReceipt
+    };
   }
   try {
     await sqlite(paths.dbFile, `
@@ -13749,7 +14529,27 @@ export async function workflowV2OwnerReviewPreview(rootDir, input = {}) {
   if (managerReviewSet.nonAcceptedIds.length) {
     errors.push(workflowV2ValidationError("manager_review_not_accepted", "owner review may only accept accepted manager review outputs", { nonAcceptedIds: managerReviewSet.nonAcceptedIds }));
   }
+  const planPattern = await workflowV2PlanOrchestrationPattern(paths, workflowId, planId);
+  if (planPattern === "evaluator_optimizer" && managerReviewSet.rows.length) {
+    const nonEvaluatorReviewIds = managerReviewSet.rows
+      .filter((row) => !workflowV2ManagerReviewHasEvaluatorReceipt(row))
+      .map((row) => row.review_id)
+      .filter(Boolean);
+    if (nonEvaluatorReviewIds.length) {
+      errors.push(workflowV2ValidationError(
+        "evaluator_review_receipt_required",
+        "evaluator_optimizer owner review may only consume accepted evaluator receipts",
+        { nonEvaluatorReviewIds }
+      ));
+    }
+  }
   const allowNoManagerReviews = boolOption(input.allowNoManagerReviews ?? input.allow_no_manager_reviews, false);
+  if (planPattern === "evaluator_optimizer" && allowNoManagerReviews && !managerReviewSet.rows.length) {
+    errors.push(workflowV2ValidationError(
+      "evaluator_review_required",
+      "evaluator_optimizer owner review requires accepted evaluator receipts and cannot use allowNoManagerReviews"
+    ));
+  }
   if (!managerReviewSet.rows.length && !allowNoManagerReviews) {
     errors.push(workflowV2ValidationError("manager_review_required", "owner review requires accepted manager reviews unless allowNoManagerReviews is explicitly set"));
   }
@@ -14678,6 +15478,7 @@ export async function workflowV2Validate(rootDir, input = {}) {
   const handoffStatusesSql = [...WORKFLOW_V2_WORKER_HANDOFF_STATUSES].map((status) => sqlValue(status)).join(", ");
   const orchestrationPatternsSql = [...WORKFLOW_V2_ORCHESTRATION_PATTERNS].map((status) => sqlValue(status)).join(", ");
   const workerPatternsSql = [...WORKFLOW_V2_WORKER_PATTERNS].map((status) => sqlValue(status)).join(", ");
+  const autonomousLoopNodeTypesSql = [...WORKFLOW_V2_AUTONOMOUS_LOOP_NODE_TYPES].map((status) => sqlValue(status)).join(", ");
   checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "plans_required_fields", ["workflow_v2_plans"], `
 SELECT COUNT(*) AS count
 FROM workflow_v2_plans
@@ -14768,6 +15569,35 @@ WHERE context_budget_tokens < 1
         COALESCE(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.delegation.stopCondition'), '')=''
         AND COALESCE(json_array_length(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.delegation.stopConditions')), 0) < 1
       );`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "autonomous_loop_iteration_caps", ["workflow_v2_worker_runs", "workflow_v2_plans", "workflow_v2_plan_nodes"], `
+WITH autonomous_nodes AS (
+  SELECT
+    n.workflow_id,
+    n.plan_id,
+    n.node_id,
+    CAST(COALESCE(
+      json_extract(CASE WHEN json_valid(n.payload_json) THEN n.payload_json ELSE '{}' END, '$.maxIterations'),
+      json_extract(CASE WHEN json_valid(n.payload_json) THEN n.payload_json ELSE '{}' END, '$.max_iterations'),
+      json_extract(CASE WHEN json_valid(n.payload_json) THEN n.payload_json ELSE '{}' END, '$.iterationCap'),
+      json_extract(CASE WHEN json_valid(n.payload_json) THEN n.payload_json ELSE '{}' END, '$.iteration_cap'),
+      0
+    ) AS INTEGER) AS max_iterations
+  FROM workflow_v2_plan_nodes n
+  JOIN workflow_v2_plans p ON p.workflow_id=n.workflow_id AND p.plan_id=n.plan_id
+  WHERE COALESCE(json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.orchestration.pattern'), '')='autonomous_agent_loop'
+    AND n.node_type IN (${autonomousLoopNodeTypesSql})
+)
+SELECT COUNT(*) AS count
+FROM autonomous_nodes a
+WHERE a.max_iterations > 0
+  AND (
+    SELECT COUNT(*)
+    FROM workflow_v2_worker_runs w
+    WHERE w.workflow_id=a.workflow_id
+      AND w.plan_id=a.plan_id
+      AND w.node_id=a.node_id
+      AND w.status!='cancelled'
+  ) > a.max_iterations;`));
   checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "worker_run_statuses_are_known", ["workflow_v2_worker_runs"], `
 SELECT COUNT(*) AS count
 FROM workflow_v2_worker_runs
@@ -14888,6 +15718,57 @@ WHERE p.plan_id IS NULL OR p.workflow_id != r.workflow_id
    OR json_valid(r.receipt_refs_json)=0
    OR json_valid(r.blocker_json)=0
    OR json_valid(r.payload_json)=0;`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "evaluator_optimizer_manager_reviews_have_receipts", ["workflow_v2_manager_reviews", "workflow_v2_plans", "workflow_v2_worker_runs"], `
+WITH evaluator_reviews AS (
+  SELECT
+    r.review_id,
+    r.decision,
+    r.node_id,
+    r.worker_run_id,
+    w.output_info_id,
+    CASE WHEN json_valid(r.payload_json) THEN r.payload_json ELSE '{}' END AS payload_json
+  FROM workflow_v2_manager_reviews r
+  JOIN workflow_v2_plans p ON p.workflow_id=r.workflow_id AND p.plan_id=r.plan_id
+  LEFT JOIN workflow_v2_worker_runs w ON w.workflow_id=r.workflow_id AND w.plan_id=r.plan_id AND w.worker_run_id=r.worker_run_id
+  WHERE COALESCE(json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.orchestration.pattern'), '')='evaluator_optimizer'
+    AND r.decision IN ('accepted','rejected','revise_required')
+)
+SELECT COUNT(*) AS count
+FROM evaluator_reviews r
+WHERE COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.schemaVersion'), '')!='workflow_v2_evaluator_receipt.v1'
+   OR COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.producerOutputInfoId'), '')=''
+   OR COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.evaluatorInputInfoId'), '')=''
+   OR COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.rubric'), '')=''
+   OR COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.reviewArtifactRef'), '')=''
+   OR COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.reviewReceiptRef'), '')=''
+   OR COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.producerWorkerRunId'), '') != r.worker_run_id
+   OR COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.producerNodeId'), '') != r.node_id
+   OR COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.producerOutputInfoId'), '') != r.output_info_id
+   OR COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.evaluatorInputInfoId'), '') != r.output_info_id
+   OR COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.decisionState'), '') NOT IN ('accepted','rejected','needs_revision')
+   OR NOT EXISTS (
+        SELECT 1
+        FROM json_each(COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.decisionStates'), '[]')) state
+        WHERE LOWER(REPLACE(state.value, '-', '_'))='accepted'
+      )
+   OR NOT EXISTS (
+        SELECT 1
+        FROM json_each(COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.decisionStates'), '[]')) state
+        WHERE LOWER(REPLACE(state.value, '-', '_'))='rejected'
+      )
+   OR NOT EXISTS (
+        SELECT 1
+        FROM json_each(COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.decisionStates'), '[]')) state
+        WHERE LOWER(REPLACE(state.value, '-', '_')) IN ('needs_revision','revise_required')
+      )
+   OR (
+        CASE r.decision
+          WHEN 'accepted' THEN 'accepted'
+          WHEN 'rejected' THEN 'rejected'
+          WHEN 'revise_required' THEN 'needs_revision'
+          ELSE r.decision
+        END
+      ) != COALESCE(json_extract(r.payload_json, '$.evaluatorReceipt.decisionState'), '');`));
   checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "manager_review_decisions_are_outcomes", ["workflow_v2_manager_reviews"], `
 	SELECT COUNT(*) AS count
 	FROM workflow_v2_manager_reviews

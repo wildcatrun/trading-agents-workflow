@@ -14,6 +14,8 @@ export const WORKFLOW_V2_ADAPTER_JOB_IMAGES = {
 };
 export const WORKFLOW_V2_ADAPTER_JOB_STATUSES = new Set(["queued", "retry_scheduled", "running", "completed", "failed", "cancelled"]);
 export const WORKFLOW_V2_WORKER_CONTEXT_LIMIT_TOKENS = 64_000;
+export const WORKFLOW_V2_DEFAULT_CONTEXT_PRESSURE_THRESHOLD = 0.81;
+export const WORKFLOW_V2_DEFAULT_MAX_COMPACTIONS = 1;
 export const WORKFLOW_V2_MAX_CONCURRENT_WORKERS = 200;
 export const WORKFLOW_V2_ORCHESTRATION_PATTERNS = new Set([
   "direct_owner_execution",

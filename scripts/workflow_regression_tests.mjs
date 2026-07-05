@@ -3637,7 +3637,302 @@ async function testWorkflowV2PlanAdvisoryAndCanonicalArtifact() {
   assert.equal(planPreview.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
   assert.equal(planPreview.planSpecV2.orchestration.pattern, "manager_worker");
   assert.equal(planPreview.planSpecV2.acceptance.ownerReviewsManagerArtifacts, true);
+  assert.equal(Boolean(planPreview.advisoryChecks.some((item) => item.code === "manager_worker_domain_ownership_recommended")), false);
+  assert.equal(Boolean(planPreview.nodes.find((node) => node.nodeType === "manager_worker_spawn")?.payload?.domainOwnership), true);
   assert.equal(Boolean(await pathExists(dbFile)), false);
+
+  const nodeStructurePreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "Explicit manager-worker nodes should expose manager ownership, expected artifacts, and review policy.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract({
+      workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+    }),
+    nodes: [
+      { nodeId: "node-structure-spawn", nodeType: "manager_worker_spawn", ownerAgent: "cat_body", payload: {} },
+      { nodeId: "node-structure-review", nodeType: "manager_review", ownerAgent: "cat_body", dependsOn: ["node-structure-spawn"] }
+    ]
+  });
+  assert.equal(nodeStructurePreview.valid, true);
+  assert.equal(Boolean(nodeStructurePreview.advisoryChecks.some((item) => item.code === "manager_worker_domain_ownership_recommended")), true);
+  assert.equal(Boolean(nodeStructurePreview.advisoryChecks.some((item) => item.code === "manager_worker_expected_artifacts_recommended")), true);
+  assert.equal(Boolean(nodeStructurePreview.advisoryChecks.some((item) => item.code === "manager_worker_review_policy_recommended")), true);
+
+  const missingSpawnPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "Manager-worker plans should not jump straight to manager review without a spawn node.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract({
+      workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+    }),
+    nodes: [
+      { nodeId: "node-missing-spawn-review", nodeType: "manager_review", ownerAgent: "cat_body" }
+    ]
+  });
+  assert.equal(missingSpawnPreview.valid, true);
+  assert.equal(Boolean(missingSpawnPreview.advisoryChecks.some((item) => item.code === "manager_worker_spawn_node_recommended")), true);
+
+  const cleanExplicitPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "A complete explicit manager-worker node set should avoid manager-worker structure advisories.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract({
+      workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+    }),
+    nodes: [
+      { nodeId: "node-clean-spawn", nodeType: "manager_worker_spawn", ownerAgent: "cat_body", payload: { domainOwnership: "implementation", expectedArtifacts: ["artifact:implementation"], reviewPolicy: "manager review" } },
+      { nodeId: "node-clean-review", nodeType: "manager_review", ownerAgent: "cat_body", dependsOn: ["node-clean-spawn"] }
+    ]
+  });
+  assert.equal(Boolean(cleanExplicitPreview.advisoryChecks.some((item) => String(item.code || "").startsWith("manager_worker_"))), false);
+
+  const parallelSectionPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "Parallel manager sections should keep section ownership distinct.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body", "cat_nose"],
+    ...v2PlanContract({
+      orchestrationPattern: "parallel_manager_sections",
+      workerBudget: { maxWorkers: 4, concurrencyLimit: 2, maxWorkerContextTokens: 64000 }
+    }),
+    nodes: [
+      { nodeId: "node-parallel-a", nodeType: "manager_worker_spawn", ownerAgent: "cat_body", payload: { domainOwnership: "data", expectedArtifacts: ["artifact:data"], reviewPolicy: "manager review" } },
+      { nodeId: "node-parallel-b", nodeType: "manager_worker_spawn", ownerAgent: "cat_nose", payload: { domainOwnership: "data", expectedArtifacts: ["artifact:signals"], reviewPolicy: "manager review" } },
+      { nodeId: "node-parallel-review", nodeType: "manager_review", ownerAgent: "cat_heart", dependsOn: ["node-parallel-a", "node-parallel-b"] }
+    ]
+  });
+  assert.equal(Boolean(parallelSectionPreview.advisoryChecks.some((item) => item.code === "parallel_sections_should_be_distinct")), true);
+
+  const evaluatorPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "Evaluator optimizer plans should expose a separate review path.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract({
+      orchestrationPattern: "evaluator_optimizer",
+      workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+    }),
+    nodes: [
+      { nodeId: "node-evaluator-producer", nodeType: "producer", ownerAgent: "cat_body", payload: { expectedArtifacts: ["artifact:producer"] } },
+      { nodeId: "node-evaluator-review", nodeType: "evaluator", ownerAgent: "cat_body", dependsOn: ["node-evaluator-producer"] }
+    ]
+  });
+  assert.equal(Boolean(evaluatorPreview.advisoryChecks.some((item) => item.code === "evaluator_optimizer_distinct_reviewer_recommended")), true);
+  assert.equal(Boolean(evaluatorPreview.advisoryChecks.some((item) => item.code === "evaluator_optimizer_evaluator_contract_recommended")), true);
+
+  const evaluatorContractPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "Evaluator optimizer plans should expose a structured evaluator contract.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body", "cat_nose"],
+    ...v2PlanContract({
+      orchestrationPattern: "evaluator_optimizer",
+      workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+    }),
+    nodes: [
+      { nodeId: "node-evaluator-contract-producer", nodeType: "producer", ownerAgent: "cat_body", payload: { outputSchema: "producer-output.v1", expectedArtifacts: ["artifact:producer-output"] } },
+      {
+        nodeId: "node-evaluator-contract-review",
+        nodeType: "evaluator",
+        ownerAgent: "cat_nose",
+        dependsOn: ["node-evaluator-contract-producer"],
+        payload: {
+          producerNodeId: "node-evaluator-contract-producer",
+          evaluatorInput: "producer output info item",
+          rubric: "Evaluate producer output against acceptance criteria and evidence completeness.",
+          reviewArtifact: "artifact://workflow-v2/evaluator-review.json",
+          decisionStates: ["accepted", "rejected", "needs_revision"]
+        }
+      }
+    ]
+  });
+  assert.equal(evaluatorContractPreview.valid, true);
+  assert.equal(Boolean(evaluatorContractPreview.advisoryChecks.some((item) => String(item.code || "").startsWith("evaluator_optimizer_"))), false);
+
+  const autonomousLoopPreview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId,
+    objective: "Autonomous agent loops should expose iteration caps, feedback checkpoints, and stop conditions.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract({
+      orchestrationPattern: "autonomous_agent_loop",
+      workerBudget: { maxWorkers: 1, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+    }),
+    nodes: [
+      { nodeId: "node-autonomous-loop", nodeType: "autonomous_loop", ownerAgent: "cat_body", payload: {} }
+    ]
+  });
+  assert.equal(Boolean(autonomousLoopPreview.advisoryChecks.some((item) => item.code === "autonomous_loop_iteration_cap_recommended")), true);
+  assert.equal(Boolean(autonomousLoopPreview.advisoryChecks.some((item) => item.code === "autonomous_loop_tool_feedback_recommended")), true);
+  assert.equal(Boolean(autonomousLoopPreview.advisoryChecks.some((item) => item.code === "autonomous_loop_stop_condition_recommended")), true);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId,
+      planId: "plan-v2-hard-missing-spawn",
+      objective: "Executable manager-worker plans must include a spawn node.",
+      taskOwnerAgent: "cat_heart",
+      participantManagers: ["cat_body"],
+      ...v2PlanContract({
+        workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+      }),
+      nodes: [
+        { nodeId: "node-hard-missing-spawn-review", nodeType: "manager_review", ownerAgent: "cat_body" }
+      ]
+    }),
+    /manager_worker_spawn_node_required/
+  );
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId,
+      planId: "plan-v2-hard-evaluator",
+      objective: "Executable evaluator optimizer plans must separate producer and evaluator.",
+      taskOwnerAgent: "cat_heart",
+      participantManagers: ["cat_body"],
+      ...v2PlanContract({
+        orchestrationPattern: "evaluator_optimizer",
+        workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+      }),
+      nodes: [
+        { nodeId: "node-hard-evaluator-producer", nodeType: "producer", ownerAgent: "cat_body", payload: { expectedArtifacts: ["artifact:producer"] } },
+        { nodeId: "node-hard-evaluator-review", nodeType: "evaluator", ownerAgent: "cat_body", dependsOn: ["node-hard-evaluator-producer"] }
+      ]
+    }),
+    /evaluator_optimizer_distinct_reviewer_required/
+  );
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId,
+      planId: "plan-v2-hard-evaluator-contract",
+      objective: "Executable evaluator optimizer plans must declare evaluator contract.",
+      taskOwnerAgent: "cat_heart",
+      participantManagers: ["cat_body", "cat_nose"],
+      ...v2PlanContract({
+        orchestrationPattern: "evaluator_optimizer",
+        workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+      }),
+      nodes: [
+        { nodeId: "node-hard-evaluator-contract-producer", nodeType: "producer", ownerAgent: "cat_body", payload: { outputSchema: "producer-output.v1", expectedArtifacts: ["artifact:producer"] } },
+        { nodeId: "node-hard-evaluator-contract-review", nodeType: "evaluator", ownerAgent: "cat_nose", dependsOn: ["node-hard-evaluator-contract-producer"], payload: {} }
+      ]
+    }),
+    /evaluator_optimizer_evaluator_contract_required/
+  );
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId,
+      planId: "plan-v2-hard-autonomous",
+      objective: "Executable autonomous loops must be bounded before admission.",
+      taskOwnerAgent: "cat_heart",
+      participantManagers: ["cat_body"],
+      ...v2PlanContract({
+        orchestrationPattern: "autonomous_agent_loop",
+        workerBudget: { maxWorkers: 1, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+      }),
+      nodes: [
+        { nodeId: "node-hard-autonomous-loop", nodeType: "autonomous_loop", ownerAgent: "cat_body", payload: {} }
+      ]
+    }),
+    /autonomous_loop_iteration_cap_required/
+  );
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId,
+      planId: "plan-v2-hard-mixed-state-a",
+      status: "planned",
+      workflowState: "draft",
+      objective: "Mixed state with planned lifecycle still requires executable gates.",
+      taskOwnerAgent: "cat_heart",
+      participantManagers: ["cat_body"],
+      ...v2PlanContract({
+        orchestrationPattern: "autonomous_agent_loop",
+        workerBudget: { maxWorkers: 1, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+      }),
+      nodes: [
+        { nodeId: "node-hard-mixed-a", nodeType: "autonomous_loop", ownerAgent: "cat_body", payload: {} }
+      ]
+    }),
+    /autonomous_loop_iteration_cap_required/
+  );
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId,
+      planId: "plan-v2-hard-mixed-state-b",
+      status: "draft",
+      workflowState: "planned",
+      objective: "Mixed state with planned workflow state still requires executable gates.",
+      taskOwnerAgent: "cat_heart",
+      participantManagers: ["cat_body"],
+      ...v2PlanContract({
+        orchestrationPattern: "autonomous_agent_loop",
+        workerBudget: { maxWorkers: 1, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+      }),
+      nodes: [
+        { nodeId: "node-hard-mixed-b", nodeType: "autonomous_loop", ownerAgent: "cat_body", payload: {} }
+      ]
+    }),
+    /autonomous_loop_iteration_cap_required/
+  );
+
+  const draftLoopRoot = await tempRoot("workflow-v2-draft-hard-gate");
+  const draftLoopPlan = await runAction(draftLoopRoot, {
+    action: "workflow.v2.plan.create",
+    workflowId: "wf-v2-draft-loop",
+    planId: "plan-v2-draft-loop",
+    status: "draft",
+    workflowState: "draft",
+    objective: "Draft autonomous loop can be persisted before executable gate is satisfied.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract({
+      orchestrationPattern: "autonomous_agent_loop",
+      workerBudget: { maxWorkers: 1, concurrencyLimit: 1, maxWorkerContextTokens: 64000 }
+    }),
+    nodes: [
+      { nodeId: "node-v2-draft-loop", nodeType: "autonomous_loop", ownerAgent: "cat_body", payload: {} }
+    ]
+  });
+  assert.equal(draftLoopPlan.plan.status, "draft");
+  assert.equal(draftLoopPlan.plan.workflowState, "draft");
+  const draftLoopSpawnPreview = await runAction(draftLoopRoot, {
+    action: "workflow.v2.worker_spawn.preview",
+    workflowId: "wf-v2-draft-loop",
+    planId: "plan-v2-draft-loop",
+    nodeId: "node-v2-draft-loop",
+    managerAgent: "cat_body",
+    sessionId: "session-draft-loop-worker",
+    workerRunId: "worker-v2-draft-loop",
+    taskInputInfoId: "info-v2-draft-loop",
+    runtimeBackend: "local_deterministic",
+    ...v2WorkerDelegation(),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  assert.equal(draftLoopSpawnPreview.valid, false);
+  assert.equal(Boolean(draftLoopSpawnPreview.errors.some((item) => item.code === "autonomous_loop_iteration_cap_required")), true);
 
   const fixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-plan-canonical");
   const plan = fixture.plan;
@@ -3649,6 +3944,7 @@ async function testWorkflowV2PlanAdvisoryAndCanonicalArtifact() {
   const canonicalPlanSpec = JSON.parse(canonicalPlanSpecText);
   assert.equal(canonicalPlanSpec.schemaVersion, "workflow_plan_spec.v2");
   assert.equal(canonicalPlanSpec.orchestration.pattern, "manager_worker");
+  assert.equal(Boolean(canonicalPlanSpec.nodes.find((node) => node.nodeType === "manager_worker_spawn")?.expectedArtifacts?.length), true);
   const storedPlanRow = sqliteJson(fixture.dbFile, "SELECT plan_revision AS planRevision, plan_spec_artifact_ref AS planSpecArtifactRef, plan_spec_artifact_hash AS planSpecArtifactHash, payload_json AS payloadJson FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
   assert.equal(storedPlanRow.planSpecArtifactRef, plan.artifacts.canonicalJson);
   assert.equal(Boolean(storedPlanRow.planSpecArtifactHash), true);
@@ -3856,6 +4152,8 @@ async function testWorkflowV2WorkerSpawnAndLifecycleGates() {
     maxCompactions: 2
   });
   assert.equal(lifecycleHighPressure.valid, true);
+  assert.equal(lifecycleHighPressure.telemetry.contextPressureThreshold, 0.81);
+  assert.equal(lifecycleHighPressure.telemetry.maxCompactions, 1);
   assert.equal(lifecycleHighPressure.recommendation.action, "handoff_required");
   assert.equal(Boolean(lifecycleHighPressure.signals.some((signal) => signal.code === "context_pressure_high")), true);
   assert.equal(Boolean(lifecycleHighPressure.signals.some((signal) => signal.code === "compaction_limit_reached")), true);
@@ -3874,6 +4172,513 @@ async function testWorkflowV2WorkerSpawnAndLifecycleGates() {
   assert.equal(queueTick.status, "ok");
   assert.equal(queueTick.workerResults[0].status, "submitted_for_review");
   assert.equal(await pathExists(queueTick.workerResults[0].artifactFile), true);
+
+  const defaultPressureWorker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-default-context-threshold",
+    contextBudgetTokens: 1000,
+    contextUsedTokens: 810,
+    compactionCount: 0,
+    sourceContextRefs: ["info-v2-task-input"]
+  }));
+  const defaultPressureLifecycle = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: defaultPressureWorker.workerRun.workerRunId
+  });
+  assert.equal(defaultPressureLifecycle.telemetry.contextPressureThreshold, 0.81);
+  assert.equal(defaultPressureLifecycle.recommendation.action, "handoff_required");
+  assert.equal(Boolean(defaultPressureLifecycle.signals.some((signal) => signal.code === "context_pressure_high")), true);
+
+  const defaultCompactionWorker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-default-compact-threshold",
+    contextBudgetTokens: 1000,
+    contextUsedTokens: 100,
+    compactionCount: 1,
+    sourceContextRefs: ["info-v2-task-input"]
+  }));
+  const defaultCompactionLifecycle = await runAction(root, {
+    action: "workflow.v2.worker_lifecycle.preview",
+    workflowId,
+    workerRunId: defaultCompactionWorker.workerRun.workerRunId
+  });
+  assert.equal(defaultCompactionLifecycle.telemetry.maxCompactions, 1);
+  assert.equal(defaultCompactionLifecycle.recommendation.action, "handoff_required");
+  assert.equal(Boolean(defaultCompactionLifecycle.signals.some((signal) => signal.code === "compaction_limit_reached")), true);
+}
+
+async function testWorkflowV2AutonomousLoopRuntimeEnforcement() {
+  const root = await tempRoot("workflow-v2-autonomous-loop-runtime");
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = "wf-v2-autonomous-loop-runtime";
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    agentId: "cat_body",
+    runtime: "hermers",
+    platform: "hermers",
+    capabilities: { permissions: ["workflow.verify", "workflow.worker.lifecycle"] }
+  });
+  await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId: "session-v2-autonomous-worker",
+    ownerAgent: "cat_body",
+    runtimeTarget: "hermers",
+    taskType: "autonomous_loop_worker",
+    purpose: "Autonomous loop runtime cap regression worker.",
+    systemBrief: "Use workflow input references and return bounded tool/environment feedback evidence."
+  });
+  const createLoopPlan = async ({ planId, nodeId, maxIterations }) => runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId,
+    objective: `Bounded autonomous loop ${planId}.`,
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract({
+      orchestrationPattern: "autonomous_agent_loop",
+      orchestrationRationale: "Autonomous loop regression plan must be bounded by runtime gates.",
+      workerBudget: { maxWorkers: 1, concurrencyLimit: 1, maxWorkerContextTokens: 64000 },
+      acceptanceCriteria: ["iteration cap is enforced", "tool feedback is recorded before repeated iterations"]
+    }),
+    nodes: [
+      {
+        nodeId,
+        nodeType: "autonomous_loop",
+        ownerAgent: "cat_body",
+        runtimeBackend: "local_deterministic",
+        payload: {
+          maxIterations,
+          toolFeedbackCheckpoints: ["tool_observation_or_environment_feedback"],
+          stopCondition: "Stop when the loop has explicit stopConditionSatisfied evidence."
+        }
+      }
+    ]
+  });
+  const recordLoopInput = async ({ planId, nodeId, infoId }) => runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId,
+    nodeId,
+    infoId,
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: `artifact://workflow-v2/${workflowId}/${infoId}.json`,
+    recipientAgent: "cat_body",
+    summary: `Autonomous loop input ${infoId}.`
+  });
+  const spawnLoopWorker = async ({ planId, nodeId, workerRunId, taskInputInfoId, payload = {}, feedbackInfoIds = [] }) => runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId,
+    nodeId,
+    managerAgent: "cat_body",
+    sessionId: "session-v2-autonomous-worker",
+    workerRunId,
+    taskInputInfoId,
+    runtimeBackend: "local_deterministic",
+    maxAttempts: 1,
+    ...v2WorkerDelegation({
+      workerObjective: "Run one bounded autonomous loop iteration and write a receipt-backed output.",
+      outputFormat: "structured autonomous loop iteration output",
+      toolBoundary: "Only consume referenced workflow info items and produce explicit feedback/output artifacts.",
+      acceptanceCriteria: ["iteration output exists", "receipt evidence exists"],
+      stopCondition: "Stop after this iteration or when stopConditionSatisfied is true.",
+      contextBudgetTokens: 1000
+    }),
+    feedbackInfoIds,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: v2KernelReceipt(),
+    oauth: v2KernelOAuth(),
+    network: v2KernelNetwork(),
+    payload
+  });
+
+  await createLoopPlan({ planId: "plan-v2-loop-cap", nodeId: "node-v2-loop-cap", maxIterations: 3 });
+  await recordLoopInput({ planId: "plan-v2-loop-cap", nodeId: "node-v2-loop-cap", infoId: "info-v2-loop-cap-input" });
+  const first = await spawnLoopWorker({
+    planId: "plan-v2-loop-cap",
+    nodeId: "node-v2-loop-cap",
+    workerRunId: "worker-v2-loop-cap-1",
+    taskInputInfoId: "info-v2-loop-cap-input"
+  });
+  assert.equal(first.valid, true);
+  assert.equal(first.workerRun.payload.autonomousLoop.iterationCount, 0);
+  assert.equal(first.workerRun.payload.autonomousLoop.nextIteration, 1);
+  assert.equal(first.workerRun.payload.autonomousLoop.maxIterations, 3);
+  const firstTick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-autonomous-loop-cap-1",
+    workerLeaseMs: 60_000
+  });
+  assert.equal(firstTick.workerResults.find((item) => item.workerRunId === "worker-v2-loop-cap-1")?.status, "submitted_for_review");
+  await assertRejectsMessage(
+    () => spawnLoopWorker({
+      planId: "plan-v2-loop-cap",
+      nodeId: "node-v2-loop-cap",
+      workerRunId: "worker-v2-loop-cap-2-missing-feedback",
+      taskInputInfoId: "info-v2-loop-cap-input"
+    }),
+    /autonomous_loop_feedback_required/
+  );
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: "plan-v2-loop-cap",
+    nodeId: "node-v2-loop-cap",
+    infoId: "info-v2-loop-cap-feedback-1",
+    workerRunId: "worker-v2-loop-cap-1",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: `artifact://workflow-v2/${workflowId}/loop-cap-feedback-1.json`,
+    recipientAgent: "cat_body",
+    summary: "Tool/environment feedback for autonomous loop iteration 1.",
+    payload: {
+      autonomousLoopFeedback: true,
+      feedbackKind: "tool_observation_or_environment_feedback",
+      checkpoint: "tool_observation_or_environment_feedback",
+      iteration: 1,
+      sourceWorkerRunId: "worker-v2-loop-cap-1"
+    }
+  });
+  const second = await spawnLoopWorker({
+    planId: "plan-v2-loop-cap",
+    nodeId: "node-v2-loop-cap",
+    workerRunId: "worker-v2-loop-cap-2",
+    taskInputInfoId: "info-v2-loop-cap-input",
+    feedbackInfoIds: ["info-v2-loop-cap-feedback-1"]
+  });
+  assert.equal(second.workerRun.payload.autonomousLoop.iterationCount, 1);
+  assert.equal(second.workerRun.payload.autonomousLoop.nextIteration, 2);
+  assert.equal(second.workerRun.payload.autonomousLoop.feedbackEvidence[0].infoId, "info-v2-loop-cap-feedback-1");
+  await assertRejectsMessage(
+    () => spawnLoopWorker({
+      planId: "plan-v2-loop-cap",
+      nodeId: "node-v2-loop-cap",
+      workerRunId: "worker-v2-loop-cap-3-before-second-completes",
+      taskInputInfoId: "info-v2-loop-cap-input",
+      feedbackInfoIds: ["info-v2-loop-cap-feedback-1"]
+    }),
+    /autonomous_loop_previous_iteration_open/
+  );
+  const secondTick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-autonomous-loop-cap-2",
+    workerLeaseMs: 60_000
+  });
+  assert.equal(secondTick.workerResults.find((item) => item.workerRunId === "worker-v2-loop-cap-2")?.status, "submitted_for_review");
+  await assertRejectsMessage(
+    () => spawnLoopWorker({
+      planId: "plan-v2-loop-cap",
+      nodeId: "node-v2-loop-cap",
+      workerRunId: "worker-v2-loop-cap-3-stale-feedback",
+      taskInputInfoId: "info-v2-loop-cap-input",
+      feedbackInfoIds: ["info-v2-loop-cap-feedback-1"]
+    }),
+    /autonomous_loop_feedback_required/
+  );
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: "plan-v2-loop-cap",
+    nodeId: "node-v2-loop-cap",
+    infoId: "info-v2-loop-cap-feedback-2",
+    workerRunId: "worker-v2-loop-cap-2",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: `artifact://workflow-v2/${workflowId}/loop-cap-feedback-2.json`,
+    recipientAgent: "cat_body",
+    summary: "Tool/environment feedback for autonomous loop iteration 2.",
+    payload: {
+      autonomousLoopFeedback: true,
+      feedbackKind: "tool_observation_or_environment_feedback",
+      checkpoint: "tool_observation_or_environment_feedback",
+      iteration: 2,
+      sourceWorkerRunId: "worker-v2-loop-cap-2"
+    }
+  });
+  const third = await spawnLoopWorker({
+    planId: "plan-v2-loop-cap",
+    nodeId: "node-v2-loop-cap",
+    workerRunId: "worker-v2-loop-cap-3",
+    taskInputInfoId: "info-v2-loop-cap-input",
+    feedbackInfoIds: ["info-v2-loop-cap-feedback-2"]
+  });
+  assert.equal(third.workerRun.payload.autonomousLoop.iterationCount, 2);
+  assert.equal(third.workerRun.payload.autonomousLoop.nextIteration, 3);
+  assert.equal(third.workerRun.payload.autonomousLoop.feedbackEvidence[0].infoId, "info-v2-loop-cap-feedback-2");
+  await assertRejectsMessage(
+    () => spawnLoopWorker({
+      planId: "plan-v2-loop-cap",
+      nodeId: "node-v2-loop-cap",
+      workerRunId: "worker-v2-loop-cap-4",
+      taskInputInfoId: "info-v2-loop-cap-input",
+      feedbackInfoIds: ["info-v2-loop-cap-feedback-2"]
+    }),
+    /autonomous_loop_iteration_cap_reached/
+  );
+
+  await createLoopPlan({ planId: "plan-v2-loop-stop", nodeId: "node-v2-loop-stop", maxIterations: 3 });
+  await recordLoopInput({ planId: "plan-v2-loop-stop", nodeId: "node-v2-loop-stop", infoId: "info-v2-loop-stop-input" });
+  await spawnLoopWorker({
+    planId: "plan-v2-loop-stop",
+    nodeId: "node-v2-loop-stop",
+    workerRunId: "worker-v2-loop-stop-1",
+    taskInputInfoId: "info-v2-loop-stop-input",
+    payload: {
+      autonomousLoop: {
+        stopConditionSatisfied: true
+      },
+      outputSummary: "Deterministic worker reached the autonomous loop stop condition."
+    }
+  });
+  const stopTick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-autonomous-loop-stop",
+    workerLeaseMs: 60_000
+  });
+  const stopResult = stopTick.workerResults.find((item) => item.workerRunId === "worker-v2-loop-stop-1");
+  assert.equal(stopResult?.status, "submitted_for_review");
+  assert.equal(stopResult?.autonomousLoop?.terminalized, true);
+  const stopNode = sqliteJson(dbFile, "SELECT status, output_info_id AS outputInfoId, payload_json AS payloadJson FROM workflow_v2_plan_nodes WHERE node_id='node-v2-loop-stop' LIMIT 1;")[0];
+  assert.equal(stopNode.status, "completed");
+  assert.equal(stopNode.outputInfoId, "worker-v2-loop-stop-1.output");
+  assert.equal(JSON.parse(stopNode.payloadJson).autonomousLoopRuntime.stopConditionSatisfied, true);
+  await assertRejectsMessage(
+    () => spawnLoopWorker({
+      planId: "plan-v2-loop-stop",
+      nodeId: "node-v2-loop-stop",
+      workerRunId: "worker-v2-loop-stop-2",
+      taskInputInfoId: "info-v2-loop-stop-input"
+    }),
+    /autonomous_loop_terminal/
+  );
+  const validate = await runAction(root, { action: "workflow.v2.validate" });
+  assert.equal(validate.checks.find((item) => item.checkId === "autonomous_loop_iteration_caps")?.status, "pass");
+}
+
+async function testWorkflowV2EvaluatorOptimizerContractFocused() {
+  const root = await tempRoot("workflow-v2-evaluator-contract");
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = "wf-v2-evaluator-contract";
+  for (const agent of [
+    { agentId: "cat_heart", runtime: "hermers", platform: "hermers", permissions: ["workflow.verify"] },
+    { agentId: "cat_body", runtime: "hermers", platform: "hermers", permissions: ["workflow.verify"] },
+    { agentId: "cat_nose", runtime: "hermers", platform: "hermers", permissions: ["workflow.verify"] }
+  ]) {
+    await runAction(root, {
+      action: "runtime.agent.upsert",
+      agentId: agent.agentId,
+      runtime: agent.runtime,
+      platform: agent.platform,
+      capabilities: { permissions: agent.permissions }
+    });
+  }
+  await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId: "session-v2-evaluator-producer",
+    ownerAgent: "cat_body",
+    runtimeTarget: "hermers",
+    taskType: "evaluator_optimizer_producer",
+    purpose: "Producer worker for evaluator optimizer contract regression.",
+    systemBrief: "Produce a structured artifact; evaluator receipt is recorded through manager review."
+  });
+  await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId: "plan-v2-evaluator-contract",
+    objective: "Evaluate optimizer output through a distinct evaluator receipt.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body", "cat_nose"],
+    ...v2PlanContract({
+      orchestrationPattern: "evaluator_optimizer",
+      orchestrationRationale: "Producer output must be reviewed by a distinct evaluator contract before owner acceptance.",
+      workerBudget: { maxWorkers: 2, concurrencyLimit: 1, maxWorkerContextTokens: 64000 },
+      acceptanceCriteria: ["producer output exists", "accepted evaluator receipt gates owner acceptance"]
+    }),
+    nodes: [
+      {
+        nodeId: "node-v2-evaluator-producer",
+        nodeType: "producer",
+        ownerAgent: "cat_body",
+        runtimeBackend: "local_deterministic",
+        payload: {
+          outputSchema: "workflow_v2_evaluator_producer_output.v1",
+          expectedArtifacts: ["artifact://workflow-v2/evaluator-producer-output.json"]
+        }
+      },
+      {
+        nodeId: "node-v2-evaluator-review",
+        nodeType: "evaluator",
+        ownerAgent: "cat_nose",
+        dependsOn: ["node-v2-evaluator-producer"],
+        payload: {
+          producerNodeId: "node-v2-evaluator-producer",
+          evaluatorInput: "producer output info item",
+          rubric: "Check producer output against acceptance criteria and evidence completeness.",
+          reviewArtifact: "artifact://workflow-v2/evaluator-review.json",
+          decisionStates: ["accepted", "rejected", "needs_revision"]
+        }
+      }
+    ]
+  });
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: "plan-v2-evaluator-contract",
+    nodeId: "node-v2-evaluator-producer",
+    infoId: "info-v2-evaluator-input",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/evaluator-input.json",
+    recipientAgent: "cat_body",
+    summary: "Evaluator optimizer producer input pointer."
+  });
+  const producer = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-evaluator-contract",
+    nodeId: "node-v2-evaluator-producer",
+    managerAgent: "cat_nose",
+    sessionId: "session-v2-evaluator-producer",
+    workerRunId: "worker-v2-evaluator-producer",
+    taskInputInfoId: "info-v2-evaluator-input",
+    runtimeBackend: "local_deterministic",
+    maxAttempts: 1,
+    ...v2WorkerDelegation({
+      workerObjective: "Produce the optimizer candidate artifact for evaluator review.",
+      outputFormat: "producer output artifact pointer",
+      toolBoundary: "Only use referenced workflow info and return output through workflow result.",
+      acceptanceCriteria: ["producer output info item exists", "runtime receipt exists"],
+      stopCondition: "Stop after producer output is submitted.",
+      contextBudgetTokens: 1000
+    }),
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: v2KernelReceipt(),
+    oauth: v2KernelOAuth(),
+    network: v2KernelNetwork(),
+    payload: { outputSummary: "Producer output ready for evaluator review." }
+  });
+  assert.equal(producer.valid, true);
+  const tick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-evaluator-contract",
+    workerLeaseMs: 60_000
+  });
+  assert.equal(tick.workerResults.find((item) => item.workerRunId === "worker-v2-evaluator-producer")?.status, "submitted_for_review");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.manager_review.record",
+      workflowId,
+      planId: "plan-v2-evaluator-contract",
+      workerRunId: "worker-v2-evaluator-producer",
+      reviewerAgent: "cat_nose",
+      decision: "accepted",
+      summary: "Evaluator review without evaluator input/rubric must fail.",
+      artifactRefs: ["artifact://workflow-v2/evaluator-review-missing-contract.json"],
+      receiptRefs: ["receipt://workflow-v2/evaluator-review-missing-contract"]
+    }),
+    /evaluator_input_required/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.manager_review.record",
+      workflowId,
+      planId: "plan-v2-evaluator-contract",
+      workerRunId: "worker-v2-evaluator-producer",
+      reviewerAgent: "cat_nose",
+      decision: "accepted",
+      summary: "Evaluator receipt must bind to the reviewed producer worker.",
+      artifactRefs: ["artifact://workflow-v2/evaluator-review-wrong-worker.json"],
+      receiptRefs: ["receipt://workflow-v2/evaluator-review-wrong-worker"],
+      payload: {
+        evaluatorReceipt: {
+          schemaVersion: "workflow_v2_evaluator_receipt.v1",
+          producerNodeId: "node-v2-evaluator-producer",
+          producerWorkerRunId: "worker-v2-evaluator-other",
+          producerOutputInfoId: "worker-v2-evaluator-producer.output",
+          evaluatorInputInfoId: "worker-v2-evaluator-producer.output",
+          rubric: "Check producer output against acceptance criteria and evidence completeness.",
+          reviewArtifactRef: "artifact://workflow-v2/evaluator-review-wrong-worker.json",
+          reviewReceiptRef: "receipt://workflow-v2/evaluator-review-wrong-worker",
+          decisionState: "accepted",
+          decisionStates: ["accepted", "rejected", "needs_revision"]
+        }
+      }
+    }),
+    /evaluator_producer_worker_mismatch/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.owner_review.record",
+      workflowId,
+      planId: "plan-v2-evaluator-contract",
+      callerAgent: "cat_heart",
+      allowNoManagerReviews: true,
+      artifactRefs: ["artifact://workflow-v2/direct-owner-bypass.json"],
+      receiptRefs: ["receipt://workflow-v2/direct-owner-bypass"],
+      decision: "accepted",
+      summary: "Evaluator optimizer must not allow owner-direct accepted bypass."
+    }),
+    /evaluator_review_required/
+  );
+  const review = await runAction(root, {
+    action: "workflow.v2.manager_review.record",
+    workflowId,
+    planId: "plan-v2-evaluator-contract",
+    reviewId: "review-v2-evaluator-accepted",
+    workerRunId: "worker-v2-evaluator-producer",
+    reviewerAgent: "cat_nose",
+    decision: "accepted",
+    summary: "Evaluator accepted producer output through structured rubric.",
+    artifactRefs: ["artifact://workflow-v2/evaluator-review.json"],
+    receiptRefs: ["receipt://workflow-v2/evaluator-review"],
+    payload: {
+      evaluatorReceipt: {
+        schemaVersion: "workflow_v2_evaluator_receipt.v1",
+        producerNodeId: "node-v2-evaluator-producer",
+        producerWorkerRunId: "worker-v2-evaluator-producer",
+        producerOutputInfoId: "worker-v2-evaluator-producer.output",
+        evaluatorInputInfoId: "worker-v2-evaluator-producer.output",
+        rubric: "Check producer output against acceptance criteria and evidence completeness.",
+        reviewArtifactRef: "artifact://workflow-v2/evaluator-review.json",
+        reviewReceiptRef: "receipt://workflow-v2/evaluator-review",
+        decisionState: "accepted",
+        decisionStates: ["accepted", "rejected", "needs_revision"]
+      }
+    }
+  });
+  assert.equal(review.review.payload.evaluatorReceipt.schemaVersion, "workflow_v2_evaluator_receipt.v1");
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_manager_reviews(review_id, workflow_id, plan_id, node_id, worker_run_id, reviewer_agent, decision, summary, findings_json, artifact_refs_json, receipt_refs_json, blocker_json, payload_json, created_at)
+VALUES ('review-v2-evaluator-loose', '${workflowId}', 'plan-v2-evaluator-contract', 'node-v2-evaluator-producer', 'worker-v2-evaluator-producer', 'cat_nose', 'accepted', 'Loose accepted review must not feed owner acceptance.', '[]', '["artifact://workflow-v2/loose-review.json"]', '["receipt://workflow-v2/loose-review"]', '{}', '{}', '2026-07-05T00:00:00.000Z');`);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.owner_review.record",
+      workflowId,
+      planId: "plan-v2-evaluator-contract",
+      callerAgent: "cat_heart",
+      managerReviewIds: ["review-v2-evaluator-loose"],
+      decision: "accepted",
+      summary: "Owner acceptance must not consume a loose review."
+    }),
+    /evaluator_review_receipt_required/
+  );
+  sqliteExec(dbFile, "DELETE FROM workflow_v2_manager_reviews WHERE review_id='review-v2-evaluator-loose';");
+  const ownerReview = await runAction(root, {
+    action: "workflow.v2.owner_review.record",
+    workflowId,
+    planId: "plan-v2-evaluator-contract",
+    callerAgent: "cat_heart",
+    managerReviewIds: [review.review.reviewId],
+    decision: "accepted",
+    summary: "Owner accepted producer output through accepted evaluator receipt."
+  });
+  assert.equal(ownerReview.ownerReview.decision, "accepted");
+  const validate = await runAction(root, { action: "workflow.v2.validate" });
+  assert.equal(validate.ok, true, JSON.stringify(validate.failedChecks));
 }
 
 async function testWorkflowV2ReviewChainFocused() {
@@ -13617,6 +14422,8 @@ try {
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
     ["workflow v2 info stack and session binding", testWorkflowV2InfoStackAndSessionBinding],
     ["workflow v2 worker spawn and lifecycle gates", testWorkflowV2WorkerSpawnAndLifecycleGates],
+    ["workflow v2 autonomous loop runtime enforcement", testWorkflowV2AutonomousLoopRuntimeEnforcement],
+    ["workflow v2 evaluator optimizer contract", testWorkflowV2EvaluatorOptimizerContractFocused],
     ["workflow v2 review chain", testWorkflowV2ReviewChainFocused],
     ["workflow v2 governance human gate bridge", testWorkflowV2GovernanceHumanGateBridgeFocused],
     ["workflow v2 lifecycle renewal and validator", testWorkflowV2LifecycleRenewalAndValidatorFocused],

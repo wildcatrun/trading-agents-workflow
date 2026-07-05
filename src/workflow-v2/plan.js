@@ -144,6 +144,298 @@ export function workflowV2PlanOrchestrationAdvisories(contract = {}, acceptanceC
   return advisories;
 }
 
+function workflowV2NodePayload(node = {}) {
+  return workflowV2JsonObject(node.payload, {});
+}
+
+function workflowV2NodeText(node = {}, ...keys) {
+  const payload = workflowV2NodePayload(node);
+  const values = [];
+  for (const key of keys) {
+    values.push(node[key], payload[key]);
+    if (key.includes("_")) values.push(payload[key.replace(/_([a-z])/g, (_, char) => char.toUpperCase())]);
+  }
+  return firstText(...values);
+}
+
+function workflowV2NodeList(node = {}, ...keys) {
+  const payload = workflowV2NodePayload(node);
+  for (const key of keys) {
+    const camelKey = key.includes("_") ? key.replace(/_([a-z])/g, (_, char) => char.toUpperCase()) : key;
+    const list = workflowV2JsonArray(node[key] ?? payload[key] ?? payload[camelKey], null);
+    if (Array.isArray(list)) return list;
+  }
+  return [];
+}
+
+function workflowV2NodeHasValue(node = {}, ...keys) {
+  const payload = workflowV2NodePayload(node);
+  for (const key of keys) {
+    const camelKey = key.includes("_") ? key.replace(/_([a-z])/g, (_, char) => char.toUpperCase()) : key;
+    const value = node[key] ?? payload[key] ?? payload[camelKey];
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value) && value.length > 0) return true;
+    if (typeof value === "object" && Object.keys(value).length > 0) return true;
+    if (String(value).trim()) return true;
+  }
+  return false;
+}
+
+function workflowV2NodeHasPositiveInt(node = {}, ...keys) {
+  const payload = workflowV2NodePayload(node);
+  for (const key of keys) {
+    const camelKey = key.includes("_") ? key.replace(/_([a-z])/g, (_, char) => char.toUpperCase()) : key;
+    const value = node[key] ?? payload[key] ?? payload[camelKey];
+    if (value !== undefined && value !== null && value !== "" && workflowV2NonNegativeInt(value, 0) > 0) return true;
+  }
+  return false;
+}
+
+function workflowV2NormalizeEvaluatorDecisionState(value = "") {
+  const text = String(value || "").trim().toLowerCase().replace(/-/g, "_");
+  if (text === "revise_required") return "needs_revision";
+  return text;
+}
+
+function workflowV2EvaluatorDecisionStates(node = {}) {
+  return workflowV2NodeList(node, "decisionStates", "decision_states", "outcomeStates", "outcome_states")
+    .map(workflowV2NormalizeEvaluatorDecisionState)
+    .filter(Boolean);
+}
+
+function workflowV2EvaluatorReferencesProducer(node = {}, producerNodeIds = []) {
+  const producerSet = new Set(producerNodeIds.filter(Boolean));
+  if (!producerSet.size) return false;
+  const refs = [
+    ...workflowV2NodeList(node, "producerNodeIds", "producer_node_ids", "producerNodes", "producer_nodes"),
+    workflowV2NodeText(node, "producerNodeId", "producer_node_id")
+  ].filter(Boolean);
+  const dependsOn = workflowV2JsonArray(node.dependsOn ?? node.depends_on, []);
+  return [...refs, ...dependsOn].some((ref) => producerSet.has(ref));
+}
+
+export function workflowV2PlanNodeAdvisories(contract = {}, nodes = []) {
+  const advisories = [];
+  const pattern = String(contract.pattern || "").trim();
+  const nodeList = Array.isArray(nodes) ? nodes : [];
+  const managerWorkerNodes = nodeList.filter((node) => node.nodeType === "manager_worker_spawn");
+  const reviewNodes = nodeList.filter((node) => ["manager_review", "owner_review", "worker_review", "evaluator_review", "evaluator"].includes(node.nodeType));
+
+  if (["manager_worker", "parallel_manager_sections"].includes(pattern)) {
+    if (managerWorkerNodes.length === 0) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "manager_worker_spawn_node_recommended",
+        "manager-worker orchestration should include at least one manager_worker_spawn node before manager review",
+        { pattern }
+      ));
+    }
+    const missingDomain = managerWorkerNodes.filter((node) => !workflowV2NodeText(node, "domainOwnership", "domain_ownership", "domain", "section"));
+    if (missingDomain.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "manager_worker_domain_ownership_recommended",
+        "manager-worker plan nodes should state domainOwnership/section so parallel work has clear ownership",
+        { nodeIds: missingDomain.map((node) => node.nodeId).filter(Boolean) }
+      ));
+    }
+    const missingArtifacts = managerWorkerNodes.filter((node) => workflowV2NodeList(node, "expectedArtifacts", "expected_artifacts").length === 0);
+    if (missingArtifacts.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "manager_worker_expected_artifacts_recommended",
+        "manager-worker plan nodes should name expectedArtifacts for artifact-first synthesis",
+        { nodeIds: missingArtifacts.map((node) => node.nodeId).filter(Boolean) }
+      ));
+    }
+    const missingReviewPolicy = managerWorkerNodes.filter((node) => !workflowV2NodeText(node, "reviewPolicy", "review_policy"));
+    if (missingReviewPolicy.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "manager_worker_review_policy_recommended",
+        "manager-worker plan nodes should state reviewPolicy before worker output can become evidence",
+        { nodeIds: missingReviewPolicy.map((node) => node.nodeId).filter(Boolean) }
+      ));
+    }
+  }
+
+  if (pattern === "parallel_manager_sections") {
+    const sections = managerWorkerNodes
+      .map((node) => workflowV2NodeText(node, "domainOwnership", "domain_ownership", "domain", "section").toLowerCase())
+      .filter(Boolean);
+    if (managerWorkerNodes.length < 2) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "parallel_sections_need_multiple_managers",
+        "parallel_manager_sections should include at least two manager-owned sections",
+        { managerWorkerNodeCount: managerWorkerNodes.length }
+      ));
+    }
+    if (sections.length && new Set(sections).size !== sections.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "parallel_sections_should_be_distinct",
+        "parallel_manager_sections should use distinct section/domain ownership labels",
+        { sections }
+      ));
+    }
+  }
+
+  if (pattern === "evaluator_optimizer") {
+    const producerNodes = nodeList.filter((node) => ["producer", "optimizer", "manager_worker_spawn", "worker_producer"].includes(node.nodeType));
+    if (producerNodes.length === 0 || reviewNodes.length === 0) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "evaluator_optimizer_pair_recommended",
+        "evaluator_optimizer plans should expose a producer node and a distinct evaluator/review node"
+      ));
+    }
+    const sameOwnerPairs = producerNodes.flatMap((producer) => reviewNodes
+      .filter((review) => review.ownerAgent && producer.ownerAgent && review.ownerAgent === producer.ownerAgent)
+      .map((review) => ({ producerNodeId: producer.nodeId, evaluatorNodeId: review.nodeId, ownerAgent: review.ownerAgent })));
+    if (sameOwnerPairs.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "evaluator_optimizer_distinct_reviewer_recommended",
+        "evaluator_optimizer review should be separate from the producing worker/manager when possible",
+        { pairs: sameOwnerPairs }
+      ));
+    }
+    const producerNodeIds = producerNodes.map((node) => node.nodeId).filter(Boolean);
+    const missingProducerOutputContract = producerNodes.filter((node) => !workflowV2NodeHasValue(node, "producerOutput", "producer_output", "producerOutputSchema", "producer_output_schema", "outputSchema", "output_schema", "outputContract", "output_contract", "expectedArtifacts", "expected_artifacts"));
+    if (missingProducerOutputContract.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "evaluator_optimizer_producer_output_contract_recommended",
+        "evaluator_optimizer producer nodes should declare producer output schema/contract or expected artifacts",
+        { nodeIds: missingProducerOutputContract.map((node) => node.nodeId).filter(Boolean) }
+      ));
+    }
+    const missingEvaluatorContract = reviewNodes.filter((node) => {
+      const referencesProducer = workflowV2EvaluatorReferencesProducer(node, producerNodeIds);
+      const hasInput = workflowV2NodeHasValue(node, "evaluatorInput", "evaluator_input", "evaluatorInputSchema", "evaluator_input_schema", "inputSchema", "input_schema", "producerOutputInput", "producer_output_input");
+      const hasRubric = workflowV2NodeHasValue(node, "rubric", "rubricSchema", "rubric_schema", "evaluationRubric", "evaluation_rubric");
+      const hasReviewArtifact = workflowV2NodeHasValue(node, "reviewArtifact", "review_artifact", "reviewArtifactRef", "review_artifact_ref", "reviewArtifactSchema", "review_artifact_schema", "expectedReviewArtifact", "expected_review_artifact");
+      return !referencesProducer || !hasInput || !hasRubric || !hasReviewArtifact;
+    });
+    if (missingEvaluatorContract.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "evaluator_optimizer_evaluator_contract_recommended",
+        "evaluator_optimizer evaluator nodes should bind producer input, rubric/schema, and review artifact contract",
+        { nodeIds: missingEvaluatorContract.map((node) => node.nodeId).filter(Boolean) }
+      ));
+    }
+    const missingDecisionStates = reviewNodes.filter((node) => {
+      const states = new Set(workflowV2EvaluatorDecisionStates(node));
+      return !states.has("accepted") || !states.has("rejected") || !states.has("needs_revision");
+    });
+    if (missingDecisionStates.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "evaluator_optimizer_decision_states_recommended",
+        "evaluator_optimizer evaluator nodes should declare accepted/rejected/needs_revision decision states",
+        { nodeIds: missingDecisionStates.map((node) => node.nodeId).filter(Boolean) }
+      ));
+    }
+  }
+
+  if (pattern === "autonomous_agent_loop") {
+    const loopNodes = nodeList.filter((node) => ["autonomous_loop", "agent_loop", "manager_worker_spawn", "task"].includes(node.nodeType));
+    const missingIterationCap = loopNodes.filter((node) => !workflowV2NodeHasPositiveInt(node, "maxIterations", "max_iterations", "iterationCap", "iteration_cap"));
+    if (missingIterationCap.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "autonomous_loop_iteration_cap_recommended",
+        "autonomous_agent_loop nodes should state maxIterations/iterationCap to prevent open-ended loops",
+        { nodeIds: missingIterationCap.map((node) => node.nodeId).filter(Boolean) }
+      ));
+    }
+    const missingToolFeedback = loopNodes.filter((node) => workflowV2NodeList(node, "toolFeedbackCheckpoints", "tool_feedback_checkpoints", "environmentFeedbackCheckpoints", "environment_feedback_checkpoints").length === 0);
+    if (missingToolFeedback.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "autonomous_loop_tool_feedback_recommended",
+        "autonomous_agent_loop nodes should state tool/environment feedback checkpoints",
+        { nodeIds: missingToolFeedback.map((node) => node.nodeId).filter(Boolean) }
+      ));
+    }
+    const missingStopCondition = loopNodes.filter((node) => !workflowV2NodeText(node, "stopCondition", "stop_condition") && workflowV2NodeList(node, "stopConditions", "stop_conditions").length === 0);
+    if (missingStopCondition.length) {
+      advisories.push(workflowV2ValidationAdvisory(
+        "autonomous_loop_stop_condition_recommended",
+        "autonomous_agent_loop nodes should state stopCondition/stopConditions",
+        { nodeIds: missingStopCondition.map((node) => node.nodeId).filter(Boolean) }
+      ));
+    }
+  }
+
+  return advisories;
+}
+
+const WORKFLOW_V2_PLAN_NODE_HARD_GATE_MESSAGES = {
+  manager_worker_spawn_node_recommended: {
+    code: "manager_worker_spawn_node_required",
+    message: "manager-worker executable orchestration requires at least one manager_worker_spawn node before manager review"
+  },
+  manager_worker_domain_ownership_recommended: {
+    code: "manager_worker_domain_ownership_required",
+    message: "manager-worker executable nodes require domainOwnership/section so parallel work has clear ownership"
+  },
+  manager_worker_expected_artifacts_recommended: {
+    code: "manager_worker_expected_artifacts_required",
+    message: "manager-worker executable nodes require expectedArtifacts for artifact-first synthesis"
+  },
+  manager_worker_review_policy_recommended: {
+    code: "manager_worker_review_policy_required",
+    message: "manager-worker executable nodes require reviewPolicy before worker output can become evidence"
+  },
+  parallel_sections_need_multiple_managers: {
+    code: "parallel_sections_multiple_managers_required",
+    message: "parallel_manager_sections executable plans require at least two manager-owned sections"
+  },
+  parallel_sections_should_be_distinct: {
+    code: "parallel_sections_distinct_required",
+    message: "parallel_manager_sections executable plans require distinct section/domain ownership labels"
+  },
+  evaluator_optimizer_pair_recommended: {
+    code: "evaluator_optimizer_pair_required",
+    message: "evaluator_optimizer executable plans require a producer node and a distinct evaluator/review node"
+  },
+  evaluator_optimizer_distinct_reviewer_recommended: {
+    code: "evaluator_optimizer_distinct_reviewer_required",
+    message: "evaluator_optimizer executable review must be separate from the producing worker/manager"
+  },
+  evaluator_optimizer_producer_output_contract_recommended: {
+    code: "evaluator_optimizer_producer_output_contract_required",
+    message: "evaluator_optimizer executable producer nodes require producer output schema/contract or expected artifacts"
+  },
+  evaluator_optimizer_evaluator_contract_recommended: {
+    code: "evaluator_optimizer_evaluator_contract_required",
+    message: "evaluator_optimizer executable evaluator nodes require producer input binding, rubric/schema, and review artifact contract"
+  },
+  evaluator_optimizer_decision_states_recommended: {
+    code: "evaluator_optimizer_decision_states_required",
+    message: "evaluator_optimizer executable evaluator nodes require accepted/rejected/needs_revision decision states"
+  },
+  autonomous_loop_iteration_cap_recommended: {
+    code: "autonomous_loop_iteration_cap_required",
+    message: "autonomous_agent_loop executable nodes require maxIterations/iterationCap"
+  },
+  autonomous_loop_tool_feedback_recommended: {
+    code: "autonomous_loop_tool_feedback_required",
+    message: "autonomous_agent_loop executable nodes require tool/environment feedback checkpoints"
+  },
+  autonomous_loop_stop_condition_recommended: {
+    code: "autonomous_loop_stop_condition_required",
+    message: "autonomous_agent_loop executable nodes require stopCondition/stopConditions"
+  }
+};
+
+export function workflowV2PlanNodeHardGateErrors(contract = {}, nodes = []) {
+  return workflowV2PlanNodeAdvisories(contract, nodes)
+    .map((advisory) => {
+      const hardGate = WORKFLOW_V2_PLAN_NODE_HARD_GATE_MESSAGES[advisory.code];
+      if (!hardGate) return null;
+      const { severity, code, message, ...details } = advisory;
+      return workflowV2ValidationError(hardGate.code, hardGate.message, details);
+    })
+    .filter(Boolean);
+}
+
+export function workflowV2PlanNeedsExecutableNodeHardGate(plan = {}) {
+  const status = String(plan.status || "").trim();
+  const workflowState = String(plan.workflowState || plan.workflow_state || "").trim();
+  return !(status === "draft" && workflowState === "draft");
+}
+
 export function workflowV2WorkerDelegationContract(input = {}) {
   const payload = workflowV2JsonObject(input.payload, {});
   const delegationInput = workflowV2JsonObject(input.delegation ?? input.delegationContract ?? input.delegation_contract ?? payload.delegation ?? payload.delegationContract ?? payload.delegation_contract, {});
@@ -217,8 +509,23 @@ export function workflowV2DefaultPlanNodes(plan = {}, input = {}) {
   addNode("intake", taskOwnerAgent, { runtimeBackend: "hermers" });
   addNode("manager_planning", taskOwnerAgent, { runtimeBackend: "hermers", dependsOn: [nodes[0]?.nodeId].filter(Boolean) });
   for (const manager of managerAgents) {
-    addNode("manager_worker_spawn", manager, { dependsOn: [nodes[1]?.nodeId].filter(Boolean) });
-    addNode("manager_review", manager, { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: "hermers" });
+    addNode("manager_worker_spawn", manager, {
+      dependsOn: [nodes[1]?.nodeId].filter(Boolean),
+      payload: {
+        managerAgent: manager,
+        domainOwnership: manager,
+        expectedArtifacts: [`artifact:${manager}:manager_output`],
+        reviewPolicy: "manager accepts, revises, or rejects worker output before owner synthesis"
+      }
+    });
+    addNode("manager_review", manager, {
+      dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean),
+      runtimeBackend: "hermers",
+      payload: {
+        managerAgent: manager,
+        reviewPolicy: "review against node acceptance criteria, artifact refs, and receipts"
+      }
+    });
   }
   addNode("cat_brain_synthesis", "main", { dependsOn: nodes.filter((node) => node.nodeType === "manager_review").map((node) => node.nodeId), runtimeBackend: "hermers" });
   addNode("cat_claw_audit", "cat_claw", { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: "openclaw_review_only" });
