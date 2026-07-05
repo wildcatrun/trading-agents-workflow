@@ -2,6 +2,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { workflowPaths } from "../workflow.js";
 import { WorkflowActionGateway } from "./action-gateway.js";
@@ -9,6 +10,8 @@ import { WorkflowReadModel } from "./read-model.js";
 
 const CONSOLE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "static", "console");
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const OPERATOR_SIGNATURE_TOLERANCE_MS = 5 * 60 * 1000;
 const RELEASE_QUALITY_GATE_DEFAULTS = [
   {
     key: "spark_code_review",
@@ -48,7 +51,8 @@ function splitHost(value = "") {
 }
 
 function isLoopbackHost(host) {
-  return ["localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1"].includes(host);
+  const normalized = splitHost(host || "").toLowerCase();
+  return LOOPBACK_HOSTS.has(normalized) || normalized === "0:0:0:0:0:0:0:1";
 }
 
 function allowedHost(host, options) {
@@ -200,9 +204,16 @@ function json(res, status, value) {
 }
 
 async function readBody(req) {
+  return parseBodyText(await readBodyText(req));
+}
+
+async function readBodyText(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
-  const text = Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function parseBodyText(text) {
   if (!text) return {};
   return JSON.parse(text);
 }
@@ -223,6 +234,52 @@ function mutationOriginOk(req) {
   if (origin) return sameOrigin(req, origin);
   if (referer) return sameOrigin(req, referer);
   return true;
+}
+
+function assertConsoleSecurityOptions(options = {}) {
+  const host = String(options.host || "").trim() || "127.0.0.1";
+  const token = String(options.token || "").trim();
+  const allowWrites = Boolean(options.allowWrites);
+  const signingSecret = String(options.operatorSigningSecret || "").trim();
+  if (!token && !isLoopbackHost(host)) {
+    throw new Error("WORKFLOW_CONSOLE_TOKEN is required when workflow console binds to a non-loopback host");
+  }
+  if (allowWrites && !token) {
+    throw new Error("WORKFLOW_CONSOLE_TOKEN is required when WORKFLOW_CONSOLE_ALLOW_WRITES is enabled");
+  }
+  if (allowWrites && !signingSecret) {
+    throw new Error("WORKFLOW_CONSOLE_OPERATOR_SIGNING_SECRET is required when WORKFLOW_CONSOLE_ALLOW_WRITES is enabled");
+  }
+}
+
+function hmacHex(secret, text) {
+  return createHmac("sha256", secret).update(text).digest("hex");
+}
+
+function constantTimeEqualHex(left = "", right = "") {
+  const a = Buffer.from(String(left || ""), "hex");
+  const b = Buffer.from(String(right || ""), "hex");
+  return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+}
+
+export function operatorActionSignatureOk(req, options = {}, bodyText = "") {
+  if (!options.allowWrites) return { ok: true };
+  const signingSecret = String(options.operatorSigningSecret || "").trim();
+  if (!signingSecret) return { ok: false, error: "operator_signing_secret_missing" };
+  const signatureHeader = String(req.headers["x-workflow-operator-signature"] || "").trim();
+  const timestamp = String(req.headers["x-workflow-operator-timestamp"] || "").trim();
+  if (!signatureHeader) return { ok: false, error: "operator_signature_required" };
+  if (!timestamp) return { ok: false, error: "operator_signature_timestamp_required" };
+  const timestampMs = Date.parse(timestamp);
+  if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > OPERATOR_SIGNATURE_TOLERANCE_MS) {
+    return { ok: false, error: "operator_signature_timestamp_invalid" };
+  }
+  const supplied = signatureHeader.replace(/^sha256=/i, "").trim();
+  if (!/^[a-f0-9]{64}$/i.test(supplied)) return { ok: false, error: "operator_signature_invalid" };
+  const expected = hmacHex(signingSecret, `${timestamp}.${bodyText}`);
+  return constantTimeEqualHex(supplied, expected)
+    ? { ok: true }
+    : { ok: false, error: "operator_signature_mismatch" };
 }
 
 export async function workflowChildPayload(readModel, workflowId, child = "", query = {}) {
@@ -261,7 +318,9 @@ export function buildConsoleConfig(paths, options = {}) {
       role: "local_console_operator_unverified",
       roleEvidence: "static_local_console_role",
       previewActions: "allowed",
-      writeActions: readOnly ? "hidden_read_only" : allowWrites ? "allowlisted_by_gateway" : "hidden_without_allow_writes",
+      writeActions: readOnly ? "hidden_read_only" : allowWrites ? "allowlisted_by_gateway_with_signed_operator_action" : "hidden_without_allow_writes",
+      authToken: options.token ? "required_configured" : "loopback_read_only_optional",
+      signedOperatorAction: allowWrites ? "required_for_api_actions" : "not_required_without_write_mode",
       evidenceExport: "redacted_browser_download",
       auditSurface: "workflow_operations"
     },
@@ -275,6 +334,8 @@ export function buildConsoleConfig(paths, options = {}) {
     securityBoundaries: [
       { key: "loopback_default", status: "enforced", detail: "Console binds to loopback unless startup config overrides host." },
       { key: "host_allowlist", status: "enforced", detail: "Unknown Host headers are rejected before routing." },
+      { key: "token_required_for_non_loopback_or_writes", status: "enforced", detail: "Non-loopback binding and write-enabled console mode require WORKFLOW_CONSOLE_TOKEN." },
+      { key: "signed_operator_action", status: allowWrites ? "enforced" : "not_required", detail: allowWrites ? "Write-enabled /api/actions requests require an HMAC signature over timestamp and raw request body." : "Write mode is disabled; action requests are preview-only or rejected by the action gateway." },
       { key: "no_query_token", status: "enforced", detail: "Authentication accepts headers only; query-string tokens are not used." },
       { key: "cross_origin_mutation_block", status: "browser_enforced", detail: "Blocks cross-site Sec-Fetch-Site and mismatched Origin/Referer; non-browser requests without Origin/Referer rely on Host allowlist and token policy." },
       { key: "preview_first_actions", status: readOnly || !allowWrites ? "enforced" : "policy_enabled", detail: readOnly ? "Read-only mode exposes preview actions only." : allowWrites ? "Writes are limited to the action gateway allowlist." : "Non-preview writes are hidden because WORKFLOW_CONSOLE_ALLOW_WRITES is off." },
@@ -319,10 +380,13 @@ export function createConsoleServer(options = {}) {
     host: options.host || process.env.WORKFLOW_CONSOLE_HOST || "127.0.0.1",
     port: Number(options.port || process.env.WORKFLOW_CONSOLE_PORT || 8791),
     token: options.token || process.env.WORKFLOW_CONSOLE_TOKEN || "",
+    operatorSigningSecret: options.operatorSigningSecret || process.env.WORKFLOW_CONSOLE_OPERATOR_SIGNING_SECRET || "",
     allowedHosts: new Set(String(options.allowedHosts || process.env.WORKFLOW_CONSOLE_ALLOWED_HOSTS || "").split(",").map((item) => splitHost(item)).filter(Boolean)),
     readOnly,
+    allowWrites,
     rootDir: paths.root
   };
+  assertConsoleSecurityOptions(serverOptions);
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -340,7 +404,7 @@ export function createConsoleServer(options = {}) {
         return json(res, 200, { ok: true, service: "workflow-console", ...health, rootDir: paths.root, readOnly });
       }
       if (req.method === "GET" && pathname === "/api/config") {
-        return json(res, 200, buildConsoleConfig(paths, { readOnly, allowWrites }));
+        return json(res, 200, buildConsoleConfig(paths, serverOptions));
       }
       if (req.method === "GET" && pathname === "/api/workflows") {
         return json(res, 200, await readModel.workflowList(Object.fromEntries(url.searchParams)));
@@ -396,7 +460,12 @@ export function createConsoleServer(options = {}) {
       if (req.method === "GET" && pathname === "/api/operations/summary") return json(res, 200, await readModel.operationsSummary(Object.fromEntries(url.searchParams)));
       if (req.method === "GET" && pathname === "/api/operations/dead-letter-evidence") return json(res, 200, await readModel.deadLetterEvidence(Object.fromEntries(url.searchParams)));
       if (req.method === "GET" && pathname === "/api/readiness/latest") return json(res, 200, await readModel.readinessLatest());
-      if (req.method === "POST" && pathname === "/api/actions") return json(res, 200, await actionGateway.handle(await readBody(req)));
+      if (req.method === "POST" && pathname === "/api/actions") {
+        const bodyText = await readBodyText(req);
+        const signature = operatorActionSignatureOk(req, serverOptions, bodyText);
+        if (!signature.ok) return json(res, 401, { ok: false, error: signature.error });
+        return json(res, 200, await actionGateway.handle(parseBodyText(bodyText)));
+      }
 
       if (req.method === "GET") return serveStatic(req, res, pathname);
       return json(res, 404, { ok: false, error: "not_found" });

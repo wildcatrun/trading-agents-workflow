@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { buildConsoleConfig, workflowChildPayload } from "../src/console/server.js";
+import { buildConsoleConfig, createConsoleServer, operatorActionSignatureOk, workflowChildPayload } from "../src/console/server.js";
 import { WorkflowActionGateway } from "../src/console/action-gateway.js";
 import { WorkflowReadModel } from "../src/console/read-model.js";
 import { kanbanPreviewActionModel } from "../static/console/preview-actions.js";
@@ -14145,9 +14145,52 @@ async function testWorkflowConsoleConfigOperatorPolicyModes() {
 
   const allowWritesConfig = buildConsoleConfig(paths, { readOnly: false, allowWrites: true, serverTime: "2026-01-01T00:00:00.000Z" });
   assert.equal(allowWritesConfig.actionMode, "allowlisted");
-  assert.equal(allowWritesConfig.operatorPolicy.writeActions, "allowlisted_by_gateway");
+  assert.equal(allowWritesConfig.operatorPolicy.writeActions, "allowlisted_by_gateway_with_signed_operator_action");
+  assert.equal(allowWritesConfig.operatorPolicy.signedOperatorAction, "required_for_api_actions");
+  assert.equal(allowWritesConfig.securityBoundaries.some((row) => row.key === "token_required_for_non_loopback_or_writes"), true);
+  assert.equal(allowWritesConfig.securityBoundaries.some((row) => row.key === "signed_operator_action" && row.status === "enforced"), true);
   assert.equal(allowWritesConfig.allowedViews.includes("active"), true);
   assert.equal(allowWritesConfig.allowedConsoleViews.includes("operations"), true);
+
+  const securityRoot = await tempRoot("console-security-fail-closed");
+  assert.throws(
+    () => createConsoleServer({ rootDir: securityRoot, host: "0.0.0.0", readOnly: true, allowWrites: false }),
+    /WORKFLOW_CONSOLE_TOKEN is required/
+  );
+  assert.throws(
+    () => createConsoleServer({ rootDir: securityRoot, host: "127.0.0.1", readOnly: false, allowWrites: true }),
+    /WORKFLOW_CONSOLE_TOKEN is required/
+  );
+  assert.throws(
+    () => createConsoleServer({ rootDir: securityRoot, host: "127.0.0.1", readOnly: false, allowWrites: true, token: "test-token" }),
+    /WORKFLOW_CONSOLE_OPERATOR_SIGNING_SECRET is required/
+  );
+  const securedServer = createConsoleServer({
+    rootDir: securityRoot,
+    host: "127.0.0.1",
+    readOnly: false,
+    allowWrites: true,
+    token: "test-token",
+    operatorSigningSecret: "test-signing-secret"
+  });
+  assert.equal(securedServer.options.token, "test-token");
+  assert.equal(securedServer.options.operatorSigningSecret, "test-signing-secret");
+  const body = JSON.stringify({ action: "workflow.v2.validate", payload: {} });
+  assert.equal(operatorActionSignatureOk({ headers: {} }, securedServer.options, body).error, "operator_signature_required");
+  const timestamp = new Date().toISOString();
+  const signature = createHmac("sha256", "test-signing-secret").update(`${timestamp}.${body}`).digest("hex");
+  assert.equal(operatorActionSignatureOk({
+    headers: {
+      "x-workflow-operator-timestamp": timestamp,
+      "x-workflow-operator-signature": `sha256=${signature}`
+    }
+  }, securedServer.options, body).ok, true);
+  assert.equal(operatorActionSignatureOk({
+    headers: {
+      "x-workflow-operator-timestamp": timestamp,
+      "x-workflow-operator-signature": "sha256=0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }, securedServer.options, body).error, "operator_signature_mismatch");
 
   const evidenceRoot = await tempRoot("console-release-quality-evidence");
   const evidenceDir = path.join(evidenceRoot, "artifacts", "console-release-quality");
