@@ -20,6 +20,7 @@ import {
   INCIDENT_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
+  RESEARCH_ACTION_REGISTRY,
   SIDE_EFFECT_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
@@ -28,13 +29,19 @@ import {
   messageFlowList,
   messageFlowReconcile,
   protocolRecord,
+  gateReview,
+  instrumentUpsert,
   messageFlowSend,
+  radarUpdate,
+  researchEvidence,
+  researchMemo,
   sideEffectRecord,
   telegramOutbox,
   telegramOutboxDelivery,
   telegramOutboxDeliveryPreview,
   telegramOutboxRequeueExecutionPackagePreview,
   telegramOutboxRequeuePreview,
+  thesisUpdate,
   tradeProposal
 } from "../src/workflow.js";
 import {
@@ -49,6 +56,10 @@ import {
   PROTOCOL_ACTION_HANDLER_NAMES,
   createProtocolActionRegistry
 } from "../src/protocol-actions.js";
+import {
+  RESEARCH_ACTION_HANDLER_NAMES,
+  createResearchActionRegistry
+} from "../src/research-actions.js";
 import {
   SIDE_EFFECT_ACTION_HANDLER_NAMES,
   createSideEffectActionRegistry
@@ -9311,6 +9322,215 @@ LIMIT 1;`)[0];
   assert.equal(resolvedEvent.artifact_ref, resolved.markdownRelativePath);
 }
 
+async function testResearchExtractedActionContracts() {
+  const expectedHandlers = {
+    "instrument.upsert": "instrumentUpsert",
+    "tracking.instrument": "instrumentUpsert",
+    "radar.update": "radarUpdate",
+    "thesis.update": "thesisUpdate",
+    "thesis.create": "thesisUpdate",
+    "research.evidence": "researchEvidence",
+    "research.memo": "researchMemo",
+    "gate.review": "gateReview",
+    "human_gate.review": "gateReview"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(RESEARCH_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted research registry`);
+    assert.equal(RESEARCH_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof instrumentUpsert, "function");
+  assert.equal(typeof radarUpdate, "function");
+  assert.equal(typeof thesisUpdate, "function");
+  assert.equal(typeof researchEvidence, "function");
+  assert.equal(typeof researchMemo, "function");
+  assert.equal(typeof gateReview, "function");
+  const directRegistry = createResearchActionRegistry({
+    gateReview,
+    instrumentUpsert,
+    radarUpdate,
+    researchEvidence,
+    researchMemo,
+    thesisUpdate
+  });
+  assert.equal(directRegistry.get("tracking.instrument"), instrumentUpsert);
+  assert.equal(directRegistry.get("thesis.create"), thesisUpdate);
+  assert.equal(directRegistry.get("human_gate.review"), gateReview);
+
+  const root = await tempRoot("research-extracted-contracts");
+  const instrument = await runAction(root, {
+    action: "tracking.instrument",
+    assetType: "stock",
+    symbol: "AAPL",
+    name: "Apple Inc.",
+    exchange: "NASDAQ",
+    currency: "USD",
+    tags: ["large_cap", "regression"]
+  });
+  assert.equal(instrument.instrumentId, "stock:AAPL");
+  assert.equal(sqliteCount(instrument.dbFile, "instruments", "instrument_id='stock:AAPL'"), 1);
+  const canonicalInstrument = await runAction(root, {
+    action: "instrument.upsert",
+    assetType: "stock",
+    symbol: "MSFT",
+    name: "Microsoft Corp."
+  });
+  assert.equal(canonicalInstrument.instrumentId, "stock:MSFT");
+
+  const radar = await runAction(root, {
+    action: "radar.update",
+    assetType: "stock",
+    symbol: "AAPL",
+    scoreId: "radar-extracted-contract",
+    asOf: "2026-06-05",
+    radarZone: "bright",
+    retailHeatScore: 61,
+    newsCatalystScore: 72,
+    fundamentalScore: 83,
+    sentimentStage: "improving",
+    sourceReliability: "high",
+    catalystWindow: "7d",
+    fundamentalTrend: "up",
+    valuationState: "fair",
+    confidence: "medium",
+    summary: "Radar extracted action contract.",
+    evidencePaths: ["evidence/a.md"],
+    researchState: "active"
+  });
+  assert.equal(radar.scoreId, "radar-extracted-contract");
+  assert.equal(radar.instrumentId, "stock:AAPL");
+  assert.equal(radar.radarZone, "bright");
+  const radarRows = sqliteJson(radar.dbFile, `
+SELECT radar_zone, retail_heat_score, news_catalyst_score, fundamental_score, evidence_paths_json
+FROM radar_scores
+WHERE score_id='radar-extracted-contract'
+LIMIT 1;`);
+  assert.equal(radarRows.length, 1);
+  assert.equal(radarRows[0].radar_zone, "bright");
+  assert.ok(Math.abs(Number(radarRows[0].retail_heat_score) - 61) < 0.000001);
+  assert.deepEqual(JSON.parse(radarRows[0].evidence_paths_json), ["evidence/a.md"]);
+
+  const thesis = await runAction(root, {
+    action: "thesis.create",
+    assetType: "stock",
+    symbol: "AAPL",
+    thesisId: "thesis-extracted-contract",
+    title: "AAPL extracted thesis",
+    status: "watch",
+    ownerAgent: "cat_ears",
+    summary: "Thesis extracted action contract.",
+    falsificationTriggers: "Break thesis.",
+    reviewDueAt: "2026-06-30T00:00:00.000Z",
+    content: "# AAPL extracted thesis\n\nContract body.\n"
+  });
+  assert.equal(thesis.thesisId, "thesis-extracted-contract");
+  assert.equal(thesis.status, "watch");
+  assert.equal(await pathExists(thesis.path), true);
+  assert.equal(sqliteCount(thesis.dbFile, "thesis_index", "thesis_id='thesis-extracted-contract' AND status='watch'"), 1);
+  const canonicalThesis = await runAction(root, {
+    action: "thesis.update",
+    assetType: "stock",
+    symbol: "MSFT",
+    thesisId: "thesis-extracted-contract-update",
+    status: "active",
+    content: "# MSFT extracted thesis update\n"
+  });
+  assert.equal(canonicalThesis.thesisId, "thesis-extracted-contract-update");
+  assert.equal(canonicalThesis.status, "active");
+
+  const evidence = await runAction(root, {
+    action: "research.evidence",
+    assetType: "stock",
+    symbol: "AAPL",
+    evidenceId: "evidence-extracted-contract",
+    kind: "filing",
+    source: "regression",
+    reliability: "high",
+    capturedAt: "2026-06-05T00:00:00.000Z",
+    summary: "Evidence extracted action contract.",
+    supports: "Supports thesis.",
+    conflicts: "No conflict.",
+    content: "# Evidence extracted\n"
+  });
+  assert.equal(evidence.evidenceId, "evidence-extracted-contract");
+  assert.equal(evidence.instrumentId, "stock:AAPL");
+  assert.equal(await pathExists(evidence.path), true);
+  assert.equal(sqliteCount(evidence.dbFile, "evidence_items", "evidence_id='evidence-extracted-contract' AND kind='filing'"), 1);
+
+  const memo = await runAction(root, {
+    action: "research.memo",
+    assetType: "stock",
+    symbol: "AAPL",
+    memoId: "memo-extracted-contract",
+    memoType: "research_memo",
+    title: "Memo extracted",
+    workflowId: "wf-research-extracted",
+    summary: "Memo extracted action contract.",
+    conclusion: "Continue tracking.",
+    content: "# Memo extracted\n"
+  });
+  assert.equal(memo.memoId, "memo-extracted-contract");
+  assert.equal(memo.instrumentId, "stock:AAPL");
+  assert.equal(await pathExists(memo.path), true);
+  assert.equal(sqliteCount(memo.dbFile, "research_memos", "memo_id='memo-extracted-contract'"), 1);
+  assert.equal(sqliteCount(memo.dbFile, "artifact_index", "artifact_id='memo-extracted-contract' AND kind='research_memo'"), 1);
+
+  const gate = await runAction(root, {
+    action: "human_gate.review",
+    assetType: "stock",
+    symbol: "AAPL",
+    gateId: "gate-extracted-contract",
+    workflowId: "wf-research-extracted",
+    gateType: "research_review",
+    status: "approved",
+    summary: "Gate review extracted action contract.",
+    reviewerAgent: "cat_claw",
+    humanGateRequired: true,
+    resumePointer: "dispatch-gate-extracted",
+    expiresAt: "2026-06-06T00:00:00.000Z",
+    approver: "flashcat",
+    evidencePaths: [evidence.relativePath, memo.relativePath]
+  });
+  assert.equal(gate.gateId, "gate-extracted-contract");
+  assert.equal(gate.status, "approved");
+  assert.equal(gate.instrumentId, "stock:AAPL");
+  const gateRows = sqliteJson(gate.dbFile, `
+SELECT gate_type, status, reviewer_agent, human_gate_required, resume_pointer, decision_at, approver, evidence_paths_json
+FROM review_gates
+WHERE gate_id='gate-extracted-contract'
+LIMIT 1;`);
+  assert.equal(gateRows.length, 1);
+  assert.equal(gateRows[0].gate_type, "research_review");
+  assert.equal(gateRows[0].status, "approved");
+  assert.equal(gateRows[0].reviewer_agent, "cat_claw");
+  assert.equal(Number(gateRows[0].human_gate_required), 1);
+  assert.equal(gateRows[0].resume_pointer, "dispatch-gate-extracted");
+  assert.notEqual(gateRows[0].decision_at, "");
+  assert.equal(gateRows[0].approver, "flashcat");
+  assert.deepEqual(JSON.parse(gateRows[0].evidence_paths_json), [evidence.relativePath, memo.relativePath]);
+  const canonicalGate = await runAction(root, {
+    action: "gate.review",
+    assetType: "stock",
+    symbol: "AAPL",
+    gateId: "gate-extracted-contract-canonical",
+    status: "pending",
+    summary: "Gate review canonical action contract."
+  });
+  assert.equal(canonicalGate.gateId, "gate-extracted-contract-canonical");
+  assert.equal(canonicalGate.status, "pending");
+
+  const tracking = sqliteJson(gate.dbFile, `
+SELECT research_state, radar_zone, thesis_status, last_evidence_at, last_memo_at, last_review_at
+FROM tracking_states
+WHERE instrument_id='stock:AAPL'
+LIMIT 1;`)[0];
+  assert.equal(tracking.research_state, "active");
+  assert.equal(tracking.radar_zone, "bright");
+  assert.equal(tracking.thesis_status, "watch");
+  assert.equal(tracking.last_evidence_at, "2026-06-05T00:00:00.000Z");
+  assert.ok(tracking.last_memo_at);
+  assert.equal(tracking.last_review_at, "2026-06-05");
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -15758,6 +15978,7 @@ try {
     ["trade proposal extracted action contracts", testTradeProposalExtractedActionContracts],
     ["side_effect extracted action contracts", testSideEffectExtractedActionContracts],
     ["incident state extracted action contracts", testIncidentStateExtractedActionContracts],
+    ["research extracted action contracts", testResearchExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
