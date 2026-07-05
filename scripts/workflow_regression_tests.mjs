@@ -17,12 +17,14 @@ import {
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   HUMAN_GATE_ACTION_REGISTRY,
+  INCIDENT_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
   SIDE_EFFECT_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
   humanGateInbox,
+  incidentState,
   messageFlowList,
   messageFlowReconcile,
   protocolRecord,
@@ -39,6 +41,10 @@ import {
   HUMAN_GATE_ACTION_HANDLER_NAMES,
   createHumanGateActionRegistry
 } from "../src/human-gate-actions.js";
+import {
+  INCIDENT_ACTION_HANDLER_NAMES,
+  createIncidentActionRegistry
+} from "../src/incident-actions.js";
 import {
   PROTOCOL_ACTION_HANDLER_NAMES,
   createProtocolActionRegistry
@@ -9172,6 +9178,139 @@ LIMIT 1;`);
   assert.equal(sqliteCount(result.dbFile, "workflow_events", "event_type='side_effect.recorded' AND side_effect_id='side-effect-extracted-contract'"), 2);
 }
 
+async function testIncidentStateExtractedActionContracts() {
+  for (const action of [
+    "incident.state",
+    "workflow.incident"
+  ]) {
+    assert.equal(INCIDENT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted incident registry`);
+    assert.equal(INCIDENT_ACTION_HANDLER_NAMES[action], "incidentState", `${action} should map to the extracted incidentState handler`);
+  }
+  assert.equal(typeof incidentState, "function");
+  const directRegistry = createIncidentActionRegistry({ incidentState });
+  assert.equal(directRegistry.get("incident.state"), incidentState);
+  assert.equal(directRegistry.get("workflow.incident"), incidentState);
+
+  const root = await tempRoot("incident-state-extracted-contracts");
+  const created = await runAction(root, {
+    action: "workflow.incident",
+    incidentId: "incident-extracted-contract",
+    workflowId: "wf-incident-extracted",
+    traceId: "trace-incident-extracted",
+    status: "active",
+    mode: "degraded",
+    affectedPlanes: ["workflow", "runtime"],
+    summary: "Incident extracted action contract.",
+    commander: "main",
+    impact: "low",
+    currentHypothesis: "contract extraction check",
+    mitigation: "observe",
+    rollbackOptions: "revert commit",
+    exitCriteria: "tests pass",
+    timeline: ["2026-06-04T00:00:00.000Z declared"],
+    payload: { workflowId: "wf-incident-extracted", note: "safe" },
+    declaredAt: "2026-06-04T00:00:00.000Z",
+    nextUpdateAt: "2026-06-04T00:30:00.000Z"
+  });
+
+  assert.equal(created.incidentId, "incident-extracted-contract");
+  assert.equal(created.status, "active");
+  assert.equal(created.mode, "degraded");
+  assert.equal(await pathExists(path.join(root, created.markdownRelativePath)), true);
+  assert.equal(await pathExists(path.join(root, created.jsonRelativePath)), true);
+
+  const createdRows = sqliteJson(created.dbFile, `
+SELECT incident_id, status, mode, summary, commander, affected_planes_json, payload_json, declared_at, next_update_at, resolved_at
+FROM incident_states
+WHERE incident_id='incident-extracted-contract'
+LIMIT 1;`);
+  assert.equal(createdRows.length, 1);
+  assert.equal(createdRows[0].status, "active");
+  assert.equal(createdRows[0].mode, "degraded");
+  assert.equal(createdRows[0].summary, "Incident extracted action contract.");
+  assert.equal(createdRows[0].commander, "main");
+  assert.deepEqual(JSON.parse(createdRows[0].affected_planes_json), ["workflow", "runtime"]);
+  assert.equal(createdRows[0].declared_at, "2026-06-04T00:00:00.000Z");
+  assert.equal(createdRows[0].next_update_at, "2026-06-04T00:30:00.000Z");
+  assert.equal(createdRows[0].resolved_at, "");
+  const createdPayload = JSON.parse(createdRows[0].payload_json);
+  assert.equal(createdPayload.workflowId, "wf-incident-extracted");
+  assert.equal(createdPayload.note, "safe");
+  assert.equal(createdPayload.jsonRelPath, created.jsonRelativePath);
+  assert.equal(createdPayload.markdownRelPath, created.markdownRelativePath);
+
+  const createdEvent = sqliteJson(created.dbFile, `
+SELECT event_type, status, workflow_id, trace_id, incident_id, actor, source_agent, previous_state, next_state, artifact_ref, payload_json
+FROM workflow_events
+WHERE event_type='incident.created' AND incident_id='incident-extracted-contract'
+LIMIT 1;`)[0];
+  assert.ok(createdEvent);
+  assert.equal(createdEvent.workflow_id, "wf-incident-extracted");
+  assert.equal(createdEvent.trace_id, "trace-incident-extracted");
+  assert.equal(createdEvent.actor, "main");
+  assert.equal(createdEvent.source_agent, "main");
+  assert.equal(createdEvent.previous_state, "");
+  assert.equal(createdEvent.next_state, "active");
+  assert.equal(createdEvent.artifact_ref, created.markdownRelativePath);
+
+  const updated = await runAction(root, {
+    action: "incident.state",
+    incidentId: "incident-extracted-contract",
+    workflowId: "wf-incident-extracted",
+    traceId: "trace-incident-extracted",
+    status: "monitoring",
+    mode: "degraded",
+    commander: "main",
+    summary: "Incident extracted action monitoring update.",
+    timeline: ["2026-06-04T00:05:00.000Z monitoring"],
+    payload: { workflowId: "wf-incident-extracted", monitor: "continue" }
+  });
+  assert.equal(updated.status, "monitoring");
+  const updatedEvent = sqliteJson(created.dbFile, `
+SELECT event_type, previous_state, next_state, artifact_ref
+FROM workflow_events
+WHERE event_type='incident.updated' AND incident_id='incident-extracted-contract'
+LIMIT 1;`)[0];
+  assert.ok(updatedEvent);
+  assert.equal(updatedEvent.previous_state, "active");
+  assert.equal(updatedEvent.next_state, "monitoring");
+  assert.equal(updatedEvent.artifact_ref, updated.markdownRelativePath);
+
+  const resolved = await runAction(root, {
+    action: "incident.state",
+    incidentId: "incident-extracted-contract",
+    workflowId: "wf-incident-extracted",
+    traceId: "trace-incident-extracted",
+    status: "resolved",
+    commander: "main",
+    summary: "Incident extracted action resolved.",
+    timeline: ["2026-06-04T00:10:00.000Z resolved"],
+    payload: { workflowId: "wf-incident-extracted", closeout: "complete" }
+  });
+  assert.equal(resolved.status, "resolved");
+  assert.equal(resolved.mode, "normal");
+  assert.equal(sqliteCount(created.dbFile, "incident_states", "incident_id='incident-extracted-contract'"), 1);
+  const resolvedRows = sqliteJson(created.dbFile, `
+SELECT status, mode, summary, resolved_at, payload_json
+FROM incident_states
+WHERE incident_id='incident-extracted-contract'
+LIMIT 1;`);
+  assert.equal(resolvedRows[0].status, "resolved");
+  assert.equal(resolvedRows[0].mode, "normal");
+  assert.equal(resolvedRows[0].summary, "Incident extracted action resolved.");
+  assert.notEqual(resolvedRows[0].resolved_at, "");
+  assert.equal(JSON.parse(resolvedRows[0].payload_json).closeout, "complete");
+  const resolvedEvent = sqliteJson(created.dbFile, `
+SELECT event_type, previous_state, next_state, artifact_ref
+FROM workflow_events
+WHERE event_type='incident.resolved' AND incident_id='incident-extracted-contract'
+LIMIT 1;`)[0];
+  assert.ok(resolvedEvent);
+  assert.equal(resolvedEvent.previous_state, "monitoring");
+  assert.equal(resolvedEvent.next_state, "resolved");
+  assert.equal(resolvedEvent.artifact_ref, resolved.markdownRelativePath);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -15618,6 +15757,7 @@ try {
     ["protocol record extracted action contracts", testProtocolRecordExtractedActionContracts],
     ["trade proposal extracted action contracts", testTradeProposalExtractedActionContracts],
     ["side_effect extracted action contracts", testSideEffectExtractedActionContracts],
+    ["incident state extracted action contracts", testIncidentStateExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
