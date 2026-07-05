@@ -15,6 +15,12 @@ import {
   controlLoopWorkerKillAfterMs
 } from "../src/control-loop-budget.js";
 import { runAction as runActionRaw } from "../src/core.js";
+import {
+  MESSAGE_FLOW_ACTION_REGISTRY,
+  messageFlowList,
+  messageFlowReconcile,
+  messageFlowSend
+} from "../src/workflow.js";
 
 const createdRoots = [];
 const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
@@ -8635,6 +8641,71 @@ async function writeHermersProfileModes(root, profiles) {
   return file;
 }
 
+async function testMessageFlowExtractedActionContracts() {
+  for (const action of [
+    "message_flow.send",
+    "workflow.message_flow.send",
+    "message_flow.list",
+    "message_flow.status",
+    "workflow.message_flow.list",
+    "workflow.message_flow.status",
+    "message_flow.reconcile",
+    "workflow.message_flow.reconcile"
+  ]) {
+    assert.equal(MESSAGE_FLOW_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted message_flow registry`);
+  }
+  assert.equal(typeof messageFlowSend, "function");
+  assert.equal(typeof messageFlowList, "function");
+  assert.equal(typeof messageFlowReconcile, "function");
+
+  const root = await tempRoot("message-flow-extracted-contracts");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "cat brain",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  const sent = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["openclaw:main"],
+    body: "message_flow extracted contract body",
+    workflowId: "workflow-message-flow-contract",
+    meetingId: "meeting-message-flow-contract",
+    returnPolicy: "silent"
+  });
+  assert.equal(sent.operation, "workflow.message_flow.send");
+  assert.equal(sent.targetCount, 1);
+  assert.equal(sent.dispatches.length, 1);
+  assert.equal(sent.dispatches[0].runtime, "openclaw");
+  assert.equal(sent.dispatches[0].agentId, "main");
+  assert.equal(sent.dispatches[0].messageFlowStatus, "route_registered");
+  assert.equal(typeof sent.dispatches[0].messageFlowId, "string");
+  assert.ok(sent.dispatches[0].messageFlowId.startsWith("flow."));
+
+  const listed = await runAction(root, {
+    action: "workflow.message_flow.status",
+    flowId: sent.dispatches[0].messageFlowId
+  });
+  assert.equal(listed.count, 1);
+  assert.equal(listed.rows[0].flow_id, sent.dispatches[0].messageFlowId);
+  assert.equal(listed.rows[0].status, "route_registered");
+  assert.equal(typeof listed.rows[0].payload, "object");
+
+  const reconciled = await runAction(root, {
+    action: "workflow.message_flow.reconcile",
+    messageFlowStuckAfterMs: 60_000
+  });
+  assert.equal(reconciled.operation, "message_flow.reconcile");
+  assert.equal(reconciled.count, 0);
+  assert.equal(Array.isArray(reconciled.recoveredSemanticContinuations), true);
+  assert.equal(Array.isArray(reconciled.incidents), true);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -15075,6 +15146,7 @@ try {
     ["human_gate ensure invalid buttons superseded", testHumanGateEnsureSupersedesInvalidExistingButtons],
     ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
     ["schedule resume semantics", testScheduleResumeSemantics],
+    ["message_flow extracted action contracts", testMessageFlowExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
