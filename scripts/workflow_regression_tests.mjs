@@ -23,6 +23,7 @@ import {
   PROTOCOL_ACTION_REGISTRY,
   RESEARCH_ACTION_REGISTRY,
   SIDE_EFFECT_ACTION_REGISTRY,
+  STATUS_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
   TOPOLOGY_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
@@ -45,7 +46,11 @@ import {
   telegramOutboxRequeueExecutionPackagePreview,
   telegramOutboxRequeuePreview,
   thesisUpdate,
+  workflowHealth,
+  workflowInit,
+  workflowReadiness,
   workflowRuntimeAgents,
+  workflowStatus,
   workflowTopology,
   tradeProposal
 } from "../src/workflow.js";
@@ -73,6 +78,10 @@ import {
   SIDE_EFFECT_ACTION_HANDLER_NAMES,
   createSideEffectActionRegistry
 } from "../src/side-effect-actions.js";
+import {
+  STATUS_ACTION_HANDLER_NAMES,
+  createStatusActionRegistry
+} from "../src/status-actions.js";
 import {
   TOPOLOGY_ACTION_HANDLER_NAMES,
   createTopologyActionRegistry
@@ -9662,6 +9671,83 @@ async function testTopologyExtractedActionContracts() {
   assert.ok(snapshot.checksum.length > 0);
 }
 
+async function testStatusExtractedActionContracts() {
+  const expectedHandlers = {
+    "workflow.init": "workflowInit",
+    "trading_workflow.init": "workflowInit",
+    "workflow.status": "workflowStatus",
+    "trading_workflow.status": "workflowStatus",
+    "workflow.health": "workflowHealth",
+    "workflow.dashboard": "workflowHealth",
+    "workflow.health.dashboard": "workflowHealth",
+    "trading_workflow.health": "workflowHealth",
+    "workflow.readiness": "workflowReadiness",
+    "trading_workflow.readiness": "workflowReadiness"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(STATUS_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted status registry`);
+    assert.equal(STATUS_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof workflowHealth, "function");
+  assert.equal(typeof workflowInit, "function");
+  assert.equal(typeof workflowReadiness, "function");
+  assert.equal(typeof workflowStatus, "function");
+  const directRegistry = createStatusActionRegistry({
+    workflowHealth,
+    workflowInit,
+    workflowReadiness,
+    workflowStatus
+  });
+  assert.equal(directRegistry.get("trading_workflow.init"), workflowInit);
+  assert.equal(directRegistry.get("trading_workflow.status"), workflowStatus);
+  assert.equal(directRegistry.get("workflow.dashboard"), workflowHealth);
+  assert.equal(directRegistry.get("workflow.health.dashboard"), workflowHealth);
+  assert.equal(directRegistry.get("trading_workflow.health"), workflowHealth);
+  assert.equal(directRegistry.get("trading_workflow.readiness"), workflowReadiness);
+
+  const root = await tempRoot("status-extracted-contracts");
+  const init = await runAction(root, { action: "trading_workflow.init" });
+  assert.equal(init.workflowSchemaVersion, init.schemaVersion);
+  assert.equal(init.root, root);
+  assert.equal(await pathExists(init.dbFile), true);
+  assert.equal(await pathExists(init.thesisDir), true);
+  assert.equal(await pathExists(init.bridgeDir), true);
+
+  await runAction(root, {
+    action: "instrument.upsert",
+    assetType: "stock",
+    symbol: "AAPL",
+    name: "Apple Inc."
+  });
+  const status = await runAction(root, {
+    action: "trading_workflow.status",
+    assetType: "stock",
+    symbol: "AAPL"
+  });
+  assert.equal(status.workflowSchemaVersion, status.schemaVersion);
+  assert.equal(status.root, root);
+  assert.equal(status.dbFile, init.dbFile);
+  assert.equal(Number(status.counts.instruments) >= 1, true);
+  assert.equal(typeof status.readiness.status, "string");
+  assert.equal(status.instrument.instrument_id, "stock:AAPL");
+  assert.equal(status.instrument.symbol, "AAPL");
+
+  const readiness = await runAction(root, { action: "trading_workflow.readiness" });
+  assert.equal(typeof readiness.status, "string");
+  assert.equal(typeof readiness.checkedAt, "string");
+  assert.ok(readiness.planes);
+  assert.ok(readiness.findings);
+
+  const health = await runAction(root, { action: "workflow.dashboard" });
+  assert.equal(health.schemaVersion, "workflow_health.v1");
+  assert.equal(health.dbFile, init.dbFile);
+  assert.ok(health.lanes);
+  assert.ok(health.recommendations);
+  const healthAlias = await runAction(root, { action: "workflow.health.dashboard" });
+  assert.equal(healthAlias.schemaVersion, "workflow_health.v1");
+  assert.equal(healthAlias.dbFile, init.dbFile);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -16112,6 +16198,7 @@ try {
     ["research extracted action contracts", testResearchExtractedActionContracts],
     ["cat_claw extracted action contracts", testCatClawExtractedActionContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
+    ["status extracted action contracts", testStatusExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],

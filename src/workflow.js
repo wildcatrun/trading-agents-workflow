@@ -107,6 +107,11 @@ import {
   runSideEffectAction
 } from "./side-effect-actions.js";
 import {
+  createStatusActionHandlers,
+  createStatusActionRegistry,
+  runStatusAction
+} from "./status-actions.js";
+import {
   createTradeActionHandlers,
   createTradeActionRegistry,
   runTradeAction
@@ -5033,26 +5038,6 @@ ${record.reviewDueAt || "待定"}
 `;
 }
 
-export async function workflowInit(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  return {
-    schemaVersion: WORKFLOW_SCHEMA_VERSION,
-    workflowSchemaVersion: WORKFLOW_SCHEMA_VERSION,
-    root: paths.root,
-    dbFile: paths.dbFile,
-    thesisDir: paths.thesisDir,
-    evidenceDir: paths.evidenceDir,
-    memosDir: paths.memosDir,
-    gatesDir: paths.gatesDir,
-    protocolDir: paths.protocolDir,
-    intentsDir: paths.intentsDir,
-    receiptsDir: paths.receiptsDir,
-    bridgeDir: paths.bridgeDir,
-    workflowsDir: paths.workflowsDir,
-    templatesDir: paths.templatesDir
-  };
-}
-
 function readinessStatus(findings) {
   if (findings.some((finding) => finding.severity === "critical")) return "critical";
   if (findings.some((finding) => finding.severity === "warning")) return "degraded";
@@ -5640,56 +5625,6 @@ FROM incident_states;`, { json: true });
     nextActions: [...new Set(recommendations.flatMap((item) => item.actions))],
     dbFile: paths.dbFile
   };
-}
-
-export async function workflowStatus(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const counts = await sqlite(paths.dbFile, `
-SELECT 'instruments' AS name, COUNT(*) AS count FROM instruments
-UNION ALL SELECT 'radar_scores', COUNT(*) FROM radar_scores
-UNION ALL SELECT 'thesis', COUNT(*) FROM thesis_index
-UNION ALL SELECT 'evidence', COUNT(*) FROM evidence_items
-UNION ALL SELECT 'memos', COUNT(*) FROM research_memos
-UNION ALL SELECT 'gates', COUNT(*) FROM review_gates
-UNION ALL SELECT 'workflows', COUNT(*) FROM workflow_runs
-UNION ALL SELECT 'workflow_phases', COUNT(*) FROM workflow_phases
-UNION ALL SELECT 'workflow_tasks', COUNT(*) FROM workflow_tasks
-UNION ALL SELECT 'workflow_task_dependencies', COUNT(*) FROM workflow_task_dependencies
-UNION ALL SELECT 'workflow_checkpoints', COUNT(*) FROM workflow_checkpoints
-UNION ALL SELECT 'workflow_events', COUNT(*) FROM workflow_events
-UNION ALL SELECT 'workflow_verification_results', COUNT(*) FROM workflow_verification_results
-UNION ALL SELECT 'workflow_session_packs', COUNT(*) FROM workflow_session_packs
-UNION ALL SELECT 'workflow_session_runs', COUNT(*) FROM workflow_session_runs
-UNION ALL SELECT 'workflow_agent_runs', COUNT(*) FROM workflow_agent_runs
-UNION ALL SELECT 'workflow_operations', COUNT(*) FROM workflow_operations
-UNION ALL SELECT 'protocol_objects', COUNT(*) FROM protocol_objects
-UNION ALL SELECT 'trade_intents', COUNT(*) FROM executable_trade_intents
-UNION ALL SELECT 'trading_core_receipts', COUNT(*) FROM trading_core_receipts
-UNION ALL SELECT 'runtime_runs', COUNT(*) FROM runtime_runs
-UNION ALL SELECT 'side_effects', COUNT(*) FROM side_effect_ledger
-UNION ALL SELECT 'incidents', COUNT(*) FROM incident_states
-UNION ALL SELECT 'readiness_snapshots', COUNT(*) FROM readiness_snapshots
-UNION ALL SELECT 'runtime_agents', COUNT(*) FROM runtime_agents
-UNION ALL SELECT 'mixed_meeting_participants', COUNT(*) FROM mixed_meeting_participants
-UNION ALL SELECT 'mixed_meeting_messages', COUNT(*) FROM mixed_meeting_messages
-UNION ALL SELECT 'mixed_meeting_dispatches', COUNT(*) FROM mixed_meeting_dispatches
-UNION ALL SELECT 'telegram_outbox', COUNT(*) FROM telegram_outbox
-UNION ALL SELECT 'control_loop_jobs', COUNT(*) FROM control_loop_jobs;`, { json: true });
-  const readiness = await workflowReadinessSnapshot(paths, input);
-  const result = {
-    schemaVersion: WORKFLOW_SCHEMA_VERSION,
-    workflowSchemaVersion: WORKFLOW_SCHEMA_VERSION,
-    root: paths.root,
-    dbFile: paths.dbFile,
-    readiness,
-    counts: Object.fromEntries(counts.map((row) => [row.name, row.count]))
-  };
-  if (input.symbol || input.instrumentId || input.instrument_id) {
-    const instrument = await readInstrument(paths, input);
-    const state = instrument ? (await sqlite(paths.dbFile, `SELECT * FROM tracking_states WHERE instrument_id=${sqlValue(instrument.instrument_id)};`, { json: true }))[0] || null : null;
-    return { ...result, instrument, state };
-  }
-  return result;
 }
 
 export async function workflowRunUpsert(rootDir, input = {}) {
@@ -21301,6 +21236,23 @@ export const {
   workflowTopology
 } = TOPOLOGY_ACTION_HANDLERS;
 
+export const STATUS_ACTION_HANDLERS = createStatusActionHandlers({
+  ensureWorkflowLayout,
+  readInstrument,
+  workflowHealthSnapshot,
+  workflowReadinessSnapshot,
+  WORKFLOW_SCHEMA_VERSION
+});
+
+export const STATUS_ACTION_REGISTRY = createStatusActionRegistry(STATUS_ACTION_HANDLERS);
+
+export const {
+  workflowHealth,
+  workflowInit,
+  workflowReadiness,
+  workflowStatus
+} = STATUS_ACTION_HANDLERS;
+
 export const RESEARCH_ACTION_HANDLERS = createResearchActionHandlers({
   clampScore,
   cleanFileSegment,
@@ -21543,23 +21495,9 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (catClawResult.handled) return catClawResult.value;
   const topologyResult = await runTopologyAction(TOPOLOGY_ACTION_REGISTRY, action, rootDir, input);
   if (topologyResult.handled) return topologyResult.value;
+  const statusResult = await runStatusAction(STATUS_ACTION_REGISTRY, action, rootDir, input);
+  if (statusResult.handled) return statusResult.value;
   switch (action) {
-    case "workflow.init":
-    case "trading_workflow.init":
-      return workflowInit(rootDir, input);
-    case "workflow.status":
-    case "trading_workflow.status":
-      return workflowStatus(rootDir, input);
-    case "workflow.health":
-    case "workflow.dashboard": {
-      const paths = await ensureWorkflowLayout(rootDir, input);
-      return workflowHealthSnapshot(paths, input);
-    }
-    case "workflow.readiness":
-    case "trading_workflow.readiness": {
-      const paths = await ensureWorkflowLayout(rootDir, input);
-      return workflowReadinessSnapshot(paths, input);
-    }
     case "workflow.permission.check":
     case "workflow.permission.explain":
       return workflowPermissionCheck(rootDir, input);
