@@ -16,8 +16,10 @@ import {
 } from "../src/control-loop-budget.js";
 import { runAction as runActionRaw } from "../src/core.js";
 import {
+  HUMAN_GATE_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
+  humanGateInbox,
   messageFlowList,
   messageFlowReconcile,
   messageFlowSend,
@@ -27,6 +29,10 @@ import {
   telegramOutboxRequeueExecutionPackagePreview,
   telegramOutboxRequeuePreview
 } from "../src/workflow.js";
+import {
+  HUMAN_GATE_ACTION_HANDLER_NAMES,
+  createHumanGateActionRegistry
+} from "../src/human-gate-actions.js";
 
 const createdRoots = [];
 const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
@@ -8841,6 +8847,88 @@ VALUES
   assert.equal(gatewayWriteAliasReplay.result.didSendTelegram, false);
 }
 
+async function testHumanGateInboxExtractedActionContracts() {
+  for (const action of [
+    "human_gate.inbox",
+    "human_gate.console",
+    "human_gate.batch_inbox"
+  ]) {
+    assert.equal(HUMAN_GATE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted human_gate registry`);
+    assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES[action], "humanGateInbox", `${action} should map to the extracted humanGateInbox handler`);
+  }
+  assert.equal(typeof humanGateInbox, "function");
+  const directRegistry = createHumanGateActionRegistry({ humanGateInbox });
+  assert.equal(directRegistry.get("human_gate.inbox"), humanGateInbox);
+
+  const root = await tempRoot("human-gate-inbox-extracted-contracts");
+  const init = await runAction(root, { action: "workflow.init" });
+  const dbFile = init.dbFile;
+  const bridgeDir = path.join(root, "bridge");
+  const gateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { allowWrites: true });
+  const readOnlyGateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { readOnly: true, allowWrites: true });
+  const createdAt = "2026-06-02T00:00:00.000Z";
+  sqliteExec(dbFile, `
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hgate-inbox-contract', 'human_gate_record', 'pending', NULL, 'regression', 'cat_claw', 'wf-hgate-inbox-contract', 'artifact://hgate-inbox-contract', '{"workflowId":"wf-hgate-inbox-contract","summary":"Human Gate inbox contract summary","payload":{"workflowId":"wf-hgate-inbox-contract","gateType":"workflow_continuation","summary":"Human Gate inbox contract body"}}', 'hash-hgate-inbox-contract', '${createdAt}', '${createdAt}');
+INSERT INTO human_gate_buttons(button_id, callback_token, human_gate_id, workflow_id, meeting_id, label, decision_status, button_role, artifact_ref, summary, prompt, payload_json, status, created_by, created_at, updated_at)
+VALUES ('button-hgate-inbox-contract-a', 'token-hgate-inbox-contract-a', 'hgate-inbox-contract', 'wf-hgate-inbox-contract', 'wf-hgate-inbox-contract', '批准方案 A：继续', 'approved', 'approve_option', 'artifact://hgate-inbox-contract', '批准继续推进', '继续推进 workflow。', '{"optionKey":"A"}', 'active', 'cat_claw', '${createdAt}', '${createdAt}');`);
+
+  const inbox = await runAction(root, {
+    action: "human_gate.console",
+    batchId: "batch-hgate-inbox-contract",
+    workflowId: "wf-hgate-inbox-contract",
+    target: "8390724843"
+  });
+  assert.equal(inbox.batchId, "batch-hgate-inbox-contract");
+  assert.equal(inbox.status, "open");
+  assert.equal(inbox.targetRef, "8390724843");
+  assert.equal(inbox.count, 1);
+  assert.equal(inbox.riskSummary.total, 1);
+  assert.equal(inbox.riskSummary.buttonChoices, 1);
+  assert.equal(inbox.items[0].sourceType, "human_gate_record");
+  assert.equal(inbox.items[0].sourceId, "hgate-inbox-contract");
+  assert.equal(inbox.items[0].buttons.length, 1);
+  assert.equal(inbox.items[0].actionHint, "select one recorded button; do not infer intent from natural language");
+  assert.equal(sqliteCount(dbFile, "human_gate_batches", "batch_id='batch-hgate-inbox-contract'"), 1);
+  assert.equal(sqliteCount(dbFile, "human_gate_batch_items", "batch_id='batch-hgate-inbox-contract'"), 1);
+  assert.equal(sqliteCount(dbFile, "artifact_index", "artifact_id='batch-hgate-inbox-contract' AND kind='human_gate_inbox'"), 1);
+  assert.equal(await pathExists(path.join(root, inbox.htmlPath)), true);
+  assert.equal(await pathExists(path.join(root, inbox.jsonPath)), true);
+
+  const readOnlyInbox = await readOnlyGateway.handle({
+    action: "human_gate.console",
+    actor: "flashcat",
+    reason: "read-only human gate inbox blocked",
+    payload: {
+      batchId: "batch-hgate-inbox-contract-readonly",
+      workflowId: "wf-hgate-inbox-contract",
+      target: "8390724843"
+    }
+  });
+  assert.equal(readOnlyInbox.ok, false);
+  assert.equal(readOnlyInbox.action, "human_gate.inbox");
+  assert.equal(readOnlyInbox.errorCode, "console_readonly");
+  assert.equal(sqliteCount(dbFile, "human_gate_batches", "batch_id='batch-hgate-inbox-contract-readonly'"), 0);
+
+  const gatewayInbox = await gateway.handle({
+    action: "human_gate.batch_inbox",
+    actor: "flashcat",
+    reason: "registry contract human gate inbox gateway alias",
+    payload: {
+      batchId: "batch-hgate-inbox-contract-gateway",
+      workflowId: "wf-hgate-inbox-contract",
+      target: "8390724843"
+    }
+  });
+  assert.equal(gatewayInbox.ok, true);
+  assert.equal(gatewayInbox.action, "human_gate.inbox");
+  assert.equal(gatewayInbox.dryRun, false);
+  assert.equal(gatewayInbox.result.batchId, "batch-hgate-inbox-contract-gateway");
+  assert.equal(gatewayInbox.result.status, "open");
+  assert.equal(gatewayInbox.result.count, 1);
+  assert.equal(gatewayInbox.result.items[0].sourceId, "hgate-inbox-contract");
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -15283,6 +15371,7 @@ try {
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["message_flow extracted action contracts", testMessageFlowExtractedActionContracts],
     ["telegram.outbox extracted action contracts", testTelegramOutboxExtractedActionContracts],
+    ["human_gate inbox extracted action contracts", testHumanGateInboxExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],

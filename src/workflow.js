@@ -72,6 +72,11 @@ import {
   runTelegramOutboxAction
 } from "./telegram-outbox-actions.js";
 import {
+  createHumanGateActionHandlers,
+  createHumanGateActionRegistry,
+  runHumanGateAction
+} from "./human-gate-actions.js";
+import {
   LEGACY_TRACKING_DB,
   LEGACY_WORKFLOW_ROOT,
   WORKFLOW_CONTROL_PLANE_DB,
@@ -12502,69 +12507,6 @@ function renderHumanGateTelegramSummary(batch) {
   ].join("\n");
 }
 
-export async function humanGateInbox(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const createdAt = nowIso();
-  const batchId = input.batchId || input.batch_id || safeId(`hgate-batch-${dailyKey()}`);
-  const targetRef = String(input.target || input.targetRef || input.target_ref || DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID).trim();
-  const title = String(input.title || `Human Gate Inbox ${dailyKey()}`).trim();
-  const items = await collectHumanGateInboxItems(paths, input);
-  const riskSummary = riskSummaryFor(items);
-  const batch = {
-    batchId,
-    status: items.length ? "open" : "empty",
-    title,
-    targetRef,
-    createdAt,
-    riskSummary,
-    items
-  };
-  const htmlPath = await writeTextArtifact(paths.root, paths.humanGateInboxDir, batchId, "html", renderHumanGateInboxHtml({ ...batch, htmlPath: "" }));
-  batch.htmlPath = htmlPath;
-  batch.telegramSummary = renderHumanGateTelegramSummary(batch);
-  const jsonPath = relativeTo(paths.root, path.join(paths.humanGateInboxDir, `${cleanFileSegment(batchId)}.json`));
-  batch.jsonPath = jsonPath;
-  await writeJsonArtifact(paths.root, paths.humanGateInboxDir, batchId, batch);
-
-  await sqlite(paths.dbFile, `
-INSERT INTO human_gate_batches(batch_id, status, title, target_ref, risk_summary_json, default_action, html_path, json_path, telegram_summary, created_by, created_at, updated_at)
-VALUES (${sqlValue(batchId)}, ${sqlValue(batch.status)}, ${sqlValue(title)}, ${sqlValue(targetRef)}, ${sqlValue(JSON.stringify(riskSummary))}, ${sqlValue(riskSummary.individual ? "review_p0_p1_first" : "batch_review_allowed")}, ${sqlValue(htmlPath)}, ${sqlValue(jsonPath)}, ${sqlValue(batch.telegramSummary)}, ${sqlValue(input.createdBy || input.from || "cat_claw")}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
-ON CONFLICT(batch_id) DO UPDATE SET
-  status=excluded.status,
-  title=excluded.title,
-  target_ref=excluded.target_ref,
-  risk_summary_json=excluded.risk_summary_json,
-  default_action=excluded.default_action,
-  html_path=excluded.html_path,
-  json_path=excluded.json_path,
-  telegram_summary=excluded.telegram_summary,
-  updated_at=excluded.updated_at;`);
-  await sqlite(paths.dbFile, `DELETE FROM human_gate_batch_items WHERE batch_id=${sqlValue(batchId)};`);
-  for (const item of items) {
-    await sqlite(paths.dbFile, `
-INSERT INTO human_gate_batch_items(batch_id, item_id, source_type, source_id, workflow_id, meeting_id, title, summary, risk_tier, default_action, requires_individual_approval, status, action_hint, payload_json, created_at)
-VALUES (${sqlValue(batchId)}, ${sqlValue(item.itemId)}, ${sqlValue(item.sourceType)}, ${sqlValue(item.sourceId)}, ${sqlValue(item.workflowId)}, ${sqlValue(item.meetingId)}, ${sqlValue(item.title)}, ${sqlValue(item.summary)}, ${sqlValue(item.riskTier)}, ${sqlValue(item.defaultAction)}, ${sqlValue(item.requiresIndividualApproval)}, ${sqlValue(item.status)}, ${sqlValue(item.actionHint || humanGateActionHint(item))}, ${sqlValue(JSON.stringify(item.payload || {}))}, ${sqlValue(item.createdAt)});`);
-  }
-  await sqlite(paths.dbFile, `
-INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
-VALUES (${sqlValue(batchId)}, ${sqlValue(input.workflowId || input.workflow_id || "")}, 'human_gate_inbox', ${sqlValue(htmlPath)}, ${sqlValue(`${riskSummary.total} pending Human Gate inbox items`)}, ${sqlValue(input.createdBy || input.from || "cat_claw")}, ${sqlValue(createdAt)})
-ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
-
-  return {
-    batchId,
-    status: batch.status,
-    createdAt,
-    targetRef,
-    count: items.length,
-    riskSummary,
-    htmlPath,
-    jsonPath,
-    telegramSummary: batch.telegramSummary,
-    items,
-    dbFile: paths.dbFile
-  };
-}
-
 async function enqueueTelegramOutbox(paths, input) {
   const outboxId = input.outboxId || input.outbox_id || safeId("tg");
   const createdAt = nowIso();
@@ -21837,6 +21779,29 @@ export const {
   telegramOutbox
 } = TELEGRAM_OUTBOX_ACTION_HANDLERS;
 
+export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
+  cleanFileSegment,
+  collectHumanGateInboxItems,
+  dailyKey,
+  ensureWorkflowLayout,
+  humanGateActionHint,
+  nowIso,
+  relativeTo,
+  renderHumanGateInboxHtml,
+  renderHumanGateTelegramSummary,
+  riskSummaryFor,
+  safeId,
+  writeJsonArtifact,
+  writeTextArtifact,
+  DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID
+});
+
+export const HUMAN_GATE_ACTION_REGISTRY = createHumanGateActionRegistry(HUMAN_GATE_ACTION_HANDLERS);
+
+export const {
+  humanGateInbox
+} = HUMAN_GATE_ACTION_HANDLERS;
+
 export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2PlanPreview,
   workflowV2PlanCreate,
@@ -21911,6 +21876,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (messageFlowResult.handled) return messageFlowResult.value;
   const telegramOutboxResult = await runTelegramOutboxAction(TELEGRAM_OUTBOX_ACTION_REGISTRY, action, rootDir, input);
   if (telegramOutboxResult.handled) return telegramOutboxResult.value;
+  const humanGateResult = await runHumanGateAction(HUMAN_GATE_ACTION_REGISTRY, action, rootDir, input);
+  if (humanGateResult.handled) return humanGateResult.value;
   switch (action) {
     case "workflow.init":
     case "trading_workflow.init":
@@ -22135,10 +22102,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "human_gate.feedback":
     case "human_gate.submit_feedback":
       return humanGateFeedback(rootDir, input);
-    case "human_gate.inbox":
-    case "human_gate.console":
-    case "human_gate.batch_inbox":
-      return humanGateInbox(rootDir, input);
     case "human_gate.resume":
     case "human_gate.confirm":
       return humanGateResume(rootDir, input);
