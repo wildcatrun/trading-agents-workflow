@@ -45,6 +45,7 @@ import {
   TRADE_ACTION_REGISTRY,
   VERIFICATION_ACTION_REGISTRY,
   WORKFLOW_RUN_ACTION_REGISTRY,
+  WORKFLOW_SWARM_ACTION_REGISTRY,
   cat_clawAudit,
   humanGateInbox,
   incidentState,
@@ -100,6 +101,7 @@ import {
   workflowSessionRunComplete,
   workflowSessionRunStart,
   workflowStatus,
+  workflowSwarmPlan,
   workflowTopology,
   workflowEvaluate,
   workflowRunUpsert,
@@ -215,6 +217,10 @@ import {
   WORKFLOW_RUN_ACTION_HANDLER_NAMES,
   createWorkflowRunActionRegistry
 } from "../src/workflow-run-actions.js";
+import {
+  WORKFLOW_SWARM_ACTION_HANDLER_NAMES,
+  createWorkflowSwarmActionRegistry
+} from "../src/workflow-swarm-actions.js";
 
 const createdRoots = [];
 const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
@@ -2695,6 +2701,106 @@ ORDER BY created_at ASC;`);
   assert.equal(events[1].eventType, "workflow.updated");
   assert.equal(events[1].previousState, "active");
   assert.equal(events[1].nextState, "blocked");
+}
+
+async function testWorkflowSwarmExtractedActionContracts() {
+  const expected = {
+    "workflow.swarm.plan": "workflowSwarmPlan",
+    "workflow.swarm": "workflowSwarmPlan"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(WORKFLOW_SWARM_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted workflow swarm registry`);
+    assert.equal(WORKFLOW_SWARM_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowSwarmPlan, "function");
+  const directRegistry = createWorkflowSwarmActionRegistry({ workflowSwarmPlan });
+  assert.equal(directRegistry.get("workflow.swarm.plan"), workflowSwarmPlan);
+  assert.equal(directRegistry.get("workflow.swarm"), workflowSwarmPlan);
+
+  const root = await tempRoot("workflow-swarm-extracted-contracts");
+  const direct = await workflowSwarmPlan(root, {
+    workflowId: "wf-swarm-contract",
+    objective: "Keep workflow swarm extracted behavior stable.",
+    phase: "analysis",
+    shards: [
+      { id: "alpha", text: "Alpha shard", payloadField: 1 },
+      "Beta shard"
+    ],
+    workers: ["hermers:cat_body", "openclaw:main"],
+    reducer: "openclaw:main",
+    taskPrefix: "wf-swarm-contract-shard",
+    reducerTaskId: "wf-swarm-contract-reduce",
+    fanoutLimit: 2,
+    priority: "normal",
+    flashLane: true,
+    reducerHumanGate: true,
+    createdBy: "main"
+  });
+  assert.equal(direct.workflowId, "wf-swarm-contract");
+  assert.equal(direct.workflowRun.workflowId, "wf-swarm-contract");
+  assert.equal(direct.objective, "Keep workflow swarm extracted behavior stable.");
+  assert.equal(direct.phase, "analysis");
+  assert.equal(direct.shardCount, 2);
+  assert.equal(direct.plannedShardCount, 2);
+  assert.deepEqual(direct.workerPool, [
+    { runtime: "hermers", agentId: "cat_body" },
+    { runtime: "openclaw", agentId: "main" }
+  ]);
+  assert.deepEqual(direct.reducer, { runtime: "openclaw", agentId: "main" });
+  assert.equal(direct.createdTasks.length, 2);
+  assert.equal(direct.reducerTask.taskId, "wf-swarm-contract-reduce");
+  assert.equal(direct.skippedTasks.length, 0);
+
+  const dbFile = direct.dbFile;
+  assert.equal(sqliteCount(dbFile, "workflow_runs", "workflow_id='wf-swarm-contract' AND status='active'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks", "workflow_id='wf-swarm-contract' AND task_type='swarm_shard' AND priority='normal'"), 2);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks", "workflow_id='wf-swarm-contract' AND task_id='wf-swarm-contract-reduce' AND task_type='swarm_reduce' AND priority='flash' AND human_gate_required=1"), 1);
+  const reducerRow = sqliteJson(dbFile, `
+SELECT depends_on_json AS dependsOnJson, prompt, payload_json AS payloadJson
+FROM workflow_tasks
+WHERE task_id='wf-swarm-contract-reduce'
+LIMIT 1;`)[0];
+  assert.deepEqual(JSON.parse(reducerRow.dependsOnJson), [
+    "wf-swarm-contract-shard-alpha",
+    "wf-swarm-contract-shard-Beta-shard"
+  ]);
+  assert.equal(reducerRow.prompt.includes("Worker task ids:"), true);
+  assert.equal(JSON.parse(reducerRow.payloadJson).shardCount, 2);
+  const workerPromptRow = sqliteJson(dbFile, `
+SELECT prompt
+FROM workflow_tasks
+WHERE task_id='wf-swarm-contract-shard-alpha'
+LIMIT 1;`)[0];
+  assert.equal(workerPromptRow.prompt.includes("Do not execute trades."), true);
+
+  const repeat = await runAction(root, {
+    action: "workflow.swarm",
+    workflowId: "wf-swarm-contract",
+    objective: "Keep workflow swarm extracted behavior stable.",
+    phase: "analysis",
+    shards: [
+      { id: "alpha", text: "Alpha shard", payloadField: 1 },
+      "Beta shard"
+    ],
+    workers: ["hermers:cat_body", "openclaw:main"],
+    reducer: "openclaw:main",
+    taskPrefix: "wf-swarm-contract-shard",
+    reducerTaskId: "wf-swarm-contract-reduce",
+    fanoutLimit: 2
+  });
+  assert.equal(repeat.workflowRun, null);
+  assert.equal(repeat.createdTasks.length, 0);
+  assert.equal(repeat.reducerTask, null);
+  assert.equal(repeat.skippedTasks.length, 3);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks", "workflow_id='wf-swarm-contract'"), 3);
+
+  await assert.rejects(
+    () => workflowSwarmPlan(root, {
+      workflowId: "wf-swarm-missing-objective",
+      shards: ["no objective"]
+    }),
+    /objective is required/
+  );
 }
 
 async function testWorkflowInterventionPreviews() {
@@ -17932,6 +18038,7 @@ try {
     ["human_gate readiness legacy schema fallback", testHumanGateReadinessLegacySchemaFallback],
     ["workflow operations console audit", testWorkflowOperationsConsoleAudit],
     ["workflow run extracted action contracts", testWorkflowRunExtractedActionContracts],
+    ["workflow swarm extracted action contracts", testWorkflowSwarmExtractedActionContracts],
     ["workflow intervention previews", testWorkflowInterventionPreviews],
     ["intervention extracted action contracts", testInterventionExtractedActionContracts],
     ["workflow v2 adapter job manifest", testWorkflowV2AdapterJobManifest],
