@@ -2948,6 +2948,16 @@ async function testWorkflowTaskLaunchExtractedActionContracts() {
     () => workflowTaskLaunchApprove(root, { draftId }),
     /Flashcat original words/
   );
+  await assert.rejects(
+    () => workflowTaskLaunchApprove(root, {
+      draftId,
+      approvedBy: "flashcat",
+      callerAgent: "cat_body",
+      sourceSystem: "workflow_gui",
+      feedbackText: "spoofed approval should not pass"
+    }),
+    /must come from Flashcat/
+  );
   const approved = await workflowTaskLaunchApprove(root, {
     draftId,
     approvedBy: "flashcat",
@@ -2961,8 +2971,82 @@ async function testWorkflowTaskLaunchExtractedActionContracts() {
   const dbFile = approved.dbFile;
   assert.equal(sqliteCount(dbFile, "protocol_objects", `object_id='${draftId}' AND status='launched'`), 1);
   assert.equal(sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}' AND status='active'`), 1);
+  const workflowRow = sqliteJson(dbFile, `
+SELECT workflow_type AS workflowType, owner_agent AS ownerAgent, current_phase AS currentPhase, payload_json AS payloadJson
+FROM workflow_runs
+WHERE workflow_id='${workflowId}'
+LIMIT 1;`)[0];
+  assert.equal(workflowRow.workflowType, "meeting_task");
+  assert.equal(workflowRow.ownerAgent, "main");
+  assert.equal(workflowRow.currentPhase, "launched");
+  assert.equal(JSON.parse(workflowRow.payloadJson).taskLaunchPackageId, draftId);
   assert.equal(sqliteCount(dbFile, "workflow_tasks", `workflow_id='${workflowId}'`), approved.materializedTasks.length);
   assert.equal(sqliteCount(dbFile, "workflow_phases", `workflow_id='${workflowId}'`), approved.materializedPhases.length);
+
+  const trustedRoot = await tempRoot("workflow-task-launch-trusted-runtime");
+  const trustedDraftId = "tlp-task-launch-trusted-runtime";
+  const trustedWorkflowId = "wf-task-launch-trusted-runtime";
+  await workflowTaskLaunchPrepare(trustedRoot, {
+    draftId: trustedDraftId,
+    workflowId: trustedWorkflowId,
+    objective: "Exercise trusted local runtime task launch approval.",
+    participants: ["cat_body"],
+    requiresHumanGate: false
+  });
+  await workflowTaskLaunchReview(trustedRoot, {
+    draftId: trustedDraftId,
+    reviewerAgent: "main",
+    status: "approved",
+    reviewOpinion: "Trusted runtime approval package approved."
+  });
+  const trustedApproved = await workflowTaskLaunchApprove(trustedRoot, {
+    draftId: trustedDraftId,
+    approvedBy: "flashcat",
+    callerAgent: "cat_body",
+    callerRuntime: "local_codex",
+    sourceSystem: "spoofed_source_should_not_matter",
+    feedbackText: "批准 trusted local runtime approval。"
+  });
+  assert.equal(trustedApproved.status, "launched");
+
+  const failureRoot = await tempRoot("workflow-task-launch-failure-restore");
+  const failureDraftId = "tlp-task-launch-failure-restore";
+  const failureWorkflowId = "wf-task-launch-failure-restore";
+  await workflowTaskLaunchPrepare(failureRoot, {
+    draftId: failureDraftId,
+    workflowId: failureWorkflowId,
+    objective: "Exercise launch workflow row restore after materialization failure.",
+    participants: ["cat_body", "cat_eyes"],
+    requiresHumanGate: false
+  });
+  await workflowTaskLaunchReview(failureRoot, {
+    draftId: failureDraftId,
+    reviewerAgent: "main",
+    status: "approved",
+    reviewOpinion: "Failure restore package approved."
+  });
+  const failureDbFile = path.join(failureRoot, "tracking.db");
+  const failurePayloadRow = sqliteJson(failureDbFile, `SELECT payload_json AS payloadJson FROM protocol_objects WHERE object_id='${failureDraftId}' LIMIT 1;`)[0];
+  const failurePayload = JSON.parse(failurePayloadRow.payloadJson);
+  assert.equal(failurePayload.launchMaterialization.tasks.length > 1, true);
+  failurePayload.launchMaterialization.tasks[1].workflowId = "";
+  sqliteExec(failureDbFile, `UPDATE protocol_objects SET payload_json='${JSON.stringify(failurePayload).replaceAll("'", "''")}' WHERE object_id='${failureDraftId}';`);
+  await assert.rejects(
+    () => workflowTaskLaunchApprove(failureRoot, {
+      draftId: failureDraftId,
+      approvedBy: "flashcat",
+      feedbackText: "批准但测试 materialization failure restore。"
+    }),
+    /workflowId is required/
+  );
+  const restoredWorkflowRow = sqliteJson(failureDbFile, `
+SELECT owner_agent AS ownerAgent, current_phase AS currentPhase, payload_json AS payloadJson
+FROM workflow_runs
+WHERE workflow_id='${failureWorkflowId}'
+LIMIT 1;`)[0];
+  assert.equal(restoredWorkflowRow.ownerAgent, "main");
+  assert.equal(restoredWorkflowRow.currentPhase, "launched");
+  assert.equal(JSON.parse(restoredWorkflowRow.payloadJson).taskLaunchPackageId, failureDraftId);
 }
 
 async function testWorkflowSwarmExtractedActionContracts() {

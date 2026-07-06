@@ -569,16 +569,38 @@ WHERE resume_pointer=${sqlValue(draftId)} AND gate_type='task_launch_cat_brain_r
     const approvedAt = nowIso();
     const approvedBy = String(input.approvedBy || input.approved_by || input.actor || "flashcat").trim();
     const caller = workflowPermissionCaller(input);
-    const sourceSystem = String(input.sourceSystem || input.source_system || "").trim().toLowerCase();
+    const trustedCaller = isWorkflowTrustedOperator({ ...caller, sourceSystem: "" });
     const approveSourceAllowed = approvedBy === "flashcat"
       && (!caller.agentId
         || caller.agentId === "flashcat"
-        || isWorkflowTrustedOperator(caller)
-        || ["human_gate_console", "human_gate_web_app", "human_gate", "workflow_gui"].includes(sourceSystem));
+        || trustedCaller);
     if (!approveSourceAllowed) {
       throw new Error("task launch approval must come from Flashcat Human Gate, governed GUI, or trusted local control plane");
     }
     const materializedTasks = [];
+    const launchWorkflowPayload = {
+      taskLaunchPackageId: draftId,
+      taskLaunchArtifacts: pkg.artifactRefs || {},
+      flashcatOriginalWords: feedbackText,
+      approvedAt,
+      approvedBy
+    };
+    const persistedLaunchWorkflowPayload = {
+      ...launchWorkflowPayload,
+      flashLane: false,
+      tradingExecution: false
+    };
+    const restoreLaunchWorkflowRow = async () => sqlite(paths.dbFile, `
+UPDATE workflow_runs
+SET workflow_type=${sqlValue(pkg.taskType || "initiative")},
+    status='active',
+    owner_agent=${sqlValue(pkg.roles?.supervisorAgent || "main")},
+    summary=${sqlValue(pkg.subject || pkg.objective || "")},
+    objective=${sqlValue(pkg.objective || "")},
+    current_phase='launched',
+    payload_json=${sqlValue(JSON.stringify(persistedLaunchWorkflowPayload))},
+    updated_at=${sqlValue(approvedAt)}
+WHERE workflow_id=${sqlValue(pkg.workflowId)};`);
     await workflowRunUpsert(rootDir, {
       workflowId: pkg.workflowId,
       workflowType: pkg.taskType || "initiative",
@@ -587,49 +609,44 @@ WHERE resume_pointer=${sqlValue(draftId)} AND gate_type='task_launch_cat_brain_r
       summary: pkg.subject || pkg.objective || "",
       objective: pkg.objective || "",
       currentPhase: "launched",
-      payload: {
-        taskLaunchPackageId: draftId,
-        taskLaunchArtifacts: pkg.artifactRefs || {},
-        flashcatOriginalWords: feedbackText,
-        approvedAt,
-        approvedBy
-      }
+      payload: launchWorkflowPayload
     });
-    for (const task of pkg.launchMaterialization?.tasks || []) {
-      const existing = await sqlite(paths.dbFile, `SELECT task_id FROM workflow_tasks WHERE task_id=${sqlValue(task.taskId)} LIMIT 1;`, { json: true });
-      if (existing[0]) {
-        materializedTasks.push({ taskId: task.taskId, status: "already_exists" });
-        continue;
-      }
-      const created = await workflowTaskCreate(rootDir, {
-        ...task,
-        createdBy: approvedBy,
-        payload: {
-          ...(task.payload || {}),
-          taskLaunchPackageId: draftId,
-          taskLaunchArtifacts: pkg.artifactRefs || {},
-          flashcatOriginalWords: feedbackText,
-          approvedAt,
-          approvedBy
+    try {
+      for (const task of pkg.launchMaterialization?.tasks || []) {
+        const existing = await sqlite(paths.dbFile, `SELECT task_id FROM workflow_tasks WHERE task_id=${sqlValue(task.taskId)} LIMIT 1;`, { json: true });
+        if (existing[0]) {
+          materializedTasks.push({ taskId: task.taskId, status: "already_exists" });
+          continue;
         }
-      });
-      materializedTasks.push({ taskId: created.taskId, status: "created", ownerAgent: created.ownerAgent, runtime: created.runtime });
-    }
-    const materializedPhases = await syncWorkflowPhasesFromPlanSpec(paths, pkg, approvedAt);
-    const nextPackage = {
-      ...pkg,
-      status: "launched",
-      approvedAt,
-      approvedBy,
-      materializedPhases,
-      flashcatOriginalWords: feedbackText,
-      materializedTasks
-    };
-    const packageDir = path.join(paths.artifactsDir, "task-launch", cleanFileSegment(pkg.workflowId || draftId));
-    const jsonRelPath = await writeJsonArtifact(paths.root, packageDir, draftId, nextPackage);
-    await writeTextArtifact(paths.root, packageDir, draftId, "md", renderTaskLaunchMarkdown(nextPackage));
-    const hash = jsonHash(nextPackage);
-    await sqlite(paths.dbFile, `
+        const created = await workflowTaskCreate(rootDir, {
+          ...task,
+          createdBy: approvedBy,
+          payload: {
+            ...(task.payload || {}),
+            taskLaunchPackageId: draftId,
+            taskLaunchArtifacts: pkg.artifactRefs || {},
+            flashcatOriginalWords: feedbackText,
+            approvedAt,
+            approvedBy
+          }
+        });
+        materializedTasks.push({ taskId: created.taskId, status: "created", ownerAgent: created.ownerAgent, runtime: created.runtime });
+      }
+      const materializedPhases = await syncWorkflowPhasesFromPlanSpec(paths, pkg, approvedAt);
+      const nextPackage = {
+        ...pkg,
+        status: "launched",
+        approvedAt,
+        approvedBy,
+        materializedPhases,
+        flashcatOriginalWords: feedbackText,
+        materializedTasks
+      };
+      const packageDir = path.join(paths.artifactsDir, "task-launch", cleanFileSegment(pkg.workflowId || draftId));
+      const jsonRelPath = await writeJsonArtifact(paths.root, packageDir, draftId, nextPackage);
+      await writeTextArtifact(paths.root, packageDir, draftId, "md", renderTaskLaunchMarkdown(nextPackage));
+      const hash = jsonHash(nextPackage);
+      await sqlite(paths.dbFile, `
 UPDATE protocol_objects
 SET status='launched',
     path=${sqlValue(jsonRelPath)},
@@ -640,30 +657,33 @@ WHERE object_id=${sqlValue(draftId)} AND object_type='workflow_task_launch_packa
 UPDATE review_gates
 SET updated_at=${sqlValue(approvedAt)}
 WHERE resume_pointer=${sqlValue(draftId)} AND gate_type='task_launch_cat_brain_review';`);
-    await appendWorkflowEvent(paths, {
-      eventType: "workflow.task_launch.launched",
-      status: "launched",
-      workflowId: pkg.workflowId,
-      traceId: pkg.traceId,
-      actor: approvedBy,
-      sourceRuntime: "workflow",
-      sourceAgent: approvedBy,
-      idempotencyKey: `task_launch_approve:${draftId}`,
-      artifactRef: jsonRelPath,
-      payload: { draftId, materializedPhases, materializedTasks, flashcatOriginalWords: feedbackText },
-      createdAt: approvedAt
-    });
-    return {
-      operation: "workflow.task.launch.approve",
-      mutated: true,
-      draftId,
-      status: "launched",
-      workflowId: pkg.workflowId,
-      materializedPhases,
-      materializedTasks,
-      artifactRef: jsonRelPath,
-      dbFile: paths.dbFile
-    };
+      await appendWorkflowEvent(paths, {
+        eventType: "workflow.task_launch.launched",
+        status: "launched",
+        workflowId: pkg.workflowId,
+        traceId: pkg.traceId,
+        actor: approvedBy,
+        sourceRuntime: "workflow",
+        sourceAgent: approvedBy,
+        idempotencyKey: `task_launch_approve:${draftId}`,
+        artifactRef: jsonRelPath,
+        payload: { draftId, materializedPhases, materializedTasks, flashcatOriginalWords: feedbackText },
+        createdAt: approvedAt
+      });
+      return {
+        operation: "workflow.task.launch.approve",
+        mutated: true,
+        draftId,
+        status: "launched",
+        workflowId: pkg.workflowId,
+        materializedPhases,
+        materializedTasks,
+        artifactRef: jsonRelPath,
+        dbFile: paths.dbFile
+      };
+    } finally {
+      await restoreLaunchWorkflowRow();
+    }
   }
 
   return {
