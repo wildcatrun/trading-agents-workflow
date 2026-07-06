@@ -152,6 +152,11 @@ import {
   runMeetingParticipantAction
 } from "./meeting-participant-actions.js";
 import {
+  createMeetingIngestActionHandlers,
+  createMeetingIngestActionRegistry,
+  runMeetingIngestAction
+} from "./meeting-ingest-actions.js";
+import {
   createScheduleActionHandlers,
   createScheduleActionRegistry,
   runScheduleAction
@@ -15186,65 +15191,6 @@ LIMIT 1;`, { json: true });
   return { ...result, ackText: routeShellAckText(result) };
 }
 
-export async function meetingIngest(rootDir, input) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
-  const runtime = normalizeRuntime(input.runtime);
-  const agentId = normalizeAgentId(input.agentId || input.agent_id || input.from || "unknown");
-  const agent = await ensureRuntimeAgent(paths, { runtime, agentId, displayName: input.displayName || input.display_name || "", preserveExisting: true });
-  const messageId = input.messageId || input.message_id || safeId("msg");
-  const createdAt = nowIso();
-  const text = String(input.text || input.summary || "").trim();
-  if (!text) throw new Error("text is required");
-  const messageType = String(input.messageType || input.message_type || "agent_message").trim();
-  const payload = parseJsonValue(input.payload, input.payload || {});
-  await sqlite(paths.dbFile, `
-INSERT INTO mixed_meeting_messages(message_id, meeting_id, runtime, agent_id, agent_key, message_type, phase, text, payload_json, telegram_live_status, created_at)
-VALUES (${sqlValue(messageId)}, ${sqlValue(meetingId)}, ${sqlValue(runtime)}, ${sqlValue(agentId)}, ${sqlValue(agent.agentKey)}, ${sqlValue(messageType)}, ${sqlValue(input.phase || "")}, ${sqlValue(text)}, ${sqlValue(JSON.stringify(payload))}, 'pending', ${sqlValue(createdAt)});`);
-  await appendJsonl(path.join(paths.messagesDir, `${cleanFileSegment(meetingId)}.messages.jsonl`), { messageId, meetingId, runtime, agentId, messageType, text, payload, createdAt });
-  const transcriptPath = await appendTranscript(paths, meetingId, `- ${createdAt} [${runtime}:${agentId}] ${text}`);
-  const link = await telegramLinkFor(paths, meetingId);
-  let telegramOutbox = null;
-  if (link && String(link.mode || "transparent") !== "silent") {
-    const targetRef = link.chat_id || link.channel_id || "";
-    if (targetRef) {
-      telegramOutbox = await enqueueTelegramOutbox(paths, {
-        meetingId,
-        targetKind: "group",
-        targetRef,
-        messageType: "meeting_live",
-        text: `[${runtime}:${agentId}] ${text}`,
-        payload: { messageId, runtime, agentId, phase: input.phase || "" }
-      });
-      await sqlite(paths.dbFile, `UPDATE mixed_meeting_messages SET telegram_live_status='queued' WHERE message_id=${sqlValue(messageId)};`);
-    } else {
-      await sqlite(paths.dbFile, `UPDATE mixed_meeting_messages SET telegram_live_status='failed_missing_target' WHERE message_id=${sqlValue(messageId)};`);
-    }
-  }
-  let reportOutbox = null;
-  if (REPORT_MESSAGE_TYPES.has(messageType) && payload.deliverySucceeded !== true) {
-    const dispatchId = String(payload.dispatchId || payload.dispatch_id || "").trim();
-    reportOutbox = await enqueueTelegramOutbox(paths, {
-      outboxId: dispatchId ? `report-${cleanFileSegment(dispatchId)}` : `report-${messageId}`,
-      meetingId,
-      targetKind: "private",
-      targetRef: DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
-      messageType,
-      text,
-      payload: {
-        ...payload,
-        messageId,
-        workflowId: payload.workflowId || payload.workflow_id || meetingId,
-        dispatchId,
-        reportDeliveryRequired: true,
-        account: "cat_claw",
-        target: DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID
-      }
-    });
-  }
-  return { meetingId, messageId, runtime, agentId, transcriptPath, telegramOutbox, reportOutbox, dbFile: paths.dbFile };
-}
-
 function hermesProfileFromEndpoint(endpointRef, agentId) {
   const endpoint = String(endpointRef || "").trim();
   if (endpoint.startsWith("hermers-profile:")) return endpoint.slice("hermers-profile:".length).trim();
@@ -20311,6 +20257,29 @@ export const {
   thesisUpdate
 } = RESEARCH_ACTION_HANDLERS;
 
+export const MEETING_INGEST_ACTION_HANDLERS = createMeetingIngestActionHandlers({
+  appendJsonl,
+  appendTranscript,
+  cleanFileSegment,
+  enqueueTelegramOutbox,
+  ensureRuntimeAgent,
+  ensureWorkflowLayout,
+  normalizeAgentId,
+  normalizeMeetingRef,
+  normalizeRuntime,
+  nowIso,
+  safeId,
+  telegramLinkFor,
+  DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
+  REPORT_MESSAGE_TYPES
+});
+
+export const MEETING_INGEST_ACTION_REGISTRY = createMeetingIngestActionRegistry(MEETING_INGEST_ACTION_HANDLERS);
+
+export const {
+  meetingIngest
+} = MEETING_INGEST_ACTION_HANDLERS;
+
 export const MESSAGE_FLOW_ACTION_HANDLERS = createMessageFlowActionHandlers({
   appendMessageFlowEvent,
   cleanFileSegment,
@@ -20547,6 +20516,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (runtimeAgentResult.handled) return runtimeAgentResult.value;
   const meetingParticipantResult = await runMeetingParticipantAction(MEETING_PARTICIPANT_ACTION_REGISTRY, action, rootDir, input);
   if (meetingParticipantResult.handled) return meetingParticipantResult.value;
+  const meetingIngestResult = await runMeetingIngestAction(MEETING_INGEST_ACTION_REGISTRY, action, rootDir, input);
+  if (meetingIngestResult.handled) return meetingIngestResult.value;
   const statusResult = await runStatusAction(STATUS_ACTION_REGISTRY, action, rootDir, input);
   if (statusResult.handled) return statusResult.value;
   const permissionResult = await runPermissionAction(PERMISSION_ACTION_REGISTRY, action, rootDir, input);
@@ -20631,8 +20602,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return routeShellIngest(rootDir, input);
     case "meeting.dispatch":
       return meetingDispatch(rootDir, input);
-    case "meeting.ingest":
-      return meetingIngest(rootDir, input);
     case "workflow.dispatch.reconcile":
     case "dispatch.reconcile":
     case "stale_dispatch.reconcile":

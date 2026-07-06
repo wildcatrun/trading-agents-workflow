@@ -23,6 +23,7 @@ import {
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
   INTERVENTION_ACTION_REGISTRY,
+  MEETING_INGEST_ACTION_REGISTRY,
   MEETING_PARTICIPANT_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
   PERMISSION_ACTION_REGISTRY,
@@ -70,6 +71,7 @@ import {
   workflowInit,
   workflowInterventionExecute,
   workflowInterventionPreview,
+  meetingIngest,
   meetingRuntimeParticipant,
   workflowPermissionCheck,
   workflowReadiness,
@@ -124,6 +126,10 @@ import {
   INTERVENTION_ACTION_HANDLER_NAMES,
   createInterventionActionRegistry
 } from "../src/intervention-actions.js";
+import {
+  MEETING_INGEST_ACTION_HANDLER_NAMES,
+  createMeetingIngestActionRegistry
+} from "../src/meeting-ingest-actions.js";
 import {
   MEETING_PARTICIPANT_ACTION_HANDLER_NAMES,
   createMeetingParticipantActionRegistry
@@ -10250,6 +10256,124 @@ LIMIT 1;`)[0];
   );
 }
 
+async function testMeetingIngestExtractedActionContracts() {
+  assert.equal(MEETING_INGEST_ACTION_REGISTRY.has("meeting.ingest"), true, "meeting.ingest should be registered in the extracted meeting ingest registry");
+  assert.equal(MEETING_INGEST_ACTION_HANDLER_NAMES["meeting.ingest"], "meetingIngest");
+  assert.equal(typeof meetingIngest, "function");
+  const directRegistry = createMeetingIngestActionRegistry({ meetingIngest });
+  assert.equal(directRegistry.get("meeting.ingest"), meetingIngest);
+
+  const root = await tempRoot("meeting-ingest-extracted-contracts");
+  await runtimeAgentUpsert(root, {
+    runtime: "hermers",
+    agentId: "cat_body",
+    displayName: "Cat Body",
+    role: "developer",
+    endpointRef: "hermers-profile:catbody"
+  });
+  const direct = await meetingIngest(root, {
+    meetingId: "meeting-ingest-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    messageId: "msg-ingest-direct",
+    messageType: "agent_message",
+    phase: "prepare",
+    text: "Direct meeting ingest contract message.",
+    payload: { source: "direct_export" }
+  });
+  assert.equal(direct.meetingId, "meeting-ingest-contract");
+  assert.equal(direct.messageId, "msg-ingest-direct");
+  assert.equal(direct.runtime, "hermers");
+  assert.equal(direct.agentId, "cat_body");
+  assert.equal(direct.telegramOutbox, null);
+  assert.equal(direct.reportOutbox, null);
+  const transcriptFile = path.join(root, direct.transcriptPath);
+  assert.equal(await pathExists(transcriptFile), true);
+
+  const dbFile = direct.dbFile;
+  const messageEvents = (await fs.readFile(path.join(root, "bridge", "messages", "meeting-ingest-contract.messages.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(messageEvents[0].messageId, "msg-ingest-direct");
+  assert.equal(messageEvents[0].payload.source, "direct_export");
+  const transcript = await fs.readFile(transcriptFile, "utf8");
+  assert.equal(transcript.includes("[hermers:cat_body] Direct meeting ingest contract message."), true);
+  const directRow = sqliteJson(dbFile, `
+SELECT message_type AS messageType, telegram_live_status AS telegramLiveStatus, text
+FROM mixed_meeting_messages
+WHERE message_id='msg-ingest-direct'
+LIMIT 1;`)[0];
+  assert.deepEqual(directRow, {
+    messageType: "agent_message",
+    telegramLiveStatus: "pending",
+    text: "Direct meeting ingest contract message."
+  });
+
+  await runAction(root, {
+    action: "telegram.live.configure",
+    meetingId: "meeting-ingest-contract",
+    chatId: "-100123456",
+    mode: "transparent",
+    status: "active"
+  });
+  const live = await runAction(root, {
+    action: "meeting.ingest",
+    meetingId: "meeting-ingest-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    messageId: "msg-ingest-live",
+    messageType: "agent_message",
+    text: "Live meeting ingest contract message."
+  });
+  assert.equal(typeof live.telegramOutbox.outboxId, "string");
+  assert.equal(live.telegramOutbox.outboxId.length > 0, true);
+  assert.equal(live.reportOutbox, null);
+  assert.equal(sqliteCount(dbFile, "telegram_outbox", "message_type='meeting_live' AND target_ref='-100123456' AND text='[hermers:cat_body] Live meeting ingest contract message.'"), 1);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_messages", "message_id='msg-ingest-live' AND telegram_live_status='queued'"), 1);
+
+  const report = await runAction(root, {
+    action: "meeting.ingest",
+    meetingId: "meeting-ingest-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    messageId: "msg-ingest-report",
+    messageType: "workflow_secretary_report",
+    text: "Report meeting ingest contract message.",
+    payload: {
+      workflowId: "wf-meeting-ingest-contract",
+      dispatchId: "dispatch-meeting-ingest-contract"
+    }
+  });
+  assert.equal(report.reportOutbox.outboxId, "report-dispatch-meeting-ingest-contract");
+  assert.equal(sqliteCount(dbFile, "telegram_outbox", "outbox_id='report-dispatch-meeting-ingest-contract' AND target_ref='8390724843' AND message_type='workflow_secretary_report'"), 1);
+
+  const flow = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["hermers:cat_body"],
+    meetingId: "meeting-ingest-flow-contract",
+    workflowId: "workflow-ingest-flow-contract",
+    sourceMessageId: "msg-flow-ingress-contract",
+    body: "recordIngress meeting ingest contract body",
+    recordIngress: true,
+    returnPolicy: "silent"
+  });
+  assert.equal(flow.targetCount, 1);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_messages", "message_id='msg-flow-ingress-contract' AND meeting_id='meeting-ingest-flow-contract' AND message_type='internal_notice'"), 1);
+
+  await assert.rejects(
+    () => meetingIngest(root, {
+      meetingId: "meeting-ingest-contract",
+      runtime: "hermers",
+      agentId: "cat_body",
+      text: ""
+    }),
+    /text is required/
+  );
+}
+
 async function testTopologyExtractedActionContracts() {
   const expectedHandlers = {
     "workflow.topology": "workflowTopology",
@@ -17438,6 +17562,7 @@ try {
     ["cat_claw extracted action contracts", testCatClawExtractedActionContracts],
     ["runtime agent extracted action contracts", testRuntimeAgentExtractedActionContracts],
     ["meeting participant extracted action contracts", testMeetingParticipantExtractedActionContracts],
+    ["meeting ingest extracted action contracts", testMeetingIngestExtractedActionContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],
     ["permission extracted action contracts", testPermissionExtractedActionContracts],
