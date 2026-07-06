@@ -24,6 +24,7 @@ import {
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
   INTERVENTION_ACTION_REGISTRY,
+  MEETING_CONTROL_ACTION_REGISTRY,
   MEETING_DISPATCH_ACTION_REGISTRY,
   MEETING_INGEST_ACTION_REGISTRY,
   MEETING_PARTICIPANT_ACTION_REGISTRY,
@@ -75,8 +76,10 @@ import {
   workflowInit,
   workflowInterventionExecute,
   workflowInterventionPreview,
+  meetingDisperse,
   meetingDispatch,
   meetingIngest,
+  meetingResume,
   meetingRuntimeParticipant,
   workflowPermissionCheck,
   workflowReadiness,
@@ -144,6 +147,10 @@ import {
   MEETING_DISPATCH_ACTION_HANDLER_NAMES,
   createMeetingDispatchActionRegistry
 } from "../src/meeting-dispatch-actions.js";
+import {
+  MEETING_CONTROL_ACTION_HANDLER_NAMES,
+  createMeetingControlActionRegistry
+} from "../src/meeting-control-actions.js";
 import {
   MEETING_PARTICIPANT_ACTION_HANDLER_NAMES,
   createMeetingParticipantActionRegistry
@@ -10488,6 +10495,75 @@ async function testMeetingDispatchExtractedActionContracts() {
   );
 }
 
+async function testMeetingControlExtractedActionContracts() {
+  const expectedHandlers = {
+    "meeting.resume": "meetingResume",
+    "meeting.disperse": "meetingDisperse"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(MEETING_CONTROL_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted meeting control registry`);
+    assert.equal(MEETING_CONTROL_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof meetingResume, "function");
+  assert.equal(typeof meetingDisperse, "function");
+  const directRegistry = createMeetingControlActionRegistry({ meetingResume, meetingDisperse });
+  assert.equal(directRegistry.get("meeting.resume"), meetingResume);
+  assert.equal(directRegistry.get("meeting.disperse"), meetingDisperse);
+
+  const root = await tempRoot("meeting-control-extracted-contracts");
+  const resume = await meetingResume(root, {
+    meetingId: "meeting-control-contract",
+    eventId: "control-resume-direct",
+    status: "active",
+    summary: "Meeting control resume contract.",
+    from: "flashcat",
+    payload: { source: "direct_export" }
+  });
+  assert.equal(resume.meetingId, "meeting-control-contract");
+  assert.equal(resume.eventId, "control-resume-direct");
+  assert.equal(resume.status, "active");
+  const dbFile = resume.dbFile;
+  assert.equal(sqliteCount(dbFile, "meeting_control_events", "event_id='control-resume-direct' AND event_type='resume' AND status='active' AND created_by='flashcat'"), 1);
+  const transcript = await fs.readFile(path.join(root, "bridge", "messages", "meeting-control-contract.transcript.md"), "utf8");
+  assert.equal(transcript.includes("[system:resume] Meeting control resume contract."), true);
+
+  await runtimeAgentUpsert(root, {
+    runtime: "hermers",
+    platform: "hermers",
+    agentId: "cat_body",
+    displayName: "Cat Body",
+    role: "developer",
+    endpointRef: "hermers-profile:catbody",
+    executionAdapter: "acp",
+    imIngressOwner: "openclaw_gateway",
+    imIngressAdapter: "openclaw_route_shell",
+    workflowIngressAdapter: "acp",
+    imIdentity: "openclaw_route_shell",
+    executionIdentity: "hermers_acp",
+    returnPolicy: "silent",
+    routingPolicy: { primary: true, routingRank: 1 }
+  });
+  const disperse = await runAction(root, {
+    action: "meeting.disperse",
+    meetingId: "meeting-control-contract",
+    eventId: "control-disperse-run",
+    targets: ["hermers:cat_body"],
+    summary: "Meeting control disperse contract.",
+    from: "main",
+    priority: "high",
+    payload: { source: "registry_dispatch" }
+  });
+  assert.equal(disperse.meetingId, "meeting-control-contract");
+  assert.equal(disperse.eventId, "control-disperse-run");
+  assert.equal(disperse.status, "queued");
+  assert.equal(disperse.dispatches.length, 1);
+  assert.equal(disperse.dispatches[0].runtime, "hermers");
+  assert.equal(disperse.dispatches[0].agentId, "cat_body");
+  assert.equal(sqliteCount(dbFile, "meeting_control_events", "event_id='control-disperse-run' AND event_type='disperse' AND status='queued' AND created_by='main'"), 1);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", `dispatch_id='${disperse.dispatches[0].dispatchId}' AND dispatch_type='execute_meeting_conclusion' AND priority='high' AND runtime='hermers'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_events", `event_type='dispatch.created' AND dispatch_id='${disperse.dispatches[0].dispatchId}'`), 1);
+}
+
 async function testRouteShellExtractedActionContracts() {
   const expectedHandlers = {
     "route_shell.ingest": "routeShellIngest",
@@ -17895,6 +17971,7 @@ try {
     ["meeting participant extracted action contracts", testMeetingParticipantExtractedActionContracts],
     ["meeting ingest extracted action contracts", testMeetingIngestExtractedActionContracts],
     ["meeting dispatch extracted action contracts", testMeetingDispatchExtractedActionContracts],
+    ["meeting control extracted action contracts", testMeetingControlExtractedActionContracts],
     ["route_shell extracted action contracts", testRouteShellExtractedActionContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],

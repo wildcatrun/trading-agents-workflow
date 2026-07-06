@@ -167,6 +167,11 @@ import {
   runMeetingDispatchAction
 } from "./meeting-dispatch-actions.js";
 import {
+  createMeetingControlActionHandlers,
+  createMeetingControlActionRegistry,
+  runMeetingControlAction
+} from "./meeting-control-actions.js";
+import {
   createRouteShellActionHandlers,
   createRouteShellActionRegistry,
   runRouteShellAction
@@ -18322,45 +18327,6 @@ export async function humanGateResume(rootDir, input) {
   });
 }
 
-export async function meetingResume(rootDir, input) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
-  const eventId = input.eventId || input.event_id || safeId("control");
-  const createdAt = nowIso();
-  await sqlite(paths.dbFile, `
-INSERT INTO meeting_control_events(event_id, meeting_id, event_type, status, summary, payload_json, created_by, created_at)
-VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'resume', ${sqlValue(input.status || "active")}, ${sqlValue(input.summary || input.text || "")}, ${sqlValue(JSON.stringify(parseJsonValue(input.payload, input.payload || {})))}, ${sqlValue(input.from || "flashcat")}, ${sqlValue(createdAt)});`);
-  await appendTranscript(paths, meetingId, `- ${createdAt} [system:resume] ${input.summary || input.text || "meeting resumed"}`);
-  return { meetingId, eventId, status: input.status || "active", dbFile: paths.dbFile };
-}
-
-export async function meetingDisperse(rootDir, input) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
-  const eventId = input.eventId || input.event_id || safeId("control");
-  const targets = toList(input.targets || input.target);
-  const createdAt = nowIso();
-  await sqlite(paths.dbFile, `
-INSERT INTO meeting_control_events(event_id, meeting_id, event_type, status, summary, payload_json, created_by, created_at)
-VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'disperse', 'queued', ${sqlValue(input.summary || input.text || "")}, ${sqlValue(JSON.stringify({ targets, payload: parseJsonValue(input.payload, input.payload || {}) }))}, ${sqlValue(input.from || "main")}, ${sqlValue(createdAt)});`);
-  const dispatches = [];
-  for (const target of targets) {
-    const [runtimePart, agentPart] = target.includes(":") ? target.split(":", 2) : ["", target];
-    const dispatchInput = {
-      meetingId,
-      agentId: agentPart,
-      dispatchType: "execute_meeting_conclusion",
-      prompt: input.summary || input.text || "",
-      priority: input.priority || "high",
-      createdBy: input.from || "main",
-      payload: input.payload
-    };
-    if (runtimePart) dispatchInput.runtime = runtimePart;
-    dispatches.push(await meetingDispatch(rootDir, dispatchInput));
-  }
-  return { meetingId, eventId, status: "queued", dispatches, dbFile: paths.dbFile };
-}
-
 async function recoverAckedMessageFlowSemanticContinuations(paths, input = {}) {
   const cutoff = input.cutoff || new Date(Date.now() - 5 * 60_000).toISOString();
   const limit = Math.max(1, Math.min(200, Number(input.limit || 20)));
@@ -19665,6 +19631,23 @@ export const {
   meetingDispatch
 } = MEETING_DISPATCH_ACTION_HANDLERS;
 
+export const MEETING_CONTROL_ACTION_HANDLERS = createMeetingControlActionHandlers({
+  appendTranscript,
+  ensureWorkflowLayout,
+  meetingDispatch,
+  normalizeMeetingRef,
+  nowIso,
+  safeId,
+  toList
+});
+
+export const MEETING_CONTROL_ACTION_REGISTRY = createMeetingControlActionRegistry(MEETING_CONTROL_ACTION_HANDLERS);
+
+export const {
+  meetingResume,
+  meetingDisperse
+} = MEETING_CONTROL_ACTION_HANDLERS;
+
 export const ROUTE_SHELL_ACTION_HANDLERS = createRouteShellActionHandlers({
   canRouteToRegisteredInstance,
   cleanFileSegment,
@@ -19958,6 +19941,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (meetingIngestResult.handled) return meetingIngestResult.value;
   const meetingDispatchResult = await runMeetingDispatchAction(MEETING_DISPATCH_ACTION_REGISTRY, action, rootDir, input);
   if (meetingDispatchResult.handled) return meetingDispatchResult.value;
+  const meetingControlResult = await runMeetingControlAction(MEETING_CONTROL_ACTION_REGISTRY, action, rootDir, input);
+  if (meetingControlResult.handled) return meetingControlResult.value;
   const routeShellResult = await runRouteShellAction(ROUTE_SHELL_ACTION_REGISTRY, action, rootDir, input);
   if (routeShellResult.handled) return routeShellResult.value;
   const dispatchReconcileResult = await runDispatchReconcileAction(DISPATCH_RECONCILE_ACTION_REGISTRY, action, rootDir, input);
@@ -20060,10 +20045,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "human_gate.resume":
     case "human_gate.confirm":
       return humanGateResume(rootDir, input);
-    case "meeting.resume":
-      return meetingResume(rootDir, input);
-    case "meeting.disperse":
-      return meetingDisperse(rootDir, input);
     case "risk.decision":
       return riskDecision(rootDir, input);
     case "human_gate.record":
