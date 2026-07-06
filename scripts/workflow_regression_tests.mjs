@@ -35,6 +35,7 @@ import {
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
   TOPOLOGY_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
+  VERIFICATION_ACTION_REGISTRY,
   cat_clawAudit,
   humanGateInbox,
   incidentState,
@@ -81,6 +82,9 @@ import {
   workflowSessionRunStart,
   workflowStatus,
   workflowTopology,
+  workflowEvaluate,
+  workflowVerificationList,
+  workflowVerificationRecord,
   tradeProposal
 } from "../src/workflow.js";
 import {
@@ -151,6 +155,10 @@ import {
   TRADE_ACTION_HANDLER_NAMES,
   createTradeActionRegistry
 } from "../src/trade-actions.js";
+import {
+  VERIFICATION_ACTION_HANDLER_NAMES,
+  createVerificationActionRegistry
+} from "../src/verification-actions.js";
 
 const createdRoots = [];
 const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
@@ -8263,6 +8271,122 @@ ORDER BY created_at ASC;`);
   assert.equal(partialView.source, "workflow_verification_results");
   assert.equal(partialView.count, 1);
   assert.equal(partialView.results[0].verificationId, "partial-verification");
+}
+
+async function testVerificationExtractedActionContracts() {
+  const expected = {
+    "workflow.verification.record": "workflowVerificationRecord",
+    "workflow.verifier_refuter.record": "workflowVerificationRecord",
+    "workflow.verifier-refuter.record": "workflowVerificationRecord",
+    "verifier_refuter.record": "workflowVerificationRecord",
+    "verifier.refuter.record": "workflowVerificationRecord",
+    "workflow.verification": "workflowVerificationRecord",
+    "workflow.evaluator.record": "workflowVerificationRecord",
+    "workflow.evaluation.record": "workflowVerificationRecord",
+    "workflow.verification.list": "workflowVerificationList",
+    "workflow.verifications": "workflowVerificationList",
+    "workflow.evaluate": "workflowEvaluate",
+    "workflow.evaluator.run": "workflowEvaluate",
+    "workflow.evaluation.run": "workflowEvaluate",
+    "workflow.goal.evaluate": "workflowEvaluate"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(VERIFICATION_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted verification registry`);
+    assert.equal(VERIFICATION_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowVerificationRecord, "function");
+  assert.equal(typeof workflowVerificationList, "function");
+  assert.equal(typeof workflowEvaluate, "function");
+  const directRegistry = createVerificationActionRegistry({
+    workflowVerificationRecord,
+    workflowVerificationList,
+    workflowEvaluate
+  });
+  assert.equal(directRegistry.get("workflow.verification.record"), workflowVerificationRecord);
+  assert.equal(directRegistry.get("workflow.evaluator.record"), workflowVerificationRecord);
+  assert.equal(directRegistry.get("workflow.verification.list"), workflowVerificationList);
+  assert.equal(directRegistry.get("workflow.goal.evaluate"), workflowEvaluate);
+
+  const root = await tempRoot("verification-extracted-contracts");
+  const workflowId = "wf-verification-contract";
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId,
+    status: "active",
+    phase: "verify",
+    acceptanceCriteria: "Verification extracted action contract remains stable.",
+    summary: "Verification extracted contract"
+  });
+  const directRecord = await workflowVerificationRecord(root, {
+    verificationId: "verification-contract-direct",
+    workflowId,
+    phaseKey: "verify",
+    resultType: "verifier",
+    decision: "pass",
+    callerAgent: "local_codex",
+    sourceAgent: "cat_claw",
+    summary: "Direct extracted verifier record."
+  });
+  assert.equal(directRecord.resultType, "verifier");
+  assert.equal(directRecord.decision, "pass");
+
+  const aliasRecord = await runAction(root, {
+    action: "workflow.evaluation.record",
+    verificationId: "verification-contract-alias",
+    workflowId,
+    phaseKey: "verify",
+    resultType: "refuter",
+    decision: "pass",
+    callerAgent: "local_codex",
+    sourceAgent: "cat_heart",
+    summary: "Alias extracted refuter record."
+  });
+  assert.equal(aliasRecord.resultType, "refuter");
+  assert.equal(aliasRecord.decision, "pass");
+
+  await workflowVerificationRecord(root, {
+    verificationId: "verification-contract-permission-caller",
+    workflowId,
+    phaseKey: "verify",
+    resultType: "verifier",
+    decision: "pass",
+    verifierAgent: "cat_claw",
+    sourceAgent: "cat_claw",
+    createdBy: "cat_claw",
+    summary: "PermissionDecision caller should own attribution."
+  }, { caller: { agentId: "verifier_bot", runtime: "hermers" } });
+  const permissionCallerRow = sqliteJson(path.join(root, "tracking.db"), `
+SELECT verifier_agent AS verifierAgent, source_agent AS sourceAgent, created_by AS createdBy
+FROM workflow_verification_results
+WHERE verification_id='verification-contract-permission-caller'
+LIMIT 1;`)[0];
+  assert.deepEqual(permissionCallerRow, {
+    verifierAgent: "verifier_bot",
+    sourceAgent: "verifier_bot",
+    createdBy: "verifier_bot"
+  });
+
+  const directList = await workflowVerificationList(root, { workflowId, limit: 10 });
+  assert.equal(directList.count, 3);
+  assert.equal(Boolean(directList.results.some((row) => row.verification_id === "verification-contract-direct")), true);
+
+  const evaluation = await runAction(root, {
+    action: "workflow.goal.evaluate",
+    verificationId: "evaluation-contract-alias",
+    workflowId,
+    phaseKey: "verify",
+    callerAgent: "local_codex",
+    evaluatorAgent: "main"
+  });
+  assert.equal(evaluation.resultType, "evaluator");
+  assert.equal(evaluation.decision, "met");
+
+  const aliasList = await runAction(root, {
+    action: "workflow.verifications",
+    workflowId,
+    limit: 10
+  });
+  assert.equal(aliasList.count, 4);
 }
 
 async function testControlLoopJobRequeue() {
@@ -16978,6 +17102,7 @@ try {
     ["workflow v2 lifecycle renewal and validator", testWorkflowV2LifecycleRenewalAndValidatorFocused],
     ["workflow intervention execution", testWorkflowInterventionExecution],
     ["workflow verification results", testWorkflowVerificationResults],
+    ["verification extracted action contracts", testVerificationExtractedActionContracts],
     ["control_loop job requeue", testControlLoopJobRequeue],
     ["control_loop job extracted action contracts", testControlLoopJobExtractedActionContracts],
     ["workflow evaluator evidence", testWorkflowEvaluatorEvidence],
