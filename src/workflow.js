@@ -92,6 +92,11 @@ import {
   runTelegramOutboxAction
 } from "./telegram-outbox-actions.js";
 import {
+  createTelegramLiveActionHandlers,
+  createTelegramLiveActionRegistry,
+  runTelegramLiveAction
+} from "./telegram-live-actions.js";
+import {
   createTopologyActionHandlers,
   createTopologyActionRegistry,
   runTopologyAction
@@ -15331,30 +15336,6 @@ ON CONFLICT(meeting_id, agent_key) DO UPDATE SET
   return { meetingId, ...agent, participantRole, dbFile: paths.dbFile };
 }
 
-export async function telegramLiveConfigure(rootDir, input) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
-  const createdAt = nowIso();
-  const mode = String(input.mode || "transparent").trim();
-  const status = String(input.status || "active").trim();
-  const target = await resolveTelegramLiveTarget(paths, meetingId, input);
-  if (status === "active" && mode !== "silent" && !target.chatId && !target.channelId) {
-    throw new Error(`telegram live target is required for active ${mode} meeting: ${meetingId}`);
-  }
-  const humanGateChannelId = target.humanGateChannelId || input.humanGateChannelId || input.human_gate_channel_id || target.channelId || target.chatId || "";
-  await sqlite(paths.dbFile, `
-INSERT INTO telegram_live_links(meeting_id, chat_id, channel_id, mode, status, human_gate_channel_id, created_at, updated_at)
-VALUES (${sqlValue(meetingId)}, ${sqlValue(target.chatId)}, ${sqlValue(target.channelId)}, ${sqlValue(mode)}, ${sqlValue(status)}, ${sqlValue(humanGateChannelId)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
-ON CONFLICT(meeting_id) DO UPDATE SET
-  chat_id=excluded.chat_id,
-  channel_id=excluded.channel_id,
-  mode=excluded.mode,
-  status=excluded.status,
-  human_gate_channel_id=excluded.human_gate_channel_id,
-  updated_at=excluded.updated_at;`);
-  return { meetingId, chatId: target.chatId, channelId: target.channelId, humanGateChannelId, mode, status, targetSource: target.source, dbFile: paths.dbFile };
-}
-
 async function telegramLinkFor(paths, meetingId) {
   const rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_live_links WHERE meeting_id=${sqlValue(meetingId)} AND status='active' LIMIT 1;`, { json: true });
   return rows[0] || null;
@@ -21302,6 +21283,19 @@ export const {
   messageFlowReconcile
 } = MESSAGE_FLOW_ACTION_HANDLERS;
 
+export const TELEGRAM_LIVE_ACTION_HANDLERS = createTelegramLiveActionHandlers({
+  ensureWorkflowLayout,
+  normalizeMeetingRef,
+  nowIso,
+  resolveTelegramLiveTarget
+});
+
+export const TELEGRAM_LIVE_ACTION_REGISTRY = createTelegramLiveActionRegistry(TELEGRAM_LIVE_ACTION_HANDLERS);
+
+export const {
+  telegramLiveConfigure
+} = TELEGRAM_LIVE_ACTION_HANDLERS;
+
 export const TELEGRAM_OUTBOX_ACTION_HANDLERS = createTelegramOutboxActionHandlers({
   appendWorkflowEvent,
   deliverTelegramOutboxRow,
@@ -21466,6 +21460,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (workflowV2Result.handled) return workflowV2Result.value;
   const messageFlowResult = await runMessageFlowAction(MESSAGE_FLOW_ACTION_REGISTRY, action, rootDir, input);
   if (messageFlowResult.handled) return messageFlowResult.value;
+  const telegramLiveResult = await runTelegramLiveAction(TELEGRAM_LIVE_ACTION_REGISTRY, action, rootDir, input);
+  if (telegramLiveResult.handled) return telegramLiveResult.value;
   const telegramOutboxResult = await runTelegramOutboxAction(TELEGRAM_OUTBOX_ACTION_REGISTRY, action, rootDir, input);
   if (telegramOutboxResult.handled) return telegramOutboxResult.value;
   const humanGateResult = await runHumanGateAction(HUMAN_GATE_ACTION_REGISTRY, action, rootDir, input);
@@ -21608,9 +21604,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "meeting.runtime_participant":
     case "runtime.participant":
       return meetingRuntimeParticipant(rootDir, input);
-    case "telegram.live":
-    case "telegram.live.configure":
-      return telegramLiveConfigure(rootDir, input);
     case "meeting.dispatch":
       return meetingDispatch(rootDir, input);
     case "meeting.ingest":

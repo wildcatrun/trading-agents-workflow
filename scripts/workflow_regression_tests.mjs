@@ -30,6 +30,7 @@ import {
   SESSION_ACTION_REGISTRY,
   SIDE_EFFECT_ACTION_REGISTRY,
   STATUS_ACTION_REGISTRY,
+  TELEGRAM_LIVE_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
   TOPOLOGY_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
@@ -46,6 +47,7 @@ import {
   researchEvidence,
   researchMemo,
   sideEffectRecord,
+  telegramLiveConfigure,
   telegramOutbox,
   telegramOutboxDelivery,
   telegramOutboxDeliveryPreview,
@@ -130,6 +132,10 @@ import {
   STATUS_ACTION_HANDLER_NAMES,
   createStatusActionRegistry
 } from "../src/status-actions.js";
+import {
+  TELEGRAM_LIVE_ACTION_HANDLER_NAMES,
+  createTelegramLiveActionRegistry
+} from "../src/telegram-live-actions.js";
 import {
   TOPOLOGY_ACTION_HANDLER_NAMES,
   createTopologyActionRegistry
@@ -8823,6 +8829,87 @@ async function testMessageFlowExtractedActionContracts() {
   assert.equal(Array.isArray(reconciled.incidents), true);
 }
 
+async function testTelegramLiveExtractedActionContracts() {
+  for (const action of [
+    "telegram.live",
+    "telegram.live.configure"
+  ]) {
+    assert.equal(TELEGRAM_LIVE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted telegram.live registry`);
+    assert.equal(TELEGRAM_LIVE_ACTION_HANDLER_NAMES[action], "telegramLiveConfigure", `${action} should map to the extracted telegramLiveConfigure handler`);
+  }
+  assert.equal(typeof telegramLiveConfigure, "function");
+  const directRegistry = createTelegramLiveActionRegistry({ telegramLiveConfigure });
+  assert.equal(directRegistry.get("telegram.live"), telegramLiveConfigure);
+  assert.equal(directRegistry.get("telegram.live.configure"), telegramLiveConfigure);
+
+  const root = await tempRoot("telegram-live-extracted-contracts");
+  const init = await runAction(root, { action: "workflow.init" });
+  const dbFile = init.dbFile;
+  const bridgeDir = path.join(root, "bridge");
+  const gateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { allowWrites: true });
+
+  const direct = await telegramLiveConfigure(root, {
+    meetingId: "meeting-live-direct",
+    chatId: "8390724843",
+    humanGateChannelId: "8390724843",
+    mode: "transparent",
+    status: "active"
+  });
+  assert.equal(direct.meetingId, "meeting-live-direct");
+  assert.equal(direct.chatId, "8390724843");
+  assert.equal(direct.humanGateChannelId, "8390724843");
+  assert.equal(direct.targetSource, "input");
+  assert.equal(sqliteCount(dbFile, "telegram_live_links", "meeting_id='meeting-live-direct' AND chat_id='8390724843' AND status='active'"), 1);
+
+  const alias = await runAction(root, {
+    action: "telegram.live.configure",
+    meetingId: "meeting-live-alias",
+    chatId: "8390724843",
+    humanGateChannelId: "8390724843",
+    mode: "silent",
+    status: "active",
+    catClawAuditId: "audit-telegram-live-extracted-contract"
+  });
+  assert.equal(alias.meetingId, "meeting-live-alias");
+  assert.equal(alias.chatId, "8390724843");
+  assert.equal(alias.mode, "silent");
+  assert.equal(sqliteCount(dbFile, "telegram_live_links", "meeting_id='meeting-live-alias' AND chat_id='8390724843' AND mode='silent'"), 1);
+
+  const overwritten = await runAction(root, {
+    action: "telegram.live",
+    meetingId: "meeting-live-alias",
+    channelId: "-100999",
+    humanGateChannelId: "-100888",
+    mode: "transparent",
+    status: "inactive",
+    catClawAuditId: "audit-telegram-live-extracted-contract"
+  });
+  assert.equal(overwritten.meetingId, "meeting-live-alias");
+  assert.equal(overwritten.channelId, "-100999");
+  assert.equal(overwritten.humanGateChannelId, "-100888");
+  assert.equal(overwritten.status, "inactive");
+  assert.equal(sqliteCount(dbFile, "telegram_live_links", "meeting_id='meeting-live-alias'"), 1);
+  assert.equal(sqliteCount(dbFile, "telegram_live_links", "meeting_id='meeting-live-alias' AND channel_id='-100999' AND human_gate_channel_id='-100888' AND status='inactive'"), 1);
+
+  const gatewayResult = await gateway.handle({
+    action: "telegram.live.configure",
+    actor: "flashcat",
+    reason: "registry contract telegram live remains console-blocked",
+    payload: {
+      meetingId: "meeting-live-gateway",
+      channelId: "-100123",
+      humanGateChannelId: "-100456",
+      mode: "transparent",
+      status: "active",
+      catClawAuditId: "audit-telegram-live-extracted-contract"
+    }
+  });
+  assert.equal(gatewayResult.ok, false);
+  assert.equal(gatewayResult.action, "telegram.live");
+  assert.equal(gatewayResult.errorCode, "action_not_allowed");
+  assert.equal(sqliteCount(dbFile, "telegram_live_links", "meeting_id='meeting-live-gateway'"), 0);
+}
+
 async function testTelegramOutboxExtractedActionContracts() {
   for (const action of [
     "telegram.outbox.delivery.preview",
@@ -16825,6 +16912,7 @@ try {
     ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["message_flow extracted action contracts", testMessageFlowExtractedActionContracts],
+    ["telegram.live extracted action contracts", testTelegramLiveExtractedActionContracts],
     ["telegram.outbox extracted action contracts", testTelegramOutboxExtractedActionContracts],
     ["human_gate inbox extracted action contracts", testHumanGateInboxExtractedActionContracts],
     ["protocol record extracted action contracts", testProtocolRecordExtractedActionContracts],
