@@ -22,6 +22,7 @@ import {
   EVENT_ACTION_REGISTRY,
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
+  INTERVENTION_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
   PERMISSION_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
@@ -64,6 +65,8 @@ import {
   workflowControlLoopJobRequeue,
   workflowControlLoopJobRequeuePreview,
   workflowInit,
+  workflowInterventionExecute,
+  workflowInterventionPreview,
   workflowPermissionCheck,
   workflowReadiness,
   workflowRuntimeAgents,
@@ -111,6 +114,10 @@ import {
   INCIDENT_ACTION_HANDLER_NAMES,
   createIncidentActionRegistry
 } from "../src/incident-actions.js";
+import {
+  INTERVENTION_ACTION_HANDLER_NAMES,
+  createInterventionActionRegistry
+} from "../src/intervention-actions.js";
 import {
   PERMISSION_ACTION_HANDLER_NAMES,
   createPermissionActionRegistry
@@ -2663,6 +2670,81 @@ ORDER BY created_at ASC;`);
   assert.equal(rows.some((row) => row.reason.includes("abc")), false);
   const workflowRows = sqliteJson(dbFile, `SELECT status FROM workflow_runs WHERE workflow_id='${workflowId}';`);
   assert.equal(workflowRows[0].status, "active");
+}
+
+async function testInterventionExtractedActionContracts() {
+  const expected = {
+    "workflow.pause": "workflowInterventionExecute",
+    "workflow.resume": "workflowInterventionExecute",
+    "workflow.stop": "workflowInterventionExecute",
+    "workflow.terminate": "workflowInterventionExecute",
+    "workflow.pause.preview": "workflowInterventionPreview",
+    "workflow.preview.pause": "workflowInterventionPreview",
+    "workflow.resume.preview": "workflowInterventionPreview",
+    "workflow.preview.resume": "workflowInterventionPreview",
+    "workflow.stop.preview": "workflowInterventionPreview",
+    "workflow.preview.stop": "workflowInterventionPreview",
+    "workflow.terminate.preview": "workflowInterventionPreview",
+    "workflow.preview.terminate": "workflowInterventionPreview",
+    "workflow.rerun.agent.preview": "workflowInterventionPreview",
+    "workflow.rerun_agent.preview": "workflowInterventionPreview",
+    "workflow.preview.rerun_agent": "workflowInterventionPreview",
+    "workflow.rerun.phase.preview": "workflowInterventionPreview",
+    "workflow.rerun_phase.preview": "workflowInterventionPreview",
+    "workflow.preview.rerun_phase": "workflowInterventionPreview"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(INTERVENTION_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted intervention registry`);
+    assert.equal(INTERVENTION_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowInterventionPreview, "function");
+  assert.equal(typeof workflowInterventionExecute, "function");
+  const directRegistry = createInterventionActionRegistry({
+    workflowInterventionPreview,
+    workflowInterventionExecute
+  });
+  assert.equal(directRegistry.get("workflow.pause.preview"), workflowInterventionPreview);
+  assert.equal(directRegistry.get("workflow.preview.rerun_agent"), workflowInterventionPreview);
+  assert.equal(directRegistry.get("workflow.pause"), workflowInterventionExecute);
+  assert.equal(directRegistry.get("workflow.terminate"), workflowInterventionExecute);
+
+  const root = await tempRoot("intervention-extracted-contracts");
+  const workflowId = "wf-intervention-contract";
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId,
+    status: "active",
+    phase: "contract",
+    summary: "Intervention extracted contract"
+  });
+  const directPreview = await workflowInterventionPreview(root, {
+    action: "workflow.preview.pause",
+    workflowId
+  });
+  assert.equal(directPreview.kind, "pause_workflow");
+  assert.equal(directPreview.action, "workflow.pause.preview");
+  assert.equal(directPreview.eligible, true);
+  assert.equal(directPreview.wouldUpdateWorkflow.status, "paused");
+
+  const executed = await workflowInterventionExecute(root, {
+    action: "workflow.pause",
+    workflowId,
+    operatorReason: "contract pause",
+    rollbackBoundary: "artifact://intervention-contract-rollback",
+    idempotencyKey: "idem-intervention-contract"
+  }, { caller: { agentId: "flashcat", runtime: "local_codex" }, policyOutcome: "allowed" });
+  assert.equal(executed.kind, "pause_workflow");
+  assert.equal(executed.previousStatus, "active");
+  assert.equal(executed.nextStatus, "paused");
+
+  const stopPreview = await runAction(root, {
+    action: "workflow.terminate.preview",
+    workflowId
+  });
+  assert.equal(stopPreview.kind, "stop_workflow");
+  assert.equal(stopPreview.action, "workflow.stop.preview");
+  assert.equal(stopPreview.eligible, true);
+  assert.equal(sqliteCount(path.join(root, "tracking.db"), "workflow_events", "event_type='workflow.intervention.executed' AND workflow_id='wf-intervention-contract'"), 1);
 }
 
 async function testWorkflowV2AdapterJobManifest() {
@@ -17087,6 +17169,7 @@ try {
     ["human_gate readiness legacy schema fallback", testHumanGateReadinessLegacySchemaFallback],
     ["workflow operations console audit", testWorkflowOperationsConsoleAudit],
     ["workflow intervention previews", testWorkflowInterventionPreviews],
+    ["intervention extracted action contracts", testInterventionExtractedActionContracts],
     ["workflow v2 adapter job manifest", testWorkflowV2AdapterJobManifest],
     ["workflow v2 adapter runner drain", testWorkflowV2AdapterRunnerDrain],
     ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
