@@ -19,6 +19,7 @@ import {
   CAT_CLAW_ACTION_REGISTRY,
   CHECKPOINT_ACTION_REGISTRY,
   CONTROL_LOOP_JOB_ACTION_REGISTRY,
+  CONTROL_LOOP_TICK_ACTION_REGISTRY,
   DISPATCH_RECONCILE_ACTION_REGISTRY,
   EVENT_ACTION_REGISTRY,
   HUMAN_GATE_ACTION_REGISTRY,
@@ -83,6 +84,7 @@ import {
   workflowSupervisorPreview,
   workflowControlLoopJobRequeue,
   workflowControlLoopJobRequeuePreview,
+  workflowControlLoopTick,
   workflowInit,
   workflowInterventionExecute,
   workflowInterventionPreview,
@@ -138,6 +140,11 @@ import {
   CONTROL_LOOP_JOB_ACTION_HANDLER_NAMES,
   createControlLoopJobActionRegistry
 } from "../src/control-loop-job-actions.js";
+import {
+  CONTROL_LOOP_TICK_ACTION_HANDLER_NAMES,
+  createControlLoopTickActionRegistry,
+  runControlLoopTickAction
+} from "../src/control-loop-tick-actions.js";
 import {
   DISPATCH_RECONCILE_ACTION_HANDLER_NAMES,
   createDispatchReconcileActionRegistry
@@ -9918,6 +9925,56 @@ VALUES ('job-control-loop-extracted', 'runtime_drain', 'runtime_drain:contract',
   assert.equal(sqliteCount(dbFile, "workflow_events", "event_type='control_loop.job.requeued' AND workflow_id='wf-control-loop-job-contract'"), 1);
 }
 
+async function testControlLoopTickExtractedActionContracts() {
+  const expected = {
+    "workflow.control_loop.tick": "workflowControlLoopTick",
+    "workflow.loop.tick": "workflowControlLoopTick",
+    "workflow.reconciler.tick": "workflowControlLoopTick"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(CONTROL_LOOP_TICK_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted control-loop tick registry`);
+    assert.equal(CONTROL_LOOP_TICK_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowControlLoopTick, "function");
+  const directRegistry = createControlLoopTickActionRegistry({ workflowControlLoopTick });
+  assert.equal(directRegistry.get("workflow.control_loop.tick"), workflowControlLoopTick);
+  assert.equal(directRegistry.get("workflow.loop.tick"), workflowControlLoopTick);
+  assert.equal(directRegistry.get("workflow.reconciler.tick"), workflowControlLoopTick);
+  const missing = await runControlLoopTickAction(directRegistry, "workflow.unknown.tick", "/tmp/unused", {});
+  assert.equal(missing.handled, false);
+
+  const root = await tempRoot("control-loop-tick-extracted-contracts");
+  const direct = await runControlLoopTickAction(directRegistry, "workflow.reconciler.tick", root, {
+    dryRun: true,
+    tickId: "tick-direct-registry",
+    leaseMs: 10_000
+  });
+  assert.equal(direct.handled, true);
+  assert.equal(direct.value.status, "ok");
+  assert.equal(direct.value.tickId, "tick-direct-registry");
+  assert.equal(direct.value.jobResults[0]?.status, "dry_run");
+
+  const gatewayAlias = await runAction(root, {
+    action: "workflow.loop.tick",
+    dryRun: true,
+    tickId: "tick-gateway-alias",
+    leaseMs: 10_000
+  });
+  assert.equal(gatewayAlias.status, "ok");
+  assert.equal(gatewayAlias.tickId, "tick-gateway-alias");
+  assert.equal(gatewayAlias.jobResults[0]?.status, "dry_run");
+
+  const reconcilerAlias = await runAction(root, {
+    action: "workflow.reconciler.tick",
+    dryRun: true,
+    tickId: "tick-reconciler-alias",
+    leaseMs: 10_000
+  });
+  assert.equal(reconcilerAlias.status, "ok");
+  assert.equal(reconcilerAlias.tickId, "tick-reconciler-alias");
+  assert.equal(reconcilerAlias.jobResults[0]?.status, "dry_run");
+}
+
 async function makeFakeOpenClaw(root, name, mode) {
   const file = path.join(root, name);
   const body = mode === "health-degraded"
@@ -18750,6 +18807,7 @@ try {
     ["verification extracted action contracts", testVerificationExtractedActionContracts],
     ["control_loop job requeue", testControlLoopJobRequeue],
     ["control_loop job extracted action contracts", testControlLoopJobExtractedActionContracts],
+    ["control_loop tick extracted action contracts", testControlLoopTickExtractedActionContracts],
     ["workflow evaluator evidence", testWorkflowEvaluatorEvidence],
     ["human_gate pending cleanup/retry", testHumanGatePendingCleanupAndRetryRedaction],
     ["human_gate ensure invalid buttons superseded", testHumanGateEnsureSupersedesInvalidExistingButtons],

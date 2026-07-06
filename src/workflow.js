@@ -102,6 +102,12 @@ import {
   runControlLoopJobAction
 } from "./control-loop-job-actions.js";
 import {
+  controlLoopTimeoutSeconds,
+  createControlLoopTickActionHandlers,
+  createControlLoopTickActionRegistry,
+  runControlLoopTickAction
+} from "./control-loop-tick-actions.js";
+import {
   createDispatchReconcileActionHandlers,
   createDispatchReconcileActionRegistry,
   runDispatchReconcileAction
@@ -16871,72 +16877,6 @@ WHERE run_id=${sqlValue(runId)};`);
   }
 }
 
-function controlLoopStatuses(input = {}) {
-  const requested = toList(input.workflowStatuses || input.workflow_statuses || input.statuses);
-  const statuses = requested.length ? requested : [...CONTROL_LOOP_WORKFLOW_STATUSES];
-  const valid = statuses.filter((status) => WORKFLOW_RUN_STATUSES.has(status));
-  return valid.length ? valid : [...CONTROL_LOOP_WORKFLOW_STATUSES];
-}
-
-async function appendControlLoopEvent(paths, tickId, phase, data = {}) {
-  await appendJsonl(path.join(paths.bridgeDir, "control-loop-events.jsonl"), {
-    ts: nowIso(),
-    tickId,
-    phase,
-    ...data
-  });
-}
-
-function controlLoopPriorityRank(priority) {
-  const value = String(priority || "normal").trim();
-  if (value === "flash") return -1;
-  if (value === "steer") return 0;
-  if (value === "high") return 1;
-  if (value === "normal") return 2;
-  if (value === "low") return 3;
-  return 4;
-}
-
-function controlLoopTickBudgetMs(input = {}) {
-  return boundedNumber([input.tickBudgetMs, input.tick_budget_ms], 60_000, 5_000, 30 * 60_000);
-}
-
-function controlLoopTimeoutSeconds(input = {}) {
-  return boundedNumber([input.timeoutSeconds, input.timeout_seconds], 45, 5, 900);
-}
-
-function controlLoopRuntimeDrainTimeoutSeconds(dispatchType = "", runtime = "", input = {}) {
-  const type = String(dispatchType || "").trim();
-  const normalizedRuntime = normalizeKnownRuntime(runtime);
-  if (normalizedRuntime === "openclaw" && ["message_flow_send", "message_flow_semantic"].includes(type)) {
-    return Math.max(controlLoopTimeoutSeconds(input), DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS);
-  }
-  return controlLoopTimeoutSeconds(input);
-}
-
-function controlLoopWorkflowSuperviseCooldownMs(input = {}, status = "") {
-  const defaultIdleCooldownMs = 5 * 60_000;
-  const idleValue = input.idleWorkflowSuperviseCooldownMs
-    ?? input.idle_workflow_supervise_cooldown_ms
-    ?? input.blockedWorkflowSuperviseCooldownMs
-    ?? input.blocked_workflow_supervise_cooldown_ms
-    ?? defaultIdleCooldownMs;
-  const generalValue = input.workflowSuperviseCooldownMs ?? input.workflow_supervise_cooldown_ms ?? 0;
-  const value = ["blocked", "waiting_human"].includes(String(status || "")) ? idleValue : generalValue;
-  const number = Number(value);
-  if (!Number.isFinite(number) || number <= 0) return 0;
-  return Math.min(24 * 3600_000, Math.max(0, number));
-}
-
-function controlLoopJobLeaseMs(input = {}, job = null) {
-  const requested = boundedNumber([input.jobLeaseMs, input.job_lease_ms], 120_000, 10_000, 60 * 60_000);
-  const payload = job ? parseJsonValue(job.payload_json || job.payload, {}) : {};
-  const payloadTimeoutSeconds = boundedNumber([payload.timeoutSeconds, payload.timeout_seconds], 0, 0, 900);
-  const timeoutSeconds = Math.max(controlLoopTimeoutSeconds(input), Number.isFinite(payloadTimeoutSeconds) ? payloadTimeoutSeconds : 0);
-  const minSafe = Math.max(controlLoopTickBudgetMs(input) + 30_000, (timeoutSeconds + 30) * 1000);
-  return Math.max(requested, minSafe);
-}
-
 async function enqueueControlLoopJob(paths, input = {}) {
   const jobType = String(input.jobType || input.job_type || "").trim();
   if (!jobType) throw new Error("control loop jobType is required");
@@ -16980,567 +16920,6 @@ LIMIT 1;`, { json: true });
 INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, created_at, updated_at)
 VALUES (${sqlValue(jobId)}, ${sqlValue(jobType)}, ${sqlValue(dedupeKey)}, ${sqlValue(input.priority || "normal")}, 'queued', ${sqlValue(input.workflowId || input.workflow_id || "")}, ${sqlValue(input.runtime || "")}, ${sqlValue(JSON.stringify(payload))}, '{}', 0, ${sqlValue(Number(input.maxAttempts || input.max_attempts || 20))}, ${sqlValue(input.nextRunAt || input.next_run_at || createdAt)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
   return { jobId, jobType, dedupeKey, status: "queued", deduped: false };
-}
-
-async function seedControlLoopJobs(paths, input = {}) {
-  const seeded = [];
-  const maxWorkflows = Math.max(1, Math.min(100, Number(input.maxWorkflowSeed || input.max_workflow_seed || input.maxWorkflows || input.max_workflows || 20)));
-  const runtimeLimit = Math.max(1, Math.min(20, Number(input.runtimeLimit || input.runtime_limit || input.limit || 1)));
-  const outboxLimit = Math.max(1, Math.min(20, Number(input.outboxLimit || input.outbox_limit || 5)));
-  const timeoutSeconds = controlLoopTimeoutSeconds(input);
-  const autoDispatch = boolOption(input.autoDispatch ?? input.auto_dispatch, true);
-  const autoReport = boolOption(input.autoReport ?? input.auto_report, false);
-  const drainQueued = boolOption(input.drainQueued ?? input.drain_queued, true);
-  const deliverOutbox = boolOption(input.deliverOutbox ?? input.deliver_outbox, true);
-  const ensureHumanGateRequests = boolOption(input.ensureHumanGateRequests ?? input.ensure_human_gate_requests, true);
-  const createHumanGateInbox = boolOption(input.createHumanGateInbox ?? input.create_human_gate_inbox, true);
-  const explicitRuntimeInput = input.runtime !== undefined || input.runtimes !== undefined;
-  const requestedRuntimeValues = explicitRuntimeInput ? toList(input.runtimes ?? input.runtime) : [];
-  const invalidRequestedRuntimes = requestedRuntimeValues.filter((runtime) => !normalizeKnownRuntime(runtime));
-  if (drainQueued && explicitRuntimeInput && invalidRequestedRuntimes.length) {
-    throw new Error(`invalid runtime for control_loop drain: ${[...new Set(invalidRequestedRuntimes)].join(",")}`);
-  }
-  const reportRuntime = normalizeRuntime(input.reportRuntime || input.report_runtime || "openclaw");
-  const reportAgent = normalizeAgentId(input.reportAgent || input.report_agent || "cat_claw");
-  const staleDispatchAfterMs = Math.max(5 * 60_000, Number(input.staleDispatchAfterMs || input.stale_dispatch_after_ms || (timeoutSeconds + 60) * 1000));
-  const staleDispatchCutoff = new Date(Date.now() - staleDispatchAfterMs).toISOString();
-  const dispatchReconcileLimit = Math.max(1, Math.min(100, Number(input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20)));
-  const messageFlowStuckAfterMs = Math.max(60_000, Math.min(24 * 3600_000, Number(input.messageFlowStuckAfterMs || input.message_flow_stuck_after_ms || 5 * 60_000)));
-  const messageFlowReconcileLimit = Math.max(1, Math.min(200, Number(input.messageFlowReconcileLimit || input.message_flow_reconcile_limit || 20)));
-  const messageFlowStuckCutoff = new Date(Date.now() - messageFlowStuckAfterMs).toISOString();
-  const statuses = controlLoopStatuses(input);
-
-  seeded.push(...await seedDueScheduleJobs(paths, input));
-
-  const workflowRows = await sqlite(paths.dbFile, `
-SELECT workflow_id, status, current_decision, payload_json, updated_at
-FROM workflow_runs
-WHERE status IN (${sqlStringList(statuses)})
-ORDER BY
-  CASE status WHEN 'waiting_human' THEN 0 WHEN 'blocked' THEN 1 ELSE 2 END,
-  updated_at
-LIMIT ${maxWorkflows};`, { json: true });
-  for (const row of workflowRows) {
-    const payload = parseJsonValue(row.payload_json, {});
-    const flashLane = boolOption(payload.flashLane ?? payload.flash_lane ?? payload.tradingExecution ?? payload.trading_execution, false);
-    const superviseCooldownMs = flashLane ? 0 : controlLoopWorkflowSuperviseCooldownMs(input, row.status);
-    seeded.push(await enqueueControlLoopJob(paths, {
-      jobType: "workflow_supervise",
-      dedupeKey: `workflow_supervise:${row.workflow_id}`,
-      priority: flashLane ? "flash" : row.status === "waiting_human" ? "steer" : row.status === "blocked" ? "high" : "normal",
-      workflowId: row.workflow_id,
-      cooldownMs: superviseCooldownMs,
-      payload: {
-        workflowId: row.workflow_id,
-        meetingId: row.workflow_id,
-        flashLane,
-        workflowStatus: row.status,
-        superviseCooldownMs,
-        autoDispatch,
-        autoReport,
-        reportRuntime,
-        reportAgent,
-        runtimeLimit,
-        timeoutSeconds,
-        maxCycles: input.maxCycles || input.max_cycles || 1
-      }
-    }));
-  }
-
-  const staleDispatchRows = await sqlite(paths.dbFile, `
-SELECT COUNT(*) AS count
-FROM mixed_meeting_dispatches
-WHERE status='sent' AND updated_at < ${sqlValue(staleDispatchCutoff)};`, { json: true });
-  if (Number(staleDispatchRows[0]?.count || 0) > 0) {
-    seeded.push(await enqueueControlLoopJob(paths, {
-      jobType: "stale_dispatch_reconcile",
-      dedupeKey: "stale_dispatch_reconcile",
-      priority: "high",
-      payload: { limit: dispatchReconcileLimit, staleDispatchAfterMs }
-    }));
-  }
-
-  const stuckMessageFlowRows = await sqlite(paths.dbFile, `
-SELECT COUNT(*) AS count
-FROM message_flows
-WHERE (
-    final_output_present=1
-    AND delivery_receipt_present=0
-    AND return_policy IN (${sqlStringList([...MESSAGE_FLOW_DELIVERY_RETURN_POLICIES])})
-    AND runtime_completed_at IS NOT NULL
-    AND runtime_completed_at != ''
-    AND runtime_completed_at < ${sqlValue(messageFlowStuckCutoff)}
-    AND status NOT IN ('telegram_sent','telegram_failed')
-  )
-  OR (
-    final_output_present=0
-    AND delivery_receipt_present=0
-    AND status='runtime_failed'
-    AND outbox_id IS NOT NULL
-    AND outbox_id != ''
-    AND runtime_failed_at IS NOT NULL
-    AND runtime_failed_at != ''
-    AND runtime_failed_at < ${sqlValue(messageFlowStuckCutoff)}
-  )
-  OR (
-    final_output_present=0
-    AND delivery_receipt_present=0
-    AND status='runtime_acknowledged'
-    AND updated_at < ${sqlValue(messageFlowStuckCutoff)}
-    AND NOT EXISTS (
-      SELECT 1
-      FROM mixed_meeting_dispatches d
-      WHERE d.dispatch_type='message_flow_semantic'
-        AND d.idempotency_key=('message-flow-semantic:' || message_flows.flow_id || ':' || message_flows.dispatch_id)
-    )
-  );`, { json: true });
-  if (Number(stuckMessageFlowRows[0]?.count || 0) > 0) {
-    seeded.push(await enqueueControlLoopJob(paths, {
-      jobType: "message_flow_reconcile",
-      dedupeKey: "message_flow_reconcile",
-      priority: "high",
-      payload: { limit: messageFlowReconcileLimit, messageFlowStuckAfterMs }
-    }));
-  }
-
-  if (drainQueued) {
-    const requestedRuntimes = requestedRuntimeValues.map(normalizeKnownRuntime).filter(Boolean);
-    const configuredRuntimes = new Set(requestedRuntimes);
-    if (!configuredRuntimes.size) {
-      const dueRuntimeRows = await sqlite(paths.dbFile, `
-SELECT runtime
-FROM mixed_meeting_dispatches
-WHERE status='queued'
-  AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())})
-GROUP BY runtime
-ORDER BY runtime;`, { json: true });
-      for (const row of dueRuntimeRows) {
-        const runtime = normalizeKnownRuntime(row.runtime);
-        if (runtime) configuredRuntimes.add(runtime);
-      }
-    }
-    const runtimes = [...configuredRuntimes];
-    const preciseExcludedRuntimes = runtimes.filter((runtime) => runtime !== "openclaw");
-    const preciseRuntimeExclusion = preciseExcludedRuntimes.length ? `AND runtime NOT IN (${sqlStringList(preciseExcludedRuntimes)})` : "";
-    for (const runtime of runtimes) {
-      const genericDispatchTypeFilter = runtime === "openclaw" ? "AND dispatch_type NOT IN ('message_flow_send','message_flow_semantic')" : "";
-      const rows = await sqlite(paths.dbFile, `
-SELECT COUNT(*) AS count
-FROM mixed_meeting_dispatches
-WHERE status='queued' AND runtime=${sqlValue(runtime)}
-  ${genericDispatchTypeFilter}
-  AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())});`, { json: true });
-      if (Number(rows[0]?.count || 0) <= 0) continue;
-      const hasFlash = Number((await sqlite(paths.dbFile, `
-SELECT COUNT(*) AS count
-FROM mixed_meeting_dispatches
-WHERE status='queued' AND runtime=${sqlValue(runtime)} AND priority='flash'
-  ${genericDispatchTypeFilter}
-  AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())});`, { json: true }))[0]?.count || 0) > 0;
-      seeded.push(await enqueueControlLoopJob(paths, {
-        jobType: "runtime_drain",
-        dedupeKey: `runtime_drain:${runtime}`,
-        priority: hasFlash ? "flash" : "high",
-        runtime,
-        payload: {
-          runtime,
-          limit: runtimeLimit,
-          timeoutSeconds,
-          ...(runtime === "openclaw" ? { excludeDispatchTypes: ["message_flow_send", "message_flow_semantic"] } : {})
-        }
-      }));
-    }
-    const messageFlowDispatchRows = await sqlite(paths.dbFile, `
-SELECT dispatch_id, runtime, priority, dispatch_type
-FROM mixed_meeting_dispatches
-WHERE status='queued'
-  AND dispatch_type IN ('message_flow_send','message_flow_semantic')
-  ${preciseRuntimeExclusion}
-  AND (next_retry_at IS NULL OR next_retry_at='' OR next_retry_at <= ${sqlValue(nowIso())})
-ORDER BY
-  CASE priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
-  created_at
-LIMIT ${runtimeLimit};`, { json: true });
-    for (const row of messageFlowDispatchRows) {
-      const runtime = normalizeRuntime(row.runtime);
-      if (!RUNTIMES.has(runtime)) continue;
-      seeded.push(await enqueueControlLoopJob(paths, {
-        jobType: "runtime_drain",
-        dedupeKey: `runtime_drain:${runtime}:${row.dispatch_id}`,
-        priority: row.priority || "high",
-        runtime,
-        payload: {
-          runtime,
-          dispatchId: row.dispatch_id,
-          limit: 1,
-          timeoutSeconds: controlLoopRuntimeDrainTimeoutSeconds(row.dispatch_type, runtime, input)
-        }
-      }));
-    }
-  }
-
-  if (ensureHumanGateRequests) {
-    const rows = await sqlite(paths.dbFile, `SELECT COUNT(*) AS count FROM protocol_objects WHERE object_type='human_gate_record' AND status='pending';`, { json: true });
-    if (Number(rows[0]?.count || 0) > 0) {
-      const flashRows = await sqlite(paths.dbFile, `
-SELECT COUNT(*) AS count
-FROM protocol_objects
-WHERE object_type='human_gate_record' AND status='pending'
-  AND (
-    payload_json LIKE ${sqlValue('%"flashLane":true%')}
-    OR payload_json LIKE ${sqlValue('%"flash_lane":true%')}
-    OR payload_json LIKE ${sqlValue('%live_trade%')}
-    OR payload_json LIKE ${sqlValue('%real_trade%')}
-    OR payload_json LIKE ${sqlValue('%真实交易%')}
-    OR payload_json LIKE ${sqlValue('%实盘%')}
-  );`, { json: true });
-      seeded.push(await enqueueControlLoopJob(paths, {
-        jobType: "human_gate_request_ensure",
-        dedupeKey: "human_gate_request_ensure",
-        priority: Number(flashRows[0]?.count || 0) > 0 ? "flash" : "steer",
-        payload: { limit: input.humanGateRequestLimit || input.human_gate_request_limit || 5 }
-      }));
-    }
-  }
-
-  if (deliverOutbox) {
-    const staleDeliveringBefore = new Date(Date.now() - TELEGRAM_OUTBOX_DELIVERY_LEASE_MS).toISOString();
-    const rows = await sqlite(paths.dbFile, `
-SELECT COUNT(*) AS count
-FROM telegram_outbox
-WHERE status='queued'
-   OR (status='delivering' AND updated_at <= ${sqlValue(staleDeliveringBefore)});`, { json: true });
-    if (Number(rows[0]?.count || 0) > 0) {
-      seeded.push(await enqueueControlLoopJob(paths, {
-        jobType: "telegram_outbox_deliver",
-        dedupeKey: "telegram_outbox_deliver",
-        priority: "high",
-        payload: { limit: outboxLimit }
-      }));
-    }
-  }
-
-  if (createHumanGateInbox) {
-    const recentCutoff = new Date(Date.now() - Math.max(60_000, Math.min(24 * 3600_000, Number(input.humanGateInboxIntervalMs || input.human_gate_inbox_interval_ms || 30 * 60_000)))).toISOString();
-    const recent = await sqlite(paths.dbFile, `SELECT batch_id FROM human_gate_batches WHERE created_at >= ${sqlValue(recentCutoff)} LIMIT 1;`, { json: true });
-    const pending = await sqlite(paths.dbFile, `
-SELECT
-  (SELECT COUNT(*) FROM protocol_objects WHERE object_type='human_gate_record' AND status='pending') +
-  (SELECT COUNT(*) FROM review_gates WHERE status='pending' OR (human_gate_required=1 AND status NOT IN ('approved','rejected','waived','expired','cancelled','done'))) +
-  (SELECT COUNT(*) FROM workflow_tasks WHERE human_gate_required=1 AND status NOT IN ('done','failed','cancelled')) +
-  (SELECT COUNT(*) FROM telegram_outbox WHERE status IN ('queued','failed') AND message_type IN ('workflow_secretary_report','human_gate_report','human_gate_request')) AS count;`, { json: true });
-    if (!recent[0] && Number(pending[0]?.count || 0) > 0) {
-      seeded.push(await enqueueControlLoopJob(paths, {
-        jobType: "human_gate_inbox",
-        dedupeKey: "human_gate_inbox",
-        priority: "normal",
-        payload: { limit: input.humanGateInboxLimit || input.human_gate_inbox_limit || 100 }
-      }));
-    }
-  }
-
-  return seeded;
-}
-
-async function claimControlLoopJobs(paths, input = {}) {
-  const owner = String(input.claimOwner || input.claim_owner || input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}:${safeId("claim")}`).trim();
-  const limit = Math.max(1, Math.min(20, Number(input.jobLimit || input.job_limit || 4)));
-  const now = nowIso();
-  const rows = await sqlite(paths.dbFile, `
-SELECT *
-FROM control_loop_jobs
-WHERE (
-    status IN ('queued','retry_scheduled')
-    AND (next_run_at IS NULL OR next_run_at='' OR next_run_at <= ${sqlValue(now)})
-  )
-  OR (status='running' AND lease_until <= ${sqlValue(now)})
-ORDER BY
-  CASE priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
-  created_at
-LIMIT ${limit};`, { json: true });
-  const claimed = [];
-  for (const row of rows) {
-    const rowLeaseMs = controlLoopJobLeaseMs(input, row);
-    const rowLeaseUntil = new Date(Date.now() + rowLeaseMs).toISOString();
-    const changed = await sqliteChangeCount(paths.dbFile, `
-UPDATE control_loop_jobs
-SET status='running',
-    attempt=attempt+1,
-    lease_owner=${sqlValue(owner)},
-    lease_until=${sqlValue(rowLeaseUntil)},
-    updated_at=${sqlValue(now)}
-WHERE job_id=${sqlValue(row.job_id)}
-  AND (
-    status IN ('queued','retry_scheduled')
-    OR (status='running' AND lease_until <= ${sqlValue(now)})
-  );`);
-    if (changed !== 1) continue;
-    const latest = await sqlite(paths.dbFile, `SELECT * FROM control_loop_jobs WHERE job_id=${sqlValue(row.job_id)} AND status='running' AND lease_owner=${sqlValue(owner)} LIMIT 1;`, { json: true });
-    if (latest[0]) claimed.push(latest[0]);
-  }
-  return claimed;
-}
-
-async function completeControlLoopJob(paths, job, result = {}) {
-  const changed = await sqliteChangeCount(paths.dbFile, `
-UPDATE control_loop_jobs
-SET status='done',
-    result_json=${sqlValue(JSON.stringify(result))},
-    lease_owner='',
-    lease_until='',
-    completed_at=${sqlValue(nowIso())},
-    updated_at=${sqlValue(nowIso())}
-WHERE job_id=${sqlValue(job.job_id)}
-  AND status='running'
-  AND lease_owner=${sqlValue(job.lease_owner || "")}
-  AND lease_until=${sqlValue(job.lease_until || "")};`);
-  return changed === 1
-    ? { status: "done", completed: true }
-    : { status: "lease_lost", completed: false, reason: "control_loop_job_lease_owner_changed" };
-}
-
-async function failControlLoopJob(paths, job, error) {
-  const message = String(error?.message || error).slice(0, 1000);
-  const attempt = Number(job.attempt || 0);
-  const maxAttempts = Number(job.max_attempts || 20);
-  const retry = attempt < maxAttempts;
-  const delayMs = Math.min(5 * 60_000, 5_000 * Math.max(1, attempt));
-  const nextRunAt = retry ? new Date(Date.now() + delayMs).toISOString() : "";
-  const changed = await sqliteChangeCount(paths.dbFile, `
-UPDATE control_loop_jobs
-SET status=${sqlValue(retry ? "retry_scheduled" : "failed")},
-    last_error=${sqlValue(message)},
-    next_run_at=${sqlValue(nextRunAt)},
-    lease_owner='',
-    lease_until='',
-    updated_at=${sqlValue(nowIso())}
-WHERE job_id=${sqlValue(job.job_id)}
-  AND status='running'
-  AND lease_owner=${sqlValue(job.lease_owner || "")}
-  AND lease_until=${sqlValue(job.lease_until || "")};`);
-  if (changed !== 1) return { status: "lease_lost", error: message, nextRunAt: "", reason: "control_loop_job_lease_owner_changed" };
-  return { status: retry ? "retry_scheduled" : "failed", error: message, nextRunAt };
-}
-
-async function runControlLoopJob(rootDir, paths, job, input = {}) {
-  const payload = parseJsonValue(job.payload_json, {});
-  if (job.job_type === "workflow_supervise") {
-    const workflowId = job.workflow_id || payload.workflowId || payload.workflow_id;
-    const supervised = await workflowSupervisor(rootDir, {
-      ...input,
-      ...payload,
-      workflowRootDir: paths.root,
-      workflowId,
-      meetingId: payload.meetingId || payload.meeting_id || workflowId,
-      drain: false,
-      checkpoint: false,
-      dryRun: false
-    });
-    const enqueuedDrains = [];
-    for (const dispatch of supervised.dispatched || []) {
-      const runtime = normalizeRuntime(dispatch.runtime || "");
-      const dispatchId = String(dispatch.dispatchId || dispatch.dispatch_id || "").trim();
-      if (!dispatchId || !RUNTIMES.has(runtime)) continue;
-      const dispatchRows = await sqlite(paths.dbFile, `
-SELECT dispatch_type
-FROM mixed_meeting_dispatches
-WHERE dispatch_id=${sqlValue(dispatchId)}
-LIMIT 1;`, { json: true });
-      const dispatchType = dispatch.dispatchType || dispatch.dispatch_type || dispatchRows[0]?.dispatch_type || "";
-      enqueuedDrains.push(await enqueueControlLoopJob(paths, {
-        jobType: "runtime_drain",
-        dedupeKey: `runtime_drain:${runtime}:${dispatchId}`,
-        priority: dispatch.priority || "high",
-        runtime,
-        workflowId,
-        payload: {
-          runtime,
-          dispatchId,
-          limit: 1,
-          timeoutSeconds: controlLoopRuntimeDrainTimeoutSeconds(dispatchType, runtime, { ...input, ...payload })
-        }
-      }));
-    }
-    return {
-      workflowId,
-      decision: supervised.finalAdvance?.decision || "",
-      dispatched: supervised.dispatched?.length || 0,
-      enqueuedDrains,
-      catClawReportDispatchId: supervised.catClawReport?.dispatchId || ""
-    };
-  }
-  if (job.job_type === "scheduled_dispatch") {
-    return runScheduledDispatchJob(rootDir, paths, job, input);
-  }
-  if (job.job_type === "runtime_drain") {
-    const limit = boundedNumber([payload.limit, payload.runtimeLimit, payload.runtime_limit, input.runtimeLimit, input.runtime_limit, input.limit], 1, 1, 20);
-    return runtimeBridgeDrain(rootDir, {
-      ...input,
-      workflowRootDir: paths.root,
-      runtime: payload.runtime || job.runtime,
-      dispatchId: payload.dispatchId || payload.dispatch_id || input.dispatchId || input.dispatch_id || "",
-      excludeDispatchTypes: payload.excludeDispatchTypes || payload.exclude_dispatch_types || input.excludeDispatchTypes || input.exclude_dispatch_types,
-      limit,
-      timeoutSeconds: payload.timeoutSeconds || payload.timeout_seconds || input.timeoutSeconds || input.timeout_seconds || 45,
-      dryRun: false
-    });
-  }
-  if (job.job_type === "stale_dispatch_reconcile") {
-    return staleDispatchReconcile(rootDir, {
-      ...input,
-      workflowRootDir: paths.root,
-      limit: payload.limit || input.dispatchReconcileLimit || input.dispatch_reconcile_limit || 20,
-      staleDispatchAfterMs: payload.staleDispatchAfterMs || payload.stale_dispatch_after_ms || input.staleDispatchAfterMs || input.stale_dispatch_after_ms
-    });
-  }
-  if (job.job_type === "message_flow_reconcile") {
-    return messageFlowReconcile(rootDir, {
-      ...input,
-      workflowRootDir: paths.root,
-      limit: payload.limit || input.messageFlowReconcileLimit || input.message_flow_reconcile_limit || 20,
-      messageFlowStuckAfterMs: payload.messageFlowStuckAfterMs || payload.message_flow_stuck_after_ms || input.messageFlowStuckAfterMs || input.message_flow_stuck_after_ms
-    });
-  }
-  if (job.job_type === "meeting_dispatch_retry") {
-    const dispatchInput = parseJsonValue(payload.dispatchInput, payload.dispatchInput || {});
-    if (!dispatchInput || typeof dispatchInput !== "object" || Array.isArray(dispatchInput)) {
-      throw new Error("meeting_dispatch_retry payload.dispatchInput is required");
-    }
-    return meetingDispatch(rootDir, {
-      ...dispatchInput,
-      workflowRootDir: paths.root
-    });
-  }
-  if (job.job_type === "human_gate_request_ensure") {
-    return ensurePendingHumanGateRequests(rootDir, paths, { ...input, ...payload });
-  }
-  if (job.job_type === "telegram_outbox_deliver") {
-    return telegramOutbox(rootDir, {
-      ...input,
-      workflowRootDir: paths.root,
-      operation: "deliver",
-      status: "queued",
-      limit: payload.limit || input.outboxLimit || input.outbox_limit || 5,
-      account: input.account
-    });
-  }
-  if (job.job_type === "human_gate_inbox") {
-    return humanGateInbox(rootDir, {
-      ...input,
-      ...payload,
-      workflowRootDir: paths.root,
-      target: input.target || DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
-      from: input.from || "cat_claw"
-    });
-  }
-  throw new Error(`unknown control loop job type: ${job.job_type}`);
-}
-
-export async function workflowControlLoopTick(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const tickId = input.tickId || input.tick_id || safeId("workflow_tick");
-  const startedAt = nowIso();
-  const lease = await acquireControlLoopLease(paths, input);
-  if (!lease.acquired) {
-    return { tickId, status: "skipped_lease_held", startedAt, lease, dbFile: paths.dbFile };
-  }
-
-  const result = {
-    tickId,
-    status: "running",
-    startedAt,
-    lease,
-    readinessBefore: null,
-    readinessAfter: null,
-    seededJobs: [],
-    claimedJobs: [],
-    jobResults: [],
-    dbFile: paths.dbFile
-  };
-
-  try {
-    const tickBudgetMs = controlLoopTickBudgetMs(input);
-    const timeoutSeconds = controlLoopTimeoutSeconds(input);
-    const jobLeaseMs = controlLoopJobLeaseMs(input);
-    const claimOwner = `${input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}`}:${tickId}`;
-    const dryRun = boolOption(input.dryRun ?? input.dry_run, false);
-    const jobLimit = Math.max(1, Math.min(20, Number(input.jobLimit || input.job_limit || input.maxJobs || input.max_jobs || 4)));
-    const startedAtMs = Date.now();
-    const withinBudget = () => Date.now() - startedAtMs < tickBudgetMs;
-
-    await appendControlLoopEvent(paths, tickId, "started", { lease, tickBudgetMs, timeoutSeconds, jobLeaseMs, jobLimit, dryRun });
-    await appendControlLoopEvent(paths, tickId, "readiness_before_started");
-    result.readinessBefore = await workflowReadinessSnapshot(paths, { ...input, activeChecks: false });
-    await appendControlLoopEvent(paths, tickId, "readiness_before_completed", { status: result.readinessBefore?.status || "" });
-
-    if (!dryRun) {
-      await appendControlLoopEvent(paths, tickId, "job_seed_started");
-      result.seededJobs = await seedControlLoopJobs(paths, input);
-      await appendControlLoopEvent(paths, tickId, "job_seed_completed", { count: result.seededJobs.length });
-
-      for (let index = 0; index < jobLimit && withinBudget(); index += 1) {
-        const [job] = await claimControlLoopJobs(paths, { ...input, claimOwner, jobLimit: 1, jobLeaseMs, tickBudgetMs, timeoutSeconds });
-        if (!job) break;
-        const jobSummary = {
-          jobId: job.job_id,
-          jobType: job.job_type,
-          dedupeKey: job.dedupe_key,
-          priority: job.priority,
-          workflowId: job.workflow_id || "",
-          runtime: job.runtime || "",
-          attempt: job.attempt,
-          leaseUntil: job.lease_until || ""
-        };
-        result.claimedJobs.push(jobSummary);
-        await appendControlLoopEvent(paths, tickId, "job_started", jobSummary);
-        try {
-          const jobResult = await runControlLoopJob(rootDir, paths, job, input);
-          const completed = await completeControlLoopJob(paths, job, jobResult);
-          result.jobResults.push({ ...jobSummary, status: completed.status, result: jobResult, reason: completed.reason || "" });
-          await appendControlLoopEvent(paths, tickId, completed.completed ? "job_completed" : "job_completion_skipped", { ...jobSummary, ...completed });
-        } catch (error) {
-          const failed = await failControlLoopJob(paths, job, error);
-          result.jobResults.push({ ...jobSummary, ...failed });
-          await appendControlLoopEvent(paths, tickId, failed.status === "lease_lost" ? "job_failure_skipped" : "job_failed", { ...jobSummary, ...failed });
-        }
-      }
-    } else {
-      result.seededJobs = [];
-      result.jobResults.push({ status: "dry_run", summary: "control loop queue was not mutated" });
-    }
-
-    await appendControlLoopEvent(paths, tickId, "readiness_after_started");
-    result.readinessAfter = await workflowReadinessSnapshot(paths, { ...input, activeChecks: false });
-    await appendControlLoopEvent(paths, tickId, "readiness_after_completed", { status: result.readinessAfter?.status || "" });
-    if (!dryRun) {
-      try {
-        result.retention = await maybeRunWorkflowRetention(paths, input);
-        await appendControlLoopEvent(paths, tickId, "retention_completed", {
-          status: result.retention?.status || "",
-          cutoffIso: result.retention?.cutoffIso || "",
-          backupRemovedCount: result.retention?.backups?.removedCount || 0,
-          database: result.retention?.database || {}
-        });
-      } catch (error) {
-        result.retention = { status: "failed", error: String(error?.message || error).slice(0, 1000) };
-        await appendControlLoopEvent(paths, tickId, "retention_failed", { error: result.retention.error });
-      }
-    }
-    result.status = "ok";
-    result.completedAt = nowIso();
-    await appendJsonl(path.join(paths.bridgeDir, "control-loop.jsonl"), result);
-    await appendControlLoopEvent(paths, tickId, "completed", { status: result.status });
-    return result;
-  } catch (error) {
-    result.status = "failed";
-    result.error = String(error?.message || error).slice(0, 2000);
-    result.completedAt = nowIso();
-    await appendJsonl(path.join(paths.bridgeDir, "control-loop.jsonl"), result);
-    await appendControlLoopEvent(paths, tickId, "failed", { error: result.error });
-    return result;
-  } finally {
-    await releaseControlLoopLease(paths, lease, result);
-  }
 }
 
 export const INCIDENT_ACTION_HANDLERS = createIncidentActionHandlers({
@@ -17971,6 +17350,43 @@ export const {
   humanGateInbox
 } = HUMAN_GATE_ACTION_HANDLERS;
 
+export const CONTROL_LOOP_TICK_ACTION_HANDLERS = createControlLoopTickActionHandlers({
+  acquireControlLoopLease,
+  appendJsonl,
+  ensurePendingHumanGateRequests,
+  ensureWorkflowLayout,
+  enqueueControlLoopJob,
+  humanGateInbox,
+  maybeRunWorkflowRetention,
+  meetingDispatch,
+  messageFlowReconcile,
+  normalizeAgentId,
+  normalizeKnownRuntime,
+  normalizeRuntime,
+  nowIso,
+  releaseControlLoopLease,
+  runScheduledDispatchJob,
+  runtimeBridgeDrain,
+  seedDueScheduleJobs,
+  staleDispatchReconcile,
+  telegramOutbox,
+  workflowReadinessSnapshot,
+  workflowSupervisor,
+  CONTROL_LOOP_ACTIVE_JOB_STATUSES,
+  CONTROL_LOOP_WORKFLOW_STATUSES,
+  DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
+  MESSAGE_FLOW_DELIVERY_RETURN_POLICIES,
+  RUNTIMES,
+  TELEGRAM_OUTBOX_DELIVERY_LEASE_MS,
+  WORKFLOW_RUN_STATUSES
+});
+
+export const CONTROL_LOOP_TICK_ACTION_REGISTRY = createControlLoopTickActionRegistry(CONTROL_LOOP_TICK_ACTION_HANDLERS);
+
+export const {
+  workflowControlLoopTick
+} = CONTROL_LOOP_TICK_ACTION_HANDLERS;
+
 export const PROTOCOL_ACTION_HANDLERS = createProtocolActionHandlers({
   ensureWorkflowLayout,
   jsonHash,
@@ -18157,6 +17573,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (workflowAdvanceResult.handled) return workflowAdvanceResult.value;
   const workflowSupervisorResult = await runWorkflowSupervisorAction(WORKFLOW_SUPERVISOR_ACTION_REGISTRY, action, rootDir, input);
   if (workflowSupervisorResult.handled) return workflowSupervisorResult.value;
+  const controlLoopTickResult = await runControlLoopTickAction(CONTROL_LOOP_TICK_ACTION_REGISTRY, action, rootDir, input);
+  if (controlLoopTickResult.handled) return controlLoopTickResult.value;
   switch (action) {
     case "workflow.incident.from_dead_letter.preview":
       return workflowIncidentFromDeadLetterPreview(rootDir, input);
@@ -18173,10 +17591,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
       return workflowIncidentCloseoutArtifactPreview(rootDir, input);
     case "workflow.incident.closeout.human_gate_request.preview":
       return workflowIncidentCloseoutHumanGateRequestPreview(rootDir, input);
-    case "workflow.control_loop.tick":
-    case "workflow.loop.tick":
-    case "workflow.reconciler.tick":
-      return workflowControlLoopTick(rootDir, input);
     case "runtime.bridge":
     case "runtime.bridge.drain":
       return runtimeBridgeDrain(rootDir, input);
