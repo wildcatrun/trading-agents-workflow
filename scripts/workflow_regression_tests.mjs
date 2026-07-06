@@ -23,6 +23,7 @@ import {
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
   INTERVENTION_ACTION_REGISTRY,
+  MEETING_PARTICIPANT_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
   PERMISSION_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
@@ -69,6 +70,7 @@ import {
   workflowInit,
   workflowInterventionExecute,
   workflowInterventionPreview,
+  meetingRuntimeParticipant,
   workflowPermissionCheck,
   workflowReadiness,
   runtimeAgentUpsert,
@@ -122,6 +124,10 @@ import {
   INTERVENTION_ACTION_HANDLER_NAMES,
   createInterventionActionRegistry
 } from "../src/intervention-actions.js";
+import {
+  MEETING_PARTICIPANT_ACTION_HANDLER_NAMES,
+  createMeetingParticipantActionRegistry
+} from "../src/meeting-participant-actions.js";
 import {
   PERMISSION_ACTION_HANDLER_NAMES,
   createPermissionActionRegistry
@@ -10168,6 +10174,82 @@ async function testRuntimeAgentExtractedActionContracts() {
   assert.equal(sqliteCount(catClaw.dbFile, "runtime_agents", "agent_key IN ('hermers:cat_body','openclaw:main','openclaw:cat_claw')"), 3);
 }
 
+async function testMeetingParticipantExtractedActionContracts() {
+  const expectedHandlers = {
+    "meeting.runtime_participant": "meetingRuntimeParticipant",
+    "runtime.participant": "meetingRuntimeParticipant"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(MEETING_PARTICIPANT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted meeting participant registry`);
+    assert.equal(MEETING_PARTICIPANT_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof meetingRuntimeParticipant, "function");
+  const directRegistry = createMeetingParticipantActionRegistry({ meetingRuntimeParticipant });
+  assert.equal(directRegistry.get("meeting.runtime_participant"), meetingRuntimeParticipant);
+  assert.equal(directRegistry.get("runtime.participant"), meetingRuntimeParticipant);
+
+  const root = await tempRoot("meeting-participant-extracted-contracts");
+  await runtimeAgentUpsert(root, {
+    runtime: "hermers",
+    agentId: "cat_body",
+    displayName: "Cat Body",
+    role: "developer",
+    endpointRef: "hermers-profile:catbody"
+  });
+  const direct = await meetingRuntimeParticipant(root, {
+    meetingId: "meeting-participant-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    participantRole: "developer",
+    chair: true,
+    metadata: { source: "direct_export" }
+  });
+  assert.equal(direct.meetingId, "meeting-participant-contract");
+  assert.equal(direct.agentKey, "hermers:cat_body");
+  assert.equal(direct.participantRole, "developer");
+  assert.equal(await pathExists(path.join(root, "bridge", "participants.jsonl")), true);
+
+  const dbFile = direct.dbFile;
+  const runtimeAgentCountBeforeAlias = sqliteCount(dbFile, "runtime_agents");
+  const alias = await runAction(root, {
+    action: "runtime.participant",
+    meetingId: "meeting-participant-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    participantRole: "reviewer",
+    liveMode: "transparent",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex"
+  });
+  assert.equal(alias.participantRole, "reviewer");
+  assert.equal(sqliteCount(dbFile, "runtime_agents"), runtimeAgentCountBeforeAlias);
+  const participantEvents = (await fs.readFile(path.join(root, "bridge", "participants.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    participantEvents.map((event) => event.participantRole),
+    ["developer", "reviewer"]
+  );
+  assert.equal(participantEvents[1].agentKey, "hermers:cat_body");
+  const participantRow = sqliteJson(dbFile, `
+SELECT participant_role AS participantRole, chair, live_mode AS liveMode, status
+FROM mixed_meeting_participants
+WHERE meeting_id='meeting-participant-contract' AND agent_key='hermers:cat_body'
+LIMIT 1;`)[0];
+  assert.deepEqual(participantRow, { participantRole: "reviewer", chair: 0, liveMode: "transparent", status: "active" });
+
+  await assert.rejects(
+    () => meetingRuntimeParticipant(root, {
+      meetingId: "meeting-participant-contract",
+      runtime: "hermers",
+      agentId: "cat_nose"
+    }),
+    /meeting runtime participant requires pre-registered active runtime agent: hermers:cat_nose/
+  );
+}
+
 async function testTopologyExtractedActionContracts() {
   const expectedHandlers = {
     "workflow.topology": "workflowTopology",
@@ -17355,6 +17437,7 @@ try {
     ["research extracted action contracts", testResearchExtractedActionContracts],
     ["cat_claw extracted action contracts", testCatClawExtractedActionContracts],
     ["runtime agent extracted action contracts", testRuntimeAgentExtractedActionContracts],
+    ["meeting participant extracted action contracts", testMeetingParticipantExtractedActionContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],
     ["permission extracted action contracts", testPermissionExtractedActionContracts],

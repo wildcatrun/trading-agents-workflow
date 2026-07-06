@@ -147,6 +147,11 @@ import {
   runRuntimeAgentAction
 } from "./runtime-agent-actions.js";
 import {
+  createMeetingParticipantActionHandlers,
+  createMeetingParticipantActionRegistry,
+  runMeetingParticipantAction
+} from "./meeting-participant-actions.js";
+import {
   createScheduleActionHandlers,
   createScheduleActionRegistry,
   runScheduleAction
@@ -14554,34 +14559,6 @@ async function workflowIncidentCloseoutHumanGateRequest(rootDir, input = {}, per
   };
 }
 
-export async function meetingRuntimeParticipant(rootDir, input) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
-  const runtime = normalizeRuntime(input.runtime || input.runtimeKey || input.runtime_key || input.platform);
-  const agentId = normalizeAgentId(input.agentId || input.agent_id);
-  const row = await findActiveRuntimeAgent(paths, runtime, agentId);
-  if (!row) {
-    throw new Error(`meeting runtime participant requires pre-registered active runtime agent: ${runtime}:${agentId}`);
-  }
-  const agent = { agentKey: row.agent_key, runtime: row.runtime, agentId: row.agent_id };
-  const createdAt = nowIso();
-  const participantRole = String(input.participantRole || input.participant_role || input.role || "participant").trim();
-  await sqlite(paths.dbFile, `
-INSERT INTO mixed_meeting_participants(meeting_id, agent_key, runtime, agent_id, participant_role, chair, decider, secretary, live_mode, status, metadata_json, created_at, updated_at)
-VALUES (${sqlValue(meetingId)}, ${sqlValue(agent.agentKey)}, ${sqlValue(agent.runtime)}, ${sqlValue(agent.agentId)}, ${sqlValue(participantRole)}, ${sqlValue(Boolean(input.chair))}, ${sqlValue(Boolean(input.decider))}, ${sqlValue(Boolean(input.secretary))}, ${sqlValue(input.liveMode || input.live_mode || "transparent")}, ${sqlValue(input.status || "active")}, ${sqlValue(JSON.stringify(parseJsonValue(input.metadata, input.metadata || {})))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
-ON CONFLICT(meeting_id, agent_key) DO UPDATE SET
-  participant_role=excluded.participant_role,
-  chair=excluded.chair,
-  decider=excluded.decider,
-  secretary=excluded.secretary,
-  live_mode=excluded.live_mode,
-  status=excluded.status,
-  metadata_json=excluded.metadata_json,
-  updated_at=excluded.updated_at;`);
-  await appendJsonl(path.join(paths.bridgeDir, "participants.jsonl"), { meetingId, ...agent, participantRole, updatedAt: createdAt });
-  return { meetingId, ...agent, participantRole, dbFile: paths.dbFile };
-}
-
 async function telegramLinkFor(paths, meetingId) {
   const rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_live_links WHERE meeting_id=${sqlValue(meetingId)} AND status='active' LIMIT 1;`, { json: true });
   return rows[0] || null;
@@ -20291,6 +20268,22 @@ export const {
   runtimeAgentUpsert
 } = RUNTIME_AGENT_ACTION_HANDLERS;
 
+export const MEETING_PARTICIPANT_ACTION_HANDLERS = createMeetingParticipantActionHandlers({
+  appendJsonl,
+  ensureWorkflowLayout,
+  findActiveRuntimeAgent,
+  normalizeAgentId,
+  normalizeMeetingRef,
+  normalizeRuntime,
+  nowIso
+});
+
+export const MEETING_PARTICIPANT_ACTION_REGISTRY = createMeetingParticipantActionRegistry(MEETING_PARTICIPANT_ACTION_HANDLERS);
+
+export const {
+  meetingRuntimeParticipant
+} = MEETING_PARTICIPANT_ACTION_HANDLERS;
+
 export const RESEARCH_ACTION_HANDLERS = createResearchActionHandlers({
   clampScore,
   cleanFileSegment,
@@ -20552,6 +20545,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (topologyResult.handled) return topologyResult.value;
   const runtimeAgentResult = await runRuntimeAgentAction(RUNTIME_AGENT_ACTION_REGISTRY, action, rootDir, input);
   if (runtimeAgentResult.handled) return runtimeAgentResult.value;
+  const meetingParticipantResult = await runMeetingParticipantAction(MEETING_PARTICIPANT_ACTION_REGISTRY, action, rootDir, input);
+  if (meetingParticipantResult.handled) return meetingParticipantResult.value;
   const statusResult = await runStatusAction(STATUS_ACTION_REGISTRY, action, rootDir, input);
   if (statusResult.handled) return statusResult.value;
   const permissionResult = await runPermissionAction(PERMISSION_ACTION_REGISTRY, action, rootDir, input);
@@ -20634,9 +20629,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "route-shell.ingest":
     case "route_shell.route":
       return routeShellIngest(rootDir, input);
-    case "meeting.runtime_participant":
-    case "runtime.participant":
-      return meetingRuntimeParticipant(rootDir, input);
     case "meeting.dispatch":
       return meetingDispatch(rootDir, input);
     case "meeting.ingest":
