@@ -62,6 +62,11 @@ import { createWorkflowV2PlanActionHandlers } from "./workflow-v2/plan-actions.j
 import { createWorkflowTemplateActionHandlers } from "./workflow-v2/template-actions.js";
 import { createWorkflowV2ValidateActionHandlers } from "./workflow-v2/validate-actions.js";
 import {
+  createWorkflowRunActionHandlers,
+  createWorkflowRunActionRegistry,
+  runWorkflowRunAction
+} from "./workflow-run-actions.js";
+import {
   createControlLoopJobActionHandlers,
   createControlLoopJobActionRegistry,
   runControlLoopJobAction
@@ -5671,50 +5676,6 @@ FROM incident_states;`, { json: true });
   };
 }
 
-export async function workflowRunUpsert(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const createdAt = nowIso();
-  const workflowId = String(input.workflowId || input.workflow_id || input.initiativeId || input.initiative_id || safeId("workflow")).trim();
-  const existingRows = await sqlite(paths.dbFile, `SELECT status FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
-  const previousStatus = existingRows[0]?.status || "";
-  const statusRaw = String(input.status || "active").trim();
-  const status = WORKFLOW_RUN_STATUSES.has(statusRaw) ? statusRaw : "active";
-  const workflowType = String(input.workflowType || input.workflow_type || input.type || "initiative").trim();
-  const payload = {
-    ...parseJsonValue(input.payload, input.payload || {}),
-    flashLane: boolOption(input.flashLane ?? input.flash_lane, false),
-    tradingExecution: boolOption(input.tradingExecution ?? input.trading_execution, false)
-  };
-  await sqlite(paths.dbFile, `
-INSERT INTO workflow_runs(workflow_id, workflow_type, status, instrument_id, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
-VALUES (${sqlValue(workflowId)}, ${sqlValue(workflowType)}, ${sqlValue(status)}, ${sqlValue(input.instrumentId || input.instrument_id || null)}, ${sqlValue(input.ownerAgent || input.owner_agent || "main")}, ${sqlValue(input.summary || input.text || "")}, ${sqlValue(input.objective || input.goal || "")}, ${sqlValue(input.acceptanceCriteria || input.acceptance_criteria || "")}, ${sqlValue(input.stopCondition || input.stop_condition || "")}, ${sqlValue(input.phase || input.currentPhase || input.current_phase || "")}, ${sqlValue(input.currentDecision || input.current_decision || "")}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
-ON CONFLICT(workflow_id) DO UPDATE SET
-  workflow_type=excluded.workflow_type,
-  status=excluded.status,
-  instrument_id=COALESCE(excluded.instrument_id, workflow_runs.instrument_id),
-  owner_agent=excluded.owner_agent,
-  summary=CASE WHEN excluded.summary != '' THEN excluded.summary ELSE workflow_runs.summary END,
-  objective=CASE WHEN excluded.objective != '' THEN excluded.objective ELSE workflow_runs.objective END,
-  acceptance_criteria=CASE WHEN excluded.acceptance_criteria != '' THEN excluded.acceptance_criteria ELSE workflow_runs.acceptance_criteria END,
-  stop_condition=CASE WHEN excluded.stop_condition != '' THEN excluded.stop_condition ELSE workflow_runs.stop_condition END,
-  current_phase=CASE WHEN excluded.current_phase != '' THEN excluded.current_phase ELSE workflow_runs.current_phase END,
-  current_decision=CASE WHEN excluded.current_decision != '' THEN excluded.current_decision ELSE workflow_runs.current_decision END,
-  payload_json=excluded.payload_json,
-  updated_at=excluded.updated_at;`);
-  await appendWorkflowEvent(paths, {
-    eventType: previousStatus ? "workflow.updated" : "workflow.created",
-    workflowId,
-    actor: input.createdBy || input.created_by || input.from || input.ownerAgent || input.owner_agent || "main",
-    previousState: previousStatus,
-    nextState: status,
-    sourceRuntime: "workflow",
-    sourceAgent: input.ownerAgent || input.owner_agent || "main",
-    payload: { workflowType, summary: input.summary || input.text || "", phase: input.phase || input.currentPhase || input.current_phase || "" },
-    createdAt
-  });
-  return { workflowId, status, workflowType, dbFile: paths.dbFile };
-}
-
 export async function workflowTaskCreate(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const createdAt = nowIso();
@@ -7940,6 +7901,19 @@ export const {
   workflowControlLoopJobRequeuePreview,
   workflowControlLoopJobRequeue
 } = CONTROL_LOOP_JOB_ACTION_HANDLERS;
+
+export const WORKFLOW_RUN_ACTION_HANDLERS = createWorkflowRunActionHandlers({
+  appendWorkflowEvent,
+  ensureWorkflowLayout,
+  nowIso,
+  WORKFLOW_RUN_STATUSES
+});
+
+export const WORKFLOW_RUN_ACTION_REGISTRY = createWorkflowRunActionRegistry(WORKFLOW_RUN_ACTION_HANDLERS);
+
+export const {
+  workflowRunUpsert
+} = WORKFLOW_RUN_ACTION_HANDLERS;
 
 export const VERIFICATION_ACTION_HANDLERS = createVerificationActionHandlers({
   ensureWorkflowLayout,
@@ -20707,10 +20681,9 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (controlLoopJobResult.handled) return controlLoopJobResult.value;
   const verificationResult = await runVerificationAction(VERIFICATION_ACTION_REGISTRY, action, rootDir, input, permissionDecision);
   if (verificationResult.handled) return verificationResult.value;
+  const workflowRunResult = await runWorkflowRunAction(WORKFLOW_RUN_ACTION_REGISTRY, action, rootDir, input, permissionDecision);
+  if (workflowRunResult.handled) return workflowRunResult.value;
   switch (action) {
-    case "workflow.run.upsert":
-    case "workflow.initiative.upsert":
-      return workflowRunUpsert(rootDir, input);
     case "workflow.swarm.plan":
     case "workflow.swarm":
       return workflowSwarmPlan(rootDir, input);

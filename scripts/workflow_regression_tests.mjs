@@ -37,6 +37,7 @@ import {
   TOPOLOGY_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
   VERIFICATION_ACTION_REGISTRY,
+  WORKFLOW_RUN_ACTION_REGISTRY,
   cat_clawAudit,
   humanGateInbox,
   incidentState,
@@ -86,6 +87,7 @@ import {
   workflowStatus,
   workflowTopology,
   workflowEvaluate,
+  workflowRunUpsert,
   workflowVerificationList,
   workflowVerificationRecord,
   tradeProposal
@@ -166,6 +168,10 @@ import {
   VERIFICATION_ACTION_HANDLER_NAMES,
   createVerificationActionRegistry
 } from "../src/verification-actions.js";
+import {
+  WORKFLOW_RUN_ACTION_HANDLER_NAMES,
+  createWorkflowRunActionRegistry
+} from "../src/workflow-run-actions.js";
 
 const createdRoots = [];
 const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
@@ -2578,6 +2584,74 @@ VALUES ('legacy-op-1', 'workflow.supervise.preview', 'completed');`);
   const partialRows = sqliteJson(partialDbFile, `SELECT workflow_id AS workflowId, reason FROM workflow_operations WHERE operation_id = '${partialPreview.operationId}';`);
   assert.equal(partialRows[0].workflowId, "wf-console-operations-partial");
   assert.equal(partialRows[0].reason.includes("abc"), false);
+}
+
+async function testWorkflowRunExtractedActionContracts() {
+  const expected = {
+    "workflow.run.upsert": "workflowRunUpsert",
+    "workflow.initiative.upsert": "workflowRunUpsert"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(WORKFLOW_RUN_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted workflow run registry`);
+    assert.equal(WORKFLOW_RUN_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowRunUpsert, "function");
+  const directRegistry = createWorkflowRunActionRegistry({ workflowRunUpsert });
+  assert.equal(directRegistry.get("workflow.run.upsert"), workflowRunUpsert);
+  assert.equal(directRegistry.get("workflow.initiative.upsert"), workflowRunUpsert);
+
+  const root = await tempRoot("workflow-run-extracted-contracts");
+  const workflowId = "wf-run-contract";
+  const direct = await workflowRunUpsert(root, {
+    workflowId,
+    workflowType: "initiative",
+    status: "not-a-real-status",
+    ownerAgent: "main",
+    summary: "Initial workflow run contract",
+    objective: "Keep run upsert extracted behavior stable.",
+    flashLane: true,
+    payload: { note: "initial" }
+  });
+  assert.equal(direct.workflowId, workflowId);
+  assert.equal(direct.status, "active");
+  assert.equal(direct.workflowType, "initiative");
+
+  const aliasUpdate = await runAction(root, {
+    action: "workflow.initiative.upsert",
+    workflowId,
+    status: "blocked",
+    ownerAgent: "cat_claw",
+    summary: "Updated workflow run contract",
+    currentPhase: "blocked_review",
+    tradingExecution: true,
+    payload: { note: "updated" }
+  });
+  assert.equal(aliasUpdate.status, "blocked");
+  const dbFile = path.join(root, "tracking.db");
+  const row = sqliteJson(dbFile, `
+SELECT workflow_type AS workflowType, status, owner_agent AS ownerAgent, summary, current_phase AS currentPhase, payload_json AS payloadJson
+FROM workflow_runs
+WHERE workflow_id='${workflowId}'
+LIMIT 1;`)[0];
+  assert.equal(row.workflowType, "initiative");
+  assert.equal(row.status, "blocked");
+  assert.equal(row.ownerAgent, "cat_claw");
+  assert.equal(row.summary, "Updated workflow run contract");
+  assert.equal(row.currentPhase, "blocked_review");
+  assert.equal(JSON.parse(row.payloadJson).tradingExecution, true);
+
+  const events = sqliteJson(dbFile, `
+SELECT event_type AS eventType, previous_state AS previousState, next_state AS nextState
+FROM workflow_events
+WHERE workflow_id='${workflowId}'
+ORDER BY created_at ASC;`);
+  assert.equal(events.length, 2);
+  assert.equal(events[0].eventType, "workflow.created");
+  assert.equal(events[0].previousState, "");
+  assert.equal(events[0].nextState, "active");
+  assert.equal(events[1].eventType, "workflow.updated");
+  assert.equal(events[1].previousState, "active");
+  assert.equal(events[1].nextState, "blocked");
 }
 
 async function testWorkflowInterventionPreviews() {
@@ -17168,6 +17242,7 @@ try {
     ["human_gate readiness checklist", testHumanGateReadinessChecklist],
     ["human_gate readiness legacy schema fallback", testHumanGateReadinessLegacySchemaFallback],
     ["workflow operations console audit", testWorkflowOperationsConsoleAudit],
+    ["workflow run extracted action contracts", testWorkflowRunExtractedActionContracts],
     ["workflow intervention previews", testWorkflowInterventionPreviews],
     ["intervention extracted action contracts", testInterventionExtractedActionContracts],
     ["workflow v2 adapter job manifest", testWorkflowV2AdapterJobManifest],
