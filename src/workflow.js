@@ -67,6 +67,11 @@ import {
   runCatClawAction
 } from "./cat-claw-actions.js";
 import {
+  createCheckpointActionHandlers,
+  createCheckpointActionRegistry,
+  runCheckpointAction
+} from "./checkpoint-actions.js";
+import {
   createEventActionHandlers,
   createEventActionRegistry,
   runEventAction
@@ -8091,8 +8096,7 @@ ${record.nextActions.length ? record.nextActions.map(actionLine).join("\n") : "-
 `;
 }
 
-export async function workflowCheckpoint(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function workflowCheckpointCore(paths, input = {}) {
   const workflowId = String(input.workflowId || input.workflow_id || "").trim();
   if (!workflowId) throw new Error("workflowId is required");
   const createdAt = nowIso();
@@ -8212,6 +8216,17 @@ ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summ
     dbFile: paths.dbFile
   };
 }
+
+export const CHECKPOINT_ACTION_HANDLERS = createCheckpointActionHandlers({
+  ensureWorkflowLayout,
+  workflowCheckpointCore
+});
+
+export const CHECKPOINT_ACTION_REGISTRY = createCheckpointActionRegistry(CHECKPOINT_ACTION_HANDLERS);
+
+export const {
+  workflowCheckpoint
+} = CHECKPOINT_ACTION_HANDLERS;
 
 function sessionJsonObject(value, fallback = {}) {
   const parsed = parseJsonValue(value, value === undefined ? fallback : value);
@@ -21481,6 +21496,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (runtimeEventResult.handled) return runtimeEventResult.value;
   const sessionResult = await runSessionAction(SESSION_ACTION_REGISTRY, action, rootDir, input);
   if (sessionResult.handled) return sessionResult.value;
+  const checkpointResult = await runCheckpointAction(CHECKPOINT_ACTION_REGISTRY, action, rootDir, input);
+  if (checkpointResult.handled) return checkpointResult.value;
   switch (action) {
     case "workflow.run.upsert":
     case "workflow.initiative.upsert":
@@ -21566,10 +21583,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.loop.tick":
     case "workflow.reconciler.tick":
       return workflowControlLoopTick(rootDir, input);
-    case "workflow.checkpoint":
-    case "workflow.context_checkpoint":
-    case "context.checkpoint":
-      return workflowCheckpoint(rootDir, input);
     case "workflow.verification.record":
     case "workflow.verifier_refuter.record":
     case "workflow.verifier-refuter.record":

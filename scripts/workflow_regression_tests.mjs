@@ -17,6 +17,7 @@ import {
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
+  CHECKPOINT_ACTION_REGISTRY,
   EVENT_ACTION_REGISTRY,
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
@@ -55,6 +56,7 @@ import {
   workflowEventList,
   workflowEventTimeline,
   workflowHealth,
+  workflowCheckpoint,
   workflowInit,
   workflowPermissionCheck,
   workflowReadiness,
@@ -80,6 +82,10 @@ import {
   CAT_CLAW_ACTION_HANDLER_NAMES,
   createCatClawActionRegistry
 } from "../src/cat-claw-actions.js";
+import {
+  CHECKPOINT_ACTION_HANDLER_NAMES,
+  createCheckpointActionRegistry
+} from "../src/checkpoint-actions.js";
 import {
   EVENT_ACTION_HANDLER_NAMES,
   createEventActionRegistry
@@ -10222,6 +10228,162 @@ async function testSessionExtractedActionContracts() {
   assert.equal(sqliteCount(pack.dbFile, "workflow_agent_runs", "agent_run_id='session.session-extracted-run' AND dispatch_id='dispatch-session-extracted' AND status='completed'"), 1);
 }
 
+async function testCheckpointExtractedActionContracts() {
+  const expectedHandlers = {
+    "workflow.checkpoint": "workflowCheckpoint",
+    "workflow.context_checkpoint": "workflowCheckpoint",
+    "context.checkpoint": "workflowCheckpoint"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(CHECKPOINT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted checkpoint registry`);
+    assert.equal(CHECKPOINT_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof workflowCheckpoint, "function");
+  const directRegistry = createCheckpointActionRegistry({ workflowCheckpoint });
+  assert.equal(directRegistry.get("workflow.context_checkpoint"), workflowCheckpoint);
+  assert.equal(directRegistry.get("context.checkpoint"), workflowCheckpoint);
+
+  const root = await tempRoot("checkpoint-extracted-contracts");
+  const workflowId = "workflow-checkpoint-extracted";
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId,
+    status: "active",
+    summary: "Checkpoint extracted action contract.",
+    objective: "Exercise extracted checkpoint action registry.",
+    acceptanceCriteria: "Checkpoint contains active tasks, blocked tasks, artifacts, and resume payload."
+  });
+  await runAction(root, {
+    action: "workflow.task.create",
+    workflowId,
+    taskId: "task-checkpoint-active",
+    phase: "execute",
+    status: "in_progress",
+    ownerAgent: "cat_body",
+    runtime: "hermers",
+    agentId: "cat_body",
+    actualArtifactRef: "artifact://task-checkpoint-active",
+    summary: "Active checkpoint task"
+  });
+  await runAction(root, {
+    action: "workflow.task.create",
+    workflowId,
+    taskId: "task-checkpoint-blocked",
+    phase: "execute",
+    status: "blocked",
+    ownerAgent: "cat_ears",
+    runtime: "hermers",
+    agentId: "cat_ears",
+    summary: "Blocked checkpoint task"
+  });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES ('artifact-checkpoint-evidence', '${workflowId}', 'evidence', 'artifact://checkpoint-evidence', 'Checkpoint evidence', 'local_codex', '2099-01-01T00:00:01.000Z');`);
+
+  const checkpoint = await runAction(root, {
+    action: "workflow.context_checkpoint",
+    workflowId,
+    checkpointId: "checkpoint-extracted",
+    summary: "Extracted checkpoint action contract.",
+    nextActions: ["continue_active_task", "resolve_blocked_task"],
+    tokenBudget: 2048,
+    compactAtPercent: 65,
+    restorePolicy: "load_checkpoint_only",
+    createdBy: "local_codex"
+  });
+  assert.equal(checkpoint.checkpointId, "checkpoint-extracted");
+  assert.equal(checkpoint.workflowId, workflowId);
+  assert.equal(checkpoint.status, "active");
+  assert.equal(checkpoint.resumePayload.counts.activeTasks, 1);
+  assert.equal(checkpoint.resumePayload.counts.blockedTasks, 1);
+  assert.equal(checkpoint.resumePayload.activeTaskIds.includes("task-checkpoint-active"), true);
+  assert.equal(checkpoint.resumePayload.blockedTaskIds.includes("task-checkpoint-blocked"), true);
+  assert.equal(checkpoint.resumePayload.artifactRefs.includes("artifact://checkpoint-evidence"), true);
+  assert.equal(checkpoint.resumePayload.artifactRefs.includes("artifact://task-checkpoint-active"), true);
+  assert.equal(checkpoint.relativePath.includes("checkpoint-extracted"), true);
+  assert.equal(checkpoint.jsonRelativePath.includes("checkpoint-extracted"), true);
+
+  const row = sqliteJson(dbFile, `
+SELECT active_tasks_json AS activeTasksJson, blocked_tasks_json AS blockedTasksJson,
+  artifact_refs_json AS artifactRefsJson, next_actions_json AS nextActionsJson,
+  context_budget_json AS contextBudgetJson, path, created_by AS createdBy
+FROM workflow_checkpoints
+WHERE checkpoint_id='checkpoint-extracted'
+LIMIT 1;`)[0];
+  assert.equal(Boolean(row), true);
+  assert.equal(row.createdBy, "local_codex");
+  assert.equal(row.path, checkpoint.relativePath);
+  assert.equal(JSON.parse(row.activeTasksJson).some((task) => task.task_id === "task-checkpoint-active"), true);
+  assert.equal(JSON.parse(row.blockedTasksJson).some((task) => task.task_id === "task-checkpoint-blocked"), true);
+  assert.equal(JSON.parse(row.artifactRefsJson).some((artifact) => artifact.path === "artifact://checkpoint-evidence"), true);
+  assert.deepEqual(JSON.parse(row.nextActionsJson), ["continue_active_task", "resolve_blocked_task"]);
+  assert.equal(JSON.parse(row.contextBudgetJson).tokenBudget, 2048);
+  assert.equal(JSON.parse(row.contextBudgetJson).compactAtPercent, 65);
+  assert.equal(JSON.parse(row.contextBudgetJson).restorePolicy, "load_checkpoint_only");
+  assert.equal(sqliteCount(dbFile, "artifact_index", "artifact_id='checkpoint-extracted' AND kind='workflow_checkpoint'"), 1);
+
+  const markdown = await fs.readFile(path.join(root, checkpoint.relativePath), "utf8");
+  const json = JSON.parse(await fs.readFile(path.join(root, checkpoint.jsonRelativePath), "utf8"));
+  assert.equal(markdown.includes("Extracted checkpoint action contract."), true);
+  assert.equal(json.activeTasks.some((task) => task.task_id === "task-checkpoint-active"), true);
+  assert.equal(json.blockedTasks.some((task) => task.task_id === "task-checkpoint-blocked"), true);
+
+  const coreAliasCheckpoint = await runAction(root, {
+    action: "context.checkpoint",
+    workflowId,
+    checkpointId: "checkpoint-extracted-core-alias",
+    summary: "Core alias checkpoint contract.",
+    nextActions: ["core_alias_checkpoint"],
+    createdBy: "local_codex"
+  });
+  assert.equal(coreAliasCheckpoint.checkpointId, "checkpoint-extracted-core-alias");
+  assert.equal(coreAliasCheckpoint.workflowId, workflowId);
+
+  const directExportCheckpoint = await workflowCheckpoint(root, {
+    workflowId,
+    checkpointId: "checkpoint-extracted-direct-export",
+    summary: "Direct export checkpoint contract.",
+    nextActions: ["direct_export_checkpoint"],
+    createdBy: "local_codex"
+  });
+  assert.equal(directExportCheckpoint.checkpointId, "checkpoint-extracted-direct-export");
+  assert.equal(directExportCheckpoint.workflowId, workflowId);
+
+  const supervised = await runAction(root, {
+    action: "workflow.supervise",
+    workflowId,
+    autoDispatch: false,
+    autoReport: false,
+    drain: false,
+    checkpoint: true,
+    summary: "Supervisor direct caller checkpoint contract.",
+    nextActions: ["supervisor_checkpoint"]
+  });
+  assert.equal(supervised.checkpoint.workflowId, workflowId);
+  assert.equal(supervised.checkpoint.resumePayload.nextActions.includes("supervisor_checkpoint"), true);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints", "checkpoint_id IN ('checkpoint-extracted', 'checkpoint-extracted-core-alias', 'checkpoint-extracted-direct-export')"), 3);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints", "summary='Supervisor direct caller checkpoint contract.'"), 1);
+
+  const archiveRequest = await requestHumanGate(root, {
+    workflowId,
+    meetingId: workflowId,
+    text: "猫爪正式汇报：checkpoint archive direct caller 回归测试，请选择方案或终止收口控制。",
+    buttons: planButtons()
+  });
+  const terminateButton = archiveRequest.buttons.find((button) => button.decisionStatus === "terminated" || button.buttonRole === "terminate");
+  assert.equal(Boolean(terminateButton?.callbackToken), true);
+  const archived = await runAction(root, {
+    action: "human_gate.resume",
+    token: terminateButton.callbackToken,
+    text: "闪电猫原话：确认该 checkpoint 抽取测试归档收口。"
+  });
+  assert.equal(archived.workflowDecision.archived, true);
+  assert.equal(archived.archiveCheckpoint.workflowId, workflowId);
+  assert.equal(archived.archiveCheckpoint.resumePayload.nextActions.includes("cat_brain main closes workflow state, confirms no pending unsafe side effects remain, and records resume boundary."), true);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints", "summary LIKE 'Flashcat selected Human Gate closeout button:%'"), 1);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -16678,6 +16840,7 @@ try {
     ["event extracted action contracts", testEventExtractedActionContracts],
     ["runtime event extracted action contracts", testRuntimeEventExtractedActionContracts],
     ["session extracted action contracts", testSessionExtractedActionContracts],
+    ["checkpoint extracted action contracts", testCheckpointExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
