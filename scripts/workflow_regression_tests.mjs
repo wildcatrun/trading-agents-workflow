@@ -27,6 +27,7 @@ import {
   PERMISSION_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
   RESEARCH_ACTION_REGISTRY,
+  RUNTIME_AGENT_ACTION_REGISTRY,
   RUNTIME_EVENT_ACTION_REGISTRY,
   SCHEDULE_ACTION_REGISTRY,
   SESSION_ACTION_REGISTRY,
@@ -70,6 +71,7 @@ import {
   workflowInterventionPreview,
   workflowPermissionCheck,
   workflowReadiness,
+  runtimeAgentUpsert,
   workflowRuntimeAgents,
   workflowRuntimeCurrentState,
   workflowRuntimeEventList,
@@ -132,6 +134,10 @@ import {
   RESEARCH_ACTION_HANDLER_NAMES,
   createResearchActionRegistry
 } from "../src/research-actions.js";
+import {
+  RUNTIME_AGENT_ACTION_HANDLER_NAMES,
+  createRuntimeAgentActionRegistry
+} from "../src/runtime-agent-actions.js";
 import {
   RUNTIME_EVENT_ACTION_HANDLER_NAMES,
   createRuntimeEventActionRegistry
@@ -10092,6 +10098,76 @@ async function testCatClawExtractedActionContracts() {
   assert.equal(content.includes("fundamental=null"), true);
 }
 
+async function testRuntimeAgentExtractedActionContracts() {
+  const expectedHandlers = {
+    "runtime.agent": "runtimeAgentUpsert",
+    "runtime.agent.upsert": "runtimeAgentUpsert"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(RUNTIME_AGENT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted runtime agent registry`);
+    assert.equal(RUNTIME_AGENT_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof runtimeAgentUpsert, "function");
+  const directRegistry = createRuntimeAgentActionRegistry({ runtimeAgentUpsert });
+  assert.equal(directRegistry.get("runtime.agent"), runtimeAgentUpsert);
+  assert.equal(directRegistry.get("runtime.agent.upsert"), runtimeAgentUpsert);
+
+  const root = await tempRoot("runtime-agent-extracted-contracts");
+  const direct = await runtimeAgentUpsert(root, {
+    runtime: "hermes_acp",
+    agentId: "cat_body",
+    displayName: "Cat Body",
+    role: "developer",
+    endpointRef: "hermers-profile:catbody",
+    metadata: { contract: "direct_export" }
+  });
+  assert.equal(direct.runtime, "hermers");
+  assert.equal(direct.agentKey, "hermers:cat_body");
+  assert.equal(direct.workflowIngressAdapter, "acp");
+  assert.equal(await pathExists(direct.snapshotFile), true);
+
+  const alias = await runAction(root, {
+    action: "runtime.agent",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "Cat Brain",
+    role: "governance",
+    workflowIngressAdapter: "openclaw_native",
+    endpointRef: "openclaw-agent:main"
+  });
+  assert.equal(alias.agentKey, "openclaw:main");
+  assert.equal(alias.platform, "openclaw");
+
+  await assert.rejects(
+    () => runAction(root, {
+      action: "runtime.agent.upsert",
+      runtime: "hermers",
+      agentId: "cat_claw",
+      endpointRef: "hermers-profile:catclaw"
+    }),
+    /cat_claw is an OpenClaw-only secretary agent/
+  );
+
+  const catClaw = await runAction(root, {
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    agentId: "cat_claw",
+    platform: "openclaw",
+    executionAdapter: "native",
+    workflowIngressAdapter: "openclaw_native",
+    imIngressOwner: "openclaw_gateway",
+    imIngressAdapter: "openclaw_native",
+    imIdentity: "openclaw_native",
+    executionIdentity: "openclaw_native",
+    displayName: "Cat Claw",
+    role: "secretary",
+    endpointRef: "openclaw-agent:cat_claw"
+  });
+  assert.equal(catClaw.agentKey, "openclaw:cat_claw");
+  assert.equal(catClaw.executionIdentity, "openclaw_native");
+  assert.equal(sqliteCount(catClaw.dbFile, "runtime_agents", "agent_key IN ('hermers:cat_body','openclaw:main','openclaw:cat_claw')"), 3);
+}
+
 async function testTopologyExtractedActionContracts() {
   const expectedHandlers = {
     "workflow.topology": "workflowTopology",
@@ -17278,6 +17354,7 @@ try {
     ["incident state extracted action contracts", testIncidentStateExtractedActionContracts],
     ["research extracted action contracts", testResearchExtractedActionContracts],
     ["cat_claw extracted action contracts", testCatClawExtractedActionContracts],
+    ["runtime agent extracted action contracts", testRuntimeAgentExtractedActionContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],
     ["permission extracted action contracts", testPermissionExtractedActionContracts],
