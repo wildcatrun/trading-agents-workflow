@@ -35,6 +35,7 @@ import {
   RESEARCH_ACTION_REGISTRY,
   ROUTE_SHELL_ACTION_REGISTRY,
   RUNTIME_AGENT_ACTION_REGISTRY,
+  RUNTIME_BRIDGE_ACTION_REGISTRY,
   RUNTIME_EVENT_ACTION_REGISTRY,
   SCHEDULE_ACTION_REGISTRY,
   SESSION_ACTION_REGISTRY,
@@ -95,6 +96,7 @@ import {
   meetingRuntimeParticipant,
   workflowPermissionCheck,
   workflowReadiness,
+  runtimeBridgeDrain,
   runtimeAgentUpsert,
   staleDispatchReconcile,
   workflowRuntimeAgents,
@@ -201,6 +203,11 @@ import {
   RUNTIME_AGENT_ACTION_HANDLER_NAMES,
   createRuntimeAgentActionRegistry
 } from "../src/runtime-agent-actions.js";
+import {
+  RUNTIME_BRIDGE_ACTION_HANDLER_NAMES,
+  createRuntimeBridgeActionRegistry,
+  runRuntimeBridgeAction
+} from "../src/runtime-bridge-actions.js";
 import {
   RUNTIME_EVENT_ACTION_HANDLER_NAMES,
   createRuntimeEventActionRegistry
@@ -9975,6 +9982,44 @@ async function testControlLoopTickExtractedActionContracts() {
   assert.equal(reconcilerAlias.jobResults[0]?.status, "dry_run");
 }
 
+async function testRuntimeBridgeExtractedActionContracts() {
+  const expected = {
+    "runtime.bridge": "runtimeBridgeDrain",
+    "runtime.bridge.drain": "runtimeBridgeDrain"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(RUNTIME_BRIDGE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted runtime bridge registry`);
+    assert.equal(RUNTIME_BRIDGE_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof runtimeBridgeDrain, "function");
+  const directRegistry = createRuntimeBridgeActionRegistry({ runtimeBridgeDrain });
+  assert.equal(directRegistry.get("runtime.bridge"), runtimeBridgeDrain);
+  assert.equal(directRegistry.get("runtime.bridge.drain"), runtimeBridgeDrain);
+  const missing = await runRuntimeBridgeAction(directRegistry, "runtime.unknown", "/tmp/unused", {});
+  assert.equal(missing.handled, false);
+
+  const root = await tempRoot("runtime-bridge-extracted-contracts");
+  const direct = await runRuntimeBridgeAction(directRegistry, "runtime.bridge", root, {
+    runtime: "hermers",
+    dryRun: true,
+    limit: 1
+  });
+  assert.equal(direct.handled, true);
+  assert.equal(direct.value.runtime, "hermers");
+  assert.equal(direct.value.dryRun, true);
+  assert.equal(direct.value.count, 0);
+
+  const gatewayAlias = await runAction(root, {
+    action: "runtime.bridge",
+    runtime: "hermers",
+    dryRun: true,
+    limit: 1
+  });
+  assert.equal(gatewayAlias.runtime, "hermers");
+  assert.equal(gatewayAlias.dryRun, true);
+  assert.equal(gatewayAlias.count, 0);
+}
+
 async function makeFakeOpenClaw(root, name, mode) {
   const file = path.join(root, name);
   const body = mode === "health-degraded"
@@ -18828,6 +18873,7 @@ try {
     ["meeting ingest extracted action contracts", testMeetingIngestExtractedActionContracts],
     ["meeting dispatch extracted action contracts", testMeetingDispatchExtractedActionContracts],
     ["meeting control extracted action contracts", testMeetingControlExtractedActionContracts],
+    ["runtime bridge extracted action contracts", testRuntimeBridgeExtractedActionContracts],
     ["route_shell extracted action contracts", testRouteShellExtractedActionContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],
