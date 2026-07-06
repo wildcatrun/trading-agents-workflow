@@ -122,6 +122,11 @@ import {
   runScheduleAction
 } from "./schedule-actions.js";
 import {
+  createSessionActionHandlers,
+  createSessionActionRegistry,
+  runSessionAction
+} from "./session-actions.js";
+import {
   createSideEffectActionHandlers,
   createSideEffectActionRegistry,
   runSideEffectAction
@@ -9304,8 +9309,7 @@ function workerInputFromSessionPack(pack, inputPayload = {}, context = {}) {
   };
 }
 
-export async function workflowSessionPackUpsert(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function workflowSessionPackUpsertCore(paths, input = {}) {
   const now = nowIso();
   const sessionId = String(input.sessionId || input.session_id || safeId("session-pack")).trim();
   const existingRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_packs WHERE session_id=${sqlValue(sessionId)} LIMIT 1;`, { json: true });
@@ -9386,8 +9390,7 @@ ON CONFLICT(session_id) DO UPDATE SET
   return { ...record, dbFile: paths.dbFile };
 }
 
-export async function workflowSessionPackGet(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function workflowSessionPackGetSnapshot(paths, input = {}) {
   const sessionId = String(input.sessionId || input.session_id || "").trim();
   if (!sessionId) throw new Error("sessionId is required");
   const rows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_packs WHERE session_id=${sqlValue(sessionId)} LIMIT 1;`, { json: true });
@@ -9396,8 +9399,7 @@ export async function workflowSessionPackGet(rootDir, input = {}) {
   return { ...pack, workerInputTemplate: workerInputFromSessionPack(pack), dbFile: paths.dbFile };
 }
 
-export async function workflowSessionPackList(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function workflowSessionPackListSnapshot(paths, input = {}) {
   const filters = [];
   if (input.status) filters.push(`status=${sqlValue(requireWorkflowSessionPackStatus(input.status))}`);
   if (input.ownerAgent || input.owner_agent) filters.push(`owner_agent=${sqlValue(normalizeAgentId(input.ownerAgent || input.owner_agent))}`);
@@ -9413,8 +9415,7 @@ LIMIT ${limit};`, { json: true });
   return { count: rows.length, packs: rows.map(sessionPackFromRow), dbFile: paths.dbFile };
 }
 
-export async function workflowSessionRunStart(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function workflowSessionRunStartCore(paths, input = {}) {
   const now = nowIso();
   const sessionId = String(input.sessionId || input.session_id || "").trim();
   if (!sessionId) throw new Error("sessionId is required");
@@ -9502,8 +9503,7 @@ VALUES (${sqlValue(runId)}, ${sqlValue(sessionId)}, ${sqlValue(pack.version)}, $
   return { runId, sessionId, packVersion: pack.version, status, workerInput, dbFile: paths.dbFile };
 }
 
-export async function workflowSessionRunComplete(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
+async function workflowSessionRunCompleteCore(paths, input = {}) {
   const runId = String(input.runId || input.run_id || "").trim();
   if (!runId) throw new Error("runId is required");
   const currentRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_runs WHERE run_id=${sqlValue(runId)} LIMIT 1;`, { json: true });
@@ -9562,6 +9562,25 @@ WHERE run_id=${sqlValue(runId)};`);
   });
   return { ...next, dbFile: paths.dbFile };
 }
+
+export const SESSION_ACTION_HANDLERS = createSessionActionHandlers({
+  ensureWorkflowLayout,
+  workflowSessionPackGetSnapshot,
+  workflowSessionPackListSnapshot,
+  workflowSessionPackUpsertCore,
+  workflowSessionRunCompleteCore,
+  workflowSessionRunStartCore
+});
+
+export const SESSION_ACTION_REGISTRY = createSessionActionRegistry(SESSION_ACTION_HANDLERS);
+
+export const {
+  workflowSessionPackGet,
+  workflowSessionPackList,
+  workflowSessionPackUpsert,
+  workflowSessionRunComplete,
+  workflowSessionRunStart
+} = SESSION_ACTION_HANDLERS;
 
 const WORKFLOW_V2_PLAN_ACTION_HANDLERS = createWorkflowV2PlanActionHandlers({
   cleanFileSegment,
@@ -21460,6 +21479,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (eventResult.handled) return eventResult.value;
   const runtimeEventResult = await runRuntimeEventAction(RUNTIME_EVENT_ACTION_REGISTRY, action, rootDir, input);
   if (runtimeEventResult.handled) return runtimeEventResult.value;
+  const sessionResult = await runSessionAction(SESSION_ACTION_REGISTRY, action, rootDir, input);
+  if (sessionResult.handled) return sessionResult.value;
   switch (action) {
     case "workflow.run.upsert":
     case "workflow.initiative.upsert":
@@ -21564,26 +21585,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "workflow.evaluation.run":
     case "workflow.goal.evaluate":
       return workflowEvaluate(rootDir, input, permissionDecision);
-    case "workflow.session_pack.upsert":
-    case "workflow.session.pack.upsert":
-    case "session_pack.upsert":
-      return workflowSessionPackUpsert(rootDir, input);
-    case "workflow.session_pack.get":
-    case "workflow.session.pack.get":
-    case "session_pack.get":
-      return workflowSessionPackGet(rootDir, input);
-    case "workflow.session_pack.list":
-    case "workflow.session.pack.list":
-    case "session_pack.list":
-      return workflowSessionPackList(rootDir, input);
-    case "workflow.session_run.start":
-    case "workflow.session.run.start":
-    case "session_run.start":
-      return workflowSessionRunStart(rootDir, input);
-    case "workflow.session_run.complete":
-    case "workflow.session.run.complete":
-    case "session_run.complete":
-      return workflowSessionRunComplete(rootDir, input);
     case "runtime.agent":
     case "runtime.agent.upsert":
       return runtimeAgentUpsert(rootDir, input);

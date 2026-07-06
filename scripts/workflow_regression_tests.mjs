@@ -26,6 +26,7 @@ import {
   RESEARCH_ACTION_REGISTRY,
   RUNTIME_EVENT_ACTION_REGISTRY,
   SCHEDULE_ACTION_REGISTRY,
+  SESSION_ACTION_REGISTRY,
   SIDE_EFFECT_ACTION_REGISTRY,
   STATUS_ACTION_REGISTRY,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
@@ -66,6 +67,11 @@ import {
   workflowSchedulePause,
   workflowScheduleResume,
   workflowScheduleUpsert,
+  workflowSessionPackGet,
+  workflowSessionPackList,
+  workflowSessionPackUpsert,
+  workflowSessionRunComplete,
+  workflowSessionRunStart,
   workflowStatus,
   workflowTopology,
   tradeProposal
@@ -106,6 +112,10 @@ import {
   SCHEDULE_ACTION_HANDLER_NAMES,
   createScheduleActionRegistry
 } from "../src/schedule-actions.js";
+import {
+  SESSION_ACTION_HANDLER_NAMES,
+  createSessionActionRegistry
+} from "../src/session-actions.js";
 import {
   SIDE_EFFECT_ACTION_HANDLER_NAMES,
   createSideEffectActionRegistry
@@ -10116,6 +10126,102 @@ async function testRuntimeEventExtractedActionContracts() {
   assert.equal(sqliteCount(recorded.dbFile, "runtime_semantic_events", "workflow_id='runtime-event-extracted'"), 1);
 }
 
+async function testSessionExtractedActionContracts() {
+  const expectedHandlers = {
+    "workflow.session_pack.upsert": "workflowSessionPackUpsert",
+    "workflow.session.pack.upsert": "workflowSessionPackUpsert",
+    "session_pack.upsert": "workflowSessionPackUpsert",
+    "workflow.session_pack.get": "workflowSessionPackGet",
+    "workflow.session.pack.get": "workflowSessionPackGet",
+    "session_pack.get": "workflowSessionPackGet",
+    "workflow.session_pack.list": "workflowSessionPackList",
+    "workflow.session.pack.list": "workflowSessionPackList",
+    "session_pack.list": "workflowSessionPackList",
+    "workflow.session_run.start": "workflowSessionRunStart",
+    "workflow.session.run.start": "workflowSessionRunStart",
+    "session_run.start": "workflowSessionRunStart",
+    "workflow.session_run.complete": "workflowSessionRunComplete",
+    "workflow.session.run.complete": "workflowSessionRunComplete",
+    "session_run.complete": "workflowSessionRunComplete"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(SESSION_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted session registry`);
+    assert.equal(SESSION_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof workflowSessionPackUpsert, "function");
+  assert.equal(typeof workflowSessionPackGet, "function");
+  assert.equal(typeof workflowSessionPackList, "function");
+  assert.equal(typeof workflowSessionRunStart, "function");
+  assert.equal(typeof workflowSessionRunComplete, "function");
+  const directRegistry = createSessionActionRegistry({
+    workflowSessionPackGet,
+    workflowSessionPackList,
+    workflowSessionPackUpsert,
+    workflowSessionRunComplete,
+    workflowSessionRunStart
+  });
+  assert.equal(directRegistry.get("workflow.session.pack.upsert"), workflowSessionPackUpsert);
+  assert.equal(directRegistry.get("session_pack.get"), workflowSessionPackGet);
+  assert.equal(directRegistry.get("session_pack.list"), workflowSessionPackList);
+  assert.equal(directRegistry.get("workflow.session.run.start"), workflowSessionRunStart);
+  assert.equal(directRegistry.get("session_run.complete"), workflowSessionRunComplete);
+
+  const root = await tempRoot("session-extracted-contracts");
+  const pack = await runAction(root, {
+    action: "workflow.session.pack.upsert",
+    sessionId: "session-extracted-pack",
+    ownerAgent: "cat_body",
+    taskType: "extracted_session_contract",
+    runtimeTarget: "worker:local_codex",
+    purpose: "Exercise extracted session action registry.",
+    metadata: { apiKey: "must-not-persist" }
+  });
+  assert.equal(pack.sessionId, "session-extracted-pack");
+  assert.equal(pack.version, 1);
+  assert.equal(pack.metadata.apiKey, "[redacted]");
+
+  const listed = await runAction(root, {
+    action: "workflow.session.pack.list",
+    ownerAgent: "cat_body",
+    taskType: "extracted_session_contract"
+  });
+  assert.equal(listed.count, 1);
+  assert.equal(listed.packs[0].sessionId, "session-extracted-pack");
+  const got = await runAction(root, {
+    action: "workflow.session.pack.get",
+    sessionId: "session-extracted-pack"
+  });
+  assert.equal(got.workerInputTemplate.sessionId, "session-extracted-pack");
+  assert.equal(JSON.stringify(got).includes("must-not-persist"), false);
+
+  const started = await runAction(root, {
+    action: "workflow.session.run.start",
+    runId: "session-extracted-run",
+    sessionId: "session-extracted-pack",
+    workflowId: "workflow-session-extracted",
+    taskId: "task-session-extracted",
+    dispatchId: "dispatch-session-extracted",
+    workerId: "worker-session-extracted",
+    input: { symbol: "BTCUSDT", apiSecret: "run-secret" }
+  });
+  assert.equal(started.status, "running");
+  assert.equal(started.workerInput.input.apiSecret, "[redacted]");
+  assert.equal(JSON.stringify(started.workerInput).includes("run-secret"), false);
+
+  const completed = await runAction(root, {
+    action: "workflow.session.run.complete",
+    runId: "session-extracted-run",
+    output: { status: "ok", refreshToken: "output-secret" },
+    receiptRef: "artifact://session-extracted-receipt"
+  });
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.output.refreshToken, "[redacted]");
+  assert.equal(completed.receiptRef, "artifact://session-extracted-receipt");
+  assert.equal(sqliteCount(pack.dbFile, "workflow_session_packs", "session_id='session-extracted-pack'"), 1);
+  assert.equal(sqliteCount(pack.dbFile, "workflow_session_runs", "run_id='session-extracted-run' AND status='completed'"), 1);
+  assert.equal(sqliteCount(pack.dbFile, "workflow_agent_runs", "agent_run_id='session.session-extracted-run' AND dispatch_id='dispatch-session-extracted' AND status='completed'"), 1);
+}
+
 async function testMessageFlowRuntimeBridge() {
   const root = await tempRoot("message-flow");
   await runAction(root, {
@@ -16571,6 +16677,7 @@ try {
     ["schedule extracted action contracts", testScheduleExtractedActionContracts],
     ["event extracted action contracts", testEventExtractedActionContracts],
     ["runtime event extracted action contracts", testRuntimeEventExtractedActionContracts],
+    ["session extracted action contracts", testSessionExtractedActionContracts],
     ["message_flow runtime bridge", testMessageFlowRuntimeBridge],
     ["message_flow immediate ack contract", testMessageFlowImmediateAckContract],
     ["message_flow ack timeout clamping", testMessageFlowAckTimeoutClamping],
