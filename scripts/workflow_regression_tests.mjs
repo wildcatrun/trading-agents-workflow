@@ -19,6 +19,7 @@ import {
   CAT_CLAW_ACTION_REGISTRY,
   CHECKPOINT_ACTION_REGISTRY,
   CONTROL_LOOP_JOB_ACTION_REGISTRY,
+  DISPATCH_RECONCILE_ACTION_REGISTRY,
   EVENT_ACTION_REGISTRY,
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
@@ -78,6 +79,7 @@ import {
   workflowPermissionCheck,
   workflowReadiness,
   runtimeAgentUpsert,
+  staleDispatchReconcile,
   workflowRuntimeAgents,
   workflowRuntimeCurrentState,
   workflowRuntimeEventList,
@@ -112,6 +114,10 @@ import {
   CONTROL_LOOP_JOB_ACTION_HANDLER_NAMES,
   createControlLoopJobActionRegistry
 } from "../src/control-loop-job-actions.js";
+import {
+  DISPATCH_RECONCILE_ACTION_HANDLER_NAMES,
+  createDispatchReconcileActionRegistry
+} from "../src/dispatch-reconcile-actions.js";
 import {
   EVENT_ACTION_HANDLER_NAMES,
   createEventActionRegistry
@@ -15804,6 +15810,21 @@ VALUES
 }
 
 async function testStaleDispatchReconcileSyncsMessageFlows() {
+  const expectedHandlers = {
+    "workflow.dispatch.reconcile": "staleDispatchReconcile",
+    "dispatch.reconcile": "staleDispatchReconcile",
+    "stale_dispatch.reconcile": "staleDispatchReconcile"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(DISPATCH_RECONCILE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted dispatch reconcile registry`);
+    assert.equal(DISPATCH_RECONCILE_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof staleDispatchReconcile, "function");
+  const directRegistry = createDispatchReconcileActionRegistry({ staleDispatchReconcile });
+  assert.equal(directRegistry.get("workflow.dispatch.reconcile"), staleDispatchReconcile);
+  assert.equal(directRegistry.get("dispatch.reconcile"), staleDispatchReconcile);
+  assert.equal(directRegistry.get("stale_dispatch.reconcile"), staleDispatchReconcile);
+
   const root = await tempRoot("stale-dispatch-flow-sync");
   await runAction(root, { action: "workflow.init" });
   const dbFile = path.join(root, "tracking.db");
@@ -15937,6 +15958,27 @@ LIMIT 1;`)[0];
     targetRef: "8390724843",
     text: "final reconciled output"
   });
+
+  const directEmpty = await staleDispatchReconcile(root, {
+    staleDispatchAfterMs: 60_000,
+    deliverMessageFlowOutbox: false,
+    limit: 10
+  });
+  assert.equal(directEmpty.count, 0);
+  const shortAliasEmpty = await runAction(root, {
+    action: "dispatch.reconcile",
+    staleDispatchAfterMs: 60_000,
+    deliverMessageFlowOutbox: false,
+    limit: 10
+  });
+  assert.equal(shortAliasEmpty.count, 0);
+  const legacyAliasEmpty = await runAction(root, {
+    action: "stale_dispatch.reconcile",
+    staleDispatchAfterMs: 60_000,
+    deliverMessageFlowOutbox: false,
+    limit: 10
+  });
+  assert.equal(legacyAliasEmpty.count, 0);
 }
 
 async function testReadinessGatewayDegraded() {
