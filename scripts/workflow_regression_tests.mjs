@@ -45,6 +45,7 @@ import {
   TRADE_ACTION_REGISTRY,
   VERIFICATION_ACTION_REGISTRY,
   WORKFLOW_RUN_ACTION_REGISTRY,
+  WORKFLOW_TASK_ACTION_REGISTRY,
   WORKFLOW_SWARM_ACTION_REGISTRY,
   cat_clawAudit,
   humanGateInbox,
@@ -102,6 +103,9 @@ import {
   workflowSessionRunStart,
   workflowStatus,
   workflowSwarmPlan,
+  workflowTaskCreate,
+  workflowTaskList,
+  workflowTaskUpdate,
   workflowTopology,
   workflowEvaluate,
   workflowRunUpsert,
@@ -217,6 +221,10 @@ import {
   WORKFLOW_RUN_ACTION_HANDLER_NAMES,
   createWorkflowRunActionRegistry
 } from "../src/workflow-run-actions.js";
+import {
+  WORKFLOW_TASK_ACTION_HANDLER_NAMES,
+  createWorkflowTaskActionRegistry
+} from "../src/workflow-task-actions.js";
 import {
   WORKFLOW_SWARM_ACTION_HANDLER_NAMES,
   createWorkflowSwarmActionRegistry
@@ -2701,6 +2709,117 @@ ORDER BY created_at ASC;`);
   assert.equal(events[1].eventType, "workflow.updated");
   assert.equal(events[1].previousState, "active");
   assert.equal(events[1].nextState, "blocked");
+}
+
+async function testWorkflowTaskExtractedActionContracts() {
+  const expected = {
+    "workflow.task.create": "workflowTaskCreate",
+    "workflow.task.update": "workflowTaskUpdate",
+    "workflow.task.list": "workflowTaskList",
+    "workflow.tasks": "workflowTaskList"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(WORKFLOW_TASK_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted workflow task registry`);
+    assert.equal(WORKFLOW_TASK_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowTaskCreate, "function");
+  assert.equal(typeof workflowTaskUpdate, "function");
+  assert.equal(typeof workflowTaskList, "function");
+  const directRegistry = createWorkflowTaskActionRegistry({ workflowTaskCreate, workflowTaskUpdate, workflowTaskList });
+  assert.equal(directRegistry.get("workflow.task.create"), workflowTaskCreate);
+  assert.equal(directRegistry.get("workflow.task.update"), workflowTaskUpdate);
+  assert.equal(directRegistry.get("workflow.task.list"), workflowTaskList);
+  assert.equal(directRegistry.get("workflow.tasks"), workflowTaskList);
+
+  const root = await tempRoot("workflow-task-extracted-contracts");
+  await runtimeAgentUpsert(root, {
+    runtime: "hermers",
+    platform: "hermers",
+    agentId: "cat_body",
+    displayName: "Cat Body",
+    role: "developer",
+    endpointRef: "hermers-profile:catbody",
+    workflowIngressAdapter: "acp",
+    executionAdapter: "acp",
+    canReceiveDispatch: true,
+    routingPolicy: { primary: true, routingRank: 1 }
+  });
+  const created = await workflowTaskCreate(root, {
+    workflowId: "wf-task-contract",
+    taskId: "task-create-contract",
+    ownerAgent: "cat_body",
+    agentId: "cat_body",
+    taskType: "research",
+    status: "not-a-real-status",
+    priority: "steer",
+    dependsOn: ["task-prereq"],
+    expectedArtifact: "artifact://expected",
+    actualArtifactRef: "artifact://actual-start",
+    receiptRequired: true,
+    humanGateRequired: true,
+    summary: "Workflow task create contract.",
+    prompt: "Create extracted workflow task contract.",
+    payload: { source: "direct_export" },
+    createdBy: "main"
+  });
+  assert.equal(created.taskId, "task-create-contract");
+  assert.equal(created.workflowId, "wf-task-contract");
+  assert.equal(created.status, "pending");
+  assert.equal(created.priority, "steer");
+  assert.equal(created.ownerAgent, "cat_body");
+  assert.equal(created.runtime, "hermers");
+  assert.equal(created.agentId, "cat_body");
+  assert.deepEqual(created.dependsOn, ["task-prereq"]);
+
+  const dbFile = created.dbFile;
+  assert.equal(sqliteCount(dbFile, "workflow_runs", "workflow_id='wf-task-contract' AND status='active'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks", "task_id='task-create-contract' AND workflow_id='wf-task-contract' AND runtime='hermers' AND agent_id='cat_body' AND status='pending' AND priority='steer' AND receipt_required=1 AND human_gate_required=1"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_task_dependencies", "task_id='task-create-contract' AND depends_on_task_id='task-prereq'"), 1);
+
+  const updated = await runAction(root, {
+    action: "workflow.task.update",
+    taskId: "task-create-contract",
+    status: "in_progress",
+    summary: "Workflow task update contract.",
+    prompt: "Updated prompt.",
+    actualArtifactRef: "artifact://actual-updated",
+    blockedReason: "waiting for receipt",
+    payload: { source: "registry_update" }
+  });
+  assert.equal(updated.taskId, "task-create-contract");
+  assert.equal(updated.workflowId, "wf-task-contract");
+  assert.equal(updated.status, "in_progress");
+  const updatedRow = sqliteJson(dbFile, `
+SELECT status, summary, prompt, actual_artifact_ref AS actualArtifactRef, blocked_reason AS blockedReason, payload_json AS payloadJson, started_at AS startedAt
+FROM workflow_tasks
+WHERE task_id='task-create-contract'
+LIMIT 1;`)[0];
+  assert.equal(updatedRow.status, "in_progress");
+  assert.equal(updatedRow.summary, "Workflow task update contract.");
+  assert.equal(updatedRow.prompt, "Updated prompt.");
+  assert.equal(updatedRow.actualArtifactRef, "artifact://actual-updated");
+  assert.equal(updatedRow.blockedReason, "waiting for receipt");
+  assert.equal(JSON.parse(updatedRow.payloadJson).source, "registry_update");
+  assert.equal(Boolean(updatedRow.startedAt), true);
+
+  const listed = await runAction(root, {
+    action: "workflow.tasks",
+    workflowId: "wf-task-contract",
+    status: "in_progress",
+    ownerAgent: "cat_body",
+    limit: 5
+  });
+  assert.equal(listed.count, 1);
+  assert.equal(listed.tasks[0].task_id, "task-create-contract");
+
+  await assert.rejects(
+    () => workflowTaskCreate(root, { taskId: "missing-workflow-id" }),
+    /workflowId is required/
+  );
+  await assert.rejects(
+    () => workflowTaskUpdate(root, { taskId: "missing-task" }),
+    /workflow task not found: missing-task/
+  );
 }
 
 async function testWorkflowSwarmExtractedActionContracts() {
@@ -18038,6 +18157,7 @@ try {
     ["human_gate readiness legacy schema fallback", testHumanGateReadinessLegacySchemaFallback],
     ["workflow operations console audit", testWorkflowOperationsConsoleAudit],
     ["workflow run extracted action contracts", testWorkflowRunExtractedActionContracts],
+    ["workflow task extracted action contracts", testWorkflowTaskExtractedActionContracts],
     ["workflow swarm extracted action contracts", testWorkflowSwarmExtractedActionContracts],
     ["workflow intervention previews", testWorkflowInterventionPreviews],
     ["intervention extracted action contracts", testInterventionExtractedActionContracts],
