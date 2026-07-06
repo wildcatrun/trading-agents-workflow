@@ -45,6 +45,7 @@ import {
   TRADE_ACTION_REGISTRY,
   VERIFICATION_ACTION_REGISTRY,
   WORKFLOW_ADVANCE_ACTION_REGISTRY,
+  WORKFLOW_SUPERVISOR_ACTION_REGISTRY,
   WORKFLOW_RUN_ACTION_REGISTRY,
   WORKFLOW_TASK_ACTION_REGISTRY,
   WORKFLOW_TASK_DRAFT_ACTION_REGISTRY,
@@ -78,6 +79,8 @@ import {
   workflowCheckpoint,
   workflowAdvance,
   workflowAdvancePreview,
+  workflowSupervisor,
+  workflowSupervisorPreview,
   workflowControlLoopJobRequeue,
   workflowControlLoopJobRequeuePreview,
   workflowInit,
@@ -235,6 +238,11 @@ import {
   WORKFLOW_ADVANCE_ACTION_HANDLER_NAMES,
   createWorkflowAdvanceActionRegistry
 } from "../src/workflow-advance-actions.js";
+import {
+  WORKFLOW_SUPERVISOR_ACTION_HANDLER_NAMES,
+  createWorkflowSupervisorActionRegistry,
+  runWorkflowSupervisorAction
+} from "../src/workflow-supervisor-actions.js";
 import {
   WORKFLOW_TASK_ACTION_HANDLER_NAMES,
   createWorkflowTaskActionRegistry
@@ -2891,6 +2899,171 @@ WHERE workflow_id='${syncWorkflowId}'
 LIMIT 1;`)[0];
   assert.equal(syncWorkflowRow.currentDecision, "blocked");
   assert.equal(syncWorkflowRow.status, "blocked");
+}
+
+async function testWorkflowSupervisorExtractedActionContracts() {
+  const expected = {
+    "workflow.supervise": "workflowSupervisor",
+    "workflow.supervisor": "workflowSupervisor",
+    "workflow.supervise.preview": "workflowSupervisorPreview",
+    "workflow.supervisor.preview": "workflowSupervisorPreview",
+    "workflow.preview.supervise": "workflowSupervisorPreview"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(WORKFLOW_SUPERVISOR_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted workflow supervisor registry`);
+    assert.equal(WORKFLOW_SUPERVISOR_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowSupervisor, "function");
+  assert.equal(typeof workflowSupervisorPreview, "function");
+  const directRegistry = createWorkflowSupervisorActionRegistry({ workflowSupervisor, workflowSupervisorPreview });
+  assert.equal(directRegistry.get("workflow.supervise"), workflowSupervisor);
+  assert.equal(directRegistry.get("workflow.supervisor"), workflowSupervisor);
+  assert.equal(directRegistry.get("workflow.supervise.preview"), workflowSupervisorPreview);
+  assert.equal(directRegistry.get("workflow.supervisor.preview"), workflowSupervisorPreview);
+  assert.equal(directRegistry.get("workflow.preview.supervise"), workflowSupervisorPreview);
+
+  const root = await tempRoot("workflow-supervisor-extracted-contracts");
+  const workflowId = "wf-supervisor-contract";
+  await runtimeAgentUpsert(root, {
+    runtime: "hermers",
+    platform: "hermers",
+    agentId: "cat_body",
+    displayName: "Cat Body",
+    role: "developer",
+    endpointRef: "hermers-profile:catbody",
+    workflowIngressAdapter: "acp",
+    executionAdapter: "acp",
+    canReceiveDispatch: true,
+    routingPolicy: { primary: true, routingRank: 1 }
+  });
+  await workflowRunUpsert(root, {
+    workflowId,
+    workflowType: "initiative",
+    status: "active",
+    summary: "Workflow supervisor extracted contract.",
+    objective: "Keep workflow supervisor extracted behavior stable."
+  });
+  await workflowTaskCreate(root, {
+    workflowId,
+    taskId: "task-supervisor-ready",
+    ownerAgent: "cat_body",
+    agentId: "cat_body",
+    runtime: "hermers",
+    status: "pending",
+    priority: "steer",
+    expectedArtifact: "artifact://supervisor-ready",
+    summary: "Ready supervisor task.",
+    prompt: "Execute supervisor task.",
+    createdBy: "main"
+  });
+  const dbFile = path.join(root, "tracking.db");
+  const preview = await runAction(root, {
+    action: "workflow.supervisor.preview",
+    workflowId,
+    autoDispatch: true,
+    drain: true,
+    checkpoint: false,
+    autoReport: false
+  });
+  assert.equal(preview.action, "workflow.supervise.preview");
+  assert.equal(preview.preview, true);
+  assert.equal(preview.readOnly, true);
+  assert.equal(preview.advance.decision, "dispatch_ready");
+  assert.deepEqual(preview.wouldDrainRuntimes, ["hermers"]);
+  assert.equal(preview.wouldCheckpoint, false);
+  assert.equal(preview.wouldCatClawReport, null);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks", "task_id='task-supervisor-ready' AND status='pending'"), 1);
+
+  const rawAliasPreview = await runAction(root, {
+    action: "workflow.preview.supervise",
+    workflowId,
+    autoDispatch: false,
+    drain: false,
+    checkpoint: true,
+    autoReport: false
+  });
+  assert.equal(rawAliasPreview.action, "workflow.supervise.preview");
+  assert.equal(rawAliasPreview.preview, true);
+  assert.equal(rawAliasPreview.advance.decision, "dispatch_ready");
+  assert.equal(rawAliasPreview.wouldDispatch?.length || 0, 0);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
+
+  const rawRegistryAlias = await runWorkflowSupervisorAction(
+    WORKFLOW_SUPERVISOR_ACTION_REGISTRY,
+    "workflow.preview.supervise",
+    root,
+    {
+      workflowId,
+      autoDispatch: false,
+      drain: false,
+      checkpoint: true,
+      autoReport: false
+    }
+  );
+  assert.equal(rawRegistryAlias.handled, true);
+  assert.equal(rawRegistryAlias.value.action, "workflow.supervise.preview");
+  assert.equal(rawRegistryAlias.value.advance.decision, "dispatch_ready");
+  assert.equal(rawRegistryAlias.value.wouldDispatch?.length || 0, 0);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
+
+  const supervised = await workflowSupervisor(root, {
+    workflowId,
+    meetingId: "meeting-supervisor-contract",
+    autoDispatch: true,
+    drain: false,
+    checkpoint: false,
+    autoReport: false
+  });
+  assert.equal(supervised.workflowId, workflowId);
+  assert.equal(supervised.meetingId, "meeting-supervisor-contract");
+  assert.equal(supervised.cycles.length, 1);
+  assert.equal(supervised.cycles[0].advance.decision, "dispatching");
+  assert.equal(supervised.dispatched.length, 1);
+  assert.equal(supervised.finalAdvance.decision, "receipts_collecting");
+  assert.equal(supervised.checkpoint, null);
+  assert.equal(supervised.catClawReport, null);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "workflow_id='wf-supervisor-contract' AND dispatch_type='task' AND priority='steer'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks", "task_id='task-supervisor-ready' AND status='in_progress'"), 1);
+
+  const reportRoot = await tempRoot("workflow-supervisor-report-preview");
+  const reportWorkflowId = "wf-supervisor-report-preview";
+  await workflowRunUpsert(reportRoot, {
+    workflowId: reportWorkflowId,
+    workflowType: "initiative",
+    status: "active",
+    summary: "Workflow supervisor report preview contract.",
+    objective: "Confirm report preview remains read-only."
+  });
+  await workflowTaskCreate(reportRoot, {
+    workflowId: reportWorkflowId,
+    taskId: "task-supervisor-done",
+    ownerAgent: "main",
+    agentId: "main",
+    runtime: "openclaw",
+    status: "done",
+    summary: "Done supervisor task.",
+    createdBy: "main"
+  });
+  const reportDbFile = path.join(reportRoot, "tracking.db");
+  const reportPreview = await workflowSupervisorPreview(reportRoot, {
+    workflowId: reportWorkflowId,
+    autoDispatch: true,
+    autoReport: true,
+    checkpoint: true,
+    reportRuntime: "openclaw",
+    reportAgent: "cat_claw"
+  });
+  assert.equal(reportPreview.advance.decision, "cat_claw_summary_required");
+  assert.equal(reportPreview.wouldCheckpoint, true);
+  assert.deepEqual(reportPreview.wouldCatClawReport, {
+    runtime: "openclaw",
+    agentId: "cat_claw",
+    dispatchType: "workflow_secretary_report",
+    priority: "high"
+  });
+  assert.equal(sqliteCount(reportDbFile, "mixed_meeting_dispatches"), 0);
+  assert.equal(sqliteCount(reportDbFile, "workflow_checkpoints"), 0);
 }
 
 async function testWorkflowTaskExtractedActionContracts() {
@@ -18552,6 +18725,7 @@ try {
     ["workflow operations console audit", testWorkflowOperationsConsoleAudit],
     ["workflow run extracted action contracts", testWorkflowRunExtractedActionContracts],
     ["workflow advance extracted action contracts", testWorkflowAdvanceExtractedActionContracts],
+    ["workflow supervisor extracted action contracts", testWorkflowSupervisorExtractedActionContracts],
     ["workflow task extracted action contracts", testWorkflowTaskExtractedActionContracts],
     ["workflow task draft extracted action contracts", testWorkflowTaskDraftExtractedActionContracts],
     ["workflow task launch extracted action contracts", testWorkflowTaskLaunchExtractedActionContracts],
