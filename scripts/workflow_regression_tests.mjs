@@ -44,6 +44,7 @@ import {
   TOPOLOGY_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
   VERIFICATION_ACTION_REGISTRY,
+  WORKFLOW_ADVANCE_ACTION_REGISTRY,
   WORKFLOW_RUN_ACTION_REGISTRY,
   WORKFLOW_TASK_ACTION_REGISTRY,
   WORKFLOW_TASK_DRAFT_ACTION_REGISTRY,
@@ -75,6 +76,8 @@ import {
   workflowEventTimeline,
   workflowHealth,
   workflowCheckpoint,
+  workflowAdvance,
+  workflowAdvancePreview,
   workflowControlLoopJobRequeue,
   workflowControlLoopJobRequeuePreview,
   workflowInit,
@@ -228,6 +231,10 @@ import {
   WORKFLOW_RUN_ACTION_HANDLER_NAMES,
   createWorkflowRunActionRegistry
 } from "../src/workflow-run-actions.js";
+import {
+  WORKFLOW_ADVANCE_ACTION_HANDLER_NAMES,
+  createWorkflowAdvanceActionRegistry
+} from "../src/workflow-advance-actions.js";
 import {
   WORKFLOW_TASK_ACTION_HANDLER_NAMES,
   createWorkflowTaskActionRegistry
@@ -2724,6 +2731,166 @@ ORDER BY created_at ASC;`);
   assert.equal(events[1].eventType, "workflow.updated");
   assert.equal(events[1].previousState, "active");
   assert.equal(events[1].nextState, "blocked");
+}
+
+async function testWorkflowAdvanceExtractedActionContracts() {
+  const expected = {
+    "workflow.advance": "workflowAdvance",
+    "workflow.advance.preview": "workflowAdvancePreview",
+    "workflow.preview.advance": "workflowAdvancePreview"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(WORKFLOW_ADVANCE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted workflow advance registry`);
+    assert.equal(WORKFLOW_ADVANCE_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowAdvance, "function");
+  assert.equal(typeof workflowAdvancePreview, "function");
+  const directRegistry = createWorkflowAdvanceActionRegistry({ workflowAdvance, workflowAdvancePreview });
+  assert.equal(directRegistry.get("workflow.advance"), workflowAdvance);
+  assert.equal(directRegistry.get("workflow.advance.preview"), workflowAdvancePreview);
+  assert.equal(directRegistry.get("workflow.preview.advance"), workflowAdvancePreview);
+
+  const root = await tempRoot("workflow-advance-extracted-contracts");
+  const workflowId = "wf-advance-contract";
+  await runtimeAgentUpsert(root, {
+    runtime: "hermers",
+    platform: "hermers",
+    agentId: "cat_body",
+    displayName: "Cat Body",
+    role: "developer",
+    endpointRef: "hermers-profile:catbody",
+    workflowIngressAdapter: "acp",
+    executionAdapter: "acp",
+    canReceiveDispatch: true,
+    routingPolicy: { primary: true, routingRank: 1 }
+  });
+  await workflowRunUpsert(root, {
+    workflowId,
+    workflowType: "initiative",
+    status: "active",
+    summary: "Workflow advance extracted contract.",
+    objective: "Keep workflow advance extracted behavior stable."
+  });
+  await workflowTaskCreate(root, {
+    workflowId,
+    taskId: "task-advance-done",
+    ownerAgent: "cat_body",
+    agentId: "cat_body",
+    runtime: "hermers",
+    status: "done",
+    summary: "Completed dependency.",
+    createdBy: "main"
+  });
+  await workflowTaskCreate(root, {
+    workflowId,
+    taskId: "task-advance-ready",
+    ownerAgent: "cat_body",
+    agentId: "cat_body",
+    runtime: "hermers",
+    status: "pending",
+    priority: "steer",
+    dependsOn: ["task-advance-done"],
+    expectedArtifact: "artifact://advance-ready",
+    summary: "Ready task.",
+    prompt: "Execute ready task.",
+    createdBy: "main"
+  });
+  const dbFile = path.join(root, "tracking.db");
+  const preview = await workflowAdvancePreview(root, {
+    workflowId,
+    autoDispatch: true,
+    syncDispatches: false
+  });
+  assert.equal(preview.preview, true);
+  assert.equal(preview.readOnly, true);
+  assert.equal(preview.decision, "dispatch_ready");
+  assert.equal(preview.summary.ready, 0);
+  assert.equal(preview.wouldDispatch.length, 1);
+  assert.equal(preview.wouldDispatch[0].taskId, "task-advance-ready");
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks", "task_id='task-advance-ready' AND status='pending'"), 1);
+
+  const aliasPreview = await runAction(root, {
+    action: "workflow.preview.advance",
+    workflowId,
+    autoDispatch: false,
+    syncDispatches: false
+  });
+  assert.equal(aliasPreview.action, "workflow.advance.preview");
+  assert.equal(aliasPreview.decision, "dispatch_ready");
+  assert.equal(aliasPreview.wouldDispatch.length, 0);
+
+  const advanced = await workflowAdvance(root, {
+    workflowId,
+    meetingId: "meeting-advance-contract",
+    autoDispatch: true,
+    syncDispatches: false
+  });
+  assert.equal(advanced.decision, "dispatching");
+  assert.equal(advanced.dispatched.length, 1);
+  assert.equal(advanced.dispatched[0].taskId, "task-advance-ready");
+  assert.equal(advanced.dispatched[0].runtime, "hermers");
+  assert.equal(advanced.summary.inProgress, 1);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "workflow_id='wf-advance-contract' AND dispatch_type='task' AND priority='steer'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks", "task_id='task-advance-ready' AND status='in_progress'"), 1);
+  const workflowRow = sqliteJson(dbFile, `
+SELECT current_decision AS currentDecision, status
+FROM workflow_runs
+WHERE workflow_id='${workflowId}'
+LIMIT 1;`)[0];
+  assert.equal(workflowRow.currentDecision, "dispatching");
+  assert.equal(workflowRow.status, "active");
+
+  const syncRoot = await tempRoot("workflow-advance-extracted-sync");
+  const syncWorkflowId = "wf-advance-sync-contract";
+  await workflowRunUpsert(syncRoot, {
+    workflowId: syncWorkflowId,
+    workflowType: "initiative",
+    status: "active",
+    summary: "Workflow advance sync contract."
+  });
+  await workflowTaskCreate(syncRoot, {
+    workflowId: syncWorkflowId,
+    taskId: "task-advance-sync-failed",
+    ownerAgent: "cat_body",
+    agentId: "cat_body",
+    runtime: "hermers",
+    status: "in_progress",
+    summary: "Task with failed terminal dispatch.",
+    createdBy: "main"
+  });
+  const syncDbFile = path.join(syncRoot, "tracking.db");
+  sqliteExec(syncDbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-advance-sync-failed', '${syncWorkflowId}', '${syncWorkflowId}', 'trace-advance-sync-failed', 'idem-advance-sync-failed', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'failed', 'normal', 1, 1, '', 'runtime_failed', 'worker failed in extracted advance sync contract', 'prompt', '{"payload":{"taskId":"task-advance-sync-failed"}}', 'main', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z', '', '2026-05-31T00:00:02.000Z', '2026-05-31T00:00:02.000Z');`);
+  const syncPreview = await workflowAdvancePreview(syncRoot, {
+    workflowId: syncWorkflowId,
+    autoDispatch: false,
+    syncDispatches: true
+  });
+  assert.equal(syncPreview.decision, "blocked");
+  assert.equal(syncPreview.wouldSyncTasks.length, 1);
+  assert.equal(syncPreview.wouldSyncTasks[0].taskId, "task-advance-sync-failed");
+  assert.equal(syncPreview.wouldSyncTasks[0].status, "failed");
+  assert.equal(syncPreview.blockedTasks[0].task_id, "task-advance-sync-failed");
+  assert.equal(sqliteCount(syncDbFile, "workflow_tasks", "task_id='task-advance-sync-failed' AND status='in_progress'"), 1);
+
+  const syncAdvance = await workflowAdvance(syncRoot, {
+    workflowId: syncWorkflowId,
+    autoDispatch: false,
+    syncDispatches: true
+  });
+  assert.equal(syncAdvance.decision, "blocked");
+  assert.equal(syncAdvance.syncedTasks.length, 1);
+  assert.equal(syncAdvance.syncedTasks[0].status, "failed");
+  assert.equal(sqliteCount(syncDbFile, "workflow_tasks", "task_id='task-advance-sync-failed' AND status='failed' AND blocked_reason LIKE 'runtime_failed:%'"), 1);
+  const syncWorkflowRow = sqliteJson(syncDbFile, `
+SELECT current_decision AS currentDecision, status
+FROM workflow_runs
+WHERE workflow_id='${syncWorkflowId}'
+LIMIT 1;`)[0];
+  assert.equal(syncWorkflowRow.currentDecision, "blocked");
+  assert.equal(syncWorkflowRow.status, "blocked");
 }
 
 async function testWorkflowTaskExtractedActionContracts() {
@@ -18384,6 +18551,7 @@ try {
     ["human_gate readiness legacy schema fallback", testHumanGateReadinessLegacySchemaFallback],
     ["workflow operations console audit", testWorkflowOperationsConsoleAudit],
     ["workflow run extracted action contracts", testWorkflowRunExtractedActionContracts],
+    ["workflow advance extracted action contracts", testWorkflowAdvanceExtractedActionContracts],
     ["workflow task extracted action contracts", testWorkflowTaskExtractedActionContracts],
     ["workflow task draft extracted action contracts", testWorkflowTaskDraftExtractedActionContracts],
     ["workflow task launch extracted action contracts", testWorkflowTaskLaunchExtractedActionContracts],
