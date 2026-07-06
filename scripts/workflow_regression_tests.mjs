@@ -18,6 +18,7 @@ import { runAction as runActionRaw } from "../src/core.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
   CHECKPOINT_ACTION_REGISTRY,
+  CONTROL_LOOP_JOB_ACTION_REGISTRY,
   EVENT_ACTION_REGISTRY,
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
@@ -59,6 +60,8 @@ import {
   workflowEventTimeline,
   workflowHealth,
   workflowCheckpoint,
+  workflowControlLoopJobRequeue,
+  workflowControlLoopJobRequeuePreview,
   workflowInit,
   workflowPermissionCheck,
   workflowReadiness,
@@ -88,6 +91,10 @@ import {
   CHECKPOINT_ACTION_HANDLER_NAMES,
   createCheckpointActionRegistry
 } from "../src/checkpoint-actions.js";
+import {
+  CONTROL_LOOP_JOB_ACTION_HANDLER_NAMES,
+  createControlLoopJobActionRegistry
+} from "../src/control-loop-job-actions.js";
 import {
   EVENT_ACTION_HANDLER_NAMES,
   createEventActionRegistry
@@ -8730,6 +8737,72 @@ async function testScheduleResumeSemantics() {
   assert.notEqual(reset.schedule.nextRunAt, nextRunAt);
 }
 
+async function testControlLoopJobExtractedActionContracts() {
+  const expected = {
+    "workflow.control_loop.job.requeue.preview": "workflowControlLoopJobRequeuePreview",
+    "workflow.control_loop.job.retry.preview": "workflowControlLoopJobRequeuePreview",
+    "workflow.control-loop.job.requeue.preview": "workflowControlLoopJobRequeuePreview",
+    "workflow.job.requeue.preview": "workflowControlLoopJobRequeuePreview",
+    "control_loop.job.requeue.preview": "workflowControlLoopJobRequeuePreview",
+    "workflow.control_loop.job.requeue": "workflowControlLoopJobRequeue",
+    "workflow.control_loop.job.retry": "workflowControlLoopJobRequeue",
+    "workflow.control-loop.job.requeue": "workflowControlLoopJobRequeue",
+    "workflow.job.requeue": "workflowControlLoopJobRequeue",
+    "control_loop.job.requeue": "workflowControlLoopJobRequeue"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(CONTROL_LOOP_JOB_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted control-loop job registry`);
+    assert.equal(CONTROL_LOOP_JOB_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowControlLoopJobRequeuePreview, "function");
+  assert.equal(typeof workflowControlLoopJobRequeue, "function");
+  const directRegistry = createControlLoopJobActionRegistry({
+    workflowControlLoopJobRequeuePreview,
+    workflowControlLoopJobRequeue
+  });
+  assert.equal(directRegistry.get("workflow.control_loop.job.requeue.preview"), workflowControlLoopJobRequeuePreview);
+  assert.equal(directRegistry.get("workflow.control_loop.job.requeue"), workflowControlLoopJobRequeue);
+
+  const root = await tempRoot("control-loop-job-extracted-contracts");
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId: "wf-control-loop-job-contract",
+    status: "active",
+    summary: "Control loop job extracted contract"
+  });
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at)
+VALUES ('job-control-loop-extracted', 'runtime_drain', 'runtime_drain:contract', 'high', 'failed', 'wf-control-loop-job-contract', 'hermers', '{"dispatchId":"dispatch-contract"}', '{"error":"failed"}', 2, 5, '2026-06-01T00:00:00.000Z', '', '', 'failed contract', '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:01.000Z', '2026-06-01T00:00:02.000Z');`);
+
+  const preview = await workflowControlLoopJobRequeuePreview(root, {
+    jobId: "job-control-loop-extracted",
+    operatorReason: "contract preview"
+  });
+  assert.equal(preview.schemaVersion, "workflow_control_loop_job_requeue_preview.v1");
+  assert.equal(preview.action, "workflow.control_loop.job.requeue.preview");
+  assert.equal(preview.eligible, true);
+  assert.equal(preview.governanceReady, true);
+  assert.equal(preview.currentJob.jobId, "job-control-loop-extracted");
+
+  const requeued = await runAction(root, {
+    action: "workflow.control_loop.job.retry",
+    jobId: "job-control-loop-extracted",
+    operatorReason: "contract retry alias",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex"
+  });
+  assert.equal(requeued.schemaVersion, "workflow_control_loop_job_requeue_result.v1");
+  assert.equal(requeued.action, "workflow.control_loop.job.requeue");
+  assert.equal(requeued.jobId, "job-control-loop-extracted");
+  assert.equal(requeued.status, "queued");
+  assert.equal(requeued.currentJob.status, "queued");
+  assert.equal(requeued.didRunJob, false);
+  assert.equal(requeued.didDispatchAgent, false);
+  assert.equal(sqliteCount(dbFile, "control_loop_jobs", "job_id='job-control-loop-extracted' AND status='queued' AND attempt=0 AND lease_owner='' AND lease_until=''"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_events", "event_type='control_loop.job.requeued' AND workflow_id='wf-control-loop-job-contract'"), 1);
+}
+
 async function makeFakeOpenClaw(root, name, mode) {
   const file = path.join(root, name);
   const body = mode === "health-degraded"
@@ -16906,6 +16979,7 @@ try {
     ["workflow intervention execution", testWorkflowInterventionExecution],
     ["workflow verification results", testWorkflowVerificationResults],
     ["control_loop job requeue", testControlLoopJobRequeue],
+    ["control_loop job extracted action contracts", testControlLoopJobExtractedActionContracts],
     ["workflow evaluator evidence", testWorkflowEvaluatorEvidence],
     ["human_gate pending cleanup/retry", testHumanGatePendingCleanupAndRetryRedaction],
     ["human_gate ensure invalid buttons superseded", testHumanGateEnsureSupersedesInvalidExistingButtons],
