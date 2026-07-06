@@ -46,6 +46,7 @@ import {
   VERIFICATION_ACTION_REGISTRY,
   WORKFLOW_RUN_ACTION_REGISTRY,
   WORKFLOW_TASK_ACTION_REGISTRY,
+  WORKFLOW_TASK_DRAFT_ACTION_REGISTRY,
   WORKFLOW_SWARM_ACTION_REGISTRY,
   cat_clawAudit,
   humanGateInbox,
@@ -104,6 +105,7 @@ import {
   workflowStatus,
   workflowSwarmPlan,
   workflowTaskCreate,
+  workflowTaskDraft,
   workflowTaskList,
   workflowTaskUpdate,
   workflowTopology,
@@ -225,6 +227,10 @@ import {
   WORKFLOW_TASK_ACTION_HANDLER_NAMES,
   createWorkflowTaskActionRegistry
 } from "../src/workflow-task-actions.js";
+import {
+  WORKFLOW_TASK_DRAFT_ACTION_HANDLER_NAMES,
+  createWorkflowTaskDraftActionRegistry
+} from "../src/workflow-task-draft-actions.js";
 import {
   WORKFLOW_SWARM_ACTION_HANDLER_NAMES,
   createWorkflowSwarmActionRegistry
@@ -2820,6 +2826,51 @@ LIMIT 1;`)[0];
     () => workflowTaskUpdate(root, { taskId: "missing-task" }),
     /workflow task not found: missing-task/
   );
+}
+
+async function testWorkflowTaskDraftExtractedActionContracts() {
+  const expected = {
+    "workflow.task.draft": "workflowTaskDraft",
+    "workflow.task.preview": "workflowTaskDraft",
+    "workflow.task.create.preview": "workflowTaskDraft",
+    "workflow.meeting_task.draft": "workflowTaskDraft"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(WORKFLOW_TASK_DRAFT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted workflow task draft registry`);
+    assert.equal(WORKFLOW_TASK_DRAFT_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowTaskDraft, "function");
+  const directRegistry = createWorkflowTaskDraftActionRegistry({ workflowTaskDraft });
+  assert.equal(directRegistry.get("workflow.task.draft"), workflowTaskDraft);
+  assert.equal(directRegistry.get("workflow.task.preview"), workflowTaskDraft);
+  assert.equal(directRegistry.get("workflow.task.create.preview"), workflowTaskDraft);
+  assert.equal(directRegistry.get("workflow.meeting_task.draft"), workflowTaskDraft);
+
+  const root = await tempRoot("workflow-task-draft-extracted-contracts");
+  const direct = await workflowTaskDraft(root, {
+    workflowId: "wf-task-draft-contract",
+    objective: "Preview extracted task draft contract.",
+    participants: ["cat_eyes", "cat_ears"],
+    requiresHumanGate: false
+  });
+  assert.equal(direct.operation, "workflow.task.draft");
+  assert.equal(direct.dryRun, true);
+  assert.equal(direct.mutated, false);
+  assert.equal(direct.spec.workflowId, "wf-task-draft-contract");
+  assert.equal(direct.spec.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
+  assert.equal(direct.spec.governance.humanGateRequired, false);
+  assert.equal(await pathExists(path.join(root, "tracking.db")), false);
+
+  const alias = await runAction(root, {
+    action: "workflow.task.preview",
+    workflowId: "wf-task-draft-alias-contract",
+    objective: "Preview extracted task draft alias contract.",
+    participant: "cat_body",
+    humanGateRequired: false
+  });
+  assert.equal(alias.operation, "workflow.task.draft");
+  assert.equal(alias.spec.workflowId, "wf-task-draft-alias-contract");
+  assert.equal(alias.spec.planSpecV2.humanGatePolicy.required, false);
 }
 
 async function testWorkflowSwarmExtractedActionContracts() {
@@ -18158,6 +18209,7 @@ try {
     ["workflow operations console audit", testWorkflowOperationsConsoleAudit],
     ["workflow run extracted action contracts", testWorkflowRunExtractedActionContracts],
     ["workflow task extracted action contracts", testWorkflowTaskExtractedActionContracts],
+    ["workflow task draft extracted action contracts", testWorkflowTaskDraftExtractedActionContracts],
     ["workflow swarm extracted action contracts", testWorkflowSwarmExtractedActionContracts],
     ["workflow intervention previews", testWorkflowInterventionPreviews],
     ["intervention extracted action contracts", testInterventionExtractedActionContracts],
