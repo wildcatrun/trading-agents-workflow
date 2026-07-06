@@ -24,6 +24,7 @@ import {
   HUMAN_GATE_ACTION_REGISTRY,
   INCIDENT_ACTION_REGISTRY,
   INTERVENTION_ACTION_REGISTRY,
+  MEETING_DISPATCH_ACTION_REGISTRY,
   MEETING_INGEST_ACTION_REGISTRY,
   MEETING_PARTICIPANT_ACTION_REGISTRY,
   MESSAGE_FLOW_ACTION_REGISTRY,
@@ -74,6 +75,7 @@ import {
   workflowInit,
   workflowInterventionExecute,
   workflowInterventionPreview,
+  meetingDispatch,
   meetingIngest,
   meetingRuntimeParticipant,
   workflowPermissionCheck,
@@ -138,6 +140,10 @@ import {
   MEETING_INGEST_ACTION_HANDLER_NAMES,
   createMeetingIngestActionRegistry
 } from "../src/meeting-ingest-actions.js";
+import {
+  MEETING_DISPATCH_ACTION_HANDLER_NAMES,
+  createMeetingDispatchActionRegistry
+} from "../src/meeting-dispatch-actions.js";
 import {
   MEETING_PARTICIPANT_ACTION_HANDLER_NAMES,
   createMeetingParticipantActionRegistry
@@ -10386,6 +10392,102 @@ LIMIT 1;`)[0];
   );
 }
 
+async function testMeetingDispatchExtractedActionContracts() {
+  assert.equal(MEETING_DISPATCH_ACTION_REGISTRY.has("meeting.dispatch"), true, "meeting.dispatch should be registered in the extracted meeting dispatch registry");
+  assert.equal(MEETING_DISPATCH_ACTION_HANDLER_NAMES["meeting.dispatch"], "meetingDispatch");
+  assert.equal(typeof meetingDispatch, "function");
+  const directRegistry = createMeetingDispatchActionRegistry({ meetingDispatch });
+  assert.equal(directRegistry.get("meeting.dispatch"), meetingDispatch);
+
+  const root = await tempRoot("meeting-dispatch-extracted-contracts");
+  await runtimeAgentUpsert(root, {
+    runtime: "hermers",
+    platform: "hermers",
+    agentId: "cat_body",
+    displayName: "Cat Body",
+    role: "developer",
+    endpointRef: "hermers-profile:catbody",
+    executionAdapter: "acp",
+    imIngressOwner: "openclaw_gateway",
+    imIngressAdapter: "openclaw_route_shell",
+    workflowIngressAdapter: "acp",
+    imIdentity: "openclaw_route_shell",
+    executionIdentity: "hermers_acp",
+    returnPolicy: "reply_to_source_chat",
+    routingPolicy: { primary: true, routingRank: 1 }
+  });
+
+  const direct = await meetingDispatch(root, {
+    meetingId: "meeting-dispatch-contract",
+    workflowId: "workflow-dispatch-contract",
+    traceId: "trace-dispatch-contract",
+    idempotencyKey: "idem-dispatch-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    dispatchType: "discussion_turn",
+    prompt: "Meeting dispatch extracted contract body.",
+    sourceChannel: "telegram",
+    accountId: "cat_claw",
+    chatId: "-100123456",
+    senderId: "8390724843",
+    sourceMessageId: "msg-dispatch-contract",
+    returnPolicy: "reply_to_source_chat",
+    priority: "high",
+    maxAttempts: 3,
+    payload: { source: "direct_export" }
+  });
+  assert.equal(direct.meetingId, "meeting-dispatch-contract");
+  assert.equal(direct.workflowId, "workflow-dispatch-contract");
+  assert.equal(direct.traceId, "trace-dispatch-contract");
+  assert.equal(direct.idempotencyKey, "idem-dispatch-contract");
+  assert.equal(direct.runtime, "hermers");
+  assert.equal(direct.platform, "hermers");
+  assert.equal(direct.agentId, "cat_body");
+  assert.equal(direct.status, "queued");
+  assert.equal(direct.returnPolicy, "reply_to_source_chat");
+  assert.equal(typeof direct.messageFlowId, "string");
+  assert.equal(direct.messageFlowId.length > 0, true);
+  assert.equal(await pathExists(path.join(root, direct.relativePath)), true);
+
+  const dbFile = direct.dbFile;
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", `dispatch_id='${direct.dispatchId}' AND runtime='hermers' AND agent_id='cat_body' AND dispatch_type='discussion_turn' AND priority='high' AND max_attempts=3`), 1);
+  assert.equal(sqliteCount(dbFile, "message_flows", `flow_id='${direct.messageFlowId}' AND dispatch_id='${direct.dispatchId}' AND status='route_registered' AND return_policy='reply_to_source_chat' AND target_runtime='hermers'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_events", `event_type='dispatch.created' AND dispatch_id='${direct.dispatchId}'`), 1);
+
+  const deduped = await runAction(root, {
+    action: "meeting.dispatch",
+    meetingId: "meeting-dispatch-contract",
+    workflowId: "workflow-dispatch-contract",
+    traceId: "trace-dispatch-contract",
+    idempotencyKey: "idem-dispatch-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    prompt: "Meeting dispatch extracted contract body.",
+    sourceChannel: "telegram",
+    accountId: "cat_claw",
+    chatId: "-100123456",
+    senderId: "8390724843",
+    sourceMessageId: "msg-dispatch-contract",
+    returnPolicy: "reply_to_source_chat"
+  });
+  assert.equal(deduped.deduped, true);
+  assert.equal(deduped.dispatchId, direct.dispatchId);
+  assert.equal(deduped.runtime, "hermers");
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "idempotency_key='idem-dispatch-contract'"), 1);
+
+  await assert.rejects(
+    () => meetingDispatch(root, {
+      meetingId: "meeting-dispatch-contract",
+      workflowId: "workflow-dispatch-contract",
+      runtime: "hermers",
+      agentId: "cat_body",
+      prompt: "missing return path",
+      returnPolicy: "reply_to_source_chat"
+    }),
+    /requires source_channel, account_id, chat_id, sender_id, source_message_id/
+  );
+}
+
 async function testRouteShellExtractedActionContracts() {
   const expectedHandlers = {
     "route_shell.ingest": "routeShellIngest",
@@ -17792,6 +17894,7 @@ try {
     ["runtime agent extracted action contracts", testRuntimeAgentExtractedActionContracts],
     ["meeting participant extracted action contracts", testMeetingParticipantExtractedActionContracts],
     ["meeting ingest extracted action contracts", testMeetingIngestExtractedActionContracts],
+    ["meeting dispatch extracted action contracts", testMeetingDispatchExtractedActionContracts],
     ["route_shell extracted action contracts", testRouteShellExtractedActionContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],
