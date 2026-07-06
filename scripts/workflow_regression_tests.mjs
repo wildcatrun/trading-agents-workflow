@@ -29,6 +29,7 @@ import {
   PERMISSION_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
   RESEARCH_ACTION_REGISTRY,
+  ROUTE_SHELL_ACTION_REGISTRY,
   RUNTIME_AGENT_ACTION_REGISTRY,
   RUNTIME_EVENT_ACTION_REGISTRY,
   SCHEDULE_ACTION_REGISTRY,
@@ -53,6 +54,7 @@ import {
   radarUpdate,
   researchEvidence,
   researchMemo,
+  routeShellIngest,
   sideEffectRecord,
   telegramLiveConfigure,
   telegramOutbox,
@@ -146,6 +148,10 @@ import {
   RESEARCH_ACTION_HANDLER_NAMES,
   createResearchActionRegistry
 } from "../src/research-actions.js";
+import {
+  ROUTE_SHELL_ACTION_HANDLER_NAMES,
+  createRouteShellActionRegistry
+} from "../src/route-shell-actions.js";
 import {
   RUNTIME_AGENT_ACTION_HANDLER_NAMES,
   createRuntimeAgentActionRegistry
@@ -10374,6 +10380,187 @@ LIMIT 1;`)[0];
   );
 }
 
+async function testRouteShellExtractedActionContracts() {
+  const expectedHandlers = {
+    "route_shell.ingest": "routeShellIngest",
+    "route-shell.ingest": "routeShellIngest",
+    "route_shell.route": "routeShellIngest"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(ROUTE_SHELL_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted route_shell registry`);
+    assert.equal(ROUTE_SHELL_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof routeShellIngest, "function");
+  const directRegistry = createRouteShellActionRegistry({ routeShellIngest });
+  assert.equal(directRegistry.get("route_shell.ingest"), routeShellIngest);
+  assert.equal(directRegistry.get("route-shell.ingest"), routeShellIngest);
+  assert.equal(directRegistry.get("route_shell.route"), routeShellIngest);
+
+  const root = await tempRoot("route-shell-extracted-contracts");
+  await runtimeAgentUpsert(root, {
+    runtime: "hermers",
+    platform: "hermers",
+    agentId: "cat_body",
+    displayName: "Cat Body",
+    role: "developer",
+    endpointRef: "hermers-profile:catbody",
+    executionAdapter: "acp",
+    imIngressOwner: "openclaw_gateway",
+    imIngressAdapter: "openclaw_route_shell",
+    workflowIngressAdapter: "acp",
+    imIdentity: "openclaw_route_shell",
+    executionIdentity: "hermers_acp",
+    returnPolicy: "reply_to_source_chat",
+    routingPolicy: { primary: true, routingRank: 1 }
+  });
+  await runtimeAgentUpsert(root, {
+    runtime: "openclaw_route_shell",
+    platform: "openclaw",
+    agentId: "cat_body",
+    displayName: "Cat Body Route Shell",
+    role: "ingress",
+    endpointRef: "openclaw-route-shell:cat_body",
+    executionAdapter: "route_shell",
+    imIngressOwner: "openclaw_gateway",
+    imIngressAdapter: "openclaw_route_shell",
+    workflowIngressAdapter: "route_shell",
+    imIdentity: "openclaw_route_shell",
+    executionIdentity: "openclaw_route_shell",
+    returnPolicy: "silent",
+    canReceiveDispatch: false
+  });
+
+  const direct = await routeShellIngest(root, {
+    routeAgentId: "cat_body",
+    meetingId: "route-shell-contract",
+    workflowId: "workflow-route-shell-contract",
+    text: "Route shell extracted contract body.",
+    sourceChannel: "telegram",
+    accountId: "cat_claw",
+    chatId: "-100123456",
+    senderId: "8390724843",
+    sourceMessageId: "tg-route-shell-contract-1",
+    payload: { source: "direct_export" }
+  });
+  assert.equal(direct.ok, true);
+  assert.equal(direct.status, "queued");
+  assert.equal(direct.routeAgentId, "cat_body");
+  assert.equal(direct.runtime, "hermers");
+  assert.equal(direct.agentId, "cat_body");
+  assert.equal(direct.targetPlatform, "hermers");
+  assert.equal(direct.workflowIngressAdapter, "acp");
+  assert.equal(direct.ingressMessageId, "tg-route-shell-contract-1");
+  assert.equal(direct.ackText.startsWith("ROUTE_REGISTERED\n"), true);
+
+  const dbFile = direct.dbFile;
+  const flowRow = sqliteJson(dbFile, `
+SELECT status, dispatch_id AS dispatchId, route_runtime AS routeRuntime, target_runtime AS targetRuntime, return_policy AS returnPolicy
+FROM message_flows
+WHERE flow_id='${direct.messageFlowId}'
+LIMIT 1;`)[0];
+  assert.deepEqual(flowRow, {
+    status: "route_registered",
+    dispatchId: direct.dispatchId,
+    routeRuntime: "openclaw_route_shell",
+    targetRuntime: "hermers",
+    returnPolicy: "reply_to_source_chat"
+  });
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_messages", "message_id='tg-route-shell-contract-1' AND message_type='route_shell_ingress' AND phase='route_shell'"), 1);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", `dispatch_id='${direct.dispatchId}' AND runtime='hermers' AND dispatch_type='route_shell_forward' AND status='queued'`), 1);
+
+  const deduped = await runAction(root, {
+    action: "route-shell.ingest",
+    routeAgentId: "cat_body",
+    meetingId: "route-shell-contract",
+    workflowId: "workflow-route-shell-contract",
+    text: "Route shell extracted contract body.",
+    sourceChannel: "telegram",
+    accountId: "cat_claw",
+    chatId: "-100123456",
+    senderId: "8390724843",
+    sourceMessageId: "tg-route-shell-contract-1"
+  });
+  assert.equal(deduped.ok, true);
+  assert.equal(deduped.deduped, true);
+  assert.equal(deduped.dispatchId, direct.dispatchId);
+  assert.equal(deduped.messageFlowStatus, "route_registered");
+
+  const alias = await runAction(root, {
+    action: "route_shell.route",
+    routeAgentId: "cat_body",
+    meetingId: "route-shell-contract-alias",
+    workflowId: "workflow-route-shell-contract",
+    text: "Route shell alias contract body.",
+    sourceChannel: "telegram",
+    accountId: "cat_claw",
+    chatId: "-100123456",
+    senderId: "8390724843",
+    sourceMessageId: "tg-route-shell-contract-2"
+  });
+  assert.equal(alias.ok, true);
+  assert.equal(alias.routeRuntime, "openclaw_route_shell");
+  assert.equal(alias.runtime, "hermers");
+
+  const dispatchRedirect = await runAction(root, {
+    action: "meeting.dispatch",
+    runtime: "openclaw_route_shell",
+    agentId: "cat_body",
+    meetingId: "route-shell-contract-dispatch",
+    workflowId: "workflow-route-shell-contract",
+    prompt: "Meeting dispatch route shell contract body.",
+    sourceChannel: "telegram",
+    accountId: "cat_claw",
+    chatId: "-100123456",
+    senderId: "8390724843",
+    sourceMessageId: "tg-route-shell-contract-3"
+  });
+  assert.equal(dispatchRedirect.ok, true);
+  assert.equal(dispatchRedirect.routeRuntime, "openclaw_route_shell");
+  assert.equal(dispatchRedirect.runtime, "hermers");
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", `dispatch_id='${dispatchRedirect.dispatchId}' AND runtime='hermers' AND dispatch_type='route_shell_forward'`), 1);
+
+  await runtimeAgentUpsert(root, {
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "cat_body",
+    displayName: "Cat Body OpenClaw Target",
+    role: "legacy-target",
+    endpointRef: "openclaw-agent:cat_body",
+    executionAdapter: "native",
+    imIngressOwner: "openclaw_gateway",
+    imIngressAdapter: "openclaw_native",
+    workflowIngressAdapter: "openclaw_native",
+    imIdentity: "openclaw_native",
+    executionIdentity: "openclaw_native",
+    returnPolicy: "silent",
+    routingPolicy: { routingRank: 20 }
+  });
+  const successBin = await makeFakeOpenClaw(root, "fake-route-shell-openclaw-success.mjs", "success");
+  const drained = await routeShellIngest(root, {
+    routeAgentId: "cat_body",
+    targetPlatform: "openclaw",
+    meetingId: "route-shell-contract-drain",
+    workflowId: "workflow-route-shell-contract",
+    text: "Route shell drainNow contract body.",
+    sourceMessageId: "tg-route-shell-contract-4",
+    openclawBin: successBin,
+    drainNow: true
+  });
+  assert.equal(drained.ok, true);
+  assert.equal(drained.runtime, "openclaw");
+  assert.equal(drained.drainResult.results[0].status, "acked");
+  assert.equal(sqliteCount(dbFile, "message_flows", `flow_id='${drained.messageFlowId}' AND status='runtime_completed' AND dispatch_id='${drained.dispatchId}'`), 1);
+
+  const failed = await routeShellIngest(root, {
+    routeAgentId: "cat_nose",
+    text: "Route shell target missing should fail with an ack."
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.status, "route_failed");
+  assert.equal(failed.ackText.includes("ROUTE_FAILED"), true);
+  assert.equal(failed.ackText.includes("active registry row with imIngressOwner=openclaw_gateway"), true);
+}
+
 async function testTopologyExtractedActionContracts() {
   const expectedHandlers = {
     "workflow.topology": "workflowTopology",
@@ -17563,6 +17750,7 @@ try {
     ["runtime agent extracted action contracts", testRuntimeAgentExtractedActionContracts],
     ["meeting participant extracted action contracts", testMeetingParticipantExtractedActionContracts],
     ["meeting ingest extracted action contracts", testMeetingIngestExtractedActionContracts],
+    ["route_shell extracted action contracts", testRouteShellExtractedActionContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],
     ["permission extracted action contracts", testPermissionExtractedActionContracts],
