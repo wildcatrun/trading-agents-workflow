@@ -47,6 +47,7 @@ import {
   WORKFLOW_RUN_ACTION_REGISTRY,
   WORKFLOW_TASK_ACTION_REGISTRY,
   WORKFLOW_TASK_DRAFT_ACTION_REGISTRY,
+  WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY,
   WORKFLOW_SWARM_ACTION_REGISTRY,
   cat_clawAudit,
   humanGateInbox,
@@ -106,6 +107,10 @@ import {
   workflowSwarmPlan,
   workflowTaskCreate,
   workflowTaskDraft,
+  workflowTaskLaunchApprove,
+  workflowTaskLaunchList,
+  workflowTaskLaunchPrepare,
+  workflowTaskLaunchReview,
   workflowTaskList,
   workflowTaskUpdate,
   workflowTopology,
@@ -231,6 +236,10 @@ import {
   WORKFLOW_TASK_DRAFT_ACTION_HANDLER_NAMES,
   createWorkflowTaskDraftActionRegistry
 } from "../src/workflow-task-draft-actions.js";
+import {
+  WORKFLOW_TASK_LAUNCH_ACTION_HANDLER_NAMES,
+  createWorkflowTaskLaunchActionRegistry
+} from "../src/workflow-task-launch-actions.js";
 import {
   WORKFLOW_SWARM_ACTION_HANDLER_NAMES,
   createWorkflowSwarmActionRegistry
@@ -2871,6 +2880,89 @@ async function testWorkflowTaskDraftExtractedActionContracts() {
   assert.equal(alias.operation, "workflow.task.draft");
   assert.equal(alias.spec.workflowId, "wf-task-draft-alias-contract");
   assert.equal(alias.spec.planSpecV2.humanGatePolicy.required, false);
+}
+
+async function testWorkflowTaskLaunchExtractedActionContracts() {
+  const expected = {
+    "workflow.task.launch.prepare": "workflowTaskLaunchPrepare",
+    "workflow.task.launch.draft": "workflowTaskLaunchPrepare",
+    "workflow.task.launch.submit": "workflowTaskLaunchPrepare",
+    "workflow.task.launch.list": "workflowTaskLaunchList",
+    "workflow.task.launch.review": "workflowTaskLaunchReview",
+    "workflow.task.launch.brain_review": "workflowTaskLaunchReview",
+    "workflow.task.launch.approve": "workflowTaskLaunchApprove"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
+    assert.equal(WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted workflow task launch registry`);
+    assert.equal(WORKFLOW_TASK_LAUNCH_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
+  }
+  assert.equal(typeof workflowTaskLaunchPrepare, "function");
+  assert.equal(typeof workflowTaskLaunchList, "function");
+  assert.equal(typeof workflowTaskLaunchReview, "function");
+  assert.equal(typeof workflowTaskLaunchApprove, "function");
+  const directRegistry = createWorkflowTaskLaunchActionRegistry({
+    workflowTaskLaunchPrepare,
+    workflowTaskLaunchList,
+    workflowTaskLaunchReview,
+    workflowTaskLaunchApprove
+  });
+  assert.equal(directRegistry.get("workflow.task.launch.prepare"), workflowTaskLaunchPrepare);
+  assert.equal(directRegistry.get("workflow.task.launch.draft"), workflowTaskLaunchPrepare);
+  assert.equal(directRegistry.get("workflow.task.launch.submit"), workflowTaskLaunchPrepare);
+  assert.equal(directRegistry.get("workflow.task.launch.list"), workflowTaskLaunchList);
+  assert.equal(directRegistry.get("workflow.task.launch.review"), workflowTaskLaunchReview);
+  assert.equal(directRegistry.get("workflow.task.launch.brain_review"), workflowTaskLaunchReview);
+  assert.equal(directRegistry.get("workflow.task.launch.approve"), workflowTaskLaunchApprove);
+
+  const root = await tempRoot("workflow-task-launch-extracted-contracts");
+  const draftId = "tlp-task-launch-contract";
+  const workflowId = "wf-task-launch-contract";
+  const prepared = await workflowTaskLaunchPrepare(root, {
+    draftId,
+    workflowId,
+    objective: "Exercise extracted workflow task launch contracts.",
+    participants: ["cat_body"],
+    requiresHumanGate: false
+  });
+  assert.equal(prepared.operation, "workflow.task.launch.prepare");
+  assert.equal(prepared.status, "pending_cat_brain_review");
+  assert.equal(prepared.draftId, draftId);
+  assert.equal(prepared.workflowId, workflowId);
+  assert.equal(Boolean(prepared.artifacts.canonicalJson), true);
+  assert.equal(Boolean(prepared.artifacts.markdown), true);
+
+  const listed = await workflowTaskLaunchList(root, { workflowId });
+  assert.equal(listed.count, 1);
+  assert.equal(listed.taskLaunches[0].draftId, draftId);
+
+  const reviewed = await workflowTaskLaunchReview(root, {
+    draftId,
+    reviewerAgent: "main",
+    status: "approved",
+    reviewOpinion: "Extracted task launch review approved."
+  });
+  assert.equal(reviewed.status, "pending_flashcat_launch");
+  assert.equal(reviewed.reviewStatus, "approved");
+
+  await assert.rejects(
+    () => workflowTaskLaunchApprove(root, { draftId }),
+    /Flashcat original words/
+  );
+  const approved = await workflowTaskLaunchApprove(root, {
+    draftId,
+    approvedBy: "flashcat",
+    sourceSystem: "workflow_gui",
+    feedbackText: "批准启动 extracted launch contract。"
+  });
+  assert.equal(approved.status, "launched");
+  assert.equal(approved.workflowId, workflowId);
+  assert.equal(approved.materializedTasks.length > 0, true);
+  assert.equal(approved.materializedPhases.length > 0, true);
+  const dbFile = approved.dbFile;
+  assert.equal(sqliteCount(dbFile, "protocol_objects", `object_id='${draftId}' AND status='launched'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}' AND status='active'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_tasks", `workflow_id='${workflowId}'`), approved.materializedTasks.length);
+  assert.equal(sqliteCount(dbFile, "workflow_phases", `workflow_id='${workflowId}'`), approved.materializedPhases.length);
 }
 
 async function testWorkflowSwarmExtractedActionContracts() {
@@ -18210,6 +18302,7 @@ try {
     ["workflow run extracted action contracts", testWorkflowRunExtractedActionContracts],
     ["workflow task extracted action contracts", testWorkflowTaskExtractedActionContracts],
     ["workflow task draft extracted action contracts", testWorkflowTaskDraftExtractedActionContracts],
+    ["workflow task launch extracted action contracts", testWorkflowTaskLaunchExtractedActionContracts],
     ["workflow swarm extracted action contracts", testWorkflowSwarmExtractedActionContracts],
     ["workflow intervention previews", testWorkflowInterventionPreviews],
     ["intervention extracted action contracts", testInterventionExtractedActionContracts],
