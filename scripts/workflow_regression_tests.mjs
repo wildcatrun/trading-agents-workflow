@@ -42,6 +42,7 @@ import {
   SIDE_EFFECT_ACTION_REGISTRY,
   STATUS_ACTION_REGISTRY,
   TELEGRAM_LIVE_ACTION_REGISTRY,
+  TELEGRAM_OUTBOX_ACTION_HANDLERS,
   TELEGRAM_OUTBOX_ACTION_REGISTRY,
   TOPOLOGY_ACTION_REGISTRY,
   TRADE_ACTION_REGISTRY,
@@ -10389,6 +10390,58 @@ VALUES
   assert.equal(gatewayWriteAliasReplay.result.schemaVersion, "telegram_outbox_delivery_result.v1");
   assert.equal(gatewayWriteAliasReplay.result.idempotentReplay, true);
   assert.equal(gatewayWriteAliasReplay.result.didSendTelegram, false);
+
+  const enqueuePaths = { root, dbFile, telegramDir: path.join(root, "bridge", "telegram") };
+  const inserted = await TELEGRAM_OUTBOX_ACTION_HANDLERS.enqueueTelegramOutbox(enqueuePaths, {
+    outboxId: "outbox-extracted-enqueue-insert",
+    meetingId: "workflow-outbox-contract",
+    targetKind: "private",
+    targetRef: "8390724843",
+    messageType: "internal_notice",
+    text: "enqueue insert contract",
+    payload: { account: "cat_claw", source: "focused_enqueue_contract" }
+  });
+  assert.deepEqual(inserted, { outboxId: "outbox-extracted-enqueue-insert", status: "queued" });
+  assert.equal(sqliteCount(dbFile, "telegram_outbox", "outbox_id='outbox-extracted-enqueue-insert' AND status='queued'"), 1);
+  const insertArtifact = JSON.parse(await fs.readFile(path.join(root, "bridge", "telegram", "outbox", "outbox-extracted-enqueue-insert.json"), "utf8"));
+  assert.equal(insertArtifact.outboxId, "outbox-extracted-enqueue-insert");
+  assert.equal(insertArtifact.targetRef, "8390724843");
+  const deduped = await TELEGRAM_OUTBOX_ACTION_HANDLERS.enqueueTelegramOutbox(enqueuePaths, {
+    outboxId: "outbox-extracted-enqueue-insert",
+    meetingId: "workflow-outbox-contract",
+    targetKind: "private",
+    targetRef: "8390724843",
+    messageType: "internal_notice",
+    text: "enqueue dedup contract",
+    payload: { account: "cat_claw" }
+  });
+  assert.deepEqual(deduped, { outboxId: "outbox-extracted-enqueue-insert", status: "queued", deduped: true });
+  assert.equal(sqliteCount(dbFile, "telegram_outbox", "outbox_id='outbox-extracted-enqueue-insert'"), 1);
+
+  for (const previousStatus of ["failed", "cancelled"]) {
+    const outboxId = `outbox-extracted-enqueue-requeue-${previousStatus}`;
+    sqliteExec(dbFile, `
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES ('${outboxId}', 'workflow-outbox-contract', 'private', '', 'human_gate_request', '${previousStatus}', 'old human gate request', '{"account":"cat_claw"}', '${createdAt}', '${createdAt}');`);
+    const requeued = await TELEGRAM_OUTBOX_ACTION_HANDLERS.enqueueTelegramOutbox(enqueuePaths, {
+      outboxId,
+      meetingId: "workflow-outbox-contract",
+      targetKind: "private",
+      targetRef: "8390724843",
+      messageType: "human_gate_request",
+      status: "queued",
+      text: `requeued human gate request from ${previousStatus}`,
+      payload: { account: "cat_claw", humanGateId: `hgate-${previousStatus}` }
+    });
+    assert.deepEqual(requeued, { outboxId, status: "queued", deduped: true, requeued: true, previousStatus });
+    const row = sqliteJson(dbFile, `SELECT status, target_ref, text FROM telegram_outbox WHERE outbox_id='${outboxId}' LIMIT 1;`)[0];
+    assert.equal(row.status, "queued");
+    assert.equal(row.target_ref, "8390724843");
+    assert.match(row.text, /requeued human gate request/);
+    const artifact = JSON.parse(await fs.readFile(path.join(root, "bridge", "telegram", "outbox", `${outboxId}.json`), "utf8"));
+    assert.equal(artifact.requeuedFromStatus, previousStatus);
+    assert.equal(artifact.targetRef, "8390724843");
+  }
 }
 
 async function testHumanGateInboxExtractedActionContracts() {

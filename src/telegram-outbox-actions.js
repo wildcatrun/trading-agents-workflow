@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import https from "node:https";
 import net from "node:net";
+import path from "node:path";
 import tls from "node:tls";
 import { promisify } from "node:util";
 import {
@@ -293,10 +294,70 @@ export function createTelegramOutboxActionHandlers(context = {}) {
   const nowIso = requireContextFunction(context, "nowIso");
   const resolveTelegramBotToken = requireContextFunction(context, "resolveTelegramBotToken");
   const updateMessageFlowFromTelegramDelivery = requireContextFunction(context, "updateMessageFlowFromTelegramDelivery");
+  const writeJsonArtifact = requireContextFunction(context, "writeJsonArtifact");
   const HUMAN_GATE_APPROVE_OPTION_MAX = requireContextValue(context, "HUMAN_GATE_APPROVE_OPTION_MAX");
   const HUMAN_GATE_APPROVE_OPTION_MIN = requireContextValue(context, "HUMAN_GATE_APPROVE_OPTION_MIN");
   const TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES = requireContextValue(context, "TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES");
   const TELEGRAM_OUTBOX_DELIVERY_LEASE_MS = requireContextValue(context, "TELEGRAM_OUTBOX_DELIVERY_LEASE_MS");
+
+  async function enqueueTelegramOutbox(paths, input) {
+    const outboxId = input.outboxId || input.outbox_id || safeId("tg");
+    const createdAt = nowIso();
+    const payload = parseJsonValue(input.payload, input.payload || {});
+    const messageType = input.messageType || input.message_type || "meeting_live";
+    const status = input.status || "queued";
+    const targetRef = input.targetRef || input.target_ref || "";
+    if (TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES.has(String(messageType)) && ["queued", "delivering"].includes(String(status)) && !String(targetRef || "").trim()) {
+      throw new Error(`telegram_outbox target_ref is required for ${messageType}`);
+    }
+    const existing = await sqlite(paths.dbFile, `SELECT outbox_id, status, message_type FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`, { json: true });
+    if (existing[0]) {
+      const existingStatus = String(existing[0].status || "");
+      const existingType = String(existing[0].message_type || "");
+      if (messageType === "human_gate_request" && existingType === "human_gate_request" && ["cancelled", "failed"].includes(existingStatus)) {
+        await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET meeting_id=${sqlValue(input.meetingId || input.meeting_id || "")},
+    target_kind=${sqlValue(input.targetKind || input.target_kind || "group")},
+    target_ref=${sqlValue(targetRef)},
+    status=${sqlValue(status)},
+    text=${sqlValue(input.text || "")},
+    payload_json=${sqlValue(JSON.stringify(payload))},
+    updated_at=${sqlValue(createdAt)}
+WHERE outbox_id=${sqlValue(outboxId)};`);
+        await writeJsonArtifact(paths.root, path.join(paths.telegramDir, "outbox"), outboxId, {
+          outboxId,
+          meetingId: input.meetingId || input.meeting_id || "",
+          targetKind: input.targetKind || input.target_kind || "group",
+          targetRef,
+          messageType,
+          status,
+          text: input.text || "",
+          payload,
+          createdAt,
+          updatedAt: createdAt,
+          requeuedFromStatus: existingStatus
+        });
+        return { outboxId, status, deduped: true, requeued: true, previousStatus: existingStatus };
+      }
+      return { outboxId, status: existingStatus, deduped: true };
+    }
+    await sqlite(paths.dbFile, `
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES (${sqlValue(outboxId)}, ${sqlValue(input.meetingId || input.meeting_id || "")}, ${sqlValue(input.targetKind || input.target_kind || "group")}, ${sqlValue(targetRef)}, ${sqlValue(messageType)}, ${sqlValue(status)}, ${sqlValue(input.text || "")}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
+    await writeJsonArtifact(paths.root, path.join(paths.telegramDir, "outbox"), outboxId, {
+      outboxId,
+      meetingId: input.meetingId || input.meeting_id || "",
+      targetKind: input.targetKind || input.target_kind || "group",
+      targetRef,
+      messageType,
+      status,
+      text: input.text || "",
+      payload,
+      createdAt
+    });
+    return { outboxId, status };
+  }
 
   async function deliverTelegramOutboxRowViaWebApp(paths, row, input, deliveryContext) {
     const payload = deliveryContext.payload || {};
@@ -1222,6 +1283,7 @@ LIMIT ${limit};`, { json: true });
   return {
     autoDeliverReportOutbox,
     deliverTelegramOutboxRow,
+    enqueueTelegramOutbox,
     telegramOutboxDeliveryPreview,
     telegramOutboxRequeuePreview,
     telegramOutboxRequeueExecutionPackagePreview,
