@@ -11084,34 +11084,6 @@ ORDER BY updated_at ASC;`, { json: true });
   return { applied: true, artifactRef: artifact.ref, incidentCount: incidentIds.length, resolvedIncidentCount: resolved.length, resolvedIncidentIds: resolved };
 }
 
-function humanGateFeedbackText(input = {}) {
-  return String(firstText(
-    input.flashcatOriginalWords,
-    input.flashcat_original_words,
-    input.feedbackText,
-    input.feedback_text,
-    input.reviewText,
-    input.review_text,
-    input.feedback,
-    input.text,
-    input.args
-  )).trim();
-}
-
-function humanGateFeedbackRequiredReply(button = {}) {
-  const callbackToken = String(button.callback_token || button.callbackToken || "").trim();
-  const tokenText = callbackToken ? `tawhg:${callbackToken}` : "<Human Gate token>";
-  return [
-    `已记录 Human Gate 按钮选择：${button.label || ""}`,
-    "请继续发送闪电猫原话/审核意见，Human Gate 才会正式完成。",
-    "",
-    "Telegram 当前不能从普通 inline callback button 直接弹出可输入文本框；请在本聊天发送带 token 的反馈：",
-    `/hgate ${tokenText} 这里写闪电猫原话或审核意见`,
-    "",
-    "这段原话会按 token 绑定到本按钮、本事项和本 workflow，保存为“闪电猫原话”，并作为下一轮 workflow 校准方向和边界的依据。"
-  ].join("\n");
-}
-
 async function updateHumanGateRecordFeedback(paths, humanGateId, status, feedback, updatedAt) {
   const rows = await sqlite(paths.dbFile, `SELECT payload_json FROM protocol_objects WHERE object_id=${sqlValue(humanGateId)} AND object_type='human_gate_record' LIMIT 1;`, { json: true });
   if (!rows[0]) return null;
@@ -11223,35 +11195,6 @@ async function catTailPreOrderRiskAuditDispatchSpec(paths, button, feedbackText,
   };
 }
 
-function rawHumanGateCallbackToken(input = {}) {
-  const payload = input.payload && typeof input.payload === "object" ? input.payload : {};
-  return firstText(
-    input.token,
-    input.callbackToken,
-    input.callback_token,
-    input.callbackData,
-    input.callback_data,
-    payload.token,
-    payload.callbackToken,
-    payload.callback_token,
-    payload.callbackData,
-    payload.callback_data,
-    typeof input.payload === "string" ? input.payload : ""
-  );
-}
-
-function normalizeHumanGateCallbackToken(input = {}) {
-  const rawToken = rawHumanGateCallbackToken(input);
-  return rawToken.startsWith("tawhg:") ? rawToken.slice("tawhg:".length) : rawToken;
-}
-
-async function humanGateButtonRowByToken(paths, input = {}) {
-  const token = normalizeHumanGateCallbackToken(input);
-  if (!token) return null;
-  const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} LIMIT 1;`, { json: true });
-  return rows[0] || null;
-}
-
 async function humanGateRecordById(paths, humanGateId) {
   const rows = await sqlite(paths.dbFile, `
 SELECT object_id, status, source_agent, parent_object_id, path, payload_json, created_at, updated_at
@@ -11268,33 +11211,6 @@ function humanGateRecordExpiry(record = {}) {
     expiresAt,
     expired: Boolean(expiresAt && (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()))
   };
-}
-
-async function humanGateCallbackIdentityAllowed(input = {}) {
-  const senderId = String(firstText(
-    input.senderId,
-    input.sender_id,
-    input.fromUserId,
-    input.from_user_id,
-    input.userId,
-    input.user_id,
-    input.payload?.senderId,
-    input.payload?.sender_id,
-    input.payload?.fromUserId,
-    input.payload?.from_user_id,
-    input.payload?.userId,
-    input.payload?.user_id,
-    input.payload?.telegramWebApp?.userId,
-    input.payload?.telegram_web_app?.userId
-  )).trim();
-  const sourceSystem = String(firstText(input.sourceSystem, input.source_system, input.source, input.payload?.source)).trim().toLowerCase();
-  const requiresSender = /(telegram|web[_-]?app|callback[_-]?query|bot|wecom|im_adapter)/.test(sourceSystem);
-  if (!senderId && requiresSender) return { ok: false, senderId: "", reason: "telegram_sender_id_required" };
-  if (!senderId) return { ok: true, senderId: "", reason: "no_sender_id_supplied" };
-  const webApp = await humanGateWebAppConfig(input);
-  const allowed = webApp.allowedTelegramUserIds.length ? webApp.allowedTelegramUserIds : [DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID];
-  if (!allowed.includes(senderId)) return { ok: false, senderId, reason: "telegram_user_not_allowed", allowedTelegramUserIds: allowed };
-  return { ok: true, senderId, reason: "" };
 }
 
 async function recoverAckedMessageFlowSemanticContinuations(paths, input = {}) {
@@ -11956,24 +11872,18 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   humanGateBody,
   humanGateButtonDisplayLabel,
   humanGateButtonFromRow,
-  humanGateButtonRowByToken,
   humanGateButtonSpecs,
   humanGateButtonTelegramStyle,
-  humanGateCallbackIdentityAllowed,
-  humanGateFeedbackRequiredReply,
-  humanGateFeedbackText,
   humanGateRecordById,
   humanGateRecordExpiry,
   humanGateStageKey,
   humanGateSummary,
   humanGateTelegramArtifacts,
   humanGateWebAppConfig,
-  normalizeHumanGateCallbackToken,
   normalizeMeetingRef,
   normalizeRequester,
   nowIso,
   pendingHumanGateForStage,
-  rawHumanGateCallbackToken,
   protocolRecord: (...args) => protocolRecord(...args),
   relativeTo,
   renderHumanGateInboxHtml,
