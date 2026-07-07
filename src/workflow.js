@@ -10125,26 +10125,6 @@ function humanGateButtonOptions(input = {}) {
   return withHumanGateControlButtons(options, {}, input, input);
 }
 
-function humanGateStageKey(input = {}, workflowId = "", gateType = "", parentObjectId = "") {
-  const explicit = firstText(
-    input.humanGateStageKey,
-    input.human_gate_stage_key,
-    input.stageKey,
-    input.stage_key,
-    input.workflowStage,
-    input.workflow_stage,
-    input.stage,
-    input.phase
-  );
-  if (explicit) return cleanFileSegment(explicit);
-  const taskId = firstText(input.taskId, input.task_id);
-  if (taskId) return `task:${cleanFileSegment(taskId)}`;
-  const dispatchId = firstText(input.dispatchId, input.dispatch_id);
-  if (dispatchId) return `dispatch:${cleanFileSegment(dispatchId)}`;
-  const parent = firstText(parentObjectId, workflowId);
-  return `workflow:${cleanFileSegment(parent || gateType || "default")}`;
-}
-
 function humanGateRecordStageKey(row = {}, payload = {}, body = {}) {
   const explicit = firstText(
     body.humanGateStageKey,
@@ -10717,36 +10697,6 @@ ORDER BY updated_at ASC;`, { json: true });
     createdAt: selectedAt
   });
   return { applied: true, artifactRef: artifact.ref, incidentCount: incidentIds.length, resolvedIncidentCount: resolved.length, resolvedIncidentIds: resolved };
-}
-
-async function updateHumanGateRecordFeedback(paths, humanGateId, status, feedback, updatedAt) {
-  const rows = await sqlite(paths.dbFile, `SELECT payload_json FROM protocol_objects WHERE object_id=${sqlValue(humanGateId)} AND object_type='human_gate_record' LIMIT 1;`, { json: true });
-  if (!rows[0]) return null;
-  const recordPayload = parseJsonValue(rows[0].payload_json, {});
-  const nestedPayload = parseJsonValue(recordPayload.payload, recordPayload.payload || {});
-  const history = Array.isArray(nestedPayload.humanGateFeedbackHistory) ? nestedPayload.humanGateFeedbackHistory.slice(-19) : [];
-  const nextPayload = {
-    ...recordPayload,
-    status,
-    payload: {
-      ...nestedPayload,
-      decisionAt: ["approved", "rejected", "paused", "terminated", "expired"].includes(status) ? updatedAt : nestedPayload.decisionAt || "",
-      decisionStatus: ["approved", "rejected", "paused", "terminated"].includes(status) ? status : nestedPayload.decisionStatus || "",
-      humanGateFeedback: feedback,
-      humanGateFeedbackHistory: [...history, feedback]
-    }
-  };
-  const hash = jsonHash(nextPayload);
-  const relPath = await writeJsonArtifact(paths.root, path.join(paths.protocolDir, "human_gate_record"), humanGateId, { ...nextPayload, hash });
-  await sqlite(paths.dbFile, `
-UPDATE protocol_objects
-SET status=${sqlValue(status)},
-    path=${sqlValue(relPath)},
-    payload_json=${sqlValue(JSON.stringify(nextPayload))},
-    hash=${sqlValue(hash)},
-    updated_at=${sqlValue(updatedAt)}
-WHERE object_id=${sqlValue(humanGateId)} AND object_type='human_gate_record';`);
-  return nextPayload;
 }
 
 async function catTailPreOrderRiskAuditDispatchSpec(paths, button, feedbackText, selectedAt) {
@@ -11499,7 +11449,6 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   humanGateButtonSpecs,
   humanGateButtonTelegramStyle,
   humanGateRecordById,
-  humanGateStageKey,
   humanGateSummary,
   humanGateTelegramArtifacts,
   humanGateWebAppConfig,
@@ -11517,7 +11466,6 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   supersedeHumanGateRecord,
   telegramLinkFor,
   textHash,
-  updateHumanGateRecordFeedback,
   verifyTelegramWebAppInitData,
   workflowCheckpoint,
   writeJsonArtifact,

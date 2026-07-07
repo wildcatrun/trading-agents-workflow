@@ -3,7 +3,10 @@ import {
   sqlValue,
   sqlite
 } from "./workflow/sqlite.js";
-import { parseJsonValue } from "./workflow/json.js";
+import {
+  jsonHash,
+  parseJsonValue
+} from "./workflow/json.js";
 
 export const HUMAN_GATE_ACTION_HANDLER_NAMES = {
   "human_gate.inbox": "humanGateInbox",
@@ -89,7 +92,6 @@ export function createHumanGateActionHandlers(context = {}) {
   const humanGateButtonSpecs = requireContextFunction(context, "humanGateButtonSpecs");
   const humanGateButtonTelegramStyle = requireContextFunction(context, "humanGateButtonTelegramStyle");
   const humanGateRecordById = requireContextFunction(context, "humanGateRecordById");
-  const humanGateStageKey = requireContextFunction(context, "humanGateStageKey");
   const humanGateSummary = requireContextFunction(context, "humanGateSummary");
   const humanGateTelegramArtifacts = requireContextFunction(context, "humanGateTelegramArtifacts");
   const humanGateWebAppConfig = requireContextFunction(context, "humanGateWebAppConfig");
@@ -107,7 +109,6 @@ export function createHumanGateActionHandlers(context = {}) {
   const supersedeHumanGateRecord = requireContextFunction(context, "supersedeHumanGateRecord");
   const telegramLinkFor = requireContextFunction(context, "telegramLinkFor");
   const textHash = requireContextFunction(context, "textHash");
-  const updateHumanGateRecordFeedback = requireContextFunction(context, "updateHumanGateRecordFeedback");
   const verifyTelegramWebAppInitData = requireContextFunction(context, "verifyTelegramWebAppInitData");
   const workflowCheckpoint = requireContextFunction(context, "workflowCheckpoint");
   const writeJsonArtifact = requireContextFunction(context, "writeJsonArtifact");
@@ -118,6 +119,56 @@ export function createHumanGateActionHandlers(context = {}) {
   const HUMAN_GATE_STATUSES = requireContextValue(context, "HUMAN_GATE_STATUSES");
   const HUMAN_GATE_TEXT_POLICY_VERSION = requireContextValue(context, "HUMAN_GATE_TEXT_POLICY_VERSION");
   const INTERNAL_HUMAN_GATE_RECORD = requireContextValue(context, "INTERNAL_HUMAN_GATE_RECORD");
+
+  function humanGateStageKey(input = {}, workflowId = "", gateType = "", parentObjectId = "") {
+    const explicit = firstText(
+      input.humanGateStageKey,
+      input.human_gate_stage_key,
+      input.stageKey,
+      input.stage_key,
+      input.workflowStage,
+      input.workflow_stage,
+      input.stage,
+      input.phase
+    );
+    if (explicit) return cleanFileSegment(explicit);
+    const taskId = firstText(input.taskId, input.task_id);
+    if (taskId) return `task:${cleanFileSegment(taskId)}`;
+    const dispatchId = firstText(input.dispatchId, input.dispatch_id);
+    if (dispatchId) return `dispatch:${cleanFileSegment(dispatchId)}`;
+    const parent = firstText(parentObjectId, workflowId);
+    return `workflow:${cleanFileSegment(parent || gateType || "default")}`;
+  }
+
+  async function updateHumanGateRecordFeedback(paths, humanGateId, status, feedback, updatedAt) {
+    const rows = await sqlite(paths.dbFile, `SELECT payload_json FROM protocol_objects WHERE object_id=${sqlValue(humanGateId)} AND object_type='human_gate_record' LIMIT 1;`, { json: true });
+    if (!rows[0]) return null;
+    const recordPayload = parseJsonValue(rows[0].payload_json, {});
+    const nestedPayload = parseJsonValue(recordPayload.payload, recordPayload.payload || {});
+    const history = Array.isArray(nestedPayload.humanGateFeedbackHistory) ? nestedPayload.humanGateFeedbackHistory.slice(-19) : [];
+    const nextPayload = {
+      ...recordPayload,
+      status,
+      payload: {
+        ...nestedPayload,
+        decisionAt: ["approved", "rejected", "paused", "terminated", "expired"].includes(status) ? updatedAt : nestedPayload.decisionAt || "",
+        decisionStatus: ["approved", "rejected", "paused", "terminated"].includes(status) ? status : nestedPayload.decisionStatus || "",
+        humanGateFeedback: feedback,
+        humanGateFeedbackHistory: [...history, feedback]
+      }
+    };
+    const hash = jsonHash(nextPayload);
+    const relPath = await writeJsonArtifact(paths.root, path.join(paths.protocolDir, "human_gate_record"), humanGateId, { ...nextPayload, hash });
+    await sqlite(paths.dbFile, `
+UPDATE protocol_objects
+SET status=${sqlValue(status)},
+    path=${sqlValue(relPath)},
+    payload_json=${sqlValue(JSON.stringify(nextPayload))},
+    hash=${sqlValue(hash)},
+    updated_at=${sqlValue(updatedAt)}
+WHERE object_id=${sqlValue(humanGateId)} AND object_type='human_gate_record';`);
+    return nextPayload;
+  }
 
   function workflowFilterMatches(workflowId, value) {
     return !workflowId || String(value || "").trim() === workflowId;
