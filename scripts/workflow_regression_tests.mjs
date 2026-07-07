@@ -138,6 +138,7 @@ import {
 } from "../src/cat-claw-actions.js";
 import {
   CHECKPOINT_ACTION_HANDLER_NAMES,
+  createCheckpointActionHandlers,
   createCheckpointActionRegistry
 } from "../src/checkpoint-actions.js";
 import {
@@ -12409,6 +12410,37 @@ async function testCheckpointExtractedActionContracts() {
   const directRegistry = createCheckpointActionRegistry({ workflowCheckpoint });
   assert.equal(directRegistry.get("workflow.context_checkpoint"), workflowCheckpoint);
   assert.equal(directRegistry.get("context.checkpoint"), workflowCheckpoint);
+  assert.throws(() => createCheckpointActionHandlers({}), /checkpoint action dependency missing: ensureWorkflowLayout/);
+  assert.throws(
+    () => createCheckpointActionHandlers({
+      ensureWorkflowLayout: async () => ({})
+    }),
+    /checkpoint action dependency missing: pendingHumanGateCount/
+  );
+  assert.throws(
+    () => createCheckpointActionHandlers({
+      ensureWorkflowLayout: async () => ({}),
+      pendingHumanGateCount: async () => 0
+    }),
+    /checkpoint action dependency missing: writeJsonArtifact/
+  );
+  assert.throws(
+    () => createCheckpointActionHandlers({
+      ensureWorkflowLayout: async () => ({}),
+      pendingHumanGateCount: async () => 0,
+      writeJsonArtifact: async () => "checkpoints/test.json"
+    }),
+    /checkpoint action dependency missing: writeTextArtifact/
+  );
+  const directHandlers = createCheckpointActionHandlers({
+    ensureWorkflowLayout: async () => {
+      throw new Error("not used");
+    },
+    pendingHumanGateCount: async () => 0,
+    writeJsonArtifact: async () => "checkpoints/test.json",
+    writeTextArtifact: async () => "checkpoints/test.md"
+  });
+  assert.equal(typeof directHandlers.workflowCheckpoint, "function");
 
   const root = await tempRoot("checkpoint-extracted-contracts");
   const workflowId = "workflow-checkpoint-extracted";
