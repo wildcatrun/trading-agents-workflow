@@ -154,6 +154,10 @@ import {
 import {
   createHumanGateActionHandlers,
   createHumanGateActionRegistry,
+  humanGateArtifactRef,
+  humanGateBody,
+  humanGateButtonFromRow,
+  humanGateSummary,
   runHumanGateAction
 } from "./human-gate-actions.js";
 import {
@@ -6096,48 +6100,6 @@ function humanGateLocalizedDetail(value, max = 520) {
   return humanGateTranslatedText(humanGateSafeDetailString(value, max), max);
 }
 
-function shellQuote(value) {
-  return `'${String(value || "").replace(/'/g, "'\\''")}'`;
-}
-
-function humanGateButtonFromRow(row, rootDir = "") {
-  const callbackToken = String(row.callback_token || "").trim();
-  const rootArg = rootDir ? ` --root ${shellQuote(rootDir)}` : ` --root "$ROOT"`;
-  return {
-    buttonId: row.button_id,
-    callbackToken,
-    humanGateId: row.human_gate_id,
-    workflowId: row.workflow_id || "",
-    meetingId: row.meeting_id || "",
-    label: row.label,
-    decisionStatus: row.decision_status,
-    role: row.button_role || "",
-    artifactRef: row.artifact_ref || "",
-    summary: row.summary || "",
-    prompt: row.prompt || "",
-    status: row.status,
-    createdBy: row.created_by,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    selectedBy: row.selected_by || "",
-    selectedAt: row.selected_at || "",
-    feedbackStatus: row.feedback_status || "",
-    feedbackText: row.feedback_text || "",
-    feedbackReceivedAt: row.feedback_received_at || "",
-    feedbackPayload: parseJsonValue(row.feedback_payload_json, {}),
-    callbackData: callbackToken ? `tawhg:${callbackToken}` : "",
-    toolAction: { action: "human_gate.button_callback", token: callbackToken, actor: "flashcat" },
-    feedbackToolAction: { action: "human_gate.feedback", token: callbackToken, actor: "flashcat", text: "<闪电猫原话或审核意见>" },
-    cliCommand: callbackToken ? `node bin/cat-meeting-governance.mjs human-gate-callback --token ${callbackToken} --actor flashcat${rootArg}` : "",
-    feedbackCliCommand: callbackToken ? `node bin/cat-meeting-governance.mjs human-gate-feedback --token ${callbackToken} --actor flashcat --text "<闪电猫原话或审核意见>"${rootArg}` : "",
-    payload: parseJsonValue(row.payload_json, {})
-  };
-}
-
-function humanGateBody(payload = {}) {
-  return parseJsonValue(payload.payload, payload.payload || {});
-}
-
 function humanGateWorkflowId(row, payload = {}, body = {}) {
   return String(body.workflowId || body.workflow_id || payload.workflowId || payload.workflow_id || row.parent_object_id || row.object_id || "").trim();
 }
@@ -6194,14 +6156,6 @@ function humanGateAlternativeSource(payload = {}, body = {}) {
   );
   const parsed = buttonArrayFromRaw(raw);
   return parsed && parsed.length ? parsed : null;
-}
-
-function humanGateArtifactRef(row, payload = {}, body = {}) {
-  return String(body.artifactRef || body.artifact_ref || body.resumePointer || body.resume_pointer || body.raw?.artifactRef || body.raw?.artifact_ref || row.path || "").trim();
-}
-
-function humanGateSummary(payload = {}, body = {}) {
-  return String(body.summary || payload.summary || "").trim();
 }
 
 function optionKeyLabel(value, index) {
@@ -10720,13 +10674,9 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   enqueueTelegramOutbox,
   ensureWorkflowLayout,
   firstText,
-  humanGateArtifactRef,
-  humanGateBody,
   humanGateButtonDisplayLabel,
-  humanGateButtonFromRow,
   humanGateButtonSpecs,
   humanGateButtonTelegramStyle,
-  humanGateSummary,
   humanGateTelegramArtifacts,
   humanGateWebAppConfig,
   incidentState,

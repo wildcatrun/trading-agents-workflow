@@ -39,6 +39,56 @@ function requireContextValue(context, name) {
   return context[name];
 }
 
+function shellQuote(value) {
+  return `'${String(value || "").replace(/'/g, "'\\''")}'`;
+}
+
+export function humanGateButtonFromRow(row, rootDir = "") {
+  const callbackToken = String(row.callback_token || "").trim();
+  const rootArg = rootDir ? ` --root ${shellQuote(rootDir)}` : ` --root "$ROOT"`;
+  return {
+    buttonId: row.button_id,
+    callbackToken,
+    humanGateId: row.human_gate_id,
+    workflowId: row.workflow_id || "",
+    meetingId: row.meeting_id || "",
+    label: row.label,
+    decisionStatus: row.decision_status,
+    role: row.button_role || "",
+    artifactRef: row.artifact_ref || "",
+    summary: row.summary || "",
+    prompt: row.prompt || "",
+    status: row.status,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    selectedBy: row.selected_by || "",
+    selectedAt: row.selected_at || "",
+    feedbackStatus: row.feedback_status || "",
+    feedbackText: row.feedback_text || "",
+    feedbackReceivedAt: row.feedback_received_at || "",
+    feedbackPayload: parseJsonValue(row.feedback_payload_json, {}),
+    callbackData: callbackToken ? `tawhg:${callbackToken}` : "",
+    toolAction: { action: "human_gate.button_callback", token: callbackToken, actor: "flashcat" },
+    feedbackToolAction: { action: "human_gate.feedback", token: callbackToken, actor: "flashcat", text: "<闪电猫原话或审核意见>" },
+    cliCommand: callbackToken ? `node bin/cat-meeting-governance.mjs human-gate-callback --token ${callbackToken} --actor flashcat${rootArg}` : "",
+    feedbackCliCommand: callbackToken ? `node bin/cat-meeting-governance.mjs human-gate-feedback --token ${callbackToken} --actor flashcat --text "<闪电猫原话或审核意见>"${rootArg}` : "",
+    payload: parseJsonValue(row.payload_json, {})
+  };
+}
+
+export function humanGateBody(payload = {}) {
+  return parseJsonValue(payload.payload, payload.payload || {});
+}
+
+export function humanGateArtifactRef(row, payload = {}, body = {}) {
+  return String(body.artifactRef || body.artifact_ref || body.resumePointer || body.resume_pointer || body.raw?.artifactRef || body.raw?.artifact_ref || row.path || "").trim();
+}
+
+export function humanGateSummary(payload = {}, body = {}) {
+  return String(body.summary || payload.summary || "").trim();
+}
+
 function humanGateRecordExpiresAt(firstText, record = {}) {
   const outer = parseJsonValue(record.payload || record.payload_json, {});
   const body = parseJsonValue(outer.payload, outer.payload || {});
@@ -85,13 +135,9 @@ export function createHumanGateActionHandlers(context = {}) {
   const appendWorkflowEvent = requireContextFunction(context, "appendWorkflowEvent");
   const catTailPreOrderRiskAuditDispatchSpec = requireContextFunction(context, "catTailPreOrderRiskAuditDispatchSpec");
   const firstText = requireContextFunction(context, "firstText");
-  const humanGateArtifactRef = requireContextFunction(context, "humanGateArtifactRef");
-  const humanGateBody = requireContextFunction(context, "humanGateBody");
   const humanGateButtonDisplayLabel = requireContextFunction(context, "humanGateButtonDisplayLabel");
-  const humanGateButtonFromRow = requireContextFunction(context, "humanGateButtonFromRow");
   const humanGateButtonSpecs = requireContextFunction(context, "humanGateButtonSpecs");
   const humanGateButtonTelegramStyle = requireContextFunction(context, "humanGateButtonTelegramStyle");
-  const humanGateSummary = requireContextFunction(context, "humanGateSummary");
   const humanGateTelegramArtifacts = requireContextFunction(context, "humanGateTelegramArtifacts");
   const humanGateWebAppConfig = requireContextFunction(context, "humanGateWebAppConfig");
   const incidentState = typeof context?.incidentState === "function" ? context.incidentState : null;
