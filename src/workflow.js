@@ -1176,10 +1176,6 @@ LIMIT 200;`, { json: true });
   return null;
 }
 
-function protocolObjectExpiresAt(protocolObject = {}) {
-  return protocolPayloadField(protocolObject, ["expiresAt", "expires_at"]);
-}
-
 function normalizeRuntime(value) {
   const raw = String(value || "openclaw").trim().toLowerCase();
   const runtime = raw === "hermes" || raw === "hermes_acp" ? "hermers" : raw;
@@ -11204,15 +11200,6 @@ LIMIT 1;`, { json: true });
   return rows[0] || null;
 }
 
-function humanGateRecordExpiry(record = {}) {
-  const expiresAt = protocolObjectExpiresAt(record);
-  const expiresAtMs = expiresAt ? Date.parse(expiresAt) : NaN;
-  return {
-    expiresAt,
-    expired: Boolean(expiresAt && (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()))
-  };
-}
-
 async function recoverAckedMessageFlowSemanticContinuations(paths, input = {}) {
   const cutoff = input.cutoff || new Date(Date.now() - 5 * 60_000).toISOString();
   const limit = Math.max(1, Math.min(200, Number(input.limit || 20)));
@@ -11875,7 +11862,6 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   humanGateButtonSpecs,
   humanGateButtonTelegramStyle,
   humanGateRecordById,
-  humanGateRecordExpiry,
   humanGateStageKey,
   humanGateSummary,
   humanGateTelegramArtifacts,

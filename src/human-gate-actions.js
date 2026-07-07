@@ -35,6 +35,22 @@ function requireContextValue(context, name) {
   return context[name];
 }
 
+function humanGateRecordExpiresAt(firstText, record = {}) {
+  const outer = parseJsonValue(record.payload || record.payload_json, {});
+  const body = parseJsonValue(outer.payload, outer.payload || {});
+  const raw = parseJsonValue(body.raw, body.raw || {});
+  return firstText(body.expiresAt, raw.expiresAt, body.expires_at, raw.expires_at);
+}
+
+function humanGateRecordExpiry(firstText, record = {}) {
+  const expiresAt = humanGateRecordExpiresAt(firstText, record);
+  const expiresAtMs = expiresAt ? Date.parse(expiresAt) : NaN;
+  return {
+    expiresAt,
+    expired: Boolean(expiresAt && (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()))
+  };
+}
+
 export function createHumanGateActionRegistry(handlers = {}) {
   const entries = Object.entries(HUMAN_GATE_ACTION_HANDLER_NAMES).map(([action, handlerName]) => {
     const handler = handlers[handlerName];
@@ -75,7 +91,6 @@ export function createHumanGateActionHandlers(context = {}) {
   const humanGateButtonSpecs = requireContextFunction(context, "humanGateButtonSpecs");
   const humanGateButtonTelegramStyle = requireContextFunction(context, "humanGateButtonTelegramStyle");
   const humanGateRecordById = requireContextFunction(context, "humanGateRecordById");
-  const humanGateRecordExpiry = requireContextFunction(context, "humanGateRecordExpiry");
   const humanGateStageKey = requireContextFunction(context, "humanGateStageKey");
   const humanGateSummary = requireContextFunction(context, "humanGateSummary");
   const humanGateTelegramArtifacts = requireContextFunction(context, "humanGateTelegramArtifacts");
@@ -393,7 +408,7 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
     const button = await humanGateButtonRowByToken(paths, input);
     if (!button) return { handled: true, status: "not_found", token: normalizeHumanGateCallbackToken(input), replyText: "Human Gate 按钮已失效或不存在。", dbFile: paths.dbFile };
     const record = await humanGateRecordById(paths, button.human_gate_id) || {};
-    const expiry = humanGateRecordExpiry(record);
+    const expiry = humanGateRecordExpiry(firstText, record);
     const recordPayload = parseJsonValue(record.payload_json, {});
     const body = humanGateBody(recordPayload);
     const webApp = await humanGateWebAppConfig(input);
@@ -500,7 +515,7 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pen
       return { handled: true, status: identity.reason, token, telegramAuth: identity, replyText };
     }
     const record = await humanGateRecordById(paths, button.human_gate_id);
-    const expiry = humanGateRecordExpiry(record || {});
+    const expiry = humanGateRecordExpiry(firstText, record || {});
     if (expiry.expired) {
       const expiredAt = nowIso();
       await sqlite(paths.dbFile, `
