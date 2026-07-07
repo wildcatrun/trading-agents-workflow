@@ -221,6 +221,7 @@ import {
 } from "../src/schedule-actions.js";
 import {
   SESSION_ACTION_HANDLER_NAMES,
+  createSessionActionHandlers,
   createSessionActionRegistry
 } from "../src/session-actions.js";
 import {
@@ -12202,6 +12203,25 @@ async function testSessionExtractedActionContracts() {
   assert.equal(typeof workflowSessionPackList, "function");
   assert.equal(typeof workflowSessionRunStart, "function");
   assert.equal(typeof workflowSessionRunComplete, "function");
+  assert.throws(() => createSessionActionHandlers({}), /session action dependency missing: ensureWorkflowLayout/);
+  assert.throws(() => createSessionActionHandlers({
+    ensureWorkflowLayout: async () => ({})
+  }), /session action dependency missing: normalizeAgentId/);
+  assert.throws(() => createSessionActionHandlers({
+    ensureWorkflowLayout: async () => ({}),
+    normalizeAgentId: (value) => String(value || "").trim(),
+    upsertWorkflowAgentRun: async () => null
+  }), /session action dependency missing: workflowTaskPhaseInfo/);
+  const directHandlers = createSessionActionHandlers({
+    ensureWorkflowLayout: async () => {
+      throw new Error("not used by dependency contract assertion");
+    },
+    normalizeAgentId: (value) => String(value || "").trim(),
+    upsertWorkflowAgentRun: async () => null,
+    workflowTaskPhaseInfo: async () => ({ phaseId: "", phaseKey: "" })
+  });
+  assert.equal(typeof directHandlers.workflowSessionPackUpsert, "function");
+  assert.equal(typeof directHandlers.workflowSessionRunComplete, "function");
   const directRegistry = createSessionActionRegistry({
     workflowSessionPackGet,
     workflowSessionPackList,
