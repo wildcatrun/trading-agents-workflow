@@ -56,6 +56,8 @@ import {
   cat_clawAudit,
   humanGateInbox,
   incidentState,
+  workflowIncidentFromDeadLetter,
+  workflowIncidentFromDeadLetterPreview,
   messageFlowList,
   messageFlowReconcile,
   protocolRecord,
@@ -161,7 +163,8 @@ import {
 } from "../src/human-gate-actions.js";
 import {
   INCIDENT_ACTION_HANDLER_NAMES,
-  createIncidentActionRegistry
+  createIncidentActionRegistry,
+  runIncidentAction
 } from "../src/incident-actions.js";
 import {
   INTERVENTION_ACTION_HANDLER_NAMES,
@@ -10637,19 +10640,52 @@ LIMIT 1;`);
 }
 
 async function testIncidentStateExtractedActionContracts() {
-  for (const action of [
-    "incident.state",
-    "workflow.incident"
-  ]) {
+  const expected = {
+    "incident.state": "incidentState",
+    "workflow.incident": "incidentState",
+    "workflow.incident.from_dead_letter.preview": "workflowIncidentFromDeadLetterPreview",
+    "workflow.incident.from_dead_letter": "workflowIncidentFromDeadLetter"
+  };
+  for (const [action, handlerName] of Object.entries(expected)) {
     assert.equal(INCIDENT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted incident registry`);
-    assert.equal(INCIDENT_ACTION_HANDLER_NAMES[action], "incidentState", `${action} should map to the extracted incidentState handler`);
+    assert.equal(INCIDENT_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
   }
   assert.equal(typeof incidentState, "function");
-  const directRegistry = createIncidentActionRegistry({ incidentState });
+  assert.equal(typeof workflowIncidentFromDeadLetterPreview, "function");
+  assert.equal(typeof workflowIncidentFromDeadLetter, "function");
+  const directRegistry = createIncidentActionRegistry({
+    incidentState,
+    workflowIncidentFromDeadLetterPreview,
+    workflowIncidentFromDeadLetter
+  });
   assert.equal(directRegistry.get("incident.state"), incidentState);
   assert.equal(directRegistry.get("workflow.incident"), incidentState);
+  assert.equal(directRegistry.get("workflow.incident.from_dead_letter.preview"), workflowIncidentFromDeadLetterPreview);
+  assert.equal(directRegistry.get("workflow.incident.from_dead_letter"), workflowIncidentFromDeadLetter);
+  const missing = await runIncidentAction(directRegistry, "workflow.incident.unknown", "/tmp/unused", {});
+  assert.equal(missing.handled, false);
 
   const root = await tempRoot("incident-state-extracted-contracts");
+  const directPreview = await runIncidentAction(directRegistry, "workflow.incident.from_dead_letter.preview", root, {
+    workflowId: "wf-incident-extracted",
+    kind: "failed_dispatches",
+    refId: "dispatch-missing"
+  });
+  assert.equal(directPreview.handled, true);
+  assert.equal(directPreview.value.schemaVersion, "workflow_dead_letter_incident_preview.v1");
+  assert.equal(directPreview.value.action, "workflow.incident.from_dead_letter.preview");
+  assert.equal(directPreview.value.readOnly, true);
+
+  const gatewayPreview = await runAction(root, {
+    action: "workflow.incident.from_dead_letter.preview",
+    workflowId: "wf-incident-extracted",
+    kind: "failed_dispatches",
+    refId: "dispatch-missing"
+  });
+  assert.equal(gatewayPreview.schemaVersion, "workflow_dead_letter_incident_preview.v1");
+  assert.equal(gatewayPreview.action, "workflow.incident.from_dead_letter.preview");
+  assert.equal(gatewayPreview.readOnly, true);
+
   const created = await runAction(root, {
     action: "workflow.incident",
     incidentId: "incident-extracted-contract",

@@ -11368,173 +11368,6 @@ ${timeline}
 `;
 }
 
-function deadLetterIncidentInput(input = {}) {
-  return {
-    workflowId: String(input.workflowId || input.workflow_id || "").trim(),
-    kind: String(input.kind || input.deadLetterKind || input.dead_letter_kind || "").trim(),
-    refId: String(input.refId || input.ref_id || input.deadLetterRefId || input.dead_letter_ref_id || "").trim(),
-    incidentId: String(input.incidentId || input.incident_id || "").trim()
-  };
-}
-
-function deterministicDeadLetterIncidentId({ workflowId, kind, refId }) {
-  const digest = textHash(`${workflowId || "-"}:${kind || "-"}:${refId || "-"}`).slice(0, 16);
-  return `incident.dead_letter.${digest}`;
-}
-
-function deadLetterIncidentMode(candidate = {}) {
-  const mode = String(candidate.suggestedMode || "").trim();
-  return INCIDENT_MODES.has(mode) ? mode : "degraded";
-}
-
-function deadLetterIncidentStatus(candidate = {}) {
-  if (candidate.severity === "warning") return "monitoring";
-  const status = String(candidate.suggestedStatus || "").trim();
-  if (INCIDENT_STATUSES.has(status)) return status;
-  return "active";
-}
-
-function deadLetterIncidentSummary(candidate = {}, input = {}) {
-  return String(input.summary || candidate.summary || `${candidate.kind || "dead_letter"} ${candidate.refId || ""}`).trim();
-}
-
-async function workflowIncidentFromDeadLetterPreview(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const deadLetter = deadLetterIncidentInput(input);
-  if (!deadLetter.workflowId) throw new Error("workflowId is required");
-  if (!deadLetter.kind) throw new Error("kind is required");
-  if (!deadLetter.refId) throw new Error("refId is required");
-  const generatedAt = nowIso();
-  const readModel = new WorkflowReadModel({ dbFile: paths.dbFile });
-  const evidence = await readModel.deadLetterEvidence({
-    workflowId: deadLetter.workflowId,
-    kind: deadLetter.kind,
-    refId: deadLetter.refId,
-    messageFlowStuckMinutes: input.messageFlowStuckMinutes || input.message_flow_stuck_minutes
-  });
-  const candidate = evidence.incidentCandidate || null;
-  const incidentId = deadLetter.incidentId || deterministicDeadLetterIncidentId(deadLetter);
-  const violations = [];
-  if (!evidence.found || !candidate) {
-    violations.push({ code: "dead_letter_not_found", detail: "selected row no longer matches the current dead-letter predicate" });
-  }
-  if (candidate && candidate.writeMode !== "read_only_preview") {
-    violations.push({ code: "candidate_write_mode_invalid", detail: `expected read_only_preview, got ${candidate.writeMode || "<empty>"}` });
-  }
-  return {
-    schemaVersion: "workflow_dead_letter_incident_preview.v1",
-    action: "workflow.incident.from_dead_letter.preview",
-    preview: true,
-    readOnly: true,
-    eligible: violations.length === 0,
-    generatedAt,
-    workflowId: deadLetter.workflowId,
-    kind: deadLetter.kind,
-    refId: deadLetter.refId,
-    incidentId,
-    riskTier: "P2-medium",
-    humanGateRequired: true,
-    catClawAuditRequired: true,
-    deadLetterEvidence: evidence,
-    incidentCandidate: candidate,
-    wouldWriteIncident: candidate ? {
-      incidentId,
-      status: deadLetterIncidentStatus(candidate),
-      mode: deadLetterIncidentMode(candidate),
-      affectedPlanes: candidate.affectedPlanes || [],
-      summary: deadLetterIncidentSummary(candidate, input),
-      payloadKeys: ["deadLetter", "incidentCandidate", "evidenceRefs", "humanGateId", "catClawAuditId", "operatorReason"]
-    } : null,
-    wouldCreateHumanGateRequest: false,
-    wouldRetryOrRepair: false,
-    wouldMutate: {
-      incidentStates: violations.length === 0 ? 1 : 0,
-      workflowEvents: violations.length === 0 ? 1 : 0,
-      workflowRuns: 0,
-      dispatches: 0,
-      runtimeRuns: 0,
-      outbox: 0,
-      humanGateButtons: 0,
-      sideEffects: 0
-    },
-    requiredEvidence: [
-      "humanGateId or Flashcat original words",
-      "catClawAuditId or secretaryAuditId",
-      "operatorReason",
-      "current workflow_dead_letter_evidence.v1 match"
-    ],
-    violations,
-    limitations: [
-      "Preview is read-only and does not persist incident state.",
-      "Execution creates or updates only incident state/artifacts and the incident workflow event.",
-      "Execution does not retry jobs, clear leases, resend Telegram, resume Human Gate, mutate side effects, or change workflow status."
-    ],
-    dbFile: paths.dbFile
-  };
-}
-
-async function workflowIncidentFromDeadLetter(rootDir, input = {}, permissionDecision = null) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const preview = await workflowIncidentFromDeadLetterPreview(rootDir, input);
-  if (!preview.eligible) {
-    throw new Error(`dead-letter incident is not eligible: ${preview.violations.map((item) => item.code).join(",") || "unknown"}`);
-  }
-  const reason = String(input.operatorReason || input.operator_reason || input.reason || "").trim();
-  if (!reason) throw new Error("operatorReason is required for dead-letter incident creation");
-  const redactedReason = redactSensitiveTextForPersistence(reason);
-  const candidate = preview.incidentCandidate;
-  const humanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
-  const catClawAuditId = String(input.catClawAuditId || input.cat_claw_audit_id || input.secretaryAuditId || input.secretary_audit_id || "").trim();
-  const record = await incidentState(rootDir, {
-    ...input,
-    workflowRootDir: paths.root,
-    incidentId: preview.incidentId,
-    workflowId: preview.workflowId,
-    status: deadLetterIncidentStatus(candidate),
-    mode: deadLetterIncidentMode(candidate),
-    affectedPlanes: candidate.affectedPlanes || [],
-    summary: deadLetterIncidentSummary(candidate, input),
-    commander: input.commander || input.actor || permissionDecision?.caller?.agentId || "cat_claw",
-    impact: input.impact || `Dead-letter item requires governed incident tracking: ${preview.kind}/${preview.refId}`,
-    currentHypothesis: input.currentHypothesis || input.current_hypothesis || "Dead-letter/stuck attention row remains current at incident creation time.",
-    mitigation: input.mitigation || "No automatic repair performed. Track evidence, ownership, and governed next action.",
-    rollbackOptions: input.rollbackOptions || input.rollback_options || candidate.rollbackBoundary || "",
-    exitCriteria: input.exitCriteria || input.exit_criteria || (candidate.exitCriteria || []).join("\n"),
-    timeline: [
-      `${preview.generatedAt} dead-letter incident linked from ${preview.kind}/${preview.refId}`,
-      `${nowIso()} operator reason recorded: ${redactedReason}`
-    ],
-    payload: redactSensitiveForPersistence({
-      schemaVersion: "workflow_dead_letter_incident_link.v1",
-      deadLetter: {
-        workflowId: preview.workflowId,
-        kind: preview.kind,
-        refId: preview.refId
-      },
-      incidentCandidate: candidate,
-      deadLetterEvidence: preview.deadLetterEvidence,
-      evidenceRefs: candidate.evidenceRefs || [],
-      humanGateId,
-      catClawAuditId,
-      operatorReason: redactedReason,
-      permissionPolicyOutcome: permissionDecision?.policyOutcome || "",
-      createdByAction: "workflow.incident.from_dead_letter"
-    })
-  });
-  return {
-    ...record,
-    schemaVersion: "workflow_dead_letter_incident_link_result.v1",
-    action: "workflow.incident.from_dead_letter",
-    workflowId: preview.workflowId,
-    kind: preview.kind,
-    refId: preview.refId,
-    incidentCandidate: candidate,
-    deadLetterEvidenceStatus: preview.deadLetterEvidence.status,
-    writeBoundary: "incident_state_only",
-    didRetryOrRepair: false
-  };
-}
-
 function closeoutPackageKindForAction(action) {
   const canonical = canonicalWorkflowAction(action || "");
   if (canonical === "workflow.incident.closeout.human_gate_package.preview") return "human_gate_package";
@@ -16720,11 +16553,15 @@ export const INCIDENT_ACTION_HANDLERS = createIncidentActionHandlers({
   ensureWorkflowLayout,
   nowIso,
   parseJsonValue,
+  redactSensitiveForPersistence,
+  redactSensitiveTextForPersistence,
   renderIncidentMarkdown,
   safeId,
+  textHash,
   toList,
   writeJsonArtifact,
   writeTextArtifact,
+  WorkflowReadModel,
   INCIDENT_MODES,
   INCIDENT_STATUSES
 });
@@ -16732,7 +16569,9 @@ export const INCIDENT_ACTION_HANDLERS = createIncidentActionHandlers({
 export const INCIDENT_ACTION_REGISTRY = createIncidentActionRegistry(INCIDENT_ACTION_HANDLERS);
 
 export const {
-  incidentState
+  incidentState,
+  workflowIncidentFromDeadLetterPreview,
+  workflowIncidentFromDeadLetter
 } = INCIDENT_ACTION_HANDLERS;
 
 export const INTERVENTION_ACTION_HANDLERS = createInterventionActionHandlers({
@@ -17339,7 +17178,7 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (tradeResult.handled) return tradeResult.value;
   const sideEffectResult = await runSideEffectAction(SIDE_EFFECT_ACTION_REGISTRY, action, rootDir, input);
   if (sideEffectResult.handled) return sideEffectResult.value;
-  const incidentResult = await runIncidentAction(INCIDENT_ACTION_REGISTRY, action, rootDir, input);
+  const incidentResult = await runIncidentAction(INCIDENT_ACTION_REGISTRY, action, rootDir, input, permissionDecision);
   if (incidentResult.handled) return incidentResult.value;
   const interventionResult = await runInterventionAction(INTERVENTION_ACTION_REGISTRY, action, rootDir, input, permissionDecision);
   if (interventionResult.handled) return interventionResult.value;
@@ -17400,8 +17239,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
   const runtimeBridgeResult = await runRuntimeBridgeAction(RUNTIME_BRIDGE_ACTION_REGISTRY, action, rootDir, input);
   if (runtimeBridgeResult.handled) return runtimeBridgeResult.value;
   switch (action) {
-    case "workflow.incident.from_dead_letter.preview":
-      return workflowIncidentFromDeadLetterPreview(rootDir, input);
     case "workflow.incident.closeout.cat_claw_report.preview":
     case "workflow.incident.closeout.human_gate_package.preview":
       return workflowIncidentCloseoutPreview(rootDir, input);
@@ -17443,8 +17280,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "trading_core.receipt":
     case "execution.receipt":
       return tradingCoreReceipt(rootDir, input);
-    case "workflow.incident.from_dead_letter":
-      return workflowIncidentFromDeadLetter(rootDir, input, permissionDecision);
     case "workflow.incident.closeout.worklist.artifact":
       return workflowIncidentCloseoutWorklistArtifact(rootDir, input, permissionDecision);
     case "workflow.incident.closeout.evidence":
