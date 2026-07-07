@@ -54,7 +54,9 @@ import {
   WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY,
   WORKFLOW_SWARM_ACTION_REGISTRY,
   cat_clawAudit,
+  humanGateFeedback,
   humanGateInbox,
+  humanGateResume,
   humanGateWebAppReview,
   humanGateWebAppSubmit,
   workflowHumanGateRecord,
@@ -10417,11 +10419,34 @@ async function testHumanGateInboxExtractedActionContracts() {
     assert.equal(HUMAN_GATE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted human_gate registry`);
     assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES[action], "humanGateWebAppSubmit", `${action} should map to the extracted humanGateWebAppSubmit handler`);
   }
+  for (const action of [
+    "human_gate.feedback",
+    "human_gate.submit_feedback"
+  ]) {
+    assert.equal(HUMAN_GATE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted human_gate registry`);
+    assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES[action], "humanGateFeedback", `${action} should map to the extracted humanGateFeedback handler`);
+  }
+  for (const action of [
+    "human_gate.resume",
+    "human_gate.confirm"
+  ]) {
+    assert.equal(HUMAN_GATE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted human_gate registry`);
+    assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES[action], "humanGateResume", `${action} should map to the extracted humanGateResume handler`);
+  }
+  assert.equal(typeof humanGateFeedback, "function");
   assert.equal(typeof humanGateInbox, "function");
+  assert.equal(typeof humanGateResume, "function");
   assert.equal(typeof humanGateWebAppReview, "function");
   assert.equal(typeof humanGateWebAppSubmit, "function");
   assert.equal(typeof workflowHumanGateRecord, "function");
-  const directRegistry = createHumanGateActionRegistry({ humanGateInbox, humanGateWebAppReview, humanGateWebAppSubmit, workflowHumanGateRecord });
+  const directRegistry = createHumanGateActionRegistry({
+    humanGateFeedback,
+    humanGateInbox,
+    humanGateResume,
+    humanGateWebAppReview,
+    humanGateWebAppSubmit,
+    workflowHumanGateRecord
+  });
   assert.equal(directRegistry.get("human_gate.inbox"), humanGateInbox);
   assert.equal(directRegistry.get("human_gate.console"), humanGateInbox);
   assert.equal(directRegistry.get("human_gate.batch_inbox"), humanGateInbox);
@@ -10431,6 +10456,10 @@ async function testHumanGateInboxExtractedActionContracts() {
   assert.equal(directRegistry.get("human_gate.review_form"), humanGateWebAppReview);
   assert.equal(directRegistry.get("human_gate.web_app_submit"), humanGateWebAppSubmit);
   assert.equal(directRegistry.get("human_gate.submit_form"), humanGateWebAppSubmit);
+  assert.equal(directRegistry.get("human_gate.feedback"), humanGateFeedback);
+  assert.equal(directRegistry.get("human_gate.submit_feedback"), humanGateFeedback);
+  assert.equal(directRegistry.get("human_gate.resume"), humanGateResume);
+  assert.equal(directRegistry.get("human_gate.confirm"), humanGateResume);
   assert.throws(
     () => createHumanGateActionRegistry({ humanGateInbox }),
     /Missing human_gate action handler: workflowHumanGateRecord/
@@ -10543,6 +10572,23 @@ VALUES ('button-hgate-inbox-contract-a', 'token-hgate-inbox-contract-a', 'hgate-
     token: "token-hgate-inbox-contract-a"
   });
   assert.equal(webAppSubmitMissingFeedbackViaDispatcher.status, "feedback_required");
+
+  const feedbackMissingTokenViaDispatcher = await runAction(root, {
+    action: "human_gate.submit_feedback"
+  });
+  assert.equal(feedbackMissingTokenViaDispatcher.status, "token_required");
+  const feedbackMissingTextViaDispatcher = await runAction(root, {
+    action: "human_gate.feedback",
+    token: "token-hgate-inbox-contract-a"
+  });
+  assert.equal(feedbackMissingTextViaDispatcher.status, "feedback_required");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "human_gate.confirm",
+      text: "闪电猫原话：缺少 token。"
+    }),
+    /human_gate.resume is button-first only/
+  );
 
   await assertRejectsMessage(
     () => workflowHumanGateRecord(root, {

@@ -14,7 +14,11 @@ export const HUMAN_GATE_ACTION_HANDLER_NAMES = {
   "human_gate.web_app_review": "humanGateWebAppReview",
   "human_gate.review_form": "humanGateWebAppReview",
   "human_gate.web_app_submit": "humanGateWebAppSubmit",
-  "human_gate.submit_form": "humanGateWebAppSubmit"
+  "human_gate.submit_form": "humanGateWebAppSubmit",
+  "human_gate.feedback": "humanGateFeedback",
+  "human_gate.submit_feedback": "humanGateFeedback",
+  "human_gate.resume": "humanGateResume",
+  "human_gate.confirm": "humanGateResume"
 };
 
 function requireContextFunction(context, name) {
@@ -63,6 +67,7 @@ export function createHumanGateActionHandlers(context = {}) {
   const humanGateWebAppConfig = requireContextFunction(context, "humanGateWebAppConfig");
   const normalizeHumanGateCallbackToken = requireContextFunction(context, "normalizeHumanGateCallbackToken");
   const nowIso = requireContextFunction(context, "nowIso");
+  const rawHumanGateCallbackToken = requireContextFunction(context, "rawHumanGateCallbackToken");
   const relativeTo = requireContextFunction(context, "relativeTo");
   const renderHumanGateInboxHtml = requireContextFunction(context, "renderHumanGateInboxHtml");
   const renderHumanGateTelegramSummary = requireContextFunction(context, "renderHumanGateTelegramSummary");
@@ -202,6 +207,66 @@ export function createHumanGateActionHandlers(context = {}) {
     });
   }
 
+  async function findPendingHumanGateFeedbackButton(paths, input = {}) {
+    const token = normalizeHumanGateCallbackToken(input);
+    if (token) {
+      const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} AND status='feedback_pending' LIMIT 1;`, { json: true });
+      if (rows[0]) return rows[0];
+    }
+    return null;
+  }
+
+  async function humanGateFeedback(rootDir, input = {}) {
+    const paths = await ensureWorkflowLayout(rootDir, input);
+    const feedbackText = humanGateFeedbackText(input);
+    const rawToken = rawHumanGateCallbackToken(input);
+    if (!rawToken) return { handled: true, status: "token_required", replyText: "请使用按钮提示中的完整格式提交：/hgate tawhg:<token> 闪电猫原话或审核意见。裸 /hgate 不会被接受，避免多个 Human Gate 并发时错配。" };
+    if (!feedbackText) return { handled: true, status: "feedback_required", replyText: "请在 token 后输入闪电猫原话或审核意见，例如：/hgate tawhg:<token> 这里写审核意见。" };
+    const button = await findPendingHumanGateFeedbackButton(paths, input);
+    if (!button) return { handled: true, status: "not_found", replyText: "没有找到与该 token 对应、且正在等待闪电猫原话的 Human Gate 选择；请确认先点击了对应按钮，并使用按钮提示里的 token。" };
+    return humanGateButtonCallback(rootDir, {
+      ...input,
+      token: button.callback_token,
+      feedbackText,
+      actor: input.actor || input.senderId || input.sender_id || input.from || button.selected_by || "flashcat",
+      sourceSystem: input.sourceSystem || input.source_system || "human_gate_feedback"
+    });
+  }
+
+  async function humanGateResume(rootDir, input = {}) {
+    const paths = await ensureWorkflowLayout(rootDir, input);
+    const token = normalizeHumanGateCallbackToken(input);
+    const humanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
+    const buttonId = String(input.buttonId || input.button_id || "").trim();
+    const feedbackText = humanGateFeedbackText(input);
+    if (!token) {
+      throw new Error("human_gate.resume is button-first only; callbackToken is required");
+    }
+    if (!feedbackText) {
+      throw new Error("human_gate.resume requires Flashcat original words or review feedback");
+    }
+    const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} LIMIT 1;`, { json: true });
+    const button = rows[0];
+    if (!button) throw new Error("human_gate.resume callback token was not found");
+    const resolvedHumanGateId = humanGateId || String(button.human_gate_id || "").trim();
+    const resolvedButtonId = buttonId || String(button.button_id || "").trim();
+    if (!resolvedHumanGateId || !resolvedButtonId) {
+      throw new Error("human_gate.resume is button-first only; humanGateId and buttonId could not be resolved from the callback token");
+    }
+    if (String(button.human_gate_id || "") !== resolvedHumanGateId || String(button.button_id || "") !== resolvedButtonId) {
+      throw new Error("human_gate.resume token does not match the supplied humanGateId/buttonId");
+    }
+    return humanGateButtonCallback(rootDir, {
+      ...input,
+      workflowRootDir: paths.root,
+      token,
+      humanGateId: resolvedHumanGateId,
+      buttonId: resolvedButtonId,
+      feedbackText,
+      sourceSystem: input.sourceSystem || input.source_system || "human_gate.resume"
+    });
+  }
+
   async function humanGateInbox(rootDir, input = {}) {
     const paths = await ensureWorkflowLayout(rootDir, input);
     const createdAt = nowIso();
@@ -266,7 +331,9 @@ ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summ
   }
 
   return {
+    humanGateFeedback,
     humanGateInbox,
+    humanGateResume,
     humanGateWebAppReview,
     humanGateWebAppSubmit,
     workflowHumanGateRecord
