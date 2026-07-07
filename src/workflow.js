@@ -10805,170 +10805,8 @@ async function humanGateTelegramArtifacts(input = {}, buttons = []) {
   };
 }
 
-export async function humanGateRequest(rootDir, input) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const meetingId = normalizeMeetingRef(input.meetingId || input.meeting_id);
-  const requester = normalizeRequester(input.from || input.sourceAgent || input.source_agent || input.ownerAgent || input.owner_agent, "cat_claw");
-  const workflowId = firstText(input.workflowId, input.workflow_id, input.parentObjectId, input.parent_object_id, meetingId);
-  const gateType = firstText(input.gateType, input.gate_type, "workflow_continuation");
-  const parentObjectId = input.parentObjectId || input.parent_object_id || workflowId;
-  const stageKey = humanGateStageKey(input, workflowId, gateType, parentObjectId);
-  const requestedHumanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
-  const supersedeExisting = boolOption(input.supersedeExisting ?? input.supersede_existing ?? input.supersede ?? input.replaceExisting ?? input.replace_existing, false);
-  const stageGateId = requestedHumanGateId || (supersedeExisting ? "" : `hgate.stage.${textHash(`${workflowId}:${gateType}:${stageKey}`).slice(0, 24)}`);
-  const directHumanGateId = stageGateId || requestedHumanGateId;
-  const requestPayload = parseJsonValue(input.payload, input.payload || {});
-  const buttonSpecs = humanGateButtonSpecs(
-    { object_id: stageGateId, path: "" },
-    { ...input, payload: requestPayload },
-    { ...input, raw: requestPayload }
-  );
-  const buttonAudit = combineHumanGateAudits(
-    auditHumanGatePlanOptions(buttonSpecs),
-    auditHumanGatePlanDetails(buttonSpecs),
-    auditHumanGatePrimaryLanguage(input, buttonSpecs)
-  );
-  if (!buttonAudit.ok) {
-    throw new Error(`Human Gate request blocked: ${buttonAudit.reason}; cat-brain main must provide ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} complete option details and Chinese-format report material before cat_claw submits to Flashcat`);
-  }
-  let gate = null;
-  let supersededGate = null;
-  if (directHumanGateId) {
-    const existingGate = await humanGateRecordById(paths, directHumanGateId);
-    const lockedButtons = await sqlite(paths.dbFile, `
-SELECT *
-FROM human_gate_buttons
-WHERE human_gate_id=${sqlValue(directHumanGateId)} AND status IN ('feedback_pending','selected')
-ORDER BY updated_at DESC, created_at ASC;`, { json: true });
-    if (existingGate && !["pending", "superseded"].includes(existingGate.status)) {
-      const rows = await sqlite(paths.dbFile, `
-SELECT *
-FROM human_gate_buttons
-WHERE human_gate_id=${sqlValue(directHumanGateId)}
-ORDER BY created_at ASC;`, { json: true });
-      return {
-        meetingId,
-        workflowId,
-        humanGateId: directHumanGateId,
-        gateType,
-        stageKey,
-        reusedStageGate: true,
-        alreadySubmitted: true,
-        status: existingGate.status,
-        buttons: rows.map((buttonRow) => humanGateButtonFromRow(buttonRow, paths.root)),
-        deliveryRequired: false,
-        dbFile: paths.dbFile
-      };
-    }
-    if (lockedButtons.length) {
-      const selected = lockedButtons.find((row) => row.status === "selected") || lockedButtons[0];
-      return {
-        meetingId,
-        workflowId,
-        humanGateId: directHumanGateId,
-        gateType,
-        stageKey,
-        reusedStageGate: true,
-        alreadySubmitted: selected.status === "selected",
-        status: selected.status === "selected" ? selected.decision_status : "feedback_pending",
-        buttons: lockedButtons.map((buttonRow) => humanGateButtonFromRow(buttonRow, paths.root)),
-        deliveryRequired: false,
-        dbFile: paths.dbFile
-      };
-    }
-  }
-  const stageMatch = await pendingHumanGateForStage(paths, { workflowId, gateType, stageKey, excludeHumanGateId: requestedHumanGateId });
-  if (stageMatch?.row) {
-    if (supersedeExisting) {
-      supersededGate = await supersedeHumanGateRecord(paths, stageMatch.row, "superseded_by_new_human_gate_request_same_stage");
-    } else {
-      gate = { objectId: stageMatch.row.object_id, objectType: "human_gate_record", status: "pending", idempotentReplay: true, reusedStageGate: true };
-    }
-  }
-  if (!gate) {
-    gate = await workflowHumanGateRecord(rootDir, {
-      ...input,
-      [INTERNAL_HUMAN_GATE_RECORD]: true,
-      humanGateId: stageGateId || input.humanGateId || input.human_gate_id,
-      workflowId,
-      parentObjectId,
-      gateType,
-      humanGateStageKey: stageKey,
-      actor: input.actor || requester,
-      status: "pending",
-      sourceSystem: input.sourceSystem || input.source_system || "openclaw",
-      sourceAgent: requester
-    });
-  }
-  let buttons = (await sqlite(paths.dbFile, `
-SELECT *
-FROM human_gate_buttons
-WHERE human_gate_id=${sqlValue(gate.objectId)} AND status='active'
-ORDER BY created_at ASC;`, { json: true })).map((buttonRow) => humanGateButtonFromRow(buttonRow, paths.root));
-  if (!buttons.length) {
-    buttons = await createHumanGateButtons(paths, {
-      ...input,
-      buttons: buttonSpecs,
-      addDefaultControls: false,
-      workflowId,
-      meetingId,
-      humanGateId: gate.objectId,
-      createdBy: requester
-    });
-  }
-  const { webApp, presentation, telegramReplyMarkup, text } = await humanGateTelegramArtifacts(input, buttons);
-  const eventId = safeId("control");
-  const createdAt = nowIso();
-  await sqlite(paths.dbFile, `
-INSERT INTO meeting_control_events(event_id, meeting_id, event_type, status, summary, payload_json, created_by, created_at)
-VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'human_gate_request', 'pending', ${sqlValue(input.summary || input.text || "")}, ${sqlValue(JSON.stringify({ humanGateId: gate.objectId, gateType, workflowId, buttons }))}, ${sqlValue(requester)}, ${sqlValue(createdAt)});`);
-  const link = await telegramLinkFor(paths, meetingId);
-  const channelTarget = firstText(input.channelId, input.channel_id, input.channel);
-  const explicitTarget = firstText(input.targetRef, input.target_ref, input.target, input.chatId, input.chat_id, input.notifyTargets, input.notify_targets, channelTarget);
-  const linkTarget = firstText(link?.human_gate_channel_id, link?.channel_id, link?.chat_id);
-  const targetRef = explicitTarget || linkTarget || DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID;
-  const targetKind = firstText(input.targetKind, input.target_kind) || (channelTarget || targetRef.startsWith("-") ? "channel" : "private");
-  const deliveryAccount = normalizeRequester(input.account || input.telegramAccount || input.telegram_account, "cat_claw");
-  const telegramOutbox = await enqueueTelegramOutbox(paths, {
-    outboxId: `hgate-${cleanFileSegment(gate.objectId)}`,
-    meetingId,
-    targetKind,
-    targetRef,
-    messageType: "human_gate_request",
-    text,
-    payload: { humanGateId: gate.objectId, gateType, workflowId, eventId, account: deliveryAccount, requester, targetKind, targetRef, buttons, presentation, telegramReplyMarkup, webApp, textPolicyVersion: HUMAN_GATE_TEXT_POLICY_VERSION }
-  });
-  let delivery = null;
-  const shouldDeliver = boolOption(input.autoDeliver ?? input.auto_deliver ?? input.deliver, false);
-  if (shouldDeliver && telegramOutbox.status === "queued") {
-    const rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(telegramOutbox.outboxId)} LIMIT 1;`, { json: true });
-    if (rows[0]) delivery = await deliverTelegramOutboxRow(paths, rows[0], { ...input, account: deliveryAccount, target: targetRef });
-  }
-  await appendWorkflowEvent(paths, {
-    eventType: "human_gate.requested",
-    status: "pending",
-    workflowId,
-    humanGateId: gate.objectId,
-    actor: requester,
-    sourceRuntime: "workflow",
-    sourceAgent: requester,
-    nextState: "pending",
-    artifactRef: telegramOutbox.outboxId,
-    payload: {
-      meetingId,
-      gateType,
-      stageKey,
-      reusedStageGate: Boolean(gate.idempotentReplay),
-      supersededHumanGateId: supersededGate?.humanGateId || "",
-      targetKind,
-      targetRef,
-      buttonCount: buttons.length,
-      telegramOutboxId: telegramOutbox.outboxId,
-      deliveryStatus: delivery?.status || telegramOutbox.status
-    },
-    createdAt
-  });
-  return { meetingId, workflowId, humanGateId: gate.objectId, gateType, stageKey, reusedStageGate: Boolean(gate.idempotentReplay), supersededGate, eventId, buttons, presentation, telegramReplyMarkup, webApp, targetKind, targetRef, deliveryAccount, telegramOutbox, deliveryRequired: telegramOutbox.status === "queued" && !delivery, delivery, status: "pending", dbFile: paths.dbFile };
+export async function humanGateRequest(rootDir, input = {}) {
+  return HUMAN_GATE_ACTION_HANDLERS.humanGateRequest(rootDir, input);
 }
 
 async function workflowPayloadWithHumanGateFeedback(paths, workflowId, button, selectedAt, feedbackContext = {}) {
@@ -12097,29 +11935,44 @@ export const {
 } = TELEGRAM_OUTBOX_ACTION_HANDLERS;
 
 export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
+  auditHumanGatePlanDetails,
+  auditHumanGatePlanOptions,
+  auditHumanGatePrimaryLanguage,
   appendWorkflowEvent,
   applyHumanGateWorkflowDecision,
+  boolOption,
   catTailPreOrderRiskAuditDispatchSpec,
   cleanFileSegment,
   collectHumanGateInboxItems,
+  combineHumanGateAudits,
+  createHumanGateButtons,
   dailyKey,
+  deliverTelegramOutboxRow,
+  enqueueTelegramOutbox,
   ensureWorkflowLayout,
+  firstText,
   humanGateActionHint,
   humanGateArtifactRef,
   humanGateBody,
   humanGateButtonDisplayLabel,
   humanGateButtonFromRow,
   humanGateButtonRowByToken,
+  humanGateButtonSpecs,
   humanGateButtonTelegramStyle,
   humanGateCallbackIdentityAllowed,
   humanGateFeedbackRequiredReply,
   humanGateFeedbackText,
   humanGateRecordById,
   humanGateRecordExpiry,
+  humanGateStageKey,
   humanGateSummary,
+  humanGateTelegramArtifacts,
   humanGateWebAppConfig,
   normalizeHumanGateCallbackToken,
+  normalizeMeetingRef,
+  normalizeRequester,
   nowIso,
+  pendingHumanGateForStage,
   rawHumanGateCallbackToken,
   protocolRecord: (...args) => protocolRecord(...args),
   relativeTo,
@@ -12131,13 +11984,20 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   safeMeetingDispatchWithRetry,
   sqliteChangeCount,
   meetingResume,
+  supersedeHumanGateRecord,
+  telegramLinkFor,
+  textHash,
   updateHumanGateRecordFeedback,
   verifyTelegramWebAppInitData,
   workflowCheckpoint,
   writeJsonArtifact,
   writeTextArtifact,
   DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
-  HUMAN_GATE_STATUSES
+  HUMAN_GATE_APPROVE_OPTION_MAX,
+  HUMAN_GATE_APPROVE_OPTION_MIN,
+  HUMAN_GATE_STATUSES,
+  HUMAN_GATE_TEXT_POLICY_VERSION,
+  INTERNAL_HUMAN_GATE_RECORD
 });
 
 export const HUMAN_GATE_ACTION_REGISTRY = createHumanGateActionRegistry(HUMAN_GATE_ACTION_HANDLERS);
@@ -12389,10 +12249,5 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (controlLoopTickResult.handled) return controlLoopTickResult.value;
   const runtimeBridgeResult = await runRuntimeBridgeAction(RUNTIME_BRIDGE_ACTION_REGISTRY, action, rootDir, input);
   if (runtimeBridgeResult.handled) return runtimeBridgeResult.value;
-  switch (action) {
-    case "human_gate.request":
-      return humanGateRequest(rootDir, input);
-    default:
-      throw new Error(`unknown workflow action: ${requestedAction}${requestedAction === action ? "" : ` (canonical: ${action})`}`);
-  }
+  throw new Error(`unknown workflow action: ${requestedAction}${requestedAction === action ? "" : ` (canonical: ${action})`}`);
 }

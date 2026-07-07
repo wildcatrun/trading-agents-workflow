@@ -57,6 +57,7 @@ import {
   humanGateButtonCallback,
   humanGateFeedback,
   humanGateInbox,
+  humanGateRequest,
   humanGateResume,
   humanGateWebAppReview,
   humanGateWebAppSubmit,
@@ -10391,6 +10392,8 @@ VALUES
 }
 
 async function testHumanGateInboxExtractedActionContracts() {
+  assert.equal(HUMAN_GATE_ACTION_REGISTRY.has("human_gate.request"), true, "human_gate.request should be registered in the extracted human_gate registry");
+  assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES["human_gate.request"], "humanGateRequest");
   for (const action of [
     "human_gate.inbox",
     "human_gate.console",
@@ -10441,6 +10444,7 @@ async function testHumanGateInboxExtractedActionContracts() {
     assert.equal(HUMAN_GATE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted human_gate registry`);
     assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES[action], "humanGateResume", `${action} should map to the extracted humanGateResume handler`);
   }
+  assert.equal(typeof humanGateRequest, "function");
   assert.equal(typeof humanGateButtonCallback, "function");
   assert.equal(typeof humanGateFeedback, "function");
   assert.equal(typeof humanGateInbox, "function");
@@ -10449,6 +10453,7 @@ async function testHumanGateInboxExtractedActionContracts() {
   assert.equal(typeof humanGateWebAppSubmit, "function");
   assert.equal(typeof workflowHumanGateRecord, "function");
   const directRegistry = createHumanGateActionRegistry({
+    humanGateRequest,
     humanGateButtonCallback,
     humanGateFeedback,
     humanGateInbox,
@@ -10460,6 +10465,7 @@ async function testHumanGateInboxExtractedActionContracts() {
   assert.equal(directRegistry.get("human_gate.inbox"), humanGateInbox);
   assert.equal(directRegistry.get("human_gate.console"), humanGateInbox);
   assert.equal(directRegistry.get("human_gate.batch_inbox"), humanGateInbox);
+  assert.equal(directRegistry.get("human_gate.request"), humanGateRequest);
   assert.equal(directRegistry.get("human_gate.record"), workflowHumanGateRecord);
   assert.equal(directRegistry.get("workflow.human_gate"), workflowHumanGateRecord);
   assert.equal(directRegistry.get("human_gate.web_app_review"), humanGateWebAppReview);
