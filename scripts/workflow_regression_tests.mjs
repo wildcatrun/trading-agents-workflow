@@ -188,6 +188,7 @@ import {
 } from "../src/meeting-participant-actions.js";
 import {
   PERMISSION_ACTION_HANDLER_NAMES,
+  createPermissionCore,
   createPermissionActionRegistry
 } from "../src/permission-actions.js";
 import {
@@ -11850,6 +11851,28 @@ async function testPermissionExtractedActionContracts() {
     assert.equal(PERMISSION_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
   }
   assert.equal(typeof workflowPermissionCheck, "function");
+  assert.throws(() => createPermissionCore({}), /permission action dependency missing: canonicalWorkflowAction/);
+  assert.throws(() => createPermissionCore({
+    canonicalWorkflowAction: (action) => String(action || "")
+  }), /permission action dependency missing: normalizeOptionalAgentId/);
+  const directCore = createPermissionCore({
+    canonicalWorkflowAction: (action) => ({
+      "workflow.message_flow.send": "message_flow.send"
+    }[String(action || "")] || String(action || "")),
+    normalizeOptionalAgentId: (value) => String(value || "").trim(),
+    normalizeRuntime: (value) => String(value || "").trim().toLowerCase()
+  });
+  assert.equal(typeof directCore.evaluateWorkflowPermission, "function");
+  assert.equal(typeof directCore.permissionEvidencePresent, "function");
+  assert.equal(directCore.workflowPermissionCaller({ callerAgent: "cat_body", callerRuntime: "hermers" }).agentId, "cat_body");
+  assert.equal(directCore.isWorkflowPolicyHardGateAction("trade.intent"), true);
+  const directHardGate = await directCore.evaluateWorkflowPermission({ dbFile: "" }, {
+    targetAction: "trade.intent",
+    callerAgent: "local_codex"
+  });
+  assert.equal(directHardGate.allowed, true);
+  assert.equal(directHardGate.policyOutcome, "requires_human_gate");
+  assert.equal(directHardGate.actionable, false);
   const directRegistry = createPermissionActionRegistry({ workflowPermissionCheck });
   assert.equal(directRegistry.get("workflow.permission.check"), workflowPermissionCheck);
   assert.equal(directRegistry.get("workflow.permission.explain"), workflowPermissionCheck);
