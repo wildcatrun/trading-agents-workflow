@@ -3,11 +3,14 @@ import {
   sqlValue,
   sqlite
 } from "./workflow/sqlite.js";
+import { parseJsonValue } from "./workflow/json.js";
 
 export const HUMAN_GATE_ACTION_HANDLER_NAMES = {
   "human_gate.inbox": "humanGateInbox",
   "human_gate.console": "humanGateInbox",
-  "human_gate.batch_inbox": "humanGateInbox"
+  "human_gate.batch_inbox": "humanGateInbox",
+  "human_gate.record": "workflowHumanGateRecord",
+  "workflow.human_gate": "workflowHumanGateRecord"
 };
 
 function requireContextFunction(context, name) {
@@ -46,11 +49,42 @@ export function createHumanGateActionHandlers(context = {}) {
   const relativeTo = requireContextFunction(context, "relativeTo");
   const renderHumanGateInboxHtml = requireContextFunction(context, "renderHumanGateInboxHtml");
   const renderHumanGateTelegramSummary = requireContextFunction(context, "renderHumanGateTelegramSummary");
+  const protocolRecord = requireContextFunction(context, "protocolRecord");
   const riskSummaryFor = requireContextFunction(context, "riskSummaryFor");
   const safeId = requireContextFunction(context, "safeId");
   const writeJsonArtifact = requireContextFunction(context, "writeJsonArtifact");
   const writeTextArtifact = requireContextFunction(context, "writeTextArtifact");
   const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = requireContextValue(context, "DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID");
+  const HUMAN_GATE_STATUSES = requireContextValue(context, "HUMAN_GATE_STATUSES");
+
+  async function workflowHumanGateRecord(rootDir, input = {}) {
+    const statusRaw = String(input.status || "pending").trim();
+    const status = HUMAN_GATE_STATUSES.has(statusRaw) ? statusRaw : "pending";
+    return protocolRecord(rootDir, {
+      ...input,
+      objectType: "human_gate_record",
+      objectId: input.humanGateId || input.human_gate_id || input.gateId || input.gate_id || input.objectId || input.object_id,
+      parentObjectId: input.parentObjectId || input.parent_object_id || input.riskDecisionId || input.risk_decision_id || input.proposalId || input.proposal_id || "",
+      status,
+      sourceSystem: input.sourceSystem || input.source_system || "local_codex",
+      sourceAgent: input.sourceAgent || input.source_agent || input.from || "flashcat",
+      payload: {
+        gateType: input.gateType || input.gate_type || "high_risk_trade_execution",
+        humanGateStageKey: input.humanGateStageKey || input.human_gate_stage_key || input.stageKey || input.stage_key || "",
+        stage: input.stage || input.phase || "",
+        meetingId: input.meetingId || input.meeting_id || "",
+        actor: input.actor || input.from || "flashcat",
+        assurance: input.assurance || input.authAssurance || "",
+        expiresAt: input.expiresAt || input.expires_at || "",
+        decisionAt: ["approved", "rejected", "paused", "terminated", "expired"].includes(status) ? nowIso() : "",
+        resumePointer: input.resumePointer || input.resume_pointer || input.dispatchId || input.dispatch_id || "",
+        workflowId: input.workflowId || input.workflow_id || "",
+        traceId: input.traceId || input.trace_id || "",
+        summary: input.summary || input.text || "",
+        raw: parseJsonValue(input.payload, input.payload || {})
+      }
+    });
+  }
 
   async function humanGateInbox(rootDir, input = {}) {
     const paths = await ensureWorkflowLayout(rootDir, input);
@@ -116,6 +150,7 @@ ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summ
   }
 
   return {
-    humanGateInbox
+    humanGateInbox,
+    workflowHumanGateRecord
   };
 }

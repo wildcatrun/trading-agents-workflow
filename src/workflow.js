@@ -8445,35 +8445,6 @@ async function runLocalCodexDispatch(paths, row, input = {}) {
   };
 }
 
-export async function workflowHumanGateRecord(rootDir, input) {
-  const statusRaw = String(input.status || "pending").trim();
-  const status = HUMAN_GATE_STATUSES.has(statusRaw) ? statusRaw : "pending";
-  return protocolRecord(rootDir, {
-    ...input,
-    objectType: "human_gate_record",
-    objectId: input.humanGateId || input.human_gate_id || input.gateId || input.gate_id || input.objectId || input.object_id,
-    parentObjectId: input.parentObjectId || input.parent_object_id || input.riskDecisionId || input.risk_decision_id || input.proposalId || input.proposal_id || "",
-    status,
-    sourceSystem: input.sourceSystem || input.source_system || "local_codex",
-    sourceAgent: input.sourceAgent || input.source_agent || input.from || "flashcat",
-    payload: {
-      gateType: input.gateType || input.gate_type || "high_risk_trade_execution",
-      humanGateStageKey: input.humanGateStageKey || input.human_gate_stage_key || input.stageKey || input.stage_key || "",
-      stage: input.stage || input.phase || "",
-      meetingId: input.meetingId || input.meeting_id || "",
-      actor: input.actor || input.from || "flashcat",
-      assurance: input.assurance || input.authAssurance || "",
-      expiresAt: input.expiresAt || input.expires_at || "",
-      decisionAt: ["approved", "rejected", "paused", "terminated", "expired"].includes(status) ? nowIso() : "",
-      resumePointer: input.resumePointer || input.resume_pointer || input.dispatchId || input.dispatch_id || "",
-      workflowId: input.workflowId || input.workflow_id || "",
-      traceId: input.traceId || input.trace_id || "",
-      summary: input.summary || input.text || "",
-      raw: parseJsonValue(input.payload, input.payload || {})
-    }
-  });
-}
-
 function renderIncidentMarkdown(record) {
   const affectedPlanes = record.affectedPlanes.length ? record.affectedPlanes.join(", ") : "unspecified";
   const timeline = record.timeline.length ? record.timeline.map((item) => `- ${item}`).join("\n") : "- none";
@@ -12703,6 +12674,7 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   ensureWorkflowLayout,
   humanGateActionHint,
   nowIso,
+  protocolRecord: (...args) => protocolRecord(...args),
   relativeTo,
   renderHumanGateInboxHtml,
   renderHumanGateTelegramSummary,
@@ -12710,13 +12682,15 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   safeId,
   writeJsonArtifact,
   writeTextArtifact,
-  DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID
+  DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
+  HUMAN_GATE_STATUSES
 });
 
 export const HUMAN_GATE_ACTION_REGISTRY = createHumanGateActionRegistry(HUMAN_GATE_ACTION_HANDLERS);
 
 export const {
-  humanGateInbox
+  humanGateInbox,
+  workflowHumanGateRecord
 } = HUMAN_GATE_ACTION_HANDLERS;
 
 export const CONTROL_LOOP_TICK_ACTION_HANDLERS = createControlLoopTickActionHandlers({
@@ -12974,9 +12948,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
     case "human_gate.resume":
     case "human_gate.confirm":
       return humanGateResume(rootDir, input);
-    case "human_gate.record":
-    case "workflow.human_gate":
-      return workflowHumanGateRecord(rootDir, input);
     default:
       throw new Error(`unknown workflow action: ${requestedAction}${requestedAction === action ? "" : ` (canonical: ${action})`}`);
   }

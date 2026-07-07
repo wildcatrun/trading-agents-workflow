@@ -55,6 +55,7 @@ import {
   WORKFLOW_SWARM_ACTION_REGISTRY,
   cat_clawAudit,
   humanGateInbox,
+  workflowHumanGateRecord,
   incidentState,
   workflowIncidentFromDeadLetter,
   workflowIncidentFromDeadLetterPreview,
@@ -163,6 +164,7 @@ import {
 } from "../src/event-actions.js";
 import {
   HUMAN_GATE_ACTION_HANDLER_NAMES,
+  createHumanGateActionHandlers,
   createHumanGateActionRegistry
 } from "../src/human-gate-actions.js";
 import {
@@ -10392,9 +10394,29 @@ async function testHumanGateInboxExtractedActionContracts() {
     assert.equal(HUMAN_GATE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted human_gate registry`);
     assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES[action], "humanGateInbox", `${action} should map to the extracted humanGateInbox handler`);
   }
+  for (const action of [
+    "human_gate.record",
+    "workflow.human_gate"
+  ]) {
+    assert.equal(HUMAN_GATE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted human_gate registry`);
+    assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES[action], "workflowHumanGateRecord", `${action} should map to the extracted workflowHumanGateRecord handler`);
+  }
   assert.equal(typeof humanGateInbox, "function");
-  const directRegistry = createHumanGateActionRegistry({ humanGateInbox });
+  assert.equal(typeof workflowHumanGateRecord, "function");
+  const directRegistry = createHumanGateActionRegistry({ humanGateInbox, workflowHumanGateRecord });
   assert.equal(directRegistry.get("human_gate.inbox"), humanGateInbox);
+  assert.equal(directRegistry.get("human_gate.console"), humanGateInbox);
+  assert.equal(directRegistry.get("human_gate.batch_inbox"), humanGateInbox);
+  assert.equal(directRegistry.get("human_gate.record"), workflowHumanGateRecord);
+  assert.equal(directRegistry.get("workflow.human_gate"), workflowHumanGateRecord);
+  assert.throws(
+    () => createHumanGateActionRegistry({ humanGateInbox }),
+    /Missing human_gate action handler: workflowHumanGateRecord/
+  );
+  assert.throws(
+    () => createHumanGateActionHandlers({}),
+    /human_gate action dependency missing: cleanFileSegment/
+  );
 
   const root = await tempRoot("human-gate-inbox-extracted-contracts");
   const init = await runAction(root, { action: "workflow.init" });
@@ -10463,6 +10485,17 @@ VALUES ('button-hgate-inbox-contract-a', 'token-hgate-inbox-contract-a', 'hgate-
   assert.equal(gatewayInbox.result.status, "open");
   assert.equal(gatewayInbox.result.count, 1);
   assert.equal(gatewayInbox.result.items[0].sourceId, "hgate-inbox-contract");
+
+  await assertRejectsMessage(
+    () => workflowHumanGateRecord(root, {
+      humanGateId: "hgate-record-external-blocked",
+      status: "approved",
+      workflowId: "wf-hgate-inbox-contract",
+      summary: "External human gate record write should remain blocked."
+    }),
+    /human_gate_record writes are button-first only/
+  );
+  assert.equal(sqliteCount(dbFile, "protocol_objects", "object_id='hgate-record-external-blocked'"), 0);
 }
 
 async function testProtocolRecordExtractedActionContracts() {
