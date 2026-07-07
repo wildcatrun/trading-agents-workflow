@@ -231,6 +231,7 @@ import {
 } from "../src/side-effect-actions.js";
 import {
   STATUS_ACTION_HANDLER_NAMES,
+  createStatusActionHandlers,
   createStatusActionRegistry
 } from "../src/status-actions.js";
 import {
@@ -11797,6 +11798,25 @@ async function testStatusExtractedActionContracts() {
   assert.equal(directRegistry.get("workflow.health.dashboard"), workflowHealth);
   assert.equal(directRegistry.get("trading_workflow.health"), workflowHealth);
   assert.equal(directRegistry.get("trading_workflow.readiness"), workflowReadiness);
+  assert.throws(() => createStatusActionHandlers({}), /status action dependency missing: ensureWorkflowLayout/);
+  assert.throws(
+    () => createStatusActionHandlers({
+      ensureWorkflowLayout: async () => ({})
+    }),
+    /status action dependency missing: activeReadinessChecks/
+  );
+  const directHandlers = createStatusActionHandlers({
+    ensureWorkflowLayout: async () => {
+      throw new Error("not used");
+    },
+    activeReadinessChecks: async () => ({}),
+    loadHermersProfileModes: async () => ({ ok: true, unavailable: true, profiles: {} }),
+    profileModesReadinessPayload: (modes) => modes,
+    readInstrument: async () => null,
+    WORKFLOW_SCHEMA_VERSION: 16
+  });
+  assert.equal(typeof directHandlers.workflowHealthSnapshot, "function");
+  assert.equal(typeof directHandlers.workflowReadinessSnapshot, "function");
 
   const root = await tempRoot("status-extracted-contracts");
   const init = await runAction(root, { action: "trading_workflow.init" });
