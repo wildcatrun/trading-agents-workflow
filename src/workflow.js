@@ -152,11 +152,19 @@ import {
   runTopologyAction
 } from "./topology-actions.js";
 import {
+  HUMAN_GATE_APPROVE_OPTION_MAX,
+  HUMAN_GATE_APPROVE_OPTION_MIN,
+  auditHumanGatePlanOptions,
+  combineHumanGateAudits,
   createHumanGateActionHandlers,
   createHumanGateActionRegistry,
   humanGateArtifactRef,
   humanGateBody,
   humanGateButtonFromRow,
+  humanGateButtonIsControl,
+  humanGateButtonRole,
+  humanGateButtonStatus,
+  humanGatePlanOptionButtons,
   humanGateSummary,
   runHumanGateAction
 } from "./human-gate-actions.js";
@@ -343,8 +351,6 @@ const HUMAN_GATE_CONTROL_STYLES = {
   terminated: "danger"
 };
 const HUMAN_GATE_REDACTED_DETAIL_KEY = /callback|token|secret|password|api[_-]?key|access[_-]?key|refresh/i;
-const HUMAN_GATE_APPROVE_OPTION_MIN = 2;
-const HUMAN_GATE_APPROVE_OPTION_MAX = 5;
 const TELEGRAM_OUTBOX_DELIVERY_LEASE_MS = 120_000;
 const HUMAN_GATE_ZH_TEXT = new Map([
   [
@@ -6296,14 +6302,6 @@ function normalizeRawHumanGateButtonSpecs(specs = [], row = {}, payload = {}, bo
   return result;
 }
 
-function humanGateButtonStatus(value = {}) {
-  return String(value.decisionStatus || value.decision_status || value.status || "").trim();
-}
-
-function humanGateButtonRole(value = {}) {
-  return String(value.role || value.buttonRole || value.button_role || "").trim();
-}
-
 function hasHumanGateButton(buttons = [], statuses = [], roles = []) {
   const statusSet = new Set(statuses);
   const roleSet = new Set(roles);
@@ -6331,34 +6329,6 @@ function humanGateButtonSpecs(row, payload = {}, body = {}) {
   const alternatives = humanGateAlternativeButtons(row, payload, body);
   if (alternatives) return withHumanGateControlButtons(normalizeRawHumanGateButtonSpecs(alternatives, row, payload, body), row, payload, body);
   return defaultHumanGateButtons(row, payload, body);
-}
-
-function humanGatePlanOptionButtons(buttons = []) {
-  return buttons.filter((button) => {
-    const status = humanGateButtonStatus(button);
-    const role = humanGateButtonRole(button);
-    const controlToken = String(button.control || button.controlId || button.control_id || role || status || "").trim().toLowerCase();
-    const isControl = ["reject", "rejected", "pause", "paused", "terminate", "terminated"].includes(controlToken);
-    const hasOptionIdentity = Boolean(firstText(button.optionId, button.option_id, button.optionKey, button.option_key, button.key, button.id));
-    const roleLooksLikeOption = /approve[_-]?option|option|plan|alternative/i.test(role);
-    return (status === "approved" || (!status && (hasOptionIdentity || roleLooksLikeOption))) && !isControl;
-  });
-}
-
-function auditHumanGatePlanOptions(buttons = []) {
-  const planButtons = humanGatePlanOptionButtons(buttons);
-  const ok = planButtons.length >= HUMAN_GATE_APPROVE_OPTION_MIN && planButtons.length <= HUMAN_GATE_APPROVE_OPTION_MAX;
-  return {
-    ok,
-    planCount: planButtons.length,
-    requiredPlanCountMin: HUMAN_GATE_APPROVE_OPTION_MIN,
-    requiredPlanCountMax: HUMAN_GATE_APPROVE_OPTION_MAX,
-    reason: ok
-      ? ""
-      : planButtons.length < HUMAN_GATE_APPROVE_OPTION_MIN
-        ? "human_gate_requires_at_least_two_alternatives"
-        : "human_gate_allows_at_most_five_alternatives"
-  };
 }
 
 function auditHumanGatePlanDetails(buttons = []) {
@@ -6469,18 +6439,6 @@ function auditHumanGatePrimaryLanguage(context = {}, buttons = []) {
     requiredChineseShare,
     languagePolicy: "cat_claw_report_chinese_format; English terms, agent ids, artifact paths, symbols, and callback/tool names may remain original",
     reason: ok ? "" : "human_gate_requires_chinese_primary_report"
-  };
-}
-
-function combineHumanGateAudits(...audits) {
-  const failed = audits.filter((audit) => audit && !audit.ok);
-  if (!failed.length) return { ok: true, reason: "", audits };
-  const details = failed.reduce((acc, audit) => ({ ...acc, ...audit }), {});
-  return {
-    ...details,
-    ok: false,
-    reason: failed.map((audit) => audit.reason).filter(Boolean).join(";") || "human_gate_audit_failed",
-    audits
   };
 }
 
@@ -9792,12 +9750,6 @@ WHERE human_gate_buttons.human_gate_id=excluded.human_gate_id
   return buttons;
 }
 
-function humanGateButtonIsControl(button = {}) {
-  const status = humanGateButtonStatus(button);
-  const role = humanGateButtonRole(button);
-  return status !== "approved" || ["reject", "pause", "terminate"].includes(role);
-}
-
 function humanGateButtonTelegramStyle(button = {}, index = 0) {
   const status = humanGateButtonStatus(button);
   const role = humanGateButtonRole(button);
@@ -10661,13 +10613,11 @@ export const {
 
 export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   auditHumanGatePlanDetails,
-  auditHumanGatePlanOptions,
   auditHumanGatePrimaryLanguage,
   appendWorkflowEvent,
   boolOption,
   catTailPreOrderRiskAuditDispatchSpec,
   cleanFileSegment,
-  combineHumanGateAudits,
   createHumanGateButtons,
   dailyKey,
   deliverTelegramOutboxRow,
@@ -10699,8 +10649,6 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   writeJsonArtifact,
   writeTextArtifact,
   DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
-  HUMAN_GATE_APPROVE_OPTION_MAX,
-  HUMAN_GATE_APPROVE_OPTION_MIN,
   HUMAN_GATE_STATUSES,
   HUMAN_GATE_TEXT_POLICY_VERSION,
   INTERNAL_HUMAN_GATE_RECORD

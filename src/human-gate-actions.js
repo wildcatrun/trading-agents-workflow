@@ -5,6 +5,7 @@ import {
   sqlite
 } from "./workflow/sqlite.js";
 import {
+  firstText,
   jsonHash,
   parseJsonValue
 } from "./workflow/json.js";
@@ -27,6 +28,9 @@ export const HUMAN_GATE_ACTION_HANDLER_NAMES = {
   "human_gate.resume": "humanGateResume",
   "human_gate.confirm": "humanGateResume"
 };
+
+export const HUMAN_GATE_APPROVE_OPTION_MIN = 2;
+export const HUMAN_GATE_APPROVE_OPTION_MAX = 5;
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -89,6 +93,67 @@ export function humanGateSummary(payload = {}, body = {}) {
   return String(body.summary || payload.summary || "").trim();
 }
 
+export function humanGateButtonStatus(value = {}) {
+  return String(value.decisionStatus || value.decision_status || value.status || "").trim();
+}
+
+export function humanGateButtonRole(value = {}) {
+  return String(value.role || value.buttonRole || value.button_role || "").trim();
+}
+
+export function humanGatePlanOptionButtons(buttons = []) {
+  return buttons.filter((button) => {
+    const status = humanGateButtonStatus(button);
+    const role = humanGateButtonRole(button);
+    const controlToken = String(button.control || button.controlId || button.control_id || role || status || "").trim().toLowerCase();
+    const isControl = ["reject", "rejected", "pause", "paused", "terminate", "terminated"].includes(controlToken);
+    const hasOptionIdentity = Boolean(firstText(
+      button.optionId,
+      button.option_id,
+      button.optionKey,
+      button.option_key,
+      button.key,
+      button.id
+    ));
+    const roleLooksLikeOption = /approve[_-]?option|option|plan|alternative/i.test(role);
+    return (status === "approved" || (!status && (hasOptionIdentity || roleLooksLikeOption))) && !isControl;
+  });
+}
+
+export function auditHumanGatePlanOptions(buttons = []) {
+  const planButtons = humanGatePlanOptionButtons(buttons);
+  const ok = planButtons.length >= HUMAN_GATE_APPROVE_OPTION_MIN && planButtons.length <= HUMAN_GATE_APPROVE_OPTION_MAX;
+  return {
+    ok,
+    planCount: planButtons.length,
+    requiredPlanCountMin: HUMAN_GATE_APPROVE_OPTION_MIN,
+    requiredPlanCountMax: HUMAN_GATE_APPROVE_OPTION_MAX,
+    reason: ok
+      ? ""
+      : planButtons.length < HUMAN_GATE_APPROVE_OPTION_MIN
+        ? "human_gate_requires_at_least_two_alternatives"
+        : "human_gate_allows_at_most_five_alternatives"
+  };
+}
+
+export function combineHumanGateAudits(...audits) {
+  const failed = audits.filter((audit) => audit && !audit.ok);
+  if (!failed.length) return { ok: true, reason: "", audits };
+  const details = failed.reduce((acc, audit) => ({ ...acc, ...audit }), {});
+  return {
+    ...details,
+    ok: false,
+    reason: failed.map((audit) => audit.reason).filter(Boolean).join(";") || "human_gate_audit_failed",
+    audits
+  };
+}
+
+export function humanGateButtonIsControl(button = {}) {
+  const status = humanGateButtonStatus(button);
+  const role = humanGateButtonRole(button);
+  return status !== "approved" || ["reject", "pause", "terminate"].includes(role);
+}
+
 function humanGateRecordExpiresAt(firstText, record = {}) {
   const outer = parseJsonValue(record.payload || record.payload_json, {});
   const body = parseJsonValue(outer.payload, outer.payload || {});
@@ -123,10 +188,8 @@ export async function runHumanGateAction(registry, action, rootDir, input = {}) 
 export function createHumanGateActionHandlers(context = {}) {
   const cleanFileSegment = requireContextFunction(context, "cleanFileSegment");
   const auditHumanGatePlanDetails = requireContextFunction(context, "auditHumanGatePlanDetails");
-  const auditHumanGatePlanOptions = requireContextFunction(context, "auditHumanGatePlanOptions");
   const auditHumanGatePrimaryLanguage = requireContextFunction(context, "auditHumanGatePrimaryLanguage");
   const boolOption = requireContextFunction(context, "boolOption");
-  const combineHumanGateAudits = requireContextFunction(context, "combineHumanGateAudits");
   const createHumanGateButtons = requireContextFunction(context, "createHumanGateButtons");
   const dailyKey = requireContextFunction(context, "dailyKey");
   const deliverTelegramOutboxRow = requireContextFunction(context, "deliverTelegramOutboxRow");
@@ -160,8 +223,6 @@ export function createHumanGateActionHandlers(context = {}) {
   const writeJsonArtifact = requireContextFunction(context, "writeJsonArtifact");
   const writeTextArtifact = requireContextFunction(context, "writeTextArtifact");
   const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = requireContextValue(context, "DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID");
-  const HUMAN_GATE_APPROVE_OPTION_MAX = requireContextValue(context, "HUMAN_GATE_APPROVE_OPTION_MAX");
-  const HUMAN_GATE_APPROVE_OPTION_MIN = requireContextValue(context, "HUMAN_GATE_APPROVE_OPTION_MIN");
   const HUMAN_GATE_STATUSES = requireContextValue(context, "HUMAN_GATE_STATUSES");
   const HUMAN_GATE_TEXT_POLICY_VERSION = requireContextValue(context, "HUMAN_GATE_TEXT_POLICY_VERSION");
   const INTERNAL_HUMAN_GATE_RECORD = requireContextValue(context, "INTERNAL_HUMAN_GATE_RECORD");
