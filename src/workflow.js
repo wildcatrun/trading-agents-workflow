@@ -3,13 +3,12 @@ import { createReadStream, createWriteStream } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { WorkflowReadModel } from "./console/read-model.js";
-import { DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS } from "./control-loop-budget.js";
 import { createWorkflowV2ActionRegistry, runWorkflowV2Action } from "./workflow-v2/index.js";
 import {
   WORKFLOW_V2_ADAPTER_JOB_STATUSES,
@@ -126,8 +125,14 @@ import {
   runEventAction
 } from "./event-actions.js";
 import {
+  DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS,
+  DEFAULT_RUNTIME_ACK_RETRY_SECONDS,
+  DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS,
+  MESSAGE_FLOW_DELIVERY_RETURN_POLICIES,
+  MESSAGE_FLOW_RETURN_POLICIES,
   createMessageFlowActionHandlers,
   createMessageFlowActionRegistry,
+  createMessageFlowRuntimeHelpers,
   runMessageFlowAction
 } from "./message-flow-actions.js";
 import {
@@ -313,9 +318,6 @@ const PROTOCOL_OBJECT_TYPES = new Set(["research_signal", "evidence_pack", "rese
 const HUMAN_GATE_STATUSES = new Set(["pending", "approved", "rejected", "paused", "terminated", "expired", "superseded"]);
 const RUNTIMES = new Set(["openclaw", "openclaw_route_shell", "hermers", "telegram", "local_codex", "codex", "claude_code", "claude-code", "opencode", "trading_sim", "trading_core", "system", "other"]);
 const DISPATCH_STATUSES = new Set(["queued", "sent", "acked", "failed", "cancelled"]);
-const MESSAGE_FLOW_STATUSES = new Set(["inbound_received", "route_registered", "runtime_dispatched", "runtime_acknowledged", "semantic_dispatched", "runtime_completed", "runtime_failed", "outbound_queued", "telegram_sent", "telegram_failed"]);
-const MESSAGE_FLOW_RETURN_POLICIES = new Set(["reply_to_source_chat", "report_to_flashcat", "silent"]);
-const MESSAGE_FLOW_DELIVERY_RETURN_POLICIES = new Set(["reply_to_source_chat", "report_to_flashcat"]);
 const WORKFLOW_RUN_STATUSES = new Set(["active", "waiting_human", "blocked", "paused", "completed", "stopped", "cancelled"]);
 const WORKFLOW_TASK_STATUSES = new Set(["pending", "in_progress", "done", "blocked", "failed", "cancelled"]);
 const WORKFLOW_TASK_PRIORITIES = new Set(["flash", "steer", "high", "normal", "low"]);
@@ -323,10 +325,6 @@ const RETIRED_RUNTIME_AGENT_STATUSES = new Set(["retired", "archived"]);
 const INCIDENT_STATUSES = new Set(["active", "mitigating", "monitoring", "resolved", "cancelled"]);
 const INCIDENT_MODES = new Set(["normal", "degraded", "critical-only", "paper-only", "frozen"]);
 const AUTO_RETRY_FAILURE_TYPES = new Set(["provider_timeout", "runtime_timeout", "acp_unavailable", "transient_runtime", "ack_contract_violation"]);
-const DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS = 90;
-const DEFAULT_RUNTIME_ACK_RETRY_SECONDS = 30;
-const DEFAULT_RUNTIME_ACK_MAX_ATTEMPTS = 3;
-const TEST_SEMANTIC_CONTINUATION_FAILURE_ENV = "TRADING_AGENTS_WORKFLOW_TEST_SEMANTIC_CONTINUATION_FAILURE";
 const REPORT_MESSAGE_TYPES = new Set(["workflow_secretary_report", "human_gate_report"]);
 const TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES = new Set(["human_gate_request", "human_gate_report", "workflow_secretary_report", "message_flow_reply", "meeting_live"]);
 const INTERNAL_HUMAN_GATE_RECORD = Symbol("internal_human_gate_record");
@@ -4433,6 +4431,44 @@ function hasAllColumns(columns, names = []) {
   return names.every((name) => columns.has(name));
 }
 
+const MESSAGE_FLOW_RUNTIME_HELPERS = createMessageFlowRuntimeHelpers({
+  cleanFileSegment,
+  deliverTelegramOutboxRow: (...args) => deliverTelegramOutboxRow(...args),
+  enqueueTelegramOutbox: (...args) => TELEGRAM_OUTBOX_ACTION_HANDLERS.enqueueTelegramOutbox(...args),
+  meetingDispatch: (...args) => meetingDispatch(...args),
+  normalizeAgentId,
+  normalizeReturnPolicy,
+  normalizeRuntime,
+  nowIso,
+  runtimeAckContract,
+  DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID
+});
+
+const {
+  acknowledgeMessageFlowRuntime,
+  appendMessageFlowEvent,
+  createMessageFlow,
+  dispatchPayloadObject,
+  finishMessageFlowRuntime,
+  isSemanticContinuationDispatch,
+  messageFlowAckTimeoutSeconds,
+  messageFlowDispatchStartedStatus,
+  messageFlowForDispatch,
+  messageFlowIdFromDispatchPayload,
+  messageFlowIdFromParts,
+  messageFlowOutputIsFinal,
+  messageFlowSendPrompt,
+  messageFlowSendTargets,
+  messageFlowSourceChannel,
+  queueMessageFlowSemanticContinuation,
+  readMessageFlow,
+  recoverAckedMessageFlowSemanticContinuations,
+  semanticContinuationTimeoutSeconds,
+  syncMessageFlowFromTerminalDispatchReceipt,
+  updateMessageFlow,
+  updateMessageFlowFromTelegramDelivery
+} = MESSAGE_FLOW_RUNTIME_HELPERS;
+
 export const CHECKPOINT_ACTION_HANDLERS = createCheckpointActionHandlers({
   ensureWorkflowLayout,
   pendingHumanGateCount,
@@ -6788,655 +6824,6 @@ function enqueueTelegramOutbox(...args) {
   return TELEGRAM_OUTBOX_ACTION_HANDLERS.enqueueTelegramOutbox(...args);
 }
 
-function messageFlowIdFromParts(...parts) {
-  const seed = parts.map((part) => String(part || "").trim()).filter(Boolean).join("\n") || safeId("flow");
-  return `flow.${createHash("sha256").update(seed).digest("hex").slice(0, 24)}`;
-}
-
-function messageFlowSendTargets(input = {}) {
-  const rawTargets = input.targets ?? input.toAgents ?? input.to_agents ?? input.toAgent ?? input.to_agent ?? input.to ?? input.target ?? input.agentId ?? input.agent_id;
-  const targetItems = Array.isArray(rawTargets)
-    ? rawTargets
-    : (typeof rawTargets === "string" ? toList(rawTargets) : (rawTargets ? [rawTargets] : []));
-  const fallbackRuntime = String(input.targetRuntime || input.target_runtime || input.runtime || "").trim();
-  const seen = new Set();
-  const targets = [];
-  for (const item of targetItems) {
-    let runtime = "";
-    let agentId = "";
-    if (item && typeof item === "object") {
-      runtime = String(item.runtime || item.platform || "").trim();
-      agentId = String(item.agentId || item.agent_id || item.agent || item.id || "").trim();
-    } else {
-      const text = String(item || "").trim();
-      if (!text) continue;
-      const parts = text.includes(":") ? text.split(":", 2) : ["", text];
-      runtime = parts[0] || "";
-      agentId = parts[1] || "";
-    }
-    agentId = normalizeAgentId(agentId);
-    runtime = runtime ? normalizeRuntime(runtime) : (fallbackRuntime ? normalizeRuntime(fallbackRuntime) : "");
-    const key = `${runtime || "*"}:${agentId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    targets.push({ runtime, agentId, key });
-  }
-  if (!targets.length) throw new Error("at least one target/toAgent is required for workflow.message_flow.send");
-  return targets;
-}
-
-function messageFlowAckTimeoutSeconds(input = {}) {
-  const raw = input.ackTimeoutSeconds ?? input.ack_timeout_seconds ?? DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS;
-  return Math.max(5, Math.min(300, Number(raw) || DEFAULT_RUNTIME_ACK_TIMEOUT_SECONDS));
-}
-
-function messageFlowSendPrompt(input = {}) {
-  const subject = String(input.subject || input.title || "").trim();
-  const body = String(input.body || input.text || input.message || input.content || "").trim();
-  const sourceRefs = toList(input.sourceRefs || input.source_refs || input.artifacts || input.artifactRefs || input.artifact_refs);
-  const requiresAck = boolOption(input.requiresAck ?? input.requires_ack, false);
-  const ackTimeoutSeconds = messageFlowAckTimeoutSeconds(input);
-  if (!subject && !body) throw new Error("body/text/message or subject is required for workflow.message_flow.send");
-  const lines = [];
-  if (subject) lines.push(`Subject: ${subject}`);
-  if (body) lines.push(body);
-  if (sourceRefs.length) lines.push(["Source refs:", ...sourceRefs.map((ref) => `- ${ref}`)].join("\n"));
-  if (requiresAck) {
-    lines.push([
-      "Immediate ACK required:",
-      `- First runtime turn must return ACK_RECEIVED within ${ackTimeoutSeconds}s after receiving the complete message.`,
-      "- The ACK only confirms receipt and message integrity; it is not the semantic task result.",
-      "- Include an ISO timestamp, dispatch id if visible, message_flow id if visible, and a one-line received scope.",
-      `- If no ACK is received, workflow retries on the ${DEFAULT_RUNTIME_ACK_RETRY_SECONDS}s governed control-loop path.`
-    ].join("\n"));
-  }
-  return { subject, body, sourceRefs, prompt: lines.join("\n\n") };
-}
-
-function messageFlowStatusTimestampColumn(status) {
-  return {
-    inbound_received: "inbound_received_at",
-    route_registered: "route_registered_at",
-    runtime_dispatched: "runtime_dispatched_at",
-    runtime_acknowledged: "",
-    semantic_dispatched: "",
-    runtime_completed: "runtime_completed_at",
-    runtime_failed: "runtime_failed_at",
-    outbound_queued: "outbound_queued_at",
-    telegram_sent: "telegram_sent_at",
-    telegram_failed: "telegram_failed_at"
-  }[status] || "";
-}
-
-const MESSAGE_FLOW_STATUS_RANK = {
-  inbound_received: 1,
-  route_registered: 2,
-  runtime_dispatched: 3,
-  runtime_acknowledged: 4,
-  semantic_dispatched: 5,
-  runtime_failed: 6,
-  runtime_completed: 6,
-  outbound_queued: 7,
-  telegram_failed: 8,
-  telegram_sent: 9
-};
-
-function isMessageFlowStatusRegression(currentStatus, nextStatus) {
-  if (!currentStatus || currentStatus === nextStatus) return false;
-  if (currentStatus === "telegram_sent" && nextStatus !== "telegram_sent") return true;
-  if (currentStatus === "telegram_failed" && !["telegram_failed", "telegram_sent"].includes(nextStatus)) return true;
-  const currentRank = MESSAGE_FLOW_STATUS_RANK[currentStatus] || 0;
-  const nextRank = MESSAGE_FLOW_STATUS_RANK[nextStatus] || 0;
-  if (currentRank && nextRank && nextRank < currentRank) return true;
-  if (currentStatus === "runtime_completed" && nextStatus === "runtime_failed") return true;
-  return false;
-}
-
-async function appendMessageFlowEvent(paths, flowId, status, eventType, payload = {}) {
-  await sqlite(paths.dbFile, `
-INSERT INTO message_flow_events(event_id, flow_id, status, event_type, payload_json, created_at)
-VALUES (${sqlValue(safeId("flowevt"))}, ${sqlValue(flowId)}, ${sqlValue(status)}, ${sqlValue(eventType)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(nowIso())});`);
-}
-
-async function createMessageFlow(paths, input = {}) {
-  const createdAt = input.createdAt || input.created_at || nowIso();
-  const flowId = String(input.flowId || input.flow_id || messageFlowIdFromParts(input.idempotencyKey || input.idempotency_key, input.traceId || input.trace_id, input.meetingId || input.meeting_id)).trim();
-  const status = MESSAGE_FLOW_STATUSES.has(String(input.status || "inbound_received")) ? String(input.status || "inbound_received") : "inbound_received";
-  const returnPolicy = normalizeReturnPolicy(input.returnPolicy || input.return_policy, "silent");
-  const payload = parseJsonValue(input.payload, input.payload || {});
-  const timestampColumn = messageFlowStatusTimestampColumn(status);
-  await sqlite(paths.dbFile, `
-INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, runtime_run_id, message_id, outbox_id, source_channel, source_system, source_runtime, source_account_id, source_chat_id, sender_id, source_message_id, route_agent_id, route_runtime, target_runtime, target_agent_id, target_platform, workflow_ingress_adapter, im_identity, execution_identity, return_policy, status, inbound_received_at, route_registered_at, runtime_dispatched_at, runtime_completed_at, runtime_failed_at, outbound_queued_at, telegram_sent_at, telegram_failed_at, completed_at, failure_type, last_error, final_output_present, delivery_receipt_present, payload_json, created_at, updated_at)
-VALUES (${sqlValue(flowId)}, ${sqlValue(input.traceId || input.trace_id || "")}, ${sqlValue(input.idempotencyKey || input.idempotency_key || "")}, ${sqlValue(input.meetingId || input.meeting_id || "")}, ${sqlValue(input.workflowId || input.workflow_id || "")}, ${sqlValue(input.dispatchId || input.dispatch_id || "")}, ${sqlValue(input.runtimeRunId || input.runtime_run_id || "")}, ${sqlValue(input.messageId || input.message_id || "")}, ${sqlValue(input.outboxId || input.outbox_id || "")}, ${sqlValue(input.sourceChannel || input.source_channel || "")}, ${sqlValue(input.sourceSystem || input.source_system || "")}, ${sqlValue(input.sourceRuntime || input.source_runtime || "")}, ${sqlValue(input.sourceAccountId || input.source_account_id || "")}, ${sqlValue(input.sourceChatId || input.source_chat_id || "")}, ${sqlValue(input.senderId || input.sender_id || "")}, ${sqlValue(input.sourceMessageId || input.source_message_id || "")}, ${sqlValue(input.routeAgentId || input.route_agent_id || "")}, ${sqlValue(input.routeRuntime || input.route_runtime || "")}, ${sqlValue(input.targetRuntime || input.target_runtime || "")}, ${sqlValue(input.targetAgentId || input.target_agent_id || "")}, ${sqlValue(input.targetPlatform || input.target_platform || "")}, ${sqlValue(input.workflowIngressAdapter || input.workflow_ingress_adapter || "")}, ${sqlValue(input.imIdentity || input.im_identity || "")}, ${sqlValue(input.executionIdentity || input.execution_identity || "")}, ${sqlValue(returnPolicy)}, ${sqlValue(status)}, ${sqlValue(timestampColumn === "inbound_received_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "route_registered_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "runtime_dispatched_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "runtime_completed_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "runtime_failed_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "outbound_queued_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "telegram_sent_at" ? createdAt : "")}, ${sqlValue(timestampColumn === "telegram_failed_at" ? createdAt : "")}, ${sqlValue(["telegram_sent", "telegram_failed"].includes(status) ? createdAt : "")}, ${sqlValue(input.failureType || input.failure_type || "")}, ${sqlValue(input.lastError || input.last_error || "")}, ${sqlValue(input.finalOutputPresent ? 1 : 0)}, ${sqlValue(input.deliveryReceiptPresent ? 1 : 0)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
-ON CONFLICT(flow_id) DO UPDATE SET
-  trace_id=CASE WHEN excluded.trace_id != '' THEN excluded.trace_id ELSE message_flows.trace_id END,
-  idempotency_key=CASE WHEN excluded.idempotency_key != '' THEN excluded.idempotency_key ELSE message_flows.idempotency_key END,
-  meeting_id=CASE WHEN excluded.meeting_id != '' THEN excluded.meeting_id ELSE message_flows.meeting_id END,
-  workflow_id=CASE WHEN excluded.workflow_id != '' THEN excluded.workflow_id ELSE message_flows.workflow_id END,
-  dispatch_id=CASE WHEN excluded.dispatch_id != '' THEN excluded.dispatch_id ELSE message_flows.dispatch_id END,
-  runtime_run_id=CASE WHEN excluded.runtime_run_id != '' THEN excluded.runtime_run_id ELSE message_flows.runtime_run_id END,
-  message_id=CASE WHEN excluded.message_id != '' THEN excluded.message_id ELSE message_flows.message_id END,
-  outbox_id=CASE WHEN excluded.outbox_id != '' THEN excluded.outbox_id ELSE message_flows.outbox_id END,
-  source_channel=CASE WHEN excluded.source_channel != '' THEN excluded.source_channel ELSE message_flows.source_channel END,
-  source_system=CASE WHEN excluded.source_system != '' THEN excluded.source_system ELSE message_flows.source_system END,
-  source_runtime=CASE WHEN excluded.source_runtime != '' THEN excluded.source_runtime ELSE message_flows.source_runtime END,
-  source_account_id=CASE WHEN excluded.source_account_id != '' THEN excluded.source_account_id ELSE message_flows.source_account_id END,
-  source_chat_id=CASE WHEN excluded.source_chat_id != '' THEN excluded.source_chat_id ELSE message_flows.source_chat_id END,
-  sender_id=CASE WHEN excluded.sender_id != '' THEN excluded.sender_id ELSE message_flows.sender_id END,
-  source_message_id=CASE WHEN excluded.source_message_id != '' THEN excluded.source_message_id ELSE message_flows.source_message_id END,
-  route_agent_id=CASE WHEN excluded.route_agent_id != '' THEN excluded.route_agent_id ELSE message_flows.route_agent_id END,
-  route_runtime=CASE WHEN excluded.route_runtime != '' THEN excluded.route_runtime ELSE message_flows.route_runtime END,
-  target_runtime=CASE WHEN excluded.target_runtime != '' THEN excluded.target_runtime ELSE message_flows.target_runtime END,
-  target_agent_id=CASE WHEN excluded.target_agent_id != '' THEN excluded.target_agent_id ELSE message_flows.target_agent_id END,
-  target_platform=CASE WHEN excluded.target_platform != '' THEN excluded.target_platform ELSE message_flows.target_platform END,
-  workflow_ingress_adapter=CASE WHEN excluded.workflow_ingress_adapter != '' THEN excluded.workflow_ingress_adapter ELSE message_flows.workflow_ingress_adapter END,
-  im_identity=CASE WHEN excluded.im_identity != '' THEN excluded.im_identity ELSE message_flows.im_identity END,
-  execution_identity=CASE WHEN excluded.execution_identity != '' THEN excluded.execution_identity ELSE message_flows.execution_identity END,
-  return_policy=CASE WHEN excluded.return_policy != 'silent' OR message_flows.return_policy='' THEN excluded.return_policy ELSE message_flows.return_policy END,
-  status=CASE
-    WHEN message_flows.status='telegram_sent' AND excluded.status!='telegram_sent' THEN message_flows.status
-    WHEN message_flows.status='telegram_failed' AND excluded.status NOT IN ('telegram_failed','telegram_sent') THEN message_flows.status
-    ELSE excluded.status
-  END,
-  inbound_received_at=CASE WHEN excluded.inbound_received_at != '' THEN excluded.inbound_received_at ELSE message_flows.inbound_received_at END,
-  route_registered_at=CASE WHEN excluded.route_registered_at != '' THEN excluded.route_registered_at ELSE message_flows.route_registered_at END,
-  runtime_dispatched_at=CASE WHEN excluded.runtime_dispatched_at != '' THEN excluded.runtime_dispatched_at ELSE message_flows.runtime_dispatched_at END,
-  runtime_completed_at=CASE WHEN excluded.runtime_completed_at != '' THEN excluded.runtime_completed_at ELSE message_flows.runtime_completed_at END,
-  runtime_failed_at=CASE WHEN excluded.runtime_failed_at != '' THEN excluded.runtime_failed_at ELSE message_flows.runtime_failed_at END,
-  outbound_queued_at=CASE WHEN excluded.outbound_queued_at != '' THEN excluded.outbound_queued_at ELSE message_flows.outbound_queued_at END,
-  telegram_sent_at=CASE WHEN excluded.telegram_sent_at != '' THEN excluded.telegram_sent_at ELSE message_flows.telegram_sent_at END,
-  telegram_failed_at=CASE WHEN excluded.telegram_failed_at != '' THEN excluded.telegram_failed_at ELSE message_flows.telegram_failed_at END,
-  completed_at=CASE WHEN excluded.completed_at != '' THEN excluded.completed_at ELSE message_flows.completed_at END,
-  failure_type=CASE WHEN excluded.failure_type != '' THEN excluded.failure_type ELSE message_flows.failure_type END,
-  last_error=CASE WHEN excluded.last_error != '' THEN excluded.last_error ELSE message_flows.last_error END,
-  final_output_present=CASE WHEN excluded.final_output_present != 0 THEN excluded.final_output_present ELSE message_flows.final_output_present END,
-  delivery_receipt_present=CASE WHEN excluded.delivery_receipt_present != 0 THEN excluded.delivery_receipt_present ELSE message_flows.delivery_receipt_present END,
-  payload_json=excluded.payload_json,
-  updated_at=excluded.updated_at;`);
-  await appendMessageFlowEvent(paths, flowId, status, "state", payload);
-  return { flowId, status, returnPolicy };
-}
-
-async function readMessageFlow(paths, flowId) {
-  if (!flowId) return null;
-  const rows = await sqlite(paths.dbFile, `SELECT * FROM message_flows WHERE flow_id=${sqlValue(flowId)} LIMIT 1;`, { json: true });
-  return rows[0] || null;
-}
-
-function messageFlowIdFromDispatchPayload(row = {}) {
-  const payload = parseJsonValue(row.payload_json, {});
-  return String(payload.messageFlowId || payload.message_flow_id || payload.routeShell?.messageFlowId || payload.routeShell?.message_flow_id || payload.payload?.messageFlowId || payload.payload?.routeShell?.messageFlowId || "").trim();
-}
-
-function dispatchPayloadObject(row = {}) {
-  return parseJsonValue(row.payload_json, {});
-}
-
-function isSemanticContinuationDispatch(row = {}) {
-  const payload = dispatchPayloadObject(row);
-  const nested = objectValue(payload.payload);
-  return boolOption(payload.semanticContinuation ?? payload.semantic_continuation ?? nested.semanticContinuation ?? nested.semantic_continuation, false);
-}
-
-function semanticContinuationTimeoutSeconds(payload = {}, input = {}, fallbackSeconds = DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS, maxSeconds = 3600) {
-  const nested = objectValue(payload.payload);
-  const raw = Number(
-    nested.semanticTimeoutSeconds ??
-    nested.semantic_timeout_seconds ??
-    payload.semanticTimeoutSeconds ??
-    payload.semantic_timeout_seconds ??
-    nested.timeoutSeconds ??
-    nested.timeout_seconds ??
-    payload.timeoutSeconds ??
-    payload.timeout_seconds ??
-    input.semanticTimeoutSeconds ??
-    input.semantic_timeout_seconds ??
-    fallbackSeconds
-  );
-  return Math.max(60, Math.min(maxSeconds, Number.isFinite(raw) && raw > 0 ? raw : fallbackSeconds));
-}
-
-function messageFlowDispatchStartedStatus(row = {}) {
-  return isSemanticContinuationDispatch(row) ? "semantic_dispatched" : "runtime_dispatched";
-}
-
-async function messageFlowForDispatch(paths, row = {}) {
-  const flowId = messageFlowIdFromDispatchPayload(row);
-  if (flowId) return readMessageFlow(paths, flowId);
-  const rows = await sqlite(paths.dbFile, `SELECT * FROM message_flows WHERE dispatch_id=${sqlValue(row.dispatch_id || "")} LIMIT 1;`, { json: true });
-  return rows[0] || null;
-}
-
-async function updateMessageFlow(paths, flowId, status, patch = {}) {
-  if (!flowId || !MESSAGE_FLOW_STATUSES.has(status)) return null;
-  const rows = await sqlite(paths.dbFile, `SELECT status, payload_json FROM message_flows WHERE flow_id=${sqlValue(flowId)} LIMIT 1;`, { json: true });
-  if (!rows[0]) return null;
-  const currentStatus = String(rows[0].status || "").trim();
-  if (isMessageFlowStatusRegression(currentStatus, status)) {
-    await appendMessageFlowEvent(paths, flowId, currentStatus, "state_regression_blocked", {
-      attemptedStatus: status,
-      reason: "terminal_message_flow_status_is_monotonic",
-      payload: patch.payload || {}
-    });
-    return readMessageFlow(paths, flowId);
-  }
-  const existingPayload = parseJsonValue(rows[0].payload_json, {});
-  const payload = { ...existingPayload, ...parseJsonValue(patch.payload, patch.payload || {}), updatedAt: nowIso() };
-  const updatedAt = patch.updatedAt || patch.updated_at || nowIso();
-  const timestampColumn = messageFlowStatusTimestampColumn(status);
-  const assignments = [
-    `status=${sqlValue(status)}`,
-    `payload_json=${sqlValue(JSON.stringify(payload))}`,
-    `updated_at=${sqlValue(updatedAt)}`
-  ];
-  if (timestampColumn) assignments.push(`${timestampColumn}=${sqlValue(updatedAt)}`);
-  if (["telegram_sent", "telegram_failed"].includes(status)) assignments.push(`completed_at=${sqlValue(updatedAt)}`);
-  if (patch.dispatchId || patch.dispatch_id) assignments.push(`dispatch_id=${sqlValue(patch.dispatchId || patch.dispatch_id)}`);
-  if (patch.runtimeRunId || patch.runtime_run_id) assignments.push(`runtime_run_id=${sqlValue(patch.runtimeRunId || patch.runtime_run_id)}`);
-  if (patch.messageId || patch.message_id) assignments.push(`message_id=${sqlValue(patch.messageId || patch.message_id)}`);
-  if (patch.outboxId || patch.outbox_id) assignments.push(`outbox_id=${sqlValue(patch.outboxId || patch.outbox_id)}`);
-  if (patch.failureType || patch.failure_type) assignments.push(`failure_type=${sqlValue(patch.failureType || patch.failure_type)}`);
-  if (patch.lastError || patch.last_error) assignments.push(`last_error=${sqlValue(String(patch.lastError || patch.last_error).slice(0, 2000))}`);
-  if (patch.finalOutputPresent !== undefined || patch.final_output_present !== undefined) assignments.push(`final_output_present=${sqlValue((patch.finalOutputPresent ?? patch.final_output_present) ? 1 : 0)}`);
-  if (patch.deliveryReceiptPresent !== undefined || patch.delivery_receipt_present !== undefined) assignments.push(`delivery_receipt_present=${sqlValue((patch.deliveryReceiptPresent ?? patch.delivery_receipt_present) ? 1 : 0)}`);
-  await sqlite(paths.dbFile, `UPDATE message_flows SET ${assignments.join(", ")} WHERE flow_id=${sqlValue(flowId)};`);
-  await appendMessageFlowEvent(paths, flowId, status, "state", patch.payload || {});
-  return readMessageFlow(paths, flowId);
-}
-
-function messageFlowSourceChannel(input = {}, originalPayload = {}) {
-  const beforeDispatch = objectValue(originalPayload.beforeDispatch || originalPayload.before_dispatch);
-  const sourceSystem = String(input.sourceSystem || input.source_system || "").toLowerCase();
-  return firstText(input.sourceChannel, input.source_channel, input.channelId, input.channel_id, input.channel, beforeDispatch.channel, sourceSystem.includes("telegram") ? "telegram" : "");
-}
-
-function messageFlowOutputIsFinal(text = "") {
-  const value = String(text || "").trim();
-  const lower = value.toLowerCase();
-  const requestFailedPlaceholder = /^(llm|model|runtime|agent) request failed(?:[\.:][^\r\n]*)?$/i;
-  if (!value) return false;
-  if (/^heartbeat_(ok|degraded)\b/i.test(value)) return true;
-  if (requestFailedPlaceholder.test(value)) return false;
-  if (lower.startsWith("operation interrupted:")) return false;
-  if (lower.includes("operation interrupted") && (lower.includes("waiting for model response") || lower.includes("cancelled"))) return false;
-  return true;
-}
-
-function messageFlowSemanticPromptFromPayload(payload = {}, fallback = "") {
-  const subject = String(payload.subject || payload.title || "").trim();
-  const body = String(payload.body || payload.text || payload.message || payload.content || "").trim();
-  const sourceRefs = toList(payload.sourceRefs || payload.source_refs || payload.artifacts || payload.artifactRefs || payload.artifact_refs);
-  const lines = [];
-  if (subject) lines.push(`Subject: ${subject}`);
-  if (body) lines.push(body);
-  if (sourceRefs.length) lines.push(["Source refs:", ...sourceRefs.map((ref) => `- ${ref}`)].join("\n"));
-  return lines.join("\n\n") || String(fallback || "").trim();
-}
-
-function messageFlowAckDispatchId(flow = {}) {
-  const payload = parseJsonValue(flow.payload_json, {});
-  return firstText(
-    payload.ackDispatchId,
-    payload.ack_dispatch_id,
-    payload.ack?.dispatchId,
-    payload.ack?.dispatch_id,
-    flow.dispatch_id
-  );
-}
-
-function messageFlowSemanticIdempotencyKey(flowId, ackDispatchId) {
-  return `message-flow-semantic:${flowId}:${ackDispatchId}`;
-}
-
-function messageFlowDeliveryTarget(flow = {}) {
-  const returnPolicy = normalizeReturnPolicy(flow.return_policy, "silent");
-  if (returnPolicy === "silent") return null;
-  if (returnPolicy === "report_to_flashcat") {
-    return { targetKind: "private", targetRef: DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID, account: "cat_claw", mode: returnPolicy };
-  }
-  if (returnPolicy === "reply_to_source_chat") {
-    if (String(flow.source_channel || "").toLowerCase() !== "telegram" || !String(flow.source_chat_id || "").trim()) return null;
-    const targetRef = String(flow.source_chat_id || "").trim();
-    return {
-      targetKind: targetRef.startsWith("-") ? "group" : "private",
-      targetRef,
-      account: firstText(flow.source_account_id, flow.route_agent_id, flow.target_agent_id, "cat_claw"),
-      mode: returnPolicy
-    };
-  }
-  return null;
-}
-
-function formatMessageFlowFailureText(flow = {}, data = {}) {
-  const agent = firstText(flow.target_agent_id, flow.route_agent_id, "unknown");
-  const failureType = firstText(data.failureType, data.failure_type, flow.failure_type, "runtime_failed");
-  const error = compactText(firstText(data.error, data.lastError, data.last_error, flow.last_error, "非 OpenClaw agent 本轮没有产出可投递的正式回复。"), 900);
-  return [
-    `【${agent} 未产出有效回复】`,
-    `时间：${nowIso()}`,
-    `Flow：${flow.flow_id || ""}`,
-    `Dispatch：${flow.dispatch_id || ""}`,
-    `状态：${failureType}`,
-    `原因：${error}`,
-    "",
-    "说明：route-shell 只表示入口已登记；本消息来自 workflow 的跨平台消息流状态机，不把 route-shell ack 或 Hermers 空输出伪装成正式回复。"
-  ].join("\n");
-}
-
-async function enqueueMessageFlowOutbound(paths, flow, text, input = {}, extraPayload = {}) {
-  if (!flow?.flow_id) return { status: "skipped", reason: "missing_flow" };
-  const target = messageFlowDeliveryTarget(flow);
-  if (!target) {
-    await appendMessageFlowEvent(paths, flow.flow_id, flow.status || "runtime_completed", "delivery_skipped", { reason: "return_policy_silent_or_missing_target" });
-    return { status: "delivery_skipped", reason: "return_policy_silent_or_missing_target", flowId: flow.flow_id };
-  }
-  const outboxId = flow.outbox_id || `flow-${cleanFileSegment(flow.flow_id)}`;
-  let rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`, { json: true });
-  if (!rows[0]) {
-    await enqueueTelegramOutbox(paths, {
-      outboxId,
-      meetingId: flow.meeting_id,
-      targetKind: target.targetKind,
-      targetRef: target.targetRef,
-      messageType: "message_flow_reply",
-      text,
-      payload: {
-        ...extraPayload,
-        messageFlowId: flow.flow_id,
-        dispatchId: flow.dispatch_id || "",
-        messageId: flow.message_id || "",
-        returnPolicy: flow.return_policy || "",
-        account: target.account,
-        target: target.targetRef,
-        flowDeliveryRequired: true
-      }
-    });
-    const flowFailedWithoutOutput = Number(flow.final_output_present || 0) === 0
-      && String(flow.status || "") === "runtime_failed"
-      && (extraPayload.finalOutputPresent === false || extraPayload.final_output_present === false);
-    await updateMessageFlow(paths, flow.flow_id, flowFailedWithoutOutput ? "runtime_failed" : "outbound_queued", { outboxId, payload: { outboxId, targetRef: target.targetRef, account: target.account } });
-    rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`, { json: true });
-  }
-  const row = rows[0];
-  if (!row) return { status: "missing_outbox", outboxId };
-  if (row.status === "sent") {
-    return updateMessageFlowFromTelegramDelivery(paths, row, {
-      outboxId,
-      status: "sent",
-      account: target.account,
-      target: target.targetRef,
-      alreadySent: true
-    });
-  }
-  const deliverNow = boolOption(input.autoDeliverMessageFlowOutbox ?? input.auto_deliver_message_flow_outbox ?? input.deliverMessageFlowOutbox ?? input.deliver_message_flow_outbox, true);
-  if (!deliverNow || row.status !== "queued") return { status: row.status, outboxId, queued: true };
-  return deliverTelegramOutboxRow(paths, row, { ...input, account: target.account, target: target.targetRef });
-}
-
-async function updateMessageFlowFromTelegramDelivery(paths, row, result = {}) {
-  const payload = parseJsonValue(row.payload_json, {});
-  const flowId = String(payload.messageFlowId || payload.message_flow_id || "").trim();
-  if (!flowId) return null;
-  const flow = await readMessageFlow(paths, flowId);
-  const hasFinalOutput = Number(flow?.final_output_present || 0) === 1;
-  const payloadReceipts = Array.isArray(payload.delivery?.receipts) ? payload.delivery.receipts : [];
-  const resultReceipts = Array.isArray(result.receipts) ? result.receipts : [];
-  const deliveryReceiptVerified = result.status === "sent" && (payloadReceipts.length > 0 || resultReceipts.length > 0);
-  const status = result.status === "sent"
-    ? (hasFinalOutput ? "telegram_sent" : "runtime_failed")
-    : "telegram_failed";
-  const messageId = String(payload.messageId || payload.message_id || "").trim();
-  if (messageId) {
-    await sqlite(paths.dbFile, `UPDATE mixed_meeting_messages SET telegram_live_status=${sqlValue(status === "telegram_sent" ? "sent" : "failed")} WHERE message_id=${sqlValue(messageId)};`);
-  }
-  return updateMessageFlow(paths, flowId, status, {
-    outboxId: row.outbox_id,
-    deliveryReceiptPresent: deliveryReceiptVerified,
-    lastError: result.error || "",
-    payload: { delivery: result }
-  });
-}
-
-async function finishMessageFlowRuntime(paths, row, data = {}, input = {}) {
-  const flow = await messageFlowForDispatch(paths, row);
-  if (!flow) return null;
-  const text = String(data.text || "").trim();
-  const finalOutputPresent = data.finalOutputPresent ?? messageFlowOutputIsFinal(text);
-  const runtimeRunId = data.runtimeRunId || data.runtime_run_id || "";
-  const messageId = data.messageId || data.message_id || "";
-  const status = finalOutputPresent ? "runtime_completed" : "runtime_failed";
-  const failureType = finalOutputPresent ? "" : firstText(data.failureType, data.failure_type, "incomplete_output");
-  const lastError = finalOutputPresent ? "" : firstText(data.lastError, data.last_error, text || "runtime did not produce final output");
-  const updated = await updateMessageFlow(paths, flow.flow_id, status, {
-    runtimeRunId,
-    messageId,
-    finalOutputPresent,
-    failureType,
-    lastError,
-    payload: {
-      runtimeStatus: status,
-      runtimeRunId,
-      messageId,
-      outputHash: data.outputHash || data.output_hash || "",
-      dispatchStatus: row.status
-    }
-  });
-  const latest = updated || await readMessageFlow(paths, flow.flow_id);
-  if (String(latest?.status || "") !== status || Boolean(Number(latest?.final_output_present || 0)) !== Boolean(finalOutputPresent)) {
-    await appendMessageFlowEvent(paths, flow.flow_id, latest?.status || flow.status || "", "delivery_skipped_after_state_regression_block", {
-      attemptedStatus: status,
-      attemptedFinalOutputPresent: Boolean(finalOutputPresent),
-      persistedStatus: latest?.status || "",
-      persistedFinalOutputPresent: Boolean(Number(latest?.final_output_present || 0))
-    });
-    return {
-      status: "state_regression_blocked",
-      flowId: flow.flow_id,
-      attemptedStatus: status,
-      persistedStatus: latest?.status || "",
-      deliverySkipped: true
-    };
-  }
-  const deliveryText = finalOutputPresent ? text : formatMessageFlowFailureText(latest || flow, { failureType, lastError });
-  return enqueueMessageFlowOutbound(paths, latest || flow, deliveryText, input, {
-    runtimeStatus: status,
-    failureType,
-    finalOutputPresent: Boolean(finalOutputPresent)
-  });
-}
-
-async function acknowledgeMessageFlowRuntime(paths, row, data = {}) {
-  const flow = await messageFlowForDispatch(paths, row);
-  if (!flow) return null;
-  const runtimeRunId = data.runtimeRunId || data.runtime_run_id || "";
-  const messageId = data.messageId || data.message_id || "";
-  const text = String(data.text || "").trim();
-  const updated = await updateMessageFlow(paths, flow.flow_id, "runtime_acknowledged", {
-    runtimeRunId,
-    messageId,
-    finalOutputPresent: false,
-    deliveryReceiptPresent: false,
-    payload: {
-      runtimeStatus: "runtime_acknowledged",
-      runtimeRunId,
-      messageId,
-      ackDispatchId: row.dispatch_id,
-      outputHash: data.outputHash || data.output_hash || "",
-      dispatchStatus: row.status,
-      ack: {
-        receivedAt: data.receivedAt || data.received_at || nowIso(),
-        text: text.slice(0, 1000)
-      }
-    }
-  });
-  return {
-    status: updated?.status || "runtime_acknowledged",
-    flowId: flow.flow_id,
-    finalOutputPresent: false,
-    deliveryQueued: false
-  };
-}
-
-async function messageTextForRuntimeReceipt(paths, messageId = "") {
-  const id = String(messageId || "").trim();
-  if (!id) return "";
-  const rows = await sqlite(paths.dbFile, `
-SELECT text
-FROM mixed_meeting_messages
-WHERE message_id=${sqlValue(id)}
-LIMIT 1;`, { json: true });
-  return String(rows[0]?.text || "").trim();
-}
-
-async function syncMessageFlowFromTerminalDispatchReceipt(paths, row, receipt = {}, input = {}) {
-  const flow = await messageFlowForDispatch(paths, row);
-  if (!flow) return null;
-  const status = String(receipt.status || "").trim();
-  const runtimeRunId = String(receipt.runtimeRunId || receipt.runtime_run_id || "").trim();
-  const messageId = String(receipt.messageId || receipt.message_id || "").trim();
-  const text = await messageTextForRuntimeReceipt(paths, messageId);
-  const outputHash = text ? textHash(text) : "";
-  if (status === "acked") {
-    const ack = runtimeAckContract(row, input);
-    if (ack.required) {
-      const result = await acknowledgeMessageFlowRuntime(paths, row, {
-        runtimeRunId,
-        messageId,
-        text,
-        outputHash,
-        receivedAt: receipt.completedAt || receipt.completed_at || nowIso()
-      });
-      await appendMessageFlowEvent(paths, flow.flow_id, result?.status || "runtime_acknowledged", "stale_dispatch_terminal_receipt_synced", {
-        dispatchId: row.dispatch_id,
-        runtimeRunId,
-        messageId,
-        terminalStatus: status,
-        ackRequired: true
-      });
-      return result;
-    }
-    return finishMessageFlowRuntime(paths, row, {
-      runtimeRunId,
-      messageId,
-      text,
-      outputHash,
-      finalOutputPresent: messageFlowOutputIsFinal(text),
-      failureType: "runtime_output_missing",
-      lastError: text ? "" : "terminal acked runtime receipt did not reference recoverable message text"
-    }, input);
-  }
-  if (status === "failed") {
-    return finishMessageFlowRuntime(paths, row, {
-      runtimeRunId,
-      messageId,
-      finalOutputPresent: false,
-      failureType: receipt.failureType || receipt.failure_type || "runtime_failed",
-      lastError: receipt.error || receipt.lastError || receipt.last_error || "terminal runtime receipt failed"
-    }, input);
-  }
-  await appendMessageFlowEvent(paths, flow.flow_id, flow.status || "", "stale_dispatch_terminal_receipt_sync_skipped", {
-    dispatchId: row.dispatch_id,
-    runtimeRunId,
-    messageId,
-    terminalStatus: status || "unknown"
-  });
-  return { status: "skipped", reason: "unsupported_terminal_status", flowId: flow.flow_id };
-}
-
-async function queueMessageFlowSemanticContinuation(paths, row, data = {}, input = {}) {
-  const ack = runtimeAckContract(row, input);
-  if (!ack.required || !ack.semanticContinuation) return null;
-  const flow = await messageFlowForDispatch(paths, row);
-  if (!flow) return null;
-  const payload = dispatchPayloadObject(row);
-  const nested = objectValue(payload.payload);
-  if (isSemanticContinuationDispatch(row)) return null;
-  if (
-    boolOption(process.env[TEST_SEMANTIC_CONTINUATION_FAILURE_ENV], false)
-    && boolOption(input.forceSemanticContinuationFailure ?? input.force_semantic_continuation_failure, false)
-  ) {
-    await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_failed", {
-      ackDispatchId: row.dispatch_id,
-      reason: "forced_semantic_continuation_failure"
-    });
-    return { status: "failed", reason: "forced_semantic_continuation_failure" };
-  }
-  const idempotencyKey = messageFlowSemanticIdempotencyKey(flow.flow_id, row.dispatch_id);
-  const semanticDispatchId = `dispatch.semantic.${textHash(idempotencyKey).slice(0, 24)}`;
-  const semanticPrompt = messageFlowSemanticPromptFromPayload(nested, row.prompt || payload.prompt || "");
-  const semanticTimeoutSeconds = semanticContinuationTimeoutSeconds(payload, input);
-  const semanticPayload = {
-    ...nested,
-    requiresAck: false,
-    timeoutSeconds: semanticTimeoutSeconds,
-    semanticTimeoutSeconds,
-    ackContract: {
-      ...(objectValue(nested.ackContract || nested.ack_contract)),
-      required: false,
-      acknowledgedByDispatch: row.dispatch_id,
-      acknowledgedByRuntimeRun: data.runtimeRunId || data.runtime_run_id || "",
-      acknowledgedAt: data.receivedAt || data.received_at || nowIso()
-    },
-    semanticContinuation: true,
-    semanticContinuationOf: row.dispatch_id,
-    ackDispatchId: row.dispatch_id,
-    ackRuntimeRunId: data.runtimeRunId || data.runtime_run_id || "",
-    ackMessageId: data.messageId || data.message_id || "",
-    messageFlowId: flow.flow_id
-  };
-  let dispatch;
-  try {
-    dispatch = await meetingDispatch(paths.root, {
-	    meetingId: row.meeting_id,
-	    workflowId: row.workflow_id || payload.workflowId || payload.workflow_id || flow.workflow_id || row.meeting_id,
-	    traceId: row.trace_id || payload.traceId || payload.trace_id || flow.trace_id || safeId("trace"),
-	    idempotencyKey,
-	    dispatchId: semanticDispatchId,
-	    runtime: row.runtime,
-    agentId: row.agent_id,
-    dispatchType: "message_flow_semantic",
-    prompt: semanticPrompt,
-    priority: row.priority || "normal",
-    createdBy: "workflow:message_flow_ack",
-    maxAttempts: input.semanticMaxAttempts || input.semantic_max_attempts || nested.semanticMaxAttempts || nested.semantic_max_attempts || 1,
-    timeoutSeconds: semanticTimeoutSeconds,
-    returnPolicy: "silent",
-    deliveryPolicy: "silent",
-    sourceChannel: flow.source_channel || nested.source?.sourceChannel || nested.source?.source_channel || "",
-    sourceSystem: "workflow.message_flow.semantic_continuation",
-    sourceRuntime: flow.source_runtime || nested.source?.runtime || "",
-    sourceAccountId: flow.source_account_id || nested.source?.sourceAccountId || nested.source?.source_account_id || "",
-    sourceChatId: flow.source_chat_id || nested.source?.sourceChatId || nested.source?.source_chat_id || "",
-    senderId: flow.sender_id || nested.source?.senderId || nested.source?.sender_id || "",
-    sourceMessageId: flow.source_message_id || nested.source?.sourceMessageId || nested.source?.source_message_id || "",
-    messageFlowId: flow.flow_id,
-    payload: semanticPayload
-  });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_failed", {
-      ackDispatchId: row.dispatch_id,
-      idempotencyKey,
-      error: message.slice(0, 2000)
-    });
-    return { status: "failed", reason: "semantic_continuation_dispatch_failed", error: message };
-  }
-  await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_queued", {
-    ackDispatchId: row.dispatch_id,
-    semanticDispatchId: dispatch.dispatchId,
-    deduped: Boolean(dispatch.deduped),
-    idempotencyKey
-  });
-  return {
-    status: dispatch.status,
-    dispatchId: dispatch.dispatchId,
-    runtime: dispatch.runtime,
-    agentId: dispatch.agentId,
-    deduped: Boolean(dispatch.deduped),
-    idempotencyKey
-  };
-}
-
 async function runLocalCodexDispatch(paths, row, input = {}) {
   const adapter = "local_codex_inbox";
   const startedAt = nowIso();
@@ -8088,7 +7475,7 @@ function runtimeAckContract(row = {}, input = {}) {
 function runtimeDispatchTimeoutSeconds(row, input = {}, fallbackSeconds = 300, maxSeconds = 1800) {
   const payload = dispatchPayloadObject(row);
   if (isSemanticContinuationDispatch(row)) {
-    return semanticContinuationTimeoutSeconds(payload, input, DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS, maxSeconds);
+    return semanticContinuationTimeoutSeconds(payload, input, undefined, maxSeconds);
   }
   const ack = runtimeAckContract(row, input);
   if (ack.required) return Math.max(5, Math.min(maxSeconds, ack.timeoutSeconds));
@@ -8107,11 +7494,6 @@ function validateRuntimeAckOutput(text = "", ack = {}) {
 function runtimeFailureShouldRetry(failureType, ack = {}) {
   if (AUTO_RETRY_FAILURE_TYPES.has(failureType)) return true;
   return Boolean(ack.required && failureType === "empty_output");
-}
-
-function assertSemanticContinuationQueued(semanticContinuation) {
-  if (!semanticContinuation || semanticContinuation.status !== "failed") return;
-  throw new Error(`semantic continuation dispatch failed: ${semanticContinuation.error || semanticContinuation.reason || "unknown"}`);
 }
 
 function buildRuntimeBridgePrompt(row) {
@@ -9969,70 +9351,6 @@ async function catTailPreOrderRiskAuditDispatchSpec(paths, button, feedbackText,
     requestRawPayload: raw,
     buttonPayload
   };
-}
-
-async function recoverAckedMessageFlowSemanticContinuations(paths, input = {}) {
-  const cutoff = input.cutoff || new Date(Date.now() - 5 * 60_000).toISOString();
-  const limit = Math.max(1, Math.min(200, Number(input.limit || 20)));
-  const rows = await sqlite(paths.dbFile, `
-SELECT *
-FROM message_flows
-WHERE status='runtime_acknowledged'
-  AND final_output_present=0
-  AND delivery_receipt_present=0
-  AND updated_at < ${sqlValue(cutoff)}
-ORDER BY updated_at
-LIMIT ${limit};`, { json: true });
-  const results = [];
-  for (const flow of rows) {
-    const ackDispatchId = messageFlowAckDispatchId(flow);
-    if (!ackDispatchId) {
-      await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_reconcile_skipped", {
-        reason: "missing_ack_dispatch_id"
-      });
-      results.push({ flowId: flow.flow_id, status: "skipped", reason: "missing_ack_dispatch_id" });
-      continue;
-    }
-    const idempotencyKey = messageFlowSemanticIdempotencyKey(flow.flow_id, ackDispatchId);
-    const existing = await sqlite(paths.dbFile, `
-SELECT dispatch_id, status
-FROM mixed_meeting_dispatches
-WHERE dispatch_type='message_flow_semantic'
-  AND idempotency_key=${sqlValue(idempotencyKey)}
-LIMIT 1;`, { json: true });
-    if (existing[0]) {
-      await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_reconcile_existing", {
-        ackDispatchId,
-        semanticDispatchId: existing[0].dispatch_id,
-        semanticStatus: existing[0].status,
-        idempotencyKey
-      });
-      results.push({ flowId: flow.flow_id, status: "existing", dispatchId: existing[0].dispatch_id, semanticStatus: existing[0].status });
-      continue;
-    }
-    const dispatchRows = await sqlite(paths.dbFile, `
-SELECT *
-FROM mixed_meeting_dispatches
-WHERE dispatch_id=${sqlValue(ackDispatchId)}
-LIMIT 1;`, { json: true });
-    const ackDispatch = dispatchRows[0];
-    if (!ackDispatch) {
-      await appendMessageFlowEvent(paths, flow.flow_id, "runtime_acknowledged", "semantic_continuation_reconcile_failed", {
-        ackDispatchId,
-        reason: "ack_dispatch_missing"
-      });
-      results.push({ flowId: flow.flow_id, status: "failed", reason: "ack_dispatch_missing", ackDispatchId });
-      continue;
-    }
-    const continuation = await queueMessageFlowSemanticContinuation(paths, ackDispatch, {
-      runtimeRunId: flow.runtime_run_id || "",
-      messageId: flow.message_id || "",
-      receivedAt: flow.updated_at || nowIso()
-    }, input);
-    assertSemanticContinuationQueued(continuation);
-    results.push({ flowId: flow.flow_id, status: "queued", ackDispatchId, semanticDispatchId: continuation.dispatchId });
-  }
-  return results;
 }
 
 async function acquireControlLoopLease(paths, input = {}) {
