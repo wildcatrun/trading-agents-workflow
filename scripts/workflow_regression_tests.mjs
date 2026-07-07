@@ -218,6 +218,7 @@ import {
 } from "../src/runtime-event-actions.js";
 import {
   SCHEDULE_ACTION_HANDLER_NAMES,
+  createScheduleActionHandlers,
   createScheduleActionRegistry
 } from "../src/schedule-actions.js";
 import {
@@ -9872,6 +9873,48 @@ async function testScheduleResumeSemantics() {
   assert.notEqual(reset.schedule.nextRunAt, nextRunAt);
 }
 
+async function testScheduleControlLoopDispatchIntegration() {
+  const root = await tempRoot("schedule-control-loop");
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  const dueAt = new Date(Date.now() - 60_000).toISOString();
+  const schedule = await runAction(root, {
+    action: "workflow.schedule.upsert",
+    scheduleId: "schedule-control-loop",
+    runtime: "openclaw",
+    agentId: "main",
+    prompt: "schedule control loop dispatch regression",
+    scheduleKind: "interval",
+    intervalSeconds: 3600,
+    nextRunAt: dueAt,
+    maxAttempts: 1
+  });
+  const tick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    deliverOutbox: false,
+    createHumanGateInbox: false,
+    ensureHumanGateRequests: false,
+    drainQueued: false
+  });
+  assert.equal(tick.status, "ok");
+  assert.equal(tick.seededJobs.some((job) => job.scheduleId === "schedule-control-loop" && job.status === "queued"), true);
+  assert.equal(tick.jobResults?.[0]?.jobType, "scheduled_dispatch");
+  assert.equal(tick.jobResults?.[0]?.status, "done");
+  assert.equal(tick.jobResults?.[0]?.result?.status, "dispatched");
+  const dbFile = schedule.dbFile;
+  assert.equal(sqliteCount(dbFile, "scheduled_runs", "schedule_id='schedule-control-loop' AND status='dispatched'"), 1);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "workflow_id LIKE 'scheduled.schedule-control-loop.%' AND status='queued'"), 1);
+  assert.equal(sqliteCount(dbFile, "control_loop_jobs", "job_type='runtime_drain' AND status='queued' AND runtime='openclaw'"), 1);
+}
+
 async function testControlLoopJobExtractedActionContracts() {
   const expected = {
     "workflow.control_loop.job.requeue.preview": "workflowControlLoopJobRequeuePreview",
@@ -11971,6 +12014,24 @@ async function testScheduleExtractedActionContracts() {
   assert.equal(directRegistry.get("workflow.scheduler.pause"), workflowSchedulePause);
   assert.equal(directRegistry.get("workflow.scheduler.resume"), workflowScheduleResume);
   assert.equal(directRegistry.get("workflow.scheduler.disable"), workflowScheduleDisable);
+  assert.throws(() => createScheduleActionHandlers({}), /schedule action dependency missing: enqueueControlLoopJob/);
+  assert.throws(
+    () => createScheduleActionHandlers({
+      enqueueControlLoopJob: async () => ({})
+    }),
+    /schedule action dependency missing: ensureWorkflowLayout/
+  );
+  const directHandlers = createScheduleActionHandlers({
+    enqueueControlLoopJob: async () => ({}),
+    ensureWorkflowLayout: async () => {
+      throw new Error("not used");
+    },
+    meetingDispatch: async () => ({ dispatchId: "dispatch.test", runtime: "openclaw", agentId: "main" }),
+    normalizeAgentId: (value) => String(value || "").trim(),
+    normalizeRuntime: (value) => String(value || "").trim()
+  });
+  assert.equal(typeof directHandlers.seedDueScheduleJobs, "function");
+  assert.equal(typeof directHandlers.runScheduledDispatchJob, "function");
 
   const root = await tempRoot("schedule-extracted-contracts");
   const nextRunAt = "2099-01-01T00:00:00.000Z";
@@ -18995,6 +19056,7 @@ try {
     ["human_gate ensure invalid buttons superseded", testHumanGateEnsureSupersedesInvalidExistingButtons],
     ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
     ["schedule resume semantics", testScheduleResumeSemantics],
+    ["schedule control loop dispatch integration", testScheduleControlLoopDispatchIntegration],
     ["message_flow extracted action contracts", testMessageFlowExtractedActionContracts],
     ["telegram.live extracted action contracts", testTelegramLiveExtractedActionContracts],
     ["telegram.outbox extracted action contracts", testTelegramOutboxExtractedActionContracts],
