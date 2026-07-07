@@ -54,6 +54,7 @@ import {
   WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY,
   WORKFLOW_SWARM_ACTION_REGISTRY,
   cat_clawAudit,
+  humanGateButtonCallback,
   humanGateFeedback,
   humanGateInbox,
   humanGateResume,
@@ -10420,6 +10421,13 @@ async function testHumanGateInboxExtractedActionContracts() {
     assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES[action], "humanGateWebAppSubmit", `${action} should map to the extracted humanGateWebAppSubmit handler`);
   }
   for (const action of [
+    "human_gate.button_callback",
+    "human_gate.callback"
+  ]) {
+    assert.equal(HUMAN_GATE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted human_gate registry`);
+    assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES[action], "humanGateButtonCallback", `${action} should map to the extracted humanGateButtonCallback handler`);
+  }
+  for (const action of [
     "human_gate.feedback",
     "human_gate.submit_feedback"
   ]) {
@@ -10433,6 +10441,7 @@ async function testHumanGateInboxExtractedActionContracts() {
     assert.equal(HUMAN_GATE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted human_gate registry`);
     assert.equal(HUMAN_GATE_ACTION_HANDLER_NAMES[action], "humanGateResume", `${action} should map to the extracted humanGateResume handler`);
   }
+  assert.equal(typeof humanGateButtonCallback, "function");
   assert.equal(typeof humanGateFeedback, "function");
   assert.equal(typeof humanGateInbox, "function");
   assert.equal(typeof humanGateResume, "function");
@@ -10440,6 +10449,7 @@ async function testHumanGateInboxExtractedActionContracts() {
   assert.equal(typeof humanGateWebAppSubmit, "function");
   assert.equal(typeof workflowHumanGateRecord, "function");
   const directRegistry = createHumanGateActionRegistry({
+    humanGateButtonCallback,
     humanGateFeedback,
     humanGateInbox,
     humanGateResume,
@@ -10456,6 +10466,8 @@ async function testHumanGateInboxExtractedActionContracts() {
   assert.equal(directRegistry.get("human_gate.review_form"), humanGateWebAppReview);
   assert.equal(directRegistry.get("human_gate.web_app_submit"), humanGateWebAppSubmit);
   assert.equal(directRegistry.get("human_gate.submit_form"), humanGateWebAppSubmit);
+  assert.equal(directRegistry.get("human_gate.button_callback"), humanGateButtonCallback);
+  assert.equal(directRegistry.get("human_gate.callback"), humanGateButtonCallback);
   assert.equal(directRegistry.get("human_gate.feedback"), humanGateFeedback);
   assert.equal(directRegistry.get("human_gate.submit_feedback"), humanGateFeedback);
   assert.equal(directRegistry.get("human_gate.resume"), humanGateResume);
@@ -10556,6 +10568,18 @@ VALUES ('button-hgate-inbox-contract-a', 'token-hgate-inbox-contract-a', 'hgate-
     token: "missing-hgate-token"
   });
   assert.equal(webAppReviewMissing.status, "not_found");
+
+  const buttonCallbackMissingPrimary = await runAction(root, {
+    action: "human_gate.button_callback",
+    token: "missing-hgate-token"
+  });
+  assert.equal(buttonCallbackMissingPrimary.status, "unknown");
+  const buttonCallbackMissing = await runAction(root, {
+    action: "human_gate.callback",
+    token: "missing-hgate-token"
+  });
+  assert.equal(buttonCallbackMissing.status, "unknown");
+  assert.equal(buttonCallbackMissing.replyText, buttonCallbackMissingPrimary.replyText);
 
   const webAppSubmitMissingToken = await humanGateWebAppSubmit(root, {});
   assert.equal(webAppSubmitMissingToken.status, "token_required");

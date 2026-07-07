@@ -11459,420 +11459,6 @@ async function humanGateCallbackIdentityAllowed(input = {}) {
   return { ok: true, senderId, reason: "" };
 }
 
-export async function humanGateButtonCallback(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const token = normalizeHumanGateCallbackToken(input);
-  if (!token) throw new Error("callback token is required");
-  const rows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE callback_token=${sqlValue(token)} LIMIT 1;`, { json: true });
-  const button = rows[0];
-  if (!button) return { handled: true, status: "unknown", token, replyText: "Human Gate 按钮已失效或不存在。" };
-  const identity = await humanGateCallbackIdentityAllowed(input);
-  if (!identity.ok) {
-    const replyText = identity.reason === "telegram_sender_id_required"
-      ? "Human Gate Telegram 回调缺少发送者身份，已拒绝处理；请通过绑定 token 的 Web App 或带 senderId 的受治理入口提交。"
-      : "该 Telegram 用户不在 Human Gate 允许提交名单中。";
-    return { handled: true, status: identity.reason, token, telegramAuth: identity, replyText };
-  }
-  const record = await humanGateRecordById(paths, button.human_gate_id);
-  const expiry = humanGateRecordExpiry(record || {});
-  if (expiry.expired) {
-    const expiredAt = nowIso();
-    await sqlite(paths.dbFile, `
-UPDATE human_gate_buttons
-SET status='expired', updated_at=${sqlValue(expiredAt)}
-WHERE human_gate_id=${sqlValue(button.human_gate_id)} AND status IN ('active','feedback_pending');`);
-    await sqlite(paths.dbFile, `
-UPDATE protocol_objects
-SET status='expired', updated_at=${sqlValue(expiredAt)}
-WHERE object_id=${sqlValue(button.human_gate_id)} AND object_type='human_gate_record' AND status='pending';`);
-    return { handled: true, status: "expired", token, workflowId: button.workflow_id, meetingId: button.meeting_id, humanGateId: button.human_gate_id, buttonId: button.button_id, expiresAt: expiry.expiresAt, replyText: "Human Gate 已过期，请让猫爪重新提交最新证据包和按钮。" };
-  }
-  const feedbackText = humanGateFeedbackText(input);
-  if (button.status === "feedback_pending" && !feedbackText) return { handled: true, status: "feedback_pending", token, replyText: humanGateFeedbackRequiredReply(button) };
-  if (button.status !== "active" && !(button.status === "feedback_pending" && feedbackText)) return { handled: true, status: button.status, token, replyText: "Human Gate 按钮已经处理过。" };
-  const selectedAt = button.selected_at || nowIso();
-  const now = nowIso();
-  const actor = String(input.actor || input.senderId || input.sender_id || input.from || button.selected_by || "flashcat").trim();
-  const callbackChatId = String(input.callbackChatId || input.callback_chat_id || button.callback_chat_id || "").trim();
-  const callbackMessageId = String(input.callbackMessageId || input.callback_message_id || button.callback_message_id || "").trim();
-  const feedbackPayload = {
-    source: input.sourceSystem || input.source_system || "human_gate.button_callback",
-    accountId: input.accountId || input.account_id || input.payload?.accountId || "",
-    senderId: input.senderId || input.sender_id || actor,
-    callbackChatId,
-    callbackMessageId,
-    callbackData: input.callbackData || input.callback_data || input.payload?.callbackData || "",
-    telegramWebApp: input.telegramWebApp || input.telegram_web_app || input.payload?.telegramWebApp || input.payload?.telegram_web_app || {},
-    selectedAt,
-    updatedAt: now
-  };
-  if (!feedbackText) {
-    const pendingChanges = await sqliteChangeCount(paths.dbFile, `
-UPDATE human_gate_buttons
-SET status=CASE WHEN button_id=${sqlValue(button.button_id)} THEN 'feedback_pending' ELSE 'superseded' END,
-    selected_by=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(actor)} ELSE selected_by END,
-    selected_at=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(selectedAt)} ELSE selected_at END,
-    callback_chat_id=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(callbackChatId)} ELSE callback_chat_id END,
-    callback_message_id=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(callbackMessageId)} ELSE callback_message_id END,
-    feedback_status=CASE WHEN button_id=${sqlValue(button.button_id)} THEN 'waiting_flashcat_words' ELSE feedback_status END,
-    feedback_payload_json=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(JSON.stringify(feedbackPayload))} ELSE feedback_payload_json END,
-    updated_at=${sqlValue(now)}
-WHERE human_gate_id=${sqlValue(button.human_gate_id)}
-  AND status='active'
-  AND NOT EXISTS (
-    SELECT 1 FROM human_gate_buttons existing
-    WHERE existing.human_gate_id=${sqlValue(button.human_gate_id)}
-      AND existing.status IN ('feedback_pending','selected')
-  );`);
-    if (!pendingChanges) {
-      const latestRows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE button_id=${sqlValue(button.button_id)} LIMIT 1;`, { json: true });
-      const latest = latestRows[0] || button;
-      return {
-        handled: true,
-        status: latest.status || "stale",
-        workflowId: latest.workflow_id || button.workflow_id,
-        meetingId: latest.meeting_id || button.meeting_id,
-        humanGateId: latest.human_gate_id || button.human_gate_id,
-        buttonId: latest.button_id || button.button_id,
-        label: latest.label || button.label,
-        replyText: latest.status === "feedback_pending" ? humanGateFeedbackRequiredReply(latest) : "Human Gate 按钮已经处理过。",
-        dbFile: paths.dbFile
-      };
-    }
-    await updateHumanGateRecordFeedback(paths, button.human_gate_id, "pending", {
-      ...feedbackPayload,
-      status: "waiting_flashcat_words",
-      buttonId: button.button_id,
-      buttonLabel: button.label,
-      decisionStatus: button.decision_status,
-      role: button.button_role || ""
-    }, now);
-    await meetingResume(rootDir, {
-      workflowRootDir: paths.root,
-      meetingId: button.meeting_id || button.workflow_id,
-      from: actor,
-      status: "feedback_pending",
-      text: `Human Gate button selected; waiting for Flashcat original words: ${button.label}`,
-      payload: {
-        workflowId: button.workflow_id,
-        humanGateId: button.human_gate_id,
-        buttonId: button.button_id,
-        status: "feedback_pending",
-        source: "human_gate.button_callback"
-      }
-    });
-    return {
-      handled: true,
-      status: "feedback_pending",
-      workflowId: button.workflow_id,
-      meetingId: button.meeting_id,
-      humanGateId: button.human_gate_id,
-      buttonId: button.button_id,
-      label: button.label,
-      replyText: humanGateFeedbackRequiredReply(button),
-      dbFile: paths.dbFile
-    };
-  }
-
-  const feedbackReceivedAt = now;
-  const finalFeedbackPayload = {
-    ...feedbackPayload,
-    status: "received",
-    feedbackReceivedAt,
-    flashcatOriginalWords: feedbackText,
-    buttonId: button.button_id,
-    buttonLabel: button.label,
-    decisionStatus: button.decision_status,
-    role: button.button_role || ""
-  };
-  const finalChanges = await sqliteChangeCount(paths.dbFile, `
-UPDATE human_gate_buttons
-SET status=CASE WHEN button_id=${sqlValue(button.button_id)} THEN 'selected' WHEN status IN ('active','feedback_pending') THEN 'superseded' ELSE status END,
-    selected_by=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(actor)} ELSE selected_by END,
-    selected_at=CASE WHEN button_id=${sqlValue(button.button_id)} THEN COALESCE(NULLIF(selected_at,''), ${sqlValue(selectedAt)}) ELSE selected_at END,
-    callback_chat_id=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(callbackChatId)} ELSE callback_chat_id END,
-    callback_message_id=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(callbackMessageId)} ELSE callback_message_id END,
-    feedback_status=CASE WHEN button_id=${sqlValue(button.button_id)} THEN 'received' WHEN status='feedback_pending' THEN 'superseded' ELSE feedback_status END,
-    feedback_text=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(feedbackText)} ELSE feedback_text END,
-    feedback_received_at=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(feedbackReceivedAt)} ELSE feedback_received_at END,
-    feedback_payload_json=CASE WHEN button_id=${sqlValue(button.button_id)} THEN ${sqlValue(JSON.stringify(finalFeedbackPayload))} ELSE feedback_payload_json END,
-    updated_at=${sqlValue(feedbackReceivedAt)}
-WHERE human_gate_id=${sqlValue(button.human_gate_id)}
-  AND (status IN ('active','feedback_pending') OR (button_id=${sqlValue(button.button_id)} AND status='feedback_pending'))
-  AND NOT EXISTS (
-    SELECT 1 FROM human_gate_buttons existing
-    WHERE existing.human_gate_id=${sqlValue(button.human_gate_id)}
-      AND existing.status='selected'
-  );`);
-  if (!finalChanges) {
-    const latestRows = await sqlite(paths.dbFile, `SELECT * FROM human_gate_buttons WHERE button_id=${sqlValue(button.button_id)} LIMIT 1;`, { json: true });
-    const latest = latestRows[0] || button;
-    return {
-      handled: true,
-      status: latest.status || "stale",
-      workflowId: latest.workflow_id || button.workflow_id,
-      meetingId: latest.meeting_id || button.meeting_id,
-      humanGateId: latest.human_gate_id || button.human_gate_id,
-      buttonId: latest.button_id || button.button_id,
-      label: latest.label || button.label,
-      replyText: "Human Gate 按钮已经处理过。",
-      dbFile: paths.dbFile
-    };
-  }
-  await updateHumanGateRecordFeedback(paths, button.human_gate_id, button.decision_status, finalFeedbackPayload, feedbackReceivedAt);
-  const workflowDecision = await applyHumanGateWorkflowDecision(paths, button, feedbackReceivedAt, {
-    flashcatOriginalWords: feedbackText,
-    feedbackReceivedAt,
-    feedbackSource: finalFeedbackPayload.source
-  });
-  const resume = await meetingResume(rootDir, {
-    workflowRootDir: paths.root,
-    meetingId: button.meeting_id || button.workflow_id,
-    from: actor,
-    status: button.decision_status,
-    text: [
-      `Human Gate button selected: ${button.label}`,
-      `闪电猫原话：${feedbackText}`
-    ].join("\n"),
-    payload: {
-      workflowId: button.workflow_id,
-      humanGateId: button.human_gate_id,
-      buttonId: button.button_id,
-      callbackTokenPresent: Boolean(token),
-      status: button.decision_status,
-      role: button.button_role || "",
-      flashcatOriginalWords: feedbackText,
-      feedbackReceivedAt,
-      source: "human_gate.feedback",
-      workflowDecision
-    }
-  });
-  let dispatch = null;
-  let archiveCheckpoint = null;
-  const closeoutDispatches = [];
-  if (["approved", "rejected"].includes(button.decision_status)) {
-    const catTailAudit = await catTailPreOrderRiskAuditDispatchSpec(paths, button, feedbackText, selectedAt);
-    const nextAction = button.decision_status === "approved"
-      ? "Continue the next workflow round under the selected Human Gate button boundary."
-      : "Revise the plan according to the selected Human Gate rejection button and prepare a new next-action package.";
-    dispatch = await safeMeetingDispatchWithRetry(rootDir, paths, catTailAudit ? {
-      workflowRootDir: paths.root,
-      meetingId: catTailAudit.meetingId,
-      workflowId: catTailAudit.workflowId,
-      traceId: `${button.workflow_id}:pre_order_risk_audit:${button.button_id}`,
-      idempotencyKey: `workflow:${button.workflow_id}:pre_order_risk_audit:${button.button_id}`,
-      runtime: "openclaw",
-      agentId: "cat_tail",
-      dispatchType: "pre_order_risk_audit",
-      priority: "high",
-      createdBy: actor,
-      prompt: [
-        "你是猫之尾 cat_tail。闪电猫已经通过 Human Gate 批准进入下单前最后风控审计。",
-        `Workflow ID: ${catTailAudit.workflowId}`,
-        `Human Gate ID: ${catTailAudit.humanGateId}`,
-        `Trade proposal ID: ${catTailAudit.proposalId}`,
-        `Pre-order risk audit ID: ${catTailAudit.preOrderRiskAuditId}`,
-        `Selected option: ${catTailAudit.selectedOption}`,
-        `闪电猫原话/审核意见：${feedbackText}`,
-        "",
-        "只执行 pre_order_risk_audit。请基于证据包、Human Gate 原话和硬性风控规则输出中文风控 paper，并生成结构化 risk_decision。",
-        "risk_decision 必须包含 reviewerAgent=cat_tail、dispatchType=pre_order_risk_audit、decision、riskLimits、evidenceRefs、paperRef、humanGateId、proposalId、preOrderRiskAuditId。当前只能批准 paper execution 或拒绝。不要下单，不要向 trading_core 发送自然语言。"
-      ].filter(Boolean).join("\n"),
-      payload: {
-        dispatchType: "pre_order_risk_audit",
-        workflowId: catTailAudit.workflowId,
-        meetingId: catTailAudit.meetingId,
-        humanGateId: catTailAudit.humanGateId,
-        buttonId: catTailAudit.buttonId,
-        proposalId: catTailAudit.proposalId,
-        preOrderRiskAuditId: catTailAudit.preOrderRiskAuditId,
-        selectedOption: catTailAudit.selectedOption,
-        selectedAt,
-        selectedBy: actor,
-        flashcatOriginalWords: feedbackText,
-        requestPayload: catTailAudit.requestPayload,
-        requestRawPayload: catTailAudit.requestRawPayload,
-        buttonPayload: catTailAudit.buttonPayload
-      }
-    } : {
-      workflowRootDir: paths.root,
-      meetingId: button.meeting_id || button.workflow_id,
-      workflowId: button.workflow_id,
-      traceId: `${button.workflow_id}:human_gate_button:${button.button_id}`,
-      idempotencyKey: `workflow:${button.workflow_id}:human_gate_button:${button.button_id}`,
-      runtime: input.runtime || "openclaw",
-      agentId: input.agentId || input.agent_id || "main",
-      dispatchType: "human_gate_resume",
-      priority: "steer",
-      createdBy: actor,
-      prompt: [
-        `Human Gate button selected: ${button.label}`,
-        `Human Gate status: ${button.decision_status}`,
-        `Workflow ID: ${button.workflow_id}`,
-        `Meeting ID: ${button.meeting_id}`,
-        `Human Gate ID: ${button.human_gate_id}`,
-        `Button ID: ${button.button_id}`,
-        button.summary ? `Button summary: ${button.summary}` : "",
-        button.artifact_ref ? `Artifact ref: ${button.artifact_ref}` : "",
-        button.prompt ? `Selected action: ${button.prompt}` : "",
-        `闪电猫原话/审核意见：${feedbackText}`,
-        "",
-        "You are cat-brain main. Resume the workflow from this exact button decision.",
-        nextAction,
-        "The selected button status is the formal Human Gate decision. Treat Flashcat's original words as binding guidance for the next workflow direction, scope, and boundaries."
-      ].filter(Boolean).join("\n"),
-      payload: {
-        workflowId: button.workflow_id,
-        meetingId: button.meeting_id,
-        humanGateId: button.human_gate_id,
-        buttonId: button.button_id,
-        buttonLabel: button.label,
-        status: button.decision_status,
-        role: button.button_role || "",
-        artifactRef: button.artifact_ref || "",
-        summary: button.summary || "",
-        selectedAt,
-        selectedBy: actor,
-        flashcatOriginalWords: feedbackText,
-        feedbackReceivedAt,
-        humanGateResume: true,
-        buttonPayload: parseJsonValue(button.payload_json, {})
-      }
-    }, {
-      source: "human_gate_button_callback",
-      humanGateId: button.human_gate_id,
-      buttonId: button.button_id
-    });
-  }
-  if (workflowDecision?.archived) {
-    archiveCheckpoint = await workflowCheckpoint(rootDir, {
-      workflowRootDir: paths.root,
-      workflowId: button.workflow_id,
-      summary: `Flashcat selected Human Gate closeout button: ${button.label}. Archive the workflow as completed/closed while preserving resume state.`,
-      nextActions: [
-        "cat_brain main closes workflow state, confirms no pending unsafe side effects remain, and records resume boundary.",
-        "cat_claw prepares final Chinese closeout report with archive id, checkpoint id, and resume instructions."
-      ],
-      createdBy: "cat_claw"
-    });
-    closeoutDispatches.push(await safeMeetingDispatchWithRetry(rootDir, paths, {
-      workflowRootDir: paths.root,
-      meetingId: button.meeting_id || button.workflow_id,
-      workflowId: button.workflow_id,
-      traceId: `${button.workflow_id}:human_gate_archive_main:${button.button_id}`,
-      idempotencyKey: `workflow:${button.workflow_id}:human_gate_archive_main:${button.button_id}`,
-      runtime: "openclaw",
-      agentId: "main",
-      dispatchType: "workflow_archive_closeout",
-      priority: "steer",
-      createdBy: actor,
-      prompt: [
-        "闪电猫点击了 Human Gate 终止/收口按钮。",
-        "语义：闪电猫认为本段工作成果已完成且复核满足要求，需要归档并结束该 workflow；这不是删除，也不是不可恢复。",
-        `Workflow ID: ${button.workflow_id}`,
-        `Human Gate ID: ${button.human_gate_id}`,
-        `Checkpoint ID: ${archiveCheckpoint?.checkpointId || ""}`,
-        `闪电猫原话/审核意见：${feedbackText}`,
-        "",
-        "请猫之脑 main 完成必要收口：确认任务状态、证据包、receipt、outbox、side-effect ledger 和恢复边界；如果未来闪电猫要求 resume，应从该 checkpoint/workflow_id 继续。"
-      ].join("\n"),
-      payload: {
-        workflowId: button.workflow_id,
-        humanGateId: button.human_gate_id,
-        checkpointId: archiveCheckpoint?.checkpointId || "",
-        flashcatOriginalWords: feedbackText,
-        feedbackReceivedAt,
-        archived: true,
-        resumeAllowed: true
-      }
-    }, {
-      source: "human_gate_archive_closeout",
-      humanGateId: button.human_gate_id,
-      buttonId: button.button_id,
-      targetAgent: "main"
-    }));
-    closeoutDispatches.push(await safeMeetingDispatchWithRetry(rootDir, paths, {
-      workflowRootDir: paths.root,
-      meetingId: button.meeting_id || button.workflow_id,
-      workflowId: button.workflow_id,
-      traceId: `${button.workflow_id}:human_gate_archive_cat_claw:${button.button_id}`,
-      idempotencyKey: `workflow:${button.workflow_id}:human_gate_archive_cat_claw:${button.button_id}`,
-      runtime: "openclaw",
-      agentId: "cat_claw",
-      dispatchType: "workflow_archive_closeout_report",
-      priority: "steer",
-      createdBy: actor,
-      prompt: [
-        "闪电猫点击了 Human Gate 终止/收口按钮。",
-        "请猫爪以中文准备最终收口汇报，包含：工作流已归档、最终成果摘要、证据/receipt 指针、checkpoint id、未来 resume 方法和仍需注意的边界。",
-        `Workflow ID: ${button.workflow_id}`,
-        `Human Gate ID: ${button.human_gate_id}`,
-        `Checkpoint ID: ${archiveCheckpoint?.checkpointId || ""}`,
-        `闪电猫原话/审核意见：${feedbackText}`,
-        "不要生成新的方案；只做秘书收口和恢复指针说明。"
-      ].join("\n"),
-      payload: {
-        workflowId: button.workflow_id,
-        humanGateId: button.human_gate_id,
-        checkpointId: archiveCheckpoint?.checkpointId || "",
-        flashcatOriginalWords: feedbackText,
-        feedbackReceivedAt,
-        archived: true,
-        resumeAllowed: true
-      }
-    }, {
-      source: "human_gate_archive_closeout",
-      humanGateId: button.human_gate_id,
-      buttonId: button.button_id,
-      targetAgent: "cat_claw"
-    }));
-  }
-  await appendWorkflowEvent(paths, {
-    eventType: "human_gate.submitted",
-    status: button.decision_status,
-    workflowId: button.workflow_id,
-    traceId: `${button.workflow_id}:human_gate:${button.button_id}`,
-    humanGateId: button.human_gate_id,
-    actor,
-    sourceRuntime: "workflow",
-    sourceAgent: actor,
-    previousState: "pending",
-    nextState: button.decision_status,
-    idempotencyKey: `workflow_event:human_gate.submitted:${button.button_id}`,
-    artifactRef: button.artifact_ref || "",
-    payload: {
-      meetingId: button.meeting_id,
-      buttonId: button.button_id,
-      buttonLabel: button.label,
-      decisionStatus: button.decision_status,
-      role: button.button_role || "",
-      feedbackReceivedAt,
-      flashcatOriginalWords: feedbackText,
-      workflowDecision,
-      dispatchId: dispatch?.dispatchId || "",
-      archiveCheckpointId: archiveCheckpoint?.checkpointId || ""
-    }
-  });
-  return {
-    handled: true,
-    status: button.decision_status,
-    workflowId: button.workflow_id,
-    meetingId: button.meeting_id,
-    humanGateId: button.human_gate_id,
-    buttonId: button.button_id,
-    label: button.label,
-    workflowDecision,
-    archiveCheckpoint,
-    resume,
-    dispatch,
-    closeoutDispatches,
-    flashcatOriginalWords: feedbackText,
-    feedbackReceivedAt,
-    replyText: `已收到闪电猫原话并正式完成 Human Gate：${button.label}`,
-    dbFile: paths.dbFile
-  };
-}
-
 async function recoverAckedMessageFlowSemanticContinuations(paths, input = {}) {
   const cutoff = input.cutoff || new Date(Date.now() - 5 * 60_000).toISOString();
   const limit = Math.max(1, Math.min(200, Number(input.limit || 20)));
@@ -12511,6 +12097,9 @@ export const {
 } = TELEGRAM_OUTBOX_ACTION_HANDLERS;
 
 export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
+  appendWorkflowEvent,
+  applyHumanGateWorkflowDecision,
+  catTailPreOrderRiskAuditDispatchSpec,
   cleanFileSegment,
   collectHumanGateInboxItems,
   dailyKey,
@@ -12518,11 +12107,12 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   humanGateActionHint,
   humanGateArtifactRef,
   humanGateBody,
-  humanGateButtonCallback,
   humanGateButtonDisplayLabel,
   humanGateButtonFromRow,
   humanGateButtonRowByToken,
   humanGateButtonTelegramStyle,
+  humanGateCallbackIdentityAllowed,
+  humanGateFeedbackRequiredReply,
   humanGateFeedbackText,
   humanGateRecordById,
   humanGateRecordExpiry,
@@ -12538,7 +12128,12 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   resolveTelegramBotToken,
   riskSummaryFor,
   safeId,
+  safeMeetingDispatchWithRetry,
+  sqliteChangeCount,
+  meetingResume,
+  updateHumanGateRecordFeedback,
   verifyTelegramWebAppInitData,
+  workflowCheckpoint,
   writeJsonArtifact,
   writeTextArtifact,
   DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
@@ -12548,6 +12143,7 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
 export const HUMAN_GATE_ACTION_REGISTRY = createHumanGateActionRegistry(HUMAN_GATE_ACTION_HANDLERS);
 
 export const {
+  humanGateButtonCallback,
   humanGateFeedback,
   humanGateInbox,
   humanGateResume,
@@ -12796,9 +12392,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
   switch (action) {
     case "human_gate.request":
       return humanGateRequest(rootDir, input);
-    case "human_gate.button_callback":
-    case "human_gate.callback":
-      return humanGateButtonCallback(rootDir, input);
     default:
       throw new Error(`unknown workflow action: ${requestedAction}${requestedAction === action ? "" : ` (canonical: ${action})`}`);
   }
