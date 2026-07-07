@@ -10,7 +10,11 @@ export const HUMAN_GATE_ACTION_HANDLER_NAMES = {
   "human_gate.console": "humanGateInbox",
   "human_gate.batch_inbox": "humanGateInbox",
   "human_gate.record": "workflowHumanGateRecord",
-  "workflow.human_gate": "workflowHumanGateRecord"
+  "workflow.human_gate": "workflowHumanGateRecord",
+  "human_gate.web_app_review": "humanGateWebAppReview",
+  "human_gate.review_form": "humanGateWebAppReview",
+  "human_gate.web_app_submit": "humanGateWebAppSubmit",
+  "human_gate.submit_form": "humanGateWebAppSubmit"
 };
 
 function requireContextFunction(context, name) {
@@ -45,13 +49,28 @@ export function createHumanGateActionHandlers(context = {}) {
   const dailyKey = requireContextFunction(context, "dailyKey");
   const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const humanGateActionHint = requireContextFunction(context, "humanGateActionHint");
+  const humanGateArtifactRef = requireContextFunction(context, "humanGateArtifactRef");
+  const humanGateBody = requireContextFunction(context, "humanGateBody");
+  const humanGateButtonCallback = requireContextFunction(context, "humanGateButtonCallback");
+  const humanGateButtonDisplayLabel = requireContextFunction(context, "humanGateButtonDisplayLabel");
+  const humanGateButtonFromRow = requireContextFunction(context, "humanGateButtonFromRow");
+  const humanGateButtonRowByToken = requireContextFunction(context, "humanGateButtonRowByToken");
+  const humanGateButtonTelegramStyle = requireContextFunction(context, "humanGateButtonTelegramStyle");
+  const humanGateFeedbackText = requireContextFunction(context, "humanGateFeedbackText");
+  const humanGateRecordById = requireContextFunction(context, "humanGateRecordById");
+  const humanGateRecordExpiry = requireContextFunction(context, "humanGateRecordExpiry");
+  const humanGateSummary = requireContextFunction(context, "humanGateSummary");
+  const humanGateWebAppConfig = requireContextFunction(context, "humanGateWebAppConfig");
+  const normalizeHumanGateCallbackToken = requireContextFunction(context, "normalizeHumanGateCallbackToken");
   const nowIso = requireContextFunction(context, "nowIso");
   const relativeTo = requireContextFunction(context, "relativeTo");
   const renderHumanGateInboxHtml = requireContextFunction(context, "renderHumanGateInboxHtml");
   const renderHumanGateTelegramSummary = requireContextFunction(context, "renderHumanGateTelegramSummary");
   const protocolRecord = requireContextFunction(context, "protocolRecord");
+  const resolveTelegramBotToken = requireContextFunction(context, "resolveTelegramBotToken");
   const riskSummaryFor = requireContextFunction(context, "riskSummaryFor");
   const safeId = requireContextFunction(context, "safeId");
+  const verifyTelegramWebAppInitData = requireContextFunction(context, "verifyTelegramWebAppInitData");
   const writeJsonArtifact = requireContextFunction(context, "writeJsonArtifact");
   const writeTextArtifact = requireContextFunction(context, "writeTextArtifact");
   const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = requireContextValue(context, "DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID");
@@ -82,6 +101,103 @@ export function createHumanGateActionHandlers(context = {}) {
         traceId: input.traceId || input.trace_id || "",
         summary: input.summary || input.text || "",
         raw: parseJsonValue(input.payload, input.payload || {})
+      }
+    });
+  }
+
+  async function humanGateWebAppReview(rootDir, input = {}) {
+    const paths = await ensureWorkflowLayout(rootDir, input);
+    const button = await humanGateButtonRowByToken(paths, input);
+    if (!button) return { handled: true, status: "not_found", token: normalizeHumanGateCallbackToken(input), replyText: "Human Gate 按钮已失效或不存在。", dbFile: paths.dbFile };
+    const record = await humanGateRecordById(paths, button.human_gate_id) || {};
+    const expiry = humanGateRecordExpiry(record);
+    const recordPayload = parseJsonValue(record.payload_json, {});
+    const body = humanGateBody(recordPayload);
+    const webApp = await humanGateWebAppConfig(input);
+    const publicButton = humanGateButtonFromRow(button, paths.root);
+    const canSubmit = ["active", "feedback_pending"].includes(button.status) && !expiry.expired;
+    return {
+      handled: true,
+      status: expiry.expired ? "expired" : canSubmit ? "ready" : button.status,
+      canSubmit,
+      token: button.callback_token,
+      humanGateId: button.human_gate_id,
+      workflowId: button.workflow_id || "",
+      meetingId: button.meeting_id || "",
+      button: {
+        buttonId: button.button_id,
+        label: publicButton.label,
+        displayLabel: humanGateButtonDisplayLabel(publicButton, 0),
+        decisionStatus: button.decision_status,
+        role: button.button_role || "",
+        style: humanGateButtonTelegramStyle(publicButton, 0),
+        artifactRef: button.artifact_ref || "",
+        summary: button.summary || "",
+        prompt: button.prompt || "",
+        status: button.status,
+        feedbackStatus: button.feedback_status || "",
+        selectedAt: button.selected_at || "",
+        feedbackReceivedAt: button.feedback_received_at || ""
+      },
+      humanGate: {
+        status: record.status || "",
+        summary: humanGateSummary(recordPayload, body),
+        gateType: body.gateType || body.gate_type || recordPayload.gateType || recordPayload.gate_type || "",
+        artifactRef: humanGateArtifactRef(record, recordPayload, body),
+        createdAt: record.created_at || "",
+        updatedAt: record.updated_at || "",
+        expiresAt: expiry.expiresAt
+      },
+      webApp,
+      dbFile: paths.dbFile
+    };
+  }
+
+  async function humanGateWebAppSubmit(rootDir, input = {}) {
+    await ensureWorkflowLayout(rootDir, input);
+    const token = normalizeHumanGateCallbackToken(input);
+    const feedbackText = humanGateFeedbackText(input);
+    if (!token) return { handled: true, status: "token_required", replyText: "缺少 Human Gate token，无法判断这段原话对应哪个按钮/事项/workflow。" };
+    if (!feedbackText) return { handled: true, status: "feedback_required", replyText: "请填写闪电猫原话或审核意见；点击发送后 Human Gate 才会正式完成。" };
+    const webApp = await humanGateWebAppConfig(input);
+    const account = String(input.account || input.accountId || input.account_id || "cat_claw").trim();
+    const initData = String(input.initData || input.init_data || input.telegramWebAppInitData || input.telegram_web_app_init_data || "").trim();
+    let telegramAuth = { ok: false, reason: initData ? "not_checked" : "missing_init_data" };
+    if (initData) {
+      const botToken = await resolveTelegramBotToken(account, input);
+      telegramAuth = verifyTelegramWebAppInitData(initData, botToken, {
+        maxAgeSeconds: webApp.maxInitDataAgeSeconds,
+        allowedTelegramUserIds: webApp.allowedTelegramUserIds
+      });
+    }
+    const verifyPolicy = webApp.verifyTelegramInitData;
+    const strictVerify = ["1", "true", "required", "strict", "yes"].includes(verifyPolicy);
+    if (telegramAuth.reason === "telegram_user_not_allowed") {
+      return { handled: true, status: "telegram_user_not_allowed", telegramAuth, replyText: "该 Telegram 用户不在 Human Gate 允许提交名单中。" };
+    }
+    if (strictVerify && !telegramAuth.ok) {
+      return { handled: true, status: "telegram_auth_failed", telegramAuth, replyText: `Telegram Web App 身份校验失败：${telegramAuth.reason}` };
+    }
+    if (telegramAuth.ok && webApp.allowedTelegramUserIds.length && telegramAuth.userId && !webApp.allowedTelegramUserIds.includes(telegramAuth.userId)) {
+      return { handled: true, status: "telegram_user_not_allowed", telegramAuth, replyText: "该 Telegram 用户不在 Human Gate 允许提交名单中。" };
+    }
+    return humanGateButtonCallback(rootDir, {
+      ...input,
+      token,
+      feedbackText,
+      actor: input.actor || telegramAuth.userId || "flashcat",
+      senderId: input.senderId || input.sender_id || telegramAuth.userId || "",
+      sourceSystem: input.sourceSystem || input.source_system || "telegram_web_app",
+      payload: {
+        ...(input.payload && typeof input.payload === "object" ? input.payload : {}),
+        telegramWebApp: {
+          initDataPresent: Boolean(initData),
+          initDataVerified: Boolean(telegramAuth.ok),
+          authReason: telegramAuth.reason || "",
+          userId: telegramAuth.userId || "",
+          username: telegramAuth.username || "",
+          submittedAt: nowIso()
+        }
       }
     });
   }
@@ -151,6 +267,8 @@ ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summ
 
   return {
     humanGateInbox,
+    humanGateWebAppReview,
+    humanGateWebAppSubmit,
     workflowHumanGateRecord
   };
 }

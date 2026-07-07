@@ -11459,103 +11459,6 @@ async function humanGateCallbackIdentityAllowed(input = {}) {
   return { ok: true, senderId, reason: "" };
 }
 
-export async function humanGateWebAppReview(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const button = await humanGateButtonRowByToken(paths, input);
-  if (!button) return { handled: true, status: "not_found", token: normalizeHumanGateCallbackToken(input), replyText: "Human Gate 按钮已失效或不存在。", dbFile: paths.dbFile };
-  const record = await humanGateRecordById(paths, button.human_gate_id) || {};
-  const expiry = humanGateRecordExpiry(record);
-  const recordPayload = parseJsonValue(record.payload_json, {});
-  const body = humanGateBody(recordPayload);
-  const webApp = await humanGateWebAppConfig(input);
-  const publicButton = humanGateButtonFromRow(button, paths.root);
-  const canSubmit = ["active", "feedback_pending"].includes(button.status) && !expiry.expired;
-  return {
-    handled: true,
-    status: expiry.expired ? "expired" : canSubmit ? "ready" : button.status,
-    canSubmit,
-    token: button.callback_token,
-    humanGateId: button.human_gate_id,
-    workflowId: button.workflow_id || "",
-    meetingId: button.meeting_id || "",
-    button: {
-      buttonId: button.button_id,
-      label: publicButton.label,
-      displayLabel: humanGateButtonDisplayLabel(publicButton, 0),
-      decisionStatus: button.decision_status,
-      role: button.button_role || "",
-      style: humanGateButtonTelegramStyle(publicButton, 0),
-      artifactRef: button.artifact_ref || "",
-      summary: button.summary || "",
-      prompt: button.prompt || "",
-      status: button.status,
-      feedbackStatus: button.feedback_status || "",
-      selectedAt: button.selected_at || "",
-      feedbackReceivedAt: button.feedback_received_at || ""
-    },
-    humanGate: {
-      status: record.status || "",
-      summary: humanGateSummary(recordPayload, body),
-      gateType: body.gateType || body.gate_type || recordPayload.gateType || recordPayload.gate_type || "",
-      artifactRef: humanGateArtifactRef(record, recordPayload, body),
-      createdAt: record.created_at || "",
-      updatedAt: record.updated_at || "",
-      expiresAt: expiry.expiresAt
-    },
-    webApp,
-    dbFile: paths.dbFile
-  };
-}
-
-export async function humanGateWebAppSubmit(rootDir, input = {}) {
-  const paths = await ensureWorkflowLayout(rootDir, input);
-  const token = normalizeHumanGateCallbackToken(input);
-  const feedbackText = humanGateFeedbackText(input);
-  if (!token) return { handled: true, status: "token_required", replyText: "缺少 Human Gate token，无法判断这段原话对应哪个按钮/事项/workflow。" };
-  if (!feedbackText) return { handled: true, status: "feedback_required", replyText: "请填写闪电猫原话或审核意见；点击发送后 Human Gate 才会正式完成。" };
-  const webApp = await humanGateWebAppConfig(input);
-  const account = String(input.account || input.accountId || input.account_id || "cat_claw").trim();
-  const initData = String(input.initData || input.init_data || input.telegramWebAppInitData || input.telegram_web_app_init_data || "").trim();
-  let telegramAuth = { ok: false, reason: initData ? "not_checked" : "missing_init_data" };
-  if (initData) {
-    const botToken = await resolveTelegramBotToken(account, input);
-    telegramAuth = verifyTelegramWebAppInitData(initData, botToken, {
-      maxAgeSeconds: webApp.maxInitDataAgeSeconds,
-      allowedTelegramUserIds: webApp.allowedTelegramUserIds
-    });
-  }
-  const verifyPolicy = webApp.verifyTelegramInitData;
-  const strictVerify = ["1", "true", "required", "strict", "yes"].includes(verifyPolicy);
-  if (telegramAuth.reason === "telegram_user_not_allowed") {
-    return { handled: true, status: "telegram_user_not_allowed", telegramAuth, replyText: "该 Telegram 用户不在 Human Gate 允许提交名单中。" };
-  }
-  if (strictVerify && !telegramAuth.ok) {
-    return { handled: true, status: "telegram_auth_failed", telegramAuth, replyText: `Telegram Web App 身份校验失败：${telegramAuth.reason}` };
-  }
-  if (telegramAuth.ok && webApp.allowedTelegramUserIds.length && telegramAuth.userId && !webApp.allowedTelegramUserIds.includes(telegramAuth.userId)) {
-    return { handled: true, status: "telegram_user_not_allowed", telegramAuth, replyText: "该 Telegram 用户不在 Human Gate 允许提交名单中。" };
-  }
-  return humanGateButtonCallback(rootDir, {
-    ...input,
-    token,
-    feedbackText,
-    actor: input.actor || telegramAuth.userId || "flashcat",
-    senderId: input.senderId || input.sender_id || telegramAuth.userId || "",
-    sourceSystem: input.sourceSystem || input.source_system || "telegram_web_app",
-    payload: {
-      ...(input.payload && typeof input.payload === "object" ? input.payload : {}),
-      telegramWebApp: {
-        initDataPresent: Boolean(initData),
-        initDataVerified: Boolean(telegramAuth.ok),
-        authReason: telegramAuth.reason || "",
-        userId: telegramAuth.userId || "",
-        username: telegramAuth.username || "",
-        submittedAt: nowIso()
-      }
-    }
-  });
-}
-
 async function findPendingHumanGateFeedbackButton(paths, input = {}) {
   const token = normalizeHumanGateCallbackToken(input);
   if (token) {
@@ -12673,13 +12576,28 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   dailyKey,
   ensureWorkflowLayout,
   humanGateActionHint,
+  humanGateArtifactRef,
+  humanGateBody,
+  humanGateButtonCallback,
+  humanGateButtonDisplayLabel,
+  humanGateButtonFromRow,
+  humanGateButtonRowByToken,
+  humanGateButtonTelegramStyle,
+  humanGateFeedbackText,
+  humanGateRecordById,
+  humanGateRecordExpiry,
+  humanGateSummary,
+  humanGateWebAppConfig,
+  normalizeHumanGateCallbackToken,
   nowIso,
   protocolRecord: (...args) => protocolRecord(...args),
   relativeTo,
   renderHumanGateInboxHtml,
   renderHumanGateTelegramSummary,
+  resolveTelegramBotToken,
   riskSummaryFor,
   safeId,
+  verifyTelegramWebAppInitData,
   writeJsonArtifact,
   writeTextArtifact,
   DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
@@ -12690,6 +12608,8 @@ export const HUMAN_GATE_ACTION_REGISTRY = createHumanGateActionRegistry(HUMAN_GA
 
 export const {
   humanGateInbox,
+  humanGateWebAppReview,
+  humanGateWebAppSubmit,
   workflowHumanGateRecord
 } = HUMAN_GATE_ACTION_HANDLERS;
 
@@ -12933,12 +12853,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
   switch (action) {
     case "human_gate.request":
       return humanGateRequest(rootDir, input);
-    case "human_gate.web_app_review":
-    case "human_gate.review_form":
-      return humanGateWebAppReview(rootDir, input);
-    case "human_gate.web_app_submit":
-    case "human_gate.submit_form":
-      return humanGateWebAppSubmit(rootDir, input);
     case "human_gate.button_callback":
     case "human_gate.callback":
       return humanGateButtonCallback(rootDir, input);
