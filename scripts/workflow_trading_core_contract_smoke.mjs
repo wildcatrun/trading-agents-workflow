@@ -13,6 +13,8 @@ const LOCAL_CODEX_CALLER = {
   sourceSystem: "local_codex"
 };
 
+process.env.TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE ||= "1";
+
 async function runWorkflowAction(root, input) {
   return runAction(root, { ...LOCAL_CODEX_CALLER, ...input });
 }

@@ -130,7 +130,10 @@ import {
   workflowRunUpsert,
   workflowVerificationList,
   workflowVerificationRecord,
-  tradeProposal
+  riskDecision,
+  tradeIntent,
+  tradeProposal,
+  tradingCoreReceipt
 } from "../src/workflow.js";
 import {
   CAT_CLAW_ACTION_HANDLER_NAMES,
@@ -246,6 +249,7 @@ import {
 } from "../src/topology-actions.js";
 import {
   TRADE_ACTION_HANDLER_NAMES,
+  createTradeActionHandlers,
   createTradeActionRegistry
 } from "../src/trade-actions.js";
 import {
@@ -10528,12 +10532,57 @@ LIMIT 1;`);
   assert.equal(sqliteCount(record.dbFile, "protocol_objects", "object_id='blocked-human-gate-record'"), 0);
 }
 
-async function testTradeProposalExtractedActionContracts() {
-  assert.equal(TRADE_ACTION_REGISTRY.has("trade.proposal"), true);
-  assert.equal(TRADE_ACTION_HANDLER_NAMES["trade.proposal"], "tradeProposal");
+async function testTradeExtractedActionContracts() {
+  const expectedHandlers = {
+    "trade.proposal": "tradeProposal",
+    "risk.decision": "riskDecision",
+    "trade.intent": "tradeIntent",
+    "execution.intent": "tradeIntent",
+    "trading_core.receipt": "tradingCoreReceipt",
+    "execution.receipt": "tradingCoreReceipt"
+  };
+  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
+    assert.equal(TRADE_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted trade registry`);
+    assert.equal(TRADE_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
+  }
+  assert.equal(typeof riskDecision, "function");
+  assert.equal(typeof tradeIntent, "function");
   assert.equal(typeof tradeProposal, "function");
-  const directRegistry = createTradeActionRegistry({ tradeProposal });
+  assert.equal(typeof tradingCoreReceipt, "function");
+  const directRegistry = createTradeActionRegistry({
+    riskDecision,
+    tradeIntent,
+    tradeProposal,
+    tradingCoreReceipt
+  });
   assert.equal(directRegistry.get("trade.proposal"), tradeProposal);
+  assert.equal(directRegistry.get("risk.decision"), riskDecision);
+  assert.equal(directRegistry.get("execution.intent"), tradeIntent);
+  assert.equal(directRegistry.get("execution.receipt"), tradingCoreReceipt);
+  assert.throws(() => createTradeActionHandlers({}), /trade action dependency missing: ensureWorkflowLayout/);
+  assert.throws(
+    () => createTradeActionHandlers({
+      ensureWorkflowLayout: async () => ({})
+    }),
+    /trade action dependency missing: findCatTailPreOrderRiskAuditDispatch/
+  );
+  const directHandlers = createTradeActionHandlers({
+    ensureWorkflowLayout: async () => {
+      throw new Error("not used");
+    },
+    findCatTailPreOrderRiskAuditDispatch: async () => null,
+    protocolObjectReferences: () => false,
+    protocolPayloadField: () => "",
+    protocolPayloadValue: () => null,
+    protocolRecord: async () => ({}),
+    readProtocolObject: async () => null,
+    upsertInstrumentRecord: async () => ({ instrumentId: "stock:TEST", assetType: "stock", symbol: "TEST" }),
+    writeJsonArtifact: async () => "intents/test.json"
+  });
+  assert.equal(typeof directHandlers.riskDecision, "function");
+  assert.equal(typeof directHandlers.tradeIntent, "function");
+  assert.equal(typeof directHandlers.tradeProposal, "function");
+  assert.equal(typeof directHandlers.tradingCoreReceipt, "function");
 
   const root = await tempRoot("trade-proposal-extracted-contracts");
   const proposal = await runAction(root, {
@@ -13970,7 +14019,7 @@ async function testControlLoopBacksOffBlockedWorkflowSupervise() {
 async function testTradeIntentFailClosed() {
   const root = await tempRoot("trade-intent");
   const intent = await runAction(root, {
-    action: "trade.intent",
+    action: "execution.intent",
     assetType: "crypto",
     symbol: "BTC/USDT",
     side: "buy",
@@ -14460,7 +14509,7 @@ LIMIT 1;`);
   });
   assert.equal(receipt.status, "accepted");
   const filledReceipt = await runAction(root, {
-    action: "trading_core.receipt",
+    action: "execution.receipt",
     intentId: "intent-ready",
     status: "filled",
     ...receiptPolicyEvidence
@@ -19094,7 +19143,7 @@ try {
     ["telegram.outbox extracted action contracts", testTelegramOutboxExtractedActionContracts],
     ["human_gate inbox extracted action contracts", testHumanGateInboxExtractedActionContracts],
     ["protocol record extracted action contracts", testProtocolRecordExtractedActionContracts],
-    ["trade proposal extracted action contracts", testTradeProposalExtractedActionContracts],
+    ["trade extracted action contracts", testTradeExtractedActionContracts],
     ["side_effect extracted action contracts", testSideEffectExtractedActionContracts],
     ["incident state extracted action contracts", testIncidentStateExtractedActionContracts],
     ["research extracted action contracts", testResearchExtractedActionContracts],
