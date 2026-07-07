@@ -10644,7 +10644,18 @@ async function testIncidentStateExtractedActionContracts() {
     "incident.state": "incidentState",
     "workflow.incident": "incidentState",
     "workflow.incident.from_dead_letter.preview": "workflowIncidentFromDeadLetterPreview",
-    "workflow.incident.from_dead_letter": "workflowIncidentFromDeadLetter"
+    "workflow.incident.from_dead_letter": "workflowIncidentFromDeadLetter",
+    "workflow.incident.closeout.cat_claw_report.preview": "workflowIncidentCloseoutPreview",
+    "workflow.incident.closeout.human_gate_package.preview": "workflowIncidentCloseoutPreview",
+    "workflow.incident.closeout.worklist.preview": "workflowIncidentCloseoutWorklistPreview",
+    "workflow.incident.closeout.worklist.artifact.preview": "workflowIncidentCloseoutWorklistArtifactPreview",
+    "workflow.incident.closeout.evidence.preview": "workflowIncidentCloseoutEvidencePreview",
+    "workflow.incident.closeout.artifact.preview": "workflowIncidentCloseoutArtifactPreview",
+    "workflow.incident.closeout.human_gate_request.preview": "workflowIncidentCloseoutHumanGateRequestPreview",
+    "workflow.incident.closeout.worklist.artifact": "workflowIncidentCloseoutWorklistArtifact",
+    "workflow.incident.closeout.evidence": "workflowIncidentCloseoutEvidence",
+    "workflow.incident.closeout.artifact": "workflowIncidentCloseoutArtifact",
+    "workflow.incident.closeout.human_gate_request": "workflowIncidentCloseoutHumanGateRequest"
   };
   for (const [action, handlerName] of Object.entries(expected)) {
     assert.equal(INCIDENT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted incident registry`);
@@ -10653,7 +10664,14 @@ async function testIncidentStateExtractedActionContracts() {
   assert.equal(typeof incidentState, "function");
   assert.equal(typeof workflowIncidentFromDeadLetterPreview, "function");
   assert.equal(typeof workflowIncidentFromDeadLetter, "function");
+  const incidentHandlerStubs = Object.fromEntries(
+    Array.from(new Set(Object.values(INCIDENT_ACTION_HANDLER_NAMES))).map((handlerName) => [
+      handlerName,
+      async () => ({ status: "stub", handlerName })
+    ])
+  );
   const directRegistry = createIncidentActionRegistry({
+    ...incidentHandlerStubs,
     incidentState,
     workflowIncidentFromDeadLetterPreview,
     workflowIncidentFromDeadLetter
@@ -10662,6 +10680,8 @@ async function testIncidentStateExtractedActionContracts() {
   assert.equal(directRegistry.get("workflow.incident"), incidentState);
   assert.equal(directRegistry.get("workflow.incident.from_dead_letter.preview"), workflowIncidentFromDeadLetterPreview);
   assert.equal(directRegistry.get("workflow.incident.from_dead_letter"), workflowIncidentFromDeadLetter);
+  assert.equal(directRegistry.get("workflow.incident.closeout.cat_claw_report.preview"), incidentHandlerStubs.workflowIncidentCloseoutPreview);
+  assert.equal(directRegistry.get("workflow.incident.closeout.human_gate_package.preview"), incidentHandlerStubs.workflowIncidentCloseoutPreview);
   const missing = await runIncidentAction(directRegistry, "workflow.incident.unknown", "/tmp/unused", {});
   assert.equal(missing.handled, false);
 
@@ -15365,6 +15385,24 @@ async function testWorkflowPermissionGate() {
   });
   assert.equal(allowedMessage.allowed, true);
   assert.equal(allowedMessage.requiredCapability, "message_flow.send");
+
+  const closeoutPreviewPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.incident.closeout.human_gate_request.preview"
+  });
+  assert.equal(closeoutPreviewPolicy.allowed, true);
+  assert.equal(closeoutPreviewPolicy.action, "workflow.incident.closeout.human_gate_request.preview");
+  assert.equal(closeoutPreviewPolicy.readOnly, true);
+  assert.equal(closeoutPreviewPolicy.requiredCapability, "read");
+
+  const closeoutPreviewAliasPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.incident.closeout.report.preview"
+  });
+  assert.equal(closeoutPreviewAliasPolicy.allowed, true);
+  assert.equal(closeoutPreviewAliasPolicy.action, "workflow.incident.closeout.cat_claw_report.preview");
+  assert.equal(closeoutPreviewAliasPolicy.readOnly, true);
+  assert.equal(closeoutPreviewAliasPolicy.requiredCapability, "read");
 
   const deniedRuntime = await runAction(root, {
     action: "workflow.permission.check",
