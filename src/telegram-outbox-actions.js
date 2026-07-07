@@ -1,13 +1,22 @@
+import { execFile } from "node:child_process";
+import https from "node:https";
+import net from "node:net";
+import tls from "node:tls";
+import { promisify } from "node:util";
 import {
+  boolOption,
   firstText,
   parseJsonValue,
   redactSensitiveForPersistence,
-  redactSensitiveTextForPersistence
+  redactSensitiveTextForPersistence,
+  safeId
 } from "./workflow/json.js";
 import {
   sqlValue,
   sqlite
 } from "./workflow/sqlite.js";
+
+const execFileAsync = promisify(execFile);
 
 export const TELEGRAM_OUTBOX_ACTION_HANDLER_NAMES = {
   "telegram.outbox.delivery.preview": "telegramOutboxDeliveryPreview",
@@ -63,6 +72,181 @@ function normalizeTelegramBotApiChatId(value = "") {
   return String(value || "").trim().replace(/^telegram:/, "");
 }
 
+function noProxyList() {
+  return String(process.env.NO_PROXY || process.env.no_proxy || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function noProxyMatches(hostname = "", port = "") {
+  const host = String(hostname || "").toLowerCase();
+  const hostPort = `${host}:${String(port || "").trim()}`;
+  for (const entryRaw of noProxyList()) {
+    const entry = entryRaw.toLowerCase();
+    if (entry === "*") return true;
+    if (entry.includes(":") && entry === hostPort) return true;
+    const domain = entry.replace(/^\./, "");
+    if (host === domain || host.endsWith(`.${domain}`)) return true;
+  }
+  return false;
+}
+
+function proxyUrlForHttpsTarget(targetUrl) {
+  const url = targetUrl instanceof URL ? targetUrl : new URL(String(targetUrl || ""));
+  if (noProxyMatches(url.hostname, url.port || "443")) return "";
+  return firstText(
+    process.env.HTTPS_PROXY,
+    process.env.https_proxy,
+    process.env.HTTP_PROXY,
+    process.env.http_proxy,
+    process.env.ALL_PROXY,
+    process.env.all_proxy
+  );
+}
+
+function proxyAuthorizationHeader(proxyUrl) {
+  if (!proxyUrl.username) return "";
+  const username = decodeURIComponent(proxyUrl.username);
+  const password = decodeURIComponent(proxyUrl.password || "");
+  return `Proxy-Authorization: Basic ${Buffer.from(`${username}:${password}`).toString("base64")}\r\n`;
+}
+
+function connectTlsViaHttpProxy(proxyRawUrl, target, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    let proxyUrl;
+    try {
+      proxyUrl = new URL(proxyRawUrl);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    if (!["http:", "https:"].includes(proxyUrl.protocol)) {
+      reject(new Error(`unsupported proxy protocol for telegram bot api: ${proxyUrl.protocol}`));
+      return;
+    }
+
+    const proxyPort = Number(proxyUrl.port || (proxyUrl.protocol === "https:" ? 443 : 80));
+    const targetHost = String(target.hostname || target.host || "").trim();
+    const targetPort = Number(target.port || 443);
+    const connectOptions = { host: proxyUrl.hostname, port: proxyPort };
+    const rawSocket = proxyUrl.protocol === "https:"
+      ? tls.connect({ ...connectOptions, servername: proxyUrl.hostname })
+      : net.connect(connectOptions);
+    let settled = false;
+    let buffered = Buffer.alloc(0);
+
+    const cleanup = () => {
+      rawSocket.removeListener("data", onData);
+      rawSocket.removeListener("error", onError);
+      rawSocket.removeListener("timeout", onTimeout);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rawSocket.destroy();
+      reject(error);
+    };
+    const onError = (error) => fail(error);
+    const onTimeout = () => fail(new Error("telegram bot api proxy connect timeout"));
+    const onData = (chunk) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      const headerEnd = buffered.indexOf("\r\n\r\n");
+      if (headerEnd < 0) return;
+      const header = buffered.slice(0, headerEnd).toString("latin1");
+      if (!/^HTTP\/1\.[01] 2\d\d\b/.test(header)) {
+        fail(new Error(`telegram bot api proxy connect failed: ${header.split("\r\n")[0] || "unknown response"}`));
+        return;
+      }
+      cleanup();
+      const secureSocket = tls.connect({
+        socket: rawSocket,
+        servername: target.servername || targetHost,
+        ALPNProtocols: ["http/1.1"]
+      }, () => {
+        if (settled) return;
+        settled = true;
+        secureSocket.setTimeout(0);
+        resolve(secureSocket);
+      });
+      secureSocket.once("error", fail);
+      secureSocket.setTimeout(timeoutMs, () => fail(new Error("telegram bot api tls handshake timeout")));
+    };
+    const sendConnect = () => {
+      const auth = proxyAuthorizationHeader(proxyUrl);
+      rawSocket.write(`CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\nProxy-Connection: Keep-Alive\r\n${auth}\r\n`);
+    };
+
+    rawSocket.setTimeout(timeoutMs, onTimeout);
+    rawSocket.once("error", onError);
+    rawSocket.on("data", onData);
+    rawSocket.once(proxyUrl.protocol === "https:" ? "secureConnect" : "connect", sendConnect);
+  });
+}
+
+function telegramBotApiHttpPost(url, body, timeoutMs = 30000) {
+  const targetUrl = url instanceof URL ? url : new URL(String(url || ""));
+  const payload = JSON.stringify(body);
+  const proxyUrl = proxyUrlForHttpsTarget(targetUrl);
+  return new Promise((resolve, reject) => {
+    const requestOptions = {
+      protocol: targetUrl.protocol,
+      hostname: targetUrl.hostname,
+      port: Number(targetUrl.port || 443),
+      path: `${targetUrl.pathname}${targetUrl.search}`,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload)
+      },
+      timeout: timeoutMs
+    };
+    if (proxyUrl) {
+      requestOptions.createConnection = (options, callback) => {
+        connectTlsViaHttpProxy(proxyUrl, {
+          hostname: targetUrl.hostname,
+          port: Number(targetUrl.port || 443),
+          servername: options.servername || targetUrl.hostname
+        }, timeoutMs).then((socket) => callback(null, socket), callback);
+      };
+    }
+    const req = https.request(requestOptions, (res) => {
+      const chunks = [];
+      let size = 0;
+      res.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > 2 * 1024 * 1024) {
+          req.destroy(new Error("telegram bot api response too large"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("end", () => {
+        resolve({
+          statusCode: res.statusCode || 0,
+          statusMessage: res.statusMessage || "",
+          text: Buffer.concat(chunks).toString("utf8")
+        });
+      });
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error("telegram bot api request timeout")));
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function telegramBotApiPost(token, method, body, timeoutMs = 30000) {
+  const response = await telegramBotApiHttpPost(`https://api.telegram.org/bot${token}/${method}`, body, timeoutMs);
+  const parsed = parseJsonValue(response.text, null);
+  if (response.statusCode < 200 || response.statusCode >= 300 || !parsed || parsed.ok === false) {
+    const description = parsed?.description || response.text || response.statusMessage;
+    throw new Error(`telegram bot api ${method} failed: ${String(description).slice(0, 1000)}`);
+  }
+  return parsed.result || parsed;
+}
+
 function telegramRequeueStrategyChinese(strategy = "") {
   const map = {
     retry_failed_delivery: "失败投递重试",
@@ -104,15 +288,203 @@ export async function runTelegramOutboxAction(registry, action, rootDir, input =
 
 export function createTelegramOutboxActionHandlers(context = {}) {
   const appendWorkflowEvent = requireContextFunction(context, "appendWorkflowEvent");
-  const deliverTelegramOutboxRow = requireContextFunction(context, "deliverTelegramOutboxRow");
   const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const humanGatePlanOptionButtons = requireContextFunction(context, "humanGatePlanOptionButtons");
   const nowIso = requireContextFunction(context, "nowIso");
+  const resolveTelegramBotToken = requireContextFunction(context, "resolveTelegramBotToken");
   const updateMessageFlowFromTelegramDelivery = requireContextFunction(context, "updateMessageFlowFromTelegramDelivery");
   const HUMAN_GATE_APPROVE_OPTION_MAX = requireContextValue(context, "HUMAN_GATE_APPROVE_OPTION_MAX");
   const HUMAN_GATE_APPROVE_OPTION_MIN = requireContextValue(context, "HUMAN_GATE_APPROVE_OPTION_MIN");
   const TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES = requireContextValue(context, "TARGET_REQUIRED_TELEGRAM_MESSAGE_TYPES");
   const TELEGRAM_OUTBOX_DELIVERY_LEASE_MS = requireContextValue(context, "TELEGRAM_OUTBOX_DELIVERY_LEASE_MS");
+
+  async function deliverTelegramOutboxRowViaWebApp(paths, row, input, deliveryContext) {
+    const payload = deliveryContext.payload || {};
+    const replyMarkup = payload.telegramReplyMarkup || payload.reply_markup || null;
+    if (!replyMarkup?.inline_keyboard?.length) return null;
+    const account = deliveryContext.account;
+    const target = normalizeTelegramBotApiChatId(deliveryContext.target);
+    if (!target) return null;
+    const token = await resolveTelegramBotToken(account, input);
+    if (!token) return null;
+    const deliveredAt = nowIso();
+    const receipts = Array.isArray(payload.delivery?.receipts) ? [...payload.delivery.receipts] : [];
+    const startIndex = Math.min(receipts.length, deliveryContext.chunks.length);
+    try {
+      for (const [index, chunk] of deliveryContext.chunks.entries()) {
+        if (index < startIndex) continue;
+        const receipt = await telegramBotApiPost(token, "sendMessage", {
+          chat_id: target,
+          text: chunk,
+          disable_web_page_preview: true,
+          ...(index === deliveryContext.chunks.length - 1 ? { reply_markup: replyMarkup } : {})
+        }, deliveryContext.timeoutSeconds * 1000);
+        receipts.push(receipt);
+      }
+      const updatedPayload = { ...payload, delivery: { channel: "telegram", account, target, mode: "direct_bot_api_web_app", deliveredAt, receipts } };
+      await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='sent', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(deliveredAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)};`);
+      return { outboxId: row.outbox_id, status: "sent", account, target, mode: "direct_bot_api_web_app", parts: deliveryContext.chunks.length, receipts };
+    } catch (error) {
+      const failedAt = nowIso();
+      if (receipts.length > 0) {
+        const updatedPayload = { ...payload, delivery: { channel: "telegram", account, target, mode: "direct_bot_api_web_app", failedAt, error: String(error?.message || error).slice(0, 2000), receipts } };
+        await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='failed', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(failedAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)};`);
+        return { outboxId: row.outbox_id, status: "failed", account, target, mode: "direct_bot_api_web_app", error: String(error?.message || error).slice(0, 2000), receipts };
+      }
+      return { outboxId: row.outbox_id, status: "web_app_direct_delivery_unavailable", account, target, error: String(error?.message || error).slice(0, 2000), receipts };
+    }
+  }
+
+  async function claimTelegramOutboxDelivery(paths, row, input = {}) {
+    const status = String(row.status || "").trim();
+    if (!["queued", "failed", "delivering"].includes(status)) {
+      return { claimed: false, row, reason: `status_${status || "unknown"}` };
+    }
+    const claimedAt = nowIso();
+    const staleBefore = new Date(Date.now() - TELEGRAM_OUTBOX_DELIVERY_LEASE_MS).toISOString();
+    const payload = parseJsonValue(row.payload_json, {});
+    const claim = {
+      claimId: safeId("tg_claim"),
+      claimedAt,
+      owner: firstText(input.owner, input.from, "workflow"),
+      previousStatus: status
+    };
+    const updatedPayload = { ...payload, deliveryClaim: claim };
+    const statusPredicate = status === "delivering"
+      ? `status='delivering' AND updated_at <= ${sqlValue(staleBefore)}`
+      : `status=${sqlValue(status)}`;
+    const changed = await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='delivering', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(claimedAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)} AND (${statusPredicate});
+SELECT changes() AS changed;`, { json: true });
+    if (Number(changed?.[0]?.changed || 0) !== 1) {
+      const rows = await sqlite(paths.dbFile, `SELECT * FROM telegram_outbox WHERE outbox_id=${sqlValue(row.outbox_id)} LIMIT 1;`, { json: true });
+      return { claimed: false, row: rows[0] || row, reason: "not_claimed" };
+    }
+    return {
+      claimed: true,
+      row: {
+        ...row,
+        status: "delivering",
+        payload_json: JSON.stringify(updatedPayload),
+        updated_at: claimedAt
+      },
+      claim
+    };
+  }
+
+  async function deliverTelegramOutboxRow(paths, row, input = {}) {
+    const claim = await claimTelegramOutboxDelivery(paths, row, input);
+    if (!claim.claimed) {
+      return { outboxId: row.outbox_id, status: claim.row?.status || row.status || "not_claimed", skipped: true, reason: claim.reason };
+    }
+    row = claim.row;
+    const payload = parseJsonValue(row.payload_json, {});
+    const account = String(input.account || payload.account || "cat_claw").trim();
+    const explicitTarget = String(input.target || "").trim();
+    const rowTarget = String(row.target_ref || "").trim();
+    if (!explicitTarget && !rowTarget) {
+      const failedAt = nowIso();
+      const error = "telegram_outbox target_ref is required unless an explicit target override is provided";
+      const updatedPayload = { ...payload, delivery: { channel: "telegram", account, failedAt, error } };
+      await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='failed', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(failedAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)};`);
+      const result = { outboxId: row.outbox_id, status: "failed", account, error };
+      await updateMessageFlowFromTelegramDelivery(paths, row, result);
+      return result;
+    }
+    const target = explicitTarget || rowTarget;
+    const openclawBin = String(input.openclawBin || input.openclaw_bin || "openclaw").trim();
+    const timeoutSeconds = Math.max(5, Math.min(120, Number(input.timeoutSeconds || input.timeout_seconds || 30)));
+    const chunks = telegramChunks(row.text);
+    const deliveredAt = nowIso();
+    const receipts = Array.isArray(payload.delivery?.receipts) ? [...payload.delivery.receipts] : [];
+    const startIndex = Math.min(receipts.length, chunks.length);
+    try {
+      const webAppDelivery = await deliverTelegramOutboxRowViaWebApp(paths, row, input, { payload, account, target, chunks, timeoutSeconds });
+      if (webAppDelivery?.status === "sent" || webAppDelivery?.status === "failed") {
+        await updateMessageFlowFromTelegramDelivery(paths, row, webAppDelivery);
+        return webAppDelivery;
+      }
+      if (webAppDelivery?.status === "web_app_direct_delivery_unavailable") {
+        payload.webAppDirectDeliveryFallback = {
+          attemptedAt: nowIso(),
+          error: webAppDelivery.error,
+          reason: "falling_back_to_openclaw_callback_buttons"
+        };
+      }
+      for (const [index, chunk] of chunks.entries()) {
+        if (index < startIndex) continue;
+        const args = [
+          "message",
+          "send",
+          "--channel",
+          "telegram",
+          "--account",
+          account,
+          "--target",
+          target,
+          "--message",
+          chunk,
+          "--json"
+        ];
+        if (payload.presentation && index === chunks.length - 1) {
+          args.push("--presentation", JSON.stringify(payload.presentation));
+        }
+        const { stdout, stderr } = await execFileAsync(openclawBin, args, {
+          cwd: paths.root,
+          timeout: timeoutSeconds * 1000,
+          maxBuffer: 4 * 1024 * 1024
+        });
+        const parsed = parseJsonValue(String(stdout || "").trim(), null);
+        if (!parsed || parsed.payload?.ok === false || parsed.ok === false) {
+          throw new Error(`telegram send failed: ${String(stdout || stderr || "").slice(0, 1000)}`);
+        }
+        receipts.push(parsed.payload || parsed);
+      }
+      const updatedPayload = { ...payload, delivery: { channel: "telegram", account, target, deliveredAt, receipts } };
+      await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='sent', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(deliveredAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)};`);
+      const result = { outboxId: row.outbox_id, status: "sent", account, target, parts: chunks.length, receipts };
+      await updateMessageFlowFromTelegramDelivery(paths, row, result);
+      return result;
+    } catch (error) {
+      const failedAt = nowIso();
+      const updatedPayload = { ...payload, delivery: { channel: "telegram", account, target, failedAt, error: String(error?.message || error).slice(0, 2000), receipts } };
+      await sqlite(paths.dbFile, `
+UPDATE telegram_outbox
+SET status='failed', payload_json=${sqlValue(JSON.stringify(updatedPayload))}, updated_at=${sqlValue(failedAt)}
+WHERE outbox_id=${sqlValue(row.outbox_id)};`);
+      const result = { outboxId: row.outbox_id, status: "failed", account, target, error: String(error?.message || error).slice(0, 2000), receipts };
+      await updateMessageFlowFromTelegramDelivery(paths, row, result);
+      return result;
+    }
+  }
+
+  async function autoDeliverReportOutbox(paths, ingest, input = {}) {
+    if (!ingest?.reportOutbox?.outboxId) return null;
+    const enabled = boolOption(input.autoDeliverReportOutbox ?? input.auto_deliver_report_outbox ?? input.reportDelivery ?? input.report_delivery, true);
+    if (!enabled) return { outboxId: ingest.reportOutbox.outboxId, status: "queued", skipped: true };
+    const rows = await sqlite(paths.dbFile, `
+SELECT * FROM telegram_outbox
+WHERE outbox_id=${sqlValue(ingest.reportOutbox.outboxId)}
+LIMIT 1;`, { json: true });
+    const row = rows[0];
+    if (!row) return { outboxId: ingest.reportOutbox.outboxId, status: "missing" };
+    if (row.status !== "queued") return { outboxId: row.outbox_id, status: row.status, skipped: true };
+    return deliverTelegramOutboxRow(paths, row, input);
+  }
 
   async function telegramOutboxDeliveryPreview(rootDir, input = {}) {
     const paths = await ensureWorkflowLayout(rootDir, input);
@@ -848,6 +1220,8 @@ LIMIT ${limit};`, { json: true });
   }
 
   return {
+    autoDeliverReportOutbox,
+    deliverTelegramOutboxRow,
     telegramOutboxDeliveryPreview,
     telegramOutboxRequeuePreview,
     telegramOutboxRequeueExecutionPackagePreview,
