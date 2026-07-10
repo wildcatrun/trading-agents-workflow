@@ -75,6 +75,25 @@ async function workflowV2WorkerRunControlSchema(dbFile) {
   };
 }
 
+function workflowV2WorkerRunScopeClauses(input = {}, alias = "w") {
+  const prefix = alias ? `${alias}.` : "";
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const planId = firstText(input.planId, input.plan_id);
+  const nodeId = firstText(input.nodeId, input.node_id);
+  const workerRunId = firstText(input.workerRunId, input.worker_run_id);
+  const clauses = [];
+  if (workflowId) clauses.push(`${prefix}workflow_id=${sqlValue(workflowId)}`);
+  if (planId) clauses.push(`${prefix}plan_id=${sqlValue(planId)}`);
+  if (nodeId) clauses.push(`${prefix}node_id=${sqlValue(nodeId)}`);
+  if (workerRunId) clauses.push(`${prefix}worker_run_id=${sqlValue(workerRunId)}`);
+  return clauses;
+}
+
+function workflowV2WorkerRunScopeClause(input = {}, alias = "w") {
+  const clauses = workflowV2WorkerRunScopeClauses(input, alias);
+  return clauses.length ? `AND ${clauses.join(" AND ")}` : "";
+}
+
 async function workflowV2ControlLoopPreview(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
   const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
@@ -106,8 +125,7 @@ async function workflowV2ControlLoopPreview(rootDir, input = {}) {
       dbFile: paths.dbFile
     };
   }
-  const workflowFilter = firstText(input.workflowId, input.workflow_id);
-  const whereWorkflow = workflowFilter ? `AND w.workflow_id=${sqlValue(workflowFilter)}` : "";
+  const workerRunScope = workflowV2WorkerRunScopeClause(input, "w");
   const counts = await sqlite(paths.dbFile, `
 SELECT
   COUNT(*) AS total,
@@ -121,7 +139,7 @@ SELECT
   SUM(CASE WHEN p.preflight_id IS NULL OR p.workflow_id != w.workflow_id OR p.backend_id != w.runtime_backend OR p.status NOT IN ('pass','warn') THEN 1 ELSE 0 END) AS invalid_preflight
 FROM workflow_v2_worker_runs w
 LEFT JOIN workflow_v2_backend_preflights p ON p.preflight_id=w.preflight_id
-WHERE 1=1 ${whereWorkflow};`, { json: true });
+WHERE 1=1 ${workerRunScope};`, { json: true });
   const limit = Math.max(1, Math.min(20, Number(input.limit || 10)));
   const rows = await sqlite(paths.dbFile, `
 SELECT w.*
@@ -133,7 +151,7 @@ WHERE w.status IN ('queued','retry_scheduled')
   AND p.workflow_id=w.workflow_id
   AND p.backend_id=w.runtime_backend
   AND p.status IN ('pass','warn')
-  ${whereWorkflow}
+  ${workerRunScope}
 ORDER BY w.updated_at ASC, w.created_at ASC
 LIMIT ${limit};`, { json: true });
   return {
@@ -156,15 +174,14 @@ function workflowV2WorkerLeaseMs(input = {}) {
 
 async function workflowV2ExpireWorkerLeases(paths, input = {}, generatedAt = nowIso()) {
   const limit = Math.max(1, Math.min(50, Number(input.expireLimit || input.expire_limit || 20)));
-  const workflowFilter = firstText(input.workflowId, input.workflow_id);
-  const whereWorkflow = workflowFilter ? `AND workflow_id=${sqlValue(workflowFilter)}` : "";
+  const workerRunScope = workflowV2WorkerRunScopeClause(input, "");
   const rows = await sqlite(paths.dbFile, `
 SELECT *
 FROM workflow_v2_worker_runs
 WHERE status='running'
   AND COALESCE(lease_until,'')!=''
   AND lease_until <= ${sqlValue(generatedAt)}
-  ${whereWorkflow}
+  ${workerRunScope}
 ORDER BY lease_until ASC, updated_at ASC
 LIMIT ${limit};`, { json: true });
   const expired = [];
@@ -187,7 +204,8 @@ SET status=${sqlValue(status)},
 WHERE worker_run_id=${sqlValue(row.worker_run_id)}
   AND status='running'
   AND lease_owner=${sqlValue(row.lease_owner || "")}
-  AND lease_until=${sqlValue(row.lease_until || "")};`);
+  AND lease_until=${sqlValue(row.lease_until || "")}
+  ${workerRunScope};`);
     if (changed !== 1) {
       expired.push({ workerRunId: row.worker_run_id, status: "lease_lost" });
       continue;
@@ -224,8 +242,8 @@ async function workflowV2ClaimWorkerRuns(paths, input = {}, generatedAt = nowIso
   const owner = firstText(input.claimOwner, input.claim_owner, input.owner, input.leaseOwner, input.lease_owner) || `pid:${process.pid}:${safeId("v2-claim")}`;
   const limit = Math.max(1, Math.min(20, Number(input.workerLimit || input.worker_limit || input.limit || 4)));
   const leaseUntil = new Date(new Date(generatedAt).getTime() + workflowV2WorkerLeaseMs(input)).toISOString();
-  const workflowFilter = firstText(input.workflowId, input.workflow_id);
-  const whereWorkflow = workflowFilter ? `AND w.workflow_id=${sqlValue(workflowFilter)}` : "";
+  const workerRunScope = workflowV2WorkerRunScopeClause(input, "w");
+  const updateWorkerRunScope = workflowV2WorkerRunScopeClause(input, "");
   const rows = await sqlite(paths.dbFile, `
 SELECT w.*
 FROM workflow_v2_worker_runs w
@@ -236,7 +254,7 @@ WHERE w.status IN ('queued','retry_scheduled')
   AND p.workflow_id=w.workflow_id
   AND p.backend_id=w.runtime_backend
   AND p.status IN ('pass','warn')
-  ${whereWorkflow}
+  ${workerRunScope}
 ORDER BY w.updated_at ASC, w.created_at ASC
 LIMIT ${limit};`, { json: true });
   const claimed = [];
@@ -262,7 +280,8 @@ WHERE worker_run_id=${sqlValue(row.worker_run_id)}
       AND p.workflow_id=workflow_v2_worker_runs.workflow_id
       AND p.backend_id=workflow_v2_worker_runs.runtime_backend
       AND p.status IN ('pass','warn')
-  );`);
+  )
+  ${updateWorkerRunScope};`);
     if (changed !== 1) continue;
     const latest = await sqlite(paths.dbFile, `SELECT * FROM workflow_v2_worker_runs WHERE worker_run_id=${sqlValue(row.worker_run_id)} AND status='running' AND lease_owner=${sqlValue(owner)} LIMIT 1;`, { json: true });
     if (latest[0]) {

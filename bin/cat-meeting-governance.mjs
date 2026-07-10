@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runAction } from "../src/core.js";
+import { strictBoolOption } from "../src/workflow/json.js";
 import path from "node:path";
 import os from "node:os";
 
@@ -21,7 +22,7 @@ function usage() {
   trading-agents-workflow workflow-supervise --workflow ID [--meeting ID] [--auto-dispatch] [--drain] [--max-cycles N] [--auto-report false] [--openclaw-bin PATH] [--root DIR]
   trading-agents-workflow workflow-supervise-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--drain true|false] [--max-cycles N] [--auto-report true|false] [--root DIR]
   trading-agents-workflow workflow-control-loop-tick [--tick-ms 30000] [--max-workflows N] [--runtime hermers] [--limit N] [--job-limit N] [--tick-budget-ms N] [--message-flow-stuck-after-ms N] [--message-flow-reconcile-limit N] [--workflow-supervise-cooldown-ms N] [--idle-workflow-supervise-cooldown-ms N] [--auto-dispatch true|false] [--deliver-outbox true|false] [--enable-schedules true|false] [--root DIR]
-  trading-agents-workflow workflow-schedule-upsert --id ID --agent AGENT --prompt TEXT [--runtime hermers] [--kind cron|interval] [--cron EXPR] [--interval-seconds N] [--next-run-at ISO] [--root DIR]
+  trading-agents-workflow workflow-schedule-upsert --id ID --agent AGENT [--template-id ID | --plan-id ID --workflow ID --human-gate-id ID | --allow-raw-schedule-dispatch true] [--prompt TEXT] [--runtime hermers] [--kind cron|interval] [--cron EXPR] [--interval-seconds N] [--next-run-at ISO] [--root DIR]
   trading-agents-workflow workflow-schedule-list [--id ID] [--status active|paused|disabled] [--runtime RUNTIME] [--agent AGENT] [--run-limit N] [--root DIR]
   trading-agents-workflow workflow-schedule-pause --id ID [--root DIR]
   trading-agents-workflow workflow-schedule-resume --id ID [--reset-next-run true|false] [--root DIR]
@@ -433,6 +434,12 @@ function toAction({ command, positional, options }) {
           runtime: options.runtime,
           agentId: options.agent,
           prompt: options.prompt,
+          templateId: options["template-id"] || options.templateId,
+          templateVersion: options["template-version"] || options.templateVersion,
+          workflowId: options.workflow || options["workflow-id"] || options.workflowId,
+          planId: options["plan-id"] || options.planId,
+          humanGateId: options["human-gate-id"] || options.humanGateId,
+          allowRawScheduleDispatch: strictBoolOption(options["allow-raw-schedule-dispatch"] || options.allowRawScheduleDispatch, false),
           dispatchType: options.type,
           priority: options.priority,
           status: options.status,
@@ -442,7 +449,7 @@ function toAction({ command, positional, options }) {
           timeoutSeconds: options["timeout-seconds"],
           maxAttempts: options["max-attempts"],
           nextRunAt: options["next-run-at"],
-          resetNextRun: options["reset-next-run"] === "true",
+          resetNextRun: strictBoolOption(options["reset-next-run"], false),
           payload: options.payload,
           createdBy: options.from
         }

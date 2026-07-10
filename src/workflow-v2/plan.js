@@ -17,6 +17,9 @@ import {
   workflowV2ValidationAdvisory,
   workflowV2ValidationError
 } from "./helpers.js";
+import {
+  boolOption
+} from "../workflow/json.js";
 
 function firstText(...values) {
   for (const value of values) {
@@ -31,15 +34,6 @@ function firstText(...values) {
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-function boolOption(value, defaultValue = false) {
-  if (value === undefined || value === null || value === "") return defaultValue;
-  if (typeof value === "boolean") return value;
-  const text = String(value).trim().toLowerCase();
-  if (["1", "true", "yes", "y", "on"].includes(text)) return true;
-  if (["0", "false", "no", "n", "off"].includes(text)) return false;
-  return Boolean(value);
 }
 
 function textHash(value) {

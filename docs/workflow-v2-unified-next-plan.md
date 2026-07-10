@@ -1,5 +1,17 @@
 # Workflow v2 Unified Next Plan
 
+Status update 2026-07-09: retained as v2 architecture and future evolution
+context. The current cleanup/convergence pass is tracked in
+`docs/workflow-kernel-convergence-plan.md`.
+
+This file is not deprecated and does not block future v2 feature development.
+The 2026-07-09 convergence pass only clarifies the current production entry
+discipline while the project is still in R&D: prefer audited templates or
+Human-Gate-authorized plans for scheduled execution, keep generic/v2
+orchestration available for authoring, diagnostics, recovery, compatibility,
+and approved-plan execution, and avoid treating ad-hoc direct writes as the
+default production path.
+
 Status: V2.1-V2.4 local slice landed; Anthropic plan-node executable gates landed; deeper V2.2 split continuing
 Created: 2026-07-05
 Scope: verification, modularization, and runtime-adapter preparation after the

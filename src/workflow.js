@@ -290,6 +290,15 @@ import {
   toList
 } from "./workflow/json.js";
 import {
+  WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS,
+  WORKFLOW_LEGACY_MUTATING_ACTIONS,
+  workflowActionBlockedResult,
+  workflowActionOverrideEnabled
+} from "./workflow/action-policy.js";
+import {
+  workflowGenericOrchestrationAuthorized
+} from "./workflow/plan-authorization.js";
+import {
   ensureColumns,
   isSqliteConstraintError,
   sqlValue,
@@ -729,6 +738,31 @@ const WORKFLOW_ACTION_ALIASES = {
   "human_gate.review": "gate.review",
   "workflow.permission.explain": "workflow.permission.check"
 };
+
+async function workflowConvergenceGate(rootDir, action, requestedAction, input = {}) {
+  if (WORKFLOW_LEGACY_MUTATING_ACTIONS.has(action)
+    && !workflowActionOverrideEnabled(input, "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS", "allowLegacyAction", "allow_legacy_action", "legacyMode", "legacy_mode")) {
+    return workflowActionBlockedResult(
+      action,
+      requestedAction,
+      "legacy_action_disabled",
+      "legacy mutating workflow actions are retained for compatibility but are disabled by default; use approved templates for production workflow execution",
+      "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1"
+    );
+  }
+  if (WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS.has(action)
+    && !workflowActionOverrideEnabled(input, "TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION", "allowGenericOrchestration", "allow_generic_orchestration", "genericMode", "generic_mode")
+    && !(await workflowGenericOrchestrationAuthorized(await ensureWorkflowLayout(rootDir, input), input)).allowed) {
+    return workflowActionBlockedResult(
+      action,
+      requestedAction,
+      "generic_orchestration_context_required",
+      "generic orchestration entry actions require an approved template plan, approved Human Gate plan, or explicit diagnostics override",
+      "TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION=1"
+    );
+  }
+  return null;
+}
 
 const WORKFLOW_V2_AUTONOMOUS_LOOP_NODE_TYPES = new Set([
   "autonomous_loop",
@@ -4695,6 +4729,7 @@ export const {
   workflowTemplateStatsRefresh,
   workflowTemplatePromotePreview,
   workflowTemplatePromoteRecord,
+  workflowTemplateRollbackPreview,
   workflowTemplateRollbackRecord,
   workflowTemplateExtractPreview,
   workflowTemplateExtractRecord
@@ -10136,6 +10171,7 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowTemplateStatsRefresh,
   workflowTemplatePromotePreview,
   workflowTemplatePromoteRecord,
+  workflowTemplateRollbackPreview,
   workflowTemplateRollbackRecord,
   workflowTemplateExtractPreview,
   workflowTemplateExtractRecord
@@ -10145,6 +10181,8 @@ export async function runWorkflowAction(rootDir, input = {}) {
   const requestedAction = String(input.action || "workflow.status");
   const action = canonicalWorkflowAction(requestedAction);
   const permissionDecision = await authorizeWorkflowAction(rootDir, input);
+  const convergenceGate = await workflowConvergenceGate(rootDir, action, requestedAction, input);
+  if (convergenceGate) return convergenceGate;
   const workflowV2Result = await runWorkflowV2Action(WORKFLOW_V2_ACTION_REGISTRY, action, rootDir, input, permissionDecision);
   if (workflowV2Result.handled) return workflowV2Result.value;
   const messageFlowResult = await runMessageFlowAction(MESSAGE_FLOW_ACTION_REGISTRY, action, rootDir, input);

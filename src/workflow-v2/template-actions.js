@@ -827,6 +827,7 @@ async function workflowTemplateExtractRecord(rootDir, input = {}) {
     workflowTemplateStatsRefresh,
     workflowTemplatePromotePreview,
     workflowTemplatePromoteRecord,
+    workflowTemplateRollbackPreview,
     workflowTemplateRollbackRecord,
     workflowTemplateExtractPreview,
     workflowTemplateExtractRecord

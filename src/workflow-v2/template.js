@@ -6,6 +6,9 @@ import {
   workflowV2ValidationAdvisory,
   workflowV2ValidationError
 } from "./helpers.js";
+import {
+  boolOption
+} from "../workflow/json.js";
 
 export const WORKFLOW_TEMPLATE_SCHEMA_VERSION = "workflow_template_spec.v1";
 export const WORKFLOW_TEMPLATE_STATUSES = new Set([
@@ -34,15 +37,6 @@ function firstText(...values) {
     }
   }
   return "";
-}
-
-function boolOption(value, fallback = false) {
-  if (value === undefined || value === null || value === "") return fallback;
-  if (typeof value === "boolean") return value;
-  const text = String(value).trim().toLowerCase();
-  if (["1", "true", "yes", "y", "on"].includes(text)) return true;
-  if (["0", "false", "no", "n", "off"].includes(text)) return false;
-  return Boolean(value);
 }
 
 function cleanTemplateId(value) {

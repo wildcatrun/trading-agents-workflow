@@ -29,7 +29,7 @@ DEFAULT_ACTIVE_WORKFLOW_ROOT = Path("/home/flashcat/multi-agent-hedge-fund-frame
 LEGACY_WORKFLOW_ROOT = Path("/home/flashcat/.openclaw/shared/trading-agents-workflow")
 ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT"
 ALLOW_NONDEFAULT_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_NONDEFAULT_ROOT"
-EXPECTED_WORKFLOW_SCHEMA_VERSION = 13
+EXPECTED_WORKFLOW_SCHEMA_VERSION = 16
 WORKFLOW_CONTROL_PLANE_DB = "workflow_control_plane.db"
 LEGACY_TRACKING_DB = "tracking.db"
 REQUIRED_TRACKING_TABLES = {
@@ -290,9 +290,13 @@ SCHEDULE_UPSERT_SCHEMA = {
     "description": (
         "Create or update a central workflow schedule. This is an administrative tool for durable recurring/cron workflow "
         "items, not for one-off agent messages. Use workflow_message_flow_send for normal communication. "
-        "Required fields: schedule_id, agent, prompt. Choose exactly one timing mode: kind=cron with cron, or kind=interval "
+        "Production schedules should bind either an approved active/default workflow template using template_id and optional "
+        "template_version, or a Human-Gate-approved workflow plan using workflow_id/plan_id and optional human_gate_id. "
+        "Raw prompt dispatch is retained only for diagnostics when the workflow service is started with TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH=1. "
+        "Required fields: schedule_id, agent, and an approved template_id or approved plan_id unless raw dispatch has been explicitly enabled. "
+        "Choose exactly one timing mode: kind=cron with cron, or kind=interval "
         "with interval_seconds. Example interval schedule: {\"schedule_id\":\"cat_ears.daily-news-check\","
-        "\"name\":\"Cat Ears daily news check\",\"agent\":\"cat_ears\",\"runtime\":\"hermers\",\"prompt\":\"Run the daily news check and write receipt.\","
+        "\"name\":\"Cat Ears daily news check\",\"agent\":\"cat_ears\",\"runtime\":\"hermers\",\"template_id\":\"cat_ears.daily-news-check\","
         "\"kind\":\"interval\",\"interval_seconds\":86400,\"priority\":\"normal\",\"timeout_seconds\":600}. "
         "Use registry agent ids with underscores, for example cat_ears or cat_heart."
     ),
@@ -316,9 +320,29 @@ SCHEDULE_UPSERT_SCHEMA = {
         "prompt": {
             "type": "string",
             "description": (
-                "Required dispatch prompt for each scheduled run. Include task boundary, expected artifact/receipt, "
-                "and stop conditions."
+                "Optional dispatch prompt. Omit for approved-template or approved-plan schedules unless a short operator note is needed. "
+                "Raw prompt scheduling requires service-level diagnostic authorization through TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH=1."
             ),
+        },
+        "template_id": {
+            "type": "string",
+            "description": "Approved workflow template id. Required by default for production schedules.",
+        },
+        "template_version": {
+            "type": "integer",
+            "description": "Optional approved template version. If omitted, the active/default version is used.",
+        },
+        "workflow_id": {
+            "type": "string",
+            "description": "Workflow id for a Human-Gate-approved workflow plan schedule.",
+        },
+        "plan_id": {
+            "type": "string",
+            "description": "Workflow v2 plan id for a Human-Gate-approved workflow plan schedule.",
+        },
+        "human_gate_id": {
+            "type": "string",
+            "description": "Optional approved Human Gate record id bound to the workflow plan.",
         },
         "kind": {
             "type": "string",
@@ -349,7 +373,7 @@ SCHEDULE_UPSERT_SCHEMA = {
             "description": "Optional structured workflow payload JSON. Do not put secrets or credentials here.",
         },
     },
-    "required": ["schedule_id", "agent", "prompt"],
+    "required": ["schedule_id", "agent"],
     "additionalProperties": True,
 }
 
@@ -509,6 +533,11 @@ def handle_schedule_upsert(args: dict[str, Any]) -> dict[str, Any]:
         "agentId": registry_agent_id(target_agent) if target_agent else None,
         "runtime": args.get("runtime") or "hermers",
         "prompt": args.get("prompt"),
+        "templateId": args.get("template_id") or args.get("templateId"),
+        "templateVersion": args.get("template_version") or args.get("templateVersion"),
+        "workflowId": args.get("workflow_id") or args.get("workflowId"),
+        "planId": args.get("plan_id") or args.get("planId"),
+        "humanGateId": args.get("human_gate_id") or args.get("humanGateId"),
         "scheduleKind": args.get("kind") or args.get("schedule_kind") or ("interval" if args.get("interval_seconds") else "cron"),
         "cronExpr": args.get("cron") or args.get("cron_expr"),
         "intervalSeconds": args.get("interval_seconds") or args.get("intervalSeconds"),
@@ -522,7 +551,7 @@ def handle_schedule_upsert(args: dict[str, Any]) -> dict[str, Any]:
     }
     if timeout_seconds is not None:
         payload["timeoutSeconds"] = timeout_seconds
-    missing = [key for key in ("scheduleId", "agentId", "prompt") if not payload.get(key)]
+    missing = [key for key in ("scheduleId", "agentId") if not payload.get(key)]
     if missing:
         raise ValueError(f"missing required fields: {', '.join(missing)}")
     return run_workflow_action(payload, root_dir=workflow_root(args))
@@ -618,9 +647,10 @@ ADMIN_TOOLS: dict[str, dict[str, Any]] = {
     "workflow_schedule_upsert": {
         "description": (
             "Register or update a governed central workflow schedule. Use only for recurring/cron workflow items, "
-            "not for one-off messages. Required fields: schedule_id, agent, prompt. Include either cron or interval_seconds. "
+            "not for one-off messages. Required fields: schedule_id, agent, and either approved template_id or "
+            "Human-Gate-approved plan_id unless raw dispatch is explicitly authorized. Include either cron or interval_seconds. "
             "Example: {\"schedule_id\":\"cat_ears.daily-news-check\",\"agent\":\"cat_ears\",\"runtime\":\"hermers\","
-            "\"prompt\":\"Run the daily news check and write receipt.\",\"kind\":\"interval\",\"interval_seconds\":86400}. "
+            "\"template_id\":\"cat_ears.daily-news-check\",\"kind\":\"interval\",\"interval_seconds\":86400}. "
             f"This administrative mutation surface is exposed only when {ALLOW_SCHEDULE_MUTATION_ENV}=1."
         ),
         "inputSchema": SCHEDULE_UPSERT_SCHEMA,

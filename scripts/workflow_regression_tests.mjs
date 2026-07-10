@@ -9,11 +9,26 @@ import path from "node:path";
 import { buildConsoleConfig, createConsoleServer, operatorActionSignatureOk, workflowChildPayload } from "../src/console/server.js";
 import { WorkflowActionGateway } from "../src/console/action-gateway.js";
 import { WorkflowReadModel } from "../src/console/read-model.js";
+import {
+  WORKFLOW_ACTION_PERMISSION_RULES,
+  WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS,
+  WORKFLOW_CONSOLE_GENERIC_ORCHESTRATION_WRITE_ACTIONS,
+  WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS,
+  WORKFLOW_CONSOLE_READ_ONLY_ACTIONS,
+  WORKFLOW_GENERIC_ORCHESTRATION_PLAN_ENTRY_ACTIONS,
+  WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS,
+  WORKFLOW_PERMISSION_READ_ACTIONS,
+  WORKFLOW_POLICY_HARD_GATE_ACTIONS,
+  workflowConsoleAllowedActions
+} from "../src/workflow/action-policy.js";
 import { kanbanPreviewActionModel } from "../static/console/preview-actions.js";
 import {
   DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS,
   controlLoopWorkerKillAfterMs
 } from "../src/control-loop-budget.js";
+import {
+  WORKFLOW_V2_ACTION_HANDLER_NAMES
+} from "../src/workflow-v2/index.js";
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
@@ -54,6 +69,7 @@ import {
   WORKFLOW_TASK_DRAFT_ACTION_REGISTRY,
   WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY,
   WORKFLOW_SWARM_ACTION_REGISTRY,
+  canonicalWorkflowAction,
   cat_clawAudit,
   humanGateButtonCallback,
   humanGateFeedback,
@@ -298,6 +314,18 @@ import {
 const createdRoots = [];
 const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
 const TEST_SEMANTIC_CONTINUATION_FAILURE_ENV = "TRADING_AGENTS_WORKFLOW_TEST_SEMANTIC_CONTINUATION_FAILURE";
+
+process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS ??= "1";
+process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION ??= "1";
+process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH ??= "1";
+
+function restoreEnv(name, previous) {
+  if (previous === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = previous;
+  }
+}
 
 async function tempRoot(name) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), `taw-regression-${name}-`));
@@ -4918,6 +4946,344 @@ LIMIT 1;`)[0];
   }
 }
 
+async function testWorkflowV2ControlLoopScopedClaim() {
+  const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-control-loop-scoped-claim");
+  const { root, dbFile, workflowId } = fixture;
+  const planId = "plan-v2-kernel";
+  const otherPlanId = "plan-v2-kernel-other";
+  const otherPlan = await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId: otherPlanId,
+    objective: "Persist a second plan under the same workflow for scoped control-loop isolation.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract({
+      workerBudget: {
+        maxWorkers: 4,
+        concurrencyLimit: 2,
+        maxWorkerContextTokens: 64000
+      }
+    })
+  });
+  const otherPlanningNode = v2KernelManagerPlanningNode(otherPlan);
+  const otherWorkerNode = v2KernelManagerWorkerNode(otherPlan);
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: otherPlanId,
+    nodeId: otherPlanningNode.nodeId,
+    infoId: "info-v2-task-input-other",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/task-input-other.json",
+    recipientAgent: "cat_body",
+    summary: "Task input pointer for the second scoped plan."
+  });
+
+  const mainWorker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-scope-main",
+    payload: { outputSummary: "Scoped main plan output." }
+  }));
+  const otherWorkerById = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    planId: otherPlanId,
+    nodeId: otherWorkerNode.nodeId,
+    taskInputInfoId: "info-v2-task-input-other",
+    workerRunId: "worker-v2-scope-by-id",
+    payload: { outputSummary: "Scoped workerRunId output." }
+  }));
+  const otherWorkerByNode = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    planId: otherPlanId,
+    nodeId: otherWorkerNode.nodeId,
+    taskInputInfoId: "info-v2-task-input-other",
+    workerRunId: "worker-v2-scope-by-node",
+    payload: { outputSummary: "Scoped node output." }
+  }));
+  assert.equal(mainWorker.valid, true);
+  assert.equal(otherWorkerById.valid, true);
+  assert.equal(otherWorkerByNode.valid, true);
+
+  const generatedAt = "2026-07-06T00:00:00.000Z";
+  const previewPlan = await runAction(root, {
+    action: "workflow.v2.control_loop.preview",
+    workflowId,
+    planId,
+    generatedAt,
+    limit: 5
+  });
+  assert.equal(Number(previewPlan.counts.due), 1);
+  assert.deepEqual(previewPlan.runnableWorkers.map((worker) => worker.workerRunId), [
+    mainWorker.workerRun.workerRunId
+  ]);
+
+  const tickPlan = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    planId,
+    claimOwner: "test-v2-control-loop-scope-plan",
+    workerLeaseMs: 60_000,
+    generatedAt
+  });
+  assert.equal(tickPlan.status, "ok");
+  assert.deepEqual(tickPlan.claimedWorkers.map((worker) => worker.workerRunId), [
+    mainWorker.workerRun.workerRunId
+  ]);
+  assert.deepEqual(tickPlan.workerResults.map((worker) => worker.workerRunId), [
+    mainWorker.workerRun.workerRunId
+  ]);
+  assert.equal(Number(tickPlan.counts.due), 0);
+
+  let rowsByWorker = Object.fromEntries(sqliteJson(dbFile, `
+SELECT worker_run_id AS workerRunId, plan_id AS planId, node_id AS nodeId, status
+FROM workflow_v2_worker_runs
+WHERE worker_run_id IN ('worker-v2-scope-main','worker-v2-scope-by-id','worker-v2-scope-by-node');`).map((row) => [row.workerRunId, row]));
+  assert.equal(rowsByWorker["worker-v2-scope-main"].status, "submitted_for_review");
+  assert.equal(rowsByWorker["worker-v2-scope-by-id"].status, "queued");
+  assert.equal(rowsByWorker["worker-v2-scope-by-node"].status, "queued");
+
+  const tickWorkerRun = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    workerRunId: otherWorkerById.workerRun.workerRunId,
+    claimOwner: "test-v2-control-loop-scope-worker",
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-06T00:01:00.000Z"
+  });
+  assert.equal(tickWorkerRun.status, "ok");
+  assert.deepEqual(tickWorkerRun.claimedWorkers.map((worker) => worker.workerRunId), [
+    otherWorkerById.workerRun.workerRunId
+  ]);
+  assert.deepEqual(tickWorkerRun.workerResults.map((worker) => worker.workerRunId), [
+    otherWorkerById.workerRun.workerRunId
+  ]);
+  rowsByWorker = Object.fromEntries(sqliteJson(dbFile, `
+SELECT worker_run_id AS workerRunId, plan_id AS planId, node_id AS nodeId, status
+FROM workflow_v2_worker_runs
+WHERE worker_run_id IN ('worker-v2-scope-main','worker-v2-scope-by-id','worker-v2-scope-by-node');`).map((row) => [row.workerRunId, row]));
+  assert.equal(rowsByWorker["worker-v2-scope-by-id"].status, "submitted_for_review");
+  assert.equal(rowsByWorker["worker-v2-scope-by-node"].status, "queued");
+
+  const previewNode = await runAction(root, {
+    action: "workflow.v2.control_loop.preview",
+    workflowId,
+    nodeId: otherWorkerNode.nodeId,
+    generatedAt: "2026-07-06T00:02:00.000Z",
+    limit: 5
+  });
+  assert.equal(Number(previewNode.counts.due), 1);
+  assert.deepEqual(previewNode.runnableWorkers.map((worker) => worker.workerRunId), [
+    otherWorkerByNode.workerRun.workerRunId
+  ]);
+  const tickNode = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    nodeId: otherWorkerNode.nodeId,
+    claimOwner: "test-v2-control-loop-scope-node",
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-06T00:02:00.000Z"
+  });
+  assert.equal(tickNode.status, "ok");
+  assert.deepEqual(tickNode.claimedWorkers.map((worker) => worker.workerRunId), [
+    otherWorkerByNode.workerRun.workerRunId
+  ]);
+  assert.deepEqual(tickNode.workerResults.map((worker) => worker.workerRunId), [
+    otherWorkerByNode.workerRun.workerRunId
+  ]);
+  rowsByWorker = Object.fromEntries(sqliteJson(dbFile, `
+SELECT worker_run_id AS workerRunId, plan_id AS planId, node_id AS nodeId, status
+FROM workflow_v2_worker_runs
+WHERE worker_run_id IN ('worker-v2-scope-main','worker-v2-scope-by-id','worker-v2-scope-by-node');`).map((row) => [row.workerRunId, row]));
+  assert.equal(rowsByWorker["worker-v2-scope-main"].planId, planId);
+  assert.equal(rowsByWorker["worker-v2-scope-by-id"].planId, otherPlanId);
+  assert.equal(rowsByWorker["worker-v2-scope-by-node"].nodeId, otherWorkerNode.nodeId);
+  assert.equal(rowsByWorker["worker-v2-scope-by-node"].status, "submitted_for_review");
+
+  const expiredMain = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-scope-expire-main",
+    payload: { outputSummary: "Expired main plan worker should be retried by scoped tick." }
+  }));
+  const expiredOther = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    planId: otherPlanId,
+    nodeId: otherWorkerNode.nodeId,
+    taskInputInfoId: "info-v2-task-input-other",
+    workerRunId: "worker-v2-scope-expire-other",
+    payload: { outputSummary: "Expired other plan worker must remain untouched by main scoped tick." }
+  }));
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='running',
+    attempt=1,
+    lease_owner='expired-plan-scope',
+    lease_until='2026-07-06T00:02:00.000Z',
+    next_retry_at='',
+    started_at='2026-07-06T00:01:30.000Z',
+    updated_at='2026-07-06T00:02:00.000Z'
+WHERE worker_run_id IN ('worker-v2-scope-expire-main','worker-v2-scope-expire-other');
+UPDATE workflow_session_runs
+SET status='running',
+    updated_at='2026-07-06T00:02:00.000Z'
+WHERE run_id IN ('${expiredMain.workerRun.sessionRunId}','${expiredOther.workerRun.sessionRunId}');`);
+  const expireTick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    planId,
+    claimOwner: "test-v2-control-loop-scope-expire",
+    workerLeaseMs: 60_000,
+    retryDelayMs: 60_000,
+    generatedAt: "2026-07-06T00:03:00.000Z"
+  });
+  assert.equal(expireTick.status, "ok");
+  assert.deepEqual(expireTick.expiredLeases.map((worker) => worker.workerRunId), [
+    expiredMain.workerRun.workerRunId
+  ]);
+  assert.deepEqual(expireTick.claimedWorkers, []);
+  rowsByWorker = Object.fromEntries(sqliteJson(dbFile, `
+SELECT worker_run_id AS workerRunId, plan_id AS planId, node_id AS nodeId, status, lease_owner AS leaseOwner, lease_until AS leaseUntil
+FROM workflow_v2_worker_runs
+WHERE worker_run_id IN ('worker-v2-scope-expire-main','worker-v2-scope-expire-other');`).map((row) => [row.workerRunId, row]));
+  assert.equal(rowsByWorker["worker-v2-scope-expire-main"].status, "retry_scheduled");
+  assert.equal(rowsByWorker["worker-v2-scope-expire-main"].leaseOwner, "");
+  assert.equal(rowsByWorker["worker-v2-scope-expire-other"].status, "running");
+  assert.equal(rowsByWorker["worker-v2-scope-expire-other"].leaseOwner, "expired-plan-scope");
+}
+
+async function testWorkflowV2ControlLoopUnscopedMixedQueue() {
+  const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-control-loop-unscoped-mixed-queue");
+  const { root, dbFile, workflowId } = fixture;
+  const planId = "plan-v2-kernel";
+  const otherPlanId = "plan-v2-kernel-unscoped-other";
+  const otherPlan = await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId: otherPlanId,
+    objective: "Persist a second plan under the same workflow for unscoped control-loop coverage.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract({
+      workerBudget: {
+        maxWorkers: 4,
+        concurrencyLimit: 2,
+        maxWorkerContextTokens: 64000
+      }
+    })
+  });
+  const otherPlanningNode = v2KernelManagerPlanningNode(otherPlan);
+  const otherWorkerNode = v2KernelManagerWorkerNode(otherPlan);
+  await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    planId: otherPlanId,
+    nodeId: otherPlanningNode.nodeId,
+    infoId: "info-v2-task-input-unscoped-other",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/task-input-unscoped-other.json",
+    recipientAgent: "cat_body",
+    summary: "Task input pointer for the second unscoped plan."
+  });
+
+  const mainWorker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-unscoped-main",
+    payload: { outputSummary: "Unscoped main plan output." }
+  }));
+  const otherWorker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    planId: otherPlanId,
+    nodeId: otherWorkerNode.nodeId,
+    taskInputInfoId: "info-v2-task-input-unscoped-other",
+    workerRunId: "worker-v2-unscoped-other",
+    payload: { outputSummary: "Unscoped other plan output." }
+  }));
+  const expectedWorkerIds = [
+    mainWorker.workerRun.workerRunId,
+    otherWorker.workerRun.workerRunId
+  ].sort();
+  const generatedAt = "2026-07-06T01:00:00.000Z";
+  const preview = await runAction(root, {
+    action: "workflow.v2.control_loop.preview",
+    generatedAt,
+    limit: 5
+  });
+  assert.equal(Number(preview.counts.due), 2);
+  assert.deepEqual(preview.runnableWorkers.map((worker) => worker.workerRunId).sort(), expectedWorkerIds);
+  const dryRunTick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    generatedAt,
+    dryRun: true,
+    limit: 5
+  });
+  assert.equal(dryRunTick.operation, "workflow.v2.control_loop.preview");
+  assert.equal(Number(dryRunTick.counts.due), 2);
+  assert.deepEqual(dryRunTick.runnableWorkers.map((worker) => worker.workerRunId).sort(), expectedWorkerIds);
+
+  const tick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    claimOwner: "test-v2-control-loop-unscoped-mixed",
+    workerLimit: 2,
+    workerLeaseMs: 60_000,
+    generatedAt
+  });
+  assert.equal(tick.status, "ok");
+  assert.deepEqual(tick.claimedWorkers.map((worker) => worker.workerRunId).sort(), expectedWorkerIds);
+  assert.deepEqual(tick.workerResults.map((worker) => worker.workerRunId).sort(), expectedWorkerIds);
+  const rowsByWorker = Object.fromEntries(sqliteJson(dbFile, `
+SELECT worker_run_id AS workerRunId, plan_id AS planId, status
+FROM workflow_v2_worker_runs
+WHERE worker_run_id IN ('worker-v2-unscoped-main','worker-v2-unscoped-other');`).map((row) => [row.workerRunId, row]));
+  assert.equal(rowsByWorker["worker-v2-unscoped-main"].planId, planId);
+  assert.equal(rowsByWorker["worker-v2-unscoped-other"].planId, otherPlanId);
+  assert.equal(rowsByWorker["worker-v2-unscoped-main"].status, "submitted_for_review");
+  assert.equal(rowsByWorker["worker-v2-unscoped-other"].status, "submitted_for_review");
+
+  const expiredMain = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-unscoped-expire-main",
+    payload: { outputSummary: "Unscoped expired main plan worker should be retried." }
+  }));
+  const expiredOther = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    planId: otherPlanId,
+    nodeId: otherWorkerNode.nodeId,
+    taskInputInfoId: "info-v2-task-input-unscoped-other",
+    workerRunId: "worker-v2-unscoped-expire-other",
+    payload: { outputSummary: "Unscoped expired other plan worker should be retried." }
+  }));
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_runs
+SET status='running',
+    attempt=1,
+    lease_owner='expired-unscoped',
+    lease_until='2026-07-06T01:02:00.000Z',
+    next_retry_at='',
+    started_at='2026-07-06T01:01:30.000Z',
+    updated_at='2026-07-06T01:02:00.000Z'
+WHERE worker_run_id IN ('worker-v2-unscoped-expire-main','worker-v2-unscoped-expire-other');
+UPDATE workflow_session_runs
+SET status='running',
+    updated_at='2026-07-06T01:02:00.000Z'
+WHERE run_id IN ('${expiredMain.workerRun.sessionRunId}','${expiredOther.workerRun.sessionRunId}');`);
+  const expireTick = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    claimOwner: "test-v2-control-loop-unscoped-expire",
+    workerLeaseMs: 60_000,
+    retryDelayMs: 60_000,
+    generatedAt: "2026-07-06T01:03:00.000Z"
+  });
+  assert.equal(expireTick.status, "ok");
+  assert.deepEqual(expireTick.expiredLeases.map((worker) => worker.workerRunId).sort(), [
+    expiredMain.workerRun.workerRunId,
+    expiredOther.workerRun.workerRunId
+  ].sort());
+  assert.deepEqual(expireTick.claimedWorkers, []);
+  const expiredRowsByWorker = Object.fromEntries(sqliteJson(dbFile, `
+SELECT worker_run_id AS workerRunId, plan_id AS planId, status, lease_owner AS leaseOwner
+FROM workflow_v2_worker_runs
+WHERE worker_run_id IN ('worker-v2-unscoped-expire-main','worker-v2-unscoped-expire-other');`).map((row) => [row.workerRunId, row]));
+  assert.equal(expiredRowsByWorker["worker-v2-unscoped-expire-main"].planId, planId);
+  assert.equal(expiredRowsByWorker["worker-v2-unscoped-expire-other"].planId, otherPlanId);
+  assert.equal(expiredRowsByWorker["worker-v2-unscoped-expire-main"].status, "retry_scheduled");
+  assert.equal(expiredRowsByWorker["worker-v2-unscoped-expire-other"].status, "retry_scheduled");
+  assert.equal(expiredRowsByWorker["worker-v2-unscoped-expire-main"].leaseOwner, "");
+  assert.equal(expiredRowsByWorker["worker-v2-unscoped-expire-other"].leaseOwner, "");
+}
+
 async function setupWorkflowV2SubmittedWorkerFixture(name = "workflow-v2-submitted-worker", overrides = {}) {
   const fixture = await setupWorkflowV2KernelExecutionFixture(name);
   const worker = await runAction(fixture.root, workflowV2KernelWorkerInput(fixture, {
@@ -5656,6 +6022,15 @@ async function testWorkflowTemplateSelfEvolution() {
   });
   assert.equal(promotedV2.previousVersion, 1);
   assert.equal(sqliteJson(dbFile, `SELECT default_version AS defaultVersion FROM workflow_v2_template_specs WHERE template_id='${templateId}' LIMIT 1;`)[0].defaultVersion, 2);
+
+  const rollbackPreview = await runAction(root, {
+    action: "workflow.template.rollback.preview",
+    templateId,
+    rollbackToVersion: 1
+  });
+  assert.equal(rollbackPreview.operation, "workflow.template.rollback.preview");
+  assert.equal(rollbackPreview.valid, false);
+  assert.equal(Boolean(rollbackPreview.requirements.some((item) => item.type === "rollback_reason")), true);
 
   await assertRejectsMessage(
     () => runAction(root, {
@@ -9927,6 +10302,658 @@ async function testScheduleControlLoopDispatchIntegration() {
   assert.equal(sqliteCount(dbFile, "scheduled_runs", "schedule_id='schedule-control-loop' AND status='dispatched'"), 1);
   assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "workflow_id LIKE 'scheduled.schedule-control-loop.%' AND status='queued'"), 1);
   assert.equal(sqliteCount(dbFile, "control_loop_jobs", "job_type='runtime_drain' AND status='queued' AND runtime='openclaw'"), 1);
+}
+
+async function testWorkflowConvergenceDefaultGates() {
+  const legacyEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS;
+  const genericEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
+  const rawScheduleEnv = process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
+  try {
+    const root = await tempRoot("workflow-convergence-default-gates");
+    const legacy = await runAction(root, {
+      action: "workflow.task.create",
+      workflowId: "wf-convergence-gate",
+      taskId: "task-convergence-gate",
+      ownerAgent: "main",
+      runtime: "openclaw",
+      summary: "legacy write should be blocked by default"
+    });
+    assert.equal(legacy.status, "blocked");
+    assert.equal(legacy.allowed, false);
+    assert.equal(legacy.reason, "legacy_action_disabled");
+    const legacyUpdate = await runAction(root, {
+      action: "workflow.task.update",
+      workflowId: "wf-convergence-gate",
+      taskId: "task-convergence-gate",
+      status: "done"
+    });
+    assert.equal(legacyUpdate.status, "blocked");
+    assert.equal(legacyUpdate.allowed, false);
+    assert.equal(legacyUpdate.reason, "legacy_action_disabled");
+
+    const generic = await runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId: "wf-convergence-gate",
+      planId: "plan-convergence-gate",
+      nodeId: "node-convergence-gate",
+      managerAgent: "cat_body",
+      workerBackendId: "local_deterministic",
+      workerDelegation: v2WorkerDelegation()
+    });
+    assert.equal(generic.status, "blocked");
+    assert.equal(generic.allowed, false);
+    assert.equal(generic.reason, "generic_orchestration_context_required");
+    const genericAdapterJob = await runAction(root, {
+      action: "workflow.v2.worker_adapter_job.record",
+      workerRunId: "worker-convergence-gate",
+      leaseOwner: "test-convergence",
+      leaseUntil: "2026-07-09T00:10:00.000Z"
+    });
+    assert.equal(genericAdapterJob.status, "blocked");
+    assert.equal(genericAdapterJob.allowed, false);
+    assert.equal(genericAdapterJob.reason, "generic_orchestration_context_required");
+    const genericAdapterClaim = await runAction(root, {
+      action: "workflow.v2.worker_adapter_job.claim",
+      runtimeBackend: "hermers_docker_worker",
+      runnerId: "runner-convergence-gate",
+      limit: 1
+    });
+    assert.equal(genericAdapterClaim.status, "blocked");
+    assert.equal(genericAdapterClaim.allowed, false);
+    assert.equal(genericAdapterClaim.reason, "generic_orchestration_context_required");
+
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.schedule.upsert",
+        scheduleId: "schedule-raw-default-blocked",
+        runtime: "openclaw",
+        agentId: "main",
+        prompt: "raw schedule should be blocked by default",
+        scheduleKind: "interval",
+        intervalSeconds: 3600
+      }),
+      /production schedule requires an approved active\/default workflow template/
+    );
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.schedule.upsert",
+        scheduleId: "schedule-raw-input-enabled-blocked",
+        runtime: "openclaw",
+        agentId: "main",
+        prompt: "non-explicit raw schedule input should not bypass",
+        scheduleKind: "interval",
+        intervalSeconds: 3600,
+        allowRawScheduleDispatch: "enabled"
+      }),
+      /production schedule requires an approved active\/default workflow template/
+    );
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.schedule.upsert",
+        scheduleId: "schedule-raw-input-true-blocked",
+        runtime: "openclaw",
+        agentId: "main",
+        prompt: "request-level raw schedule override should not bypass",
+        scheduleKind: "interval",
+        intervalSeconds: 3600,
+        allowRawScheduleDispatch: true
+      }),
+      /production schedule requires an approved active\/default workflow template/
+    );
+
+    process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS = "enabled";
+    process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION = "enabled";
+    process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH = "enabled";
+    const strictLegacy = await runAction(root, {
+      action: "workflow.task.create",
+      workflowId: "wf-convergence-strict-bool",
+      taskId: "task-convergence-strict-bool",
+      ownerAgent: "main",
+      runtime: "openclaw",
+      summary: "non-explicit legacy env should not bypass"
+    });
+    assert.equal(strictLegacy.status, "blocked");
+    assert.equal(strictLegacy.reason, "legacy_action_disabled");
+    const strictGeneric = await runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId: "wf-convergence-strict-bool",
+      planId: "plan-convergence-strict-bool",
+      nodeId: "node-convergence-strict-bool",
+      managerAgent: "cat_body",
+      sessionId: "session-convergence-strict-bool",
+      workerRunId: "worker-convergence-strict-bool",
+      taskInputInfoId: "info-convergence-strict-bool",
+      ...v2WorkerDelegation()
+    });
+    assert.equal(strictGeneric.status, "blocked");
+    assert.equal(strictGeneric.reason, "generic_orchestration_context_required");
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.schedule.upsert",
+        scheduleId: "schedule-strict-bool-blocked",
+        runtime: "openclaw",
+        agentId: "main",
+        prompt: "non-explicit raw schedule env should not bypass",
+        scheduleKind: "interval",
+        intervalSeconds: 3600
+      }),
+      /production schedule requires an approved active\/default workflow template/
+    );
+  } finally {
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS", legacyEnv);
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION", genericEnv);
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH", rawScheduleEnv);
+  }
+}
+
+async function testScheduleApprovedTemplateDefaultPath() {
+  const rawScheduleEnv = process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
+  try {
+    const root = await tempRoot("schedule-approved-template-default");
+    const templateId = "template.workflow.schedule.approved";
+    await runAction(root, {
+      action: "workflow.template.record_candidate",
+      templateSpec: workflowTemplateSpec({
+        templateId,
+        title: "Approved schedule template",
+        description: "Regression template for approved schedule gate."
+      }),
+      sourceWorkflowId: "wf-schedule-template-source",
+      sourcePlanId: "plan-schedule-template-source"
+    });
+    await runAction(root, {
+      action: "workflow.template.eval.record",
+      templateId,
+      version: 1,
+      fixtureSnapshot: { caseId: "schedule-approved-template" },
+      arms: [
+        { kind: "baseline", isolatedRoot: "/tmp/schedule-template-baseline" },
+        { kind: "previous_version", isolatedRoot: "/tmp/schedule-template-previous" },
+        { kind: "candidate_version", isolatedRoot: "/tmp/schedule-template-candidate" }
+      ],
+      metrics: {
+        planGatePassRate: 1,
+        executionSuccessRate: 1,
+        receiptCompletenessRate: 1,
+        evaluatorAcceptRate: 1,
+        ownerRevisionRate: 0,
+        humanGateReturnRate: 0,
+        duplicateWorkRate: 0,
+        toolFeedbackCompleteness: 1,
+        sideEffectUncertainRate: 0,
+        freshnessViolationRate: 0,
+        rollbackReadinessRate: 1
+      },
+      evidenceRefs: ["artifact://schedule-template/eval"]
+    });
+    await runAction(root, {
+      action: "workflow.template.promote.record",
+      templateId,
+      version: 1,
+      targetStatus: "default",
+      catBrainAuditId: "brain-schedule-template",
+      catClawAuditId: "claw-schedule-template",
+      evidenceRefs: ["artifact://schedule-template/eval"]
+    });
+    const upserted = await runAction(root, {
+      action: "workflow.schedule.upsert",
+      scheduleId: "schedule-approved-template",
+      runtime: "openclaw",
+      agentId: "main",
+      templateId,
+      scheduleKind: "interval",
+      intervalSeconds: 3600,
+      nextRunAt: "2099-01-01T00:00:00.000Z"
+    });
+    assert.equal(upserted.schedule.scheduleId, "schedule-approved-template");
+    assert.equal(upserted.schedule.payload.scheduleExecutionMode, "approved_template");
+    assert.equal(upserted.schedule.payload.productionTemplate.templateId, templateId);
+    assert.equal(upserted.schedule.payload.productionTemplate.version, 1);
+    assert.equal(upserted.schedule.prompt, `Run approved workflow template ${templateId} v1.`);
+  } finally {
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH", rawScheduleEnv);
+  }
+}
+
+async function testScheduleHumanGateApprovedPlanDefaultPath() {
+  const rawScheduleEnv = process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
+  try {
+    const root = await tempRoot("schedule-human-gate-approved-plan");
+    const dbFile = path.join(root, "tracking.db");
+    const workflowId = "wf-schedule-hgate-plan";
+    const planId = "plan-schedule-hgate-plan";
+    const nodeId = "node-schedule-hgate-plan";
+    await runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId,
+      planId,
+      objective: "Run an audited Human Gate approved scheduled plan.",
+      taskOwnerAgent: "cat_heart",
+      plannerAgent: "main",
+      participantManagers: ["cat_body"],
+      ...v2PlanContract({
+        orchestrationPattern: "manager_worker",
+        orchestrationRationale: "Human Gate approved recurring workflow may use bounded worker orchestration."
+      }),
+      nodes: [
+        {
+          nodeId,
+          nodeType: "manager_worker_spawn",
+          ownerAgent: "cat_body",
+          payload: {
+            domainOwnership: "implementation",
+            expectedArtifacts: ["artifact://schedule-hgate-plan/output"],
+            reviewPolicy: "manager review required before owner acceptance"
+          }
+        }
+      ]
+    });
+    const approvedPayload = JSON.stringify({ workflowId, planId, decisionStatus: "approved" });
+    sqliteExec(dbFile, `
+	INSERT INTO protocol_objects(object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+	VALUES ('hg-schedule-plan', 'human_gate_record', 'approved', 'test', 'cat_claw', '', '', '${approvedPayload}', 'hash-schedule-plan', '2026-07-09T00:00:00.000Z', '2026-07-09T00:00:00.000Z');`);
+    const workflowOnlyPayload = JSON.stringify({ workflowId, decisionStatus: "approved" });
+    sqliteExec(dbFile, `
+INSERT INTO protocol_objects(object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hg-schedule-workflow-only', 'human_gate_record', 'approved', 'test', 'cat_claw', '${workflowId}', '', '${workflowOnlyPayload}', 'hash-schedule-workflow-only', '2026-07-09T00:00:00.500Z', '2026-07-09T00:00:00.500Z');`);
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.schedule.upsert",
+        scheduleId: "schedule-human-gate-workflow-only-rejected",
+        runtime: "openclaw",
+        agentId: "main",
+        workflowId,
+        planId,
+        humanGateId: "hg-schedule-workflow-only",
+        scheduleKind: "interval",
+        intervalSeconds: 3600,
+        nextRunAt: "2099-01-01T00:00:00.000Z"
+      }),
+      /approved Human Gate record not found for workflow plan/
+    );
+    const upserted = await runAction(root, {
+      action: "workflow.schedule.upsert",
+      scheduleId: "schedule-human-gate-plan",
+      runtime: "openclaw",
+      agentId: "main",
+      workflowId,
+      planId,
+      humanGateId: "hg-schedule-plan",
+      scheduleKind: "interval",
+      intervalSeconds: 3600,
+      nextRunAt: "2099-01-01T00:00:00.000Z"
+    });
+    assert.equal(upserted.schedule.scheduleId, "schedule-human-gate-plan");
+    assert.equal(upserted.schedule.payload.scheduleExecutionMode, "human_gate_approved_plan");
+    assert.equal(upserted.schedule.payload.productionPlan.workflowId, workflowId);
+    assert.equal(upserted.schedule.payload.productionPlan.planId, planId);
+    assert.equal(upserted.schedule.payload.productionPlan.humanGateId, "hg-schedule-plan");
+    assert.equal(upserted.schedule.prompt, `Run Human-Gate-approved workflow plan ${planId} for ${workflowId}.`);
+  } finally {
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH", rawScheduleEnv);
+  }
+}
+
+async function testScheduleCliHumanGatePlanParameterPassthrough() {
+  const rawScheduleEnv = process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
+  try {
+    const root = await tempRoot("schedule-cli-human-gate-plan");
+    const dbFile = path.join(root, "tracking.db");
+    const workflowId = "wf-schedule-cli-hgate-plan";
+    const planId = "plan-schedule-cli-hgate-plan";
+    await runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId,
+      planId,
+      objective: "Run an audited schedule through the CLI.",
+      taskOwnerAgent: "cat_heart",
+      plannerAgent: "main",
+      participantManagers: ["cat_body"],
+      ...v2PlanContract({
+        orchestrationPattern: "manager_worker",
+        orchestrationRationale: "CLI must pass Human Gate approved plan schedule identifiers to core."
+      }),
+      nodes: [
+        {
+          nodeId: "node-schedule-cli-hgate-plan",
+          nodeType: "manager_worker_spawn",
+          ownerAgent: "cat_body",
+          payload: {
+            domainOwnership: "implementation",
+            expectedArtifacts: ["artifact://schedule-cli-hgate-plan/output"],
+            reviewPolicy: "manager review required before owner acceptance"
+          }
+        }
+      ]
+    });
+    const approvedPayload = JSON.stringify({ workflowId, planId, decisionStatus: "approved" });
+    sqliteExec(dbFile, `
+INSERT INTO protocol_objects(object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hg-schedule-cli-plan', 'human_gate_record', 'approved', 'test', 'cat_claw', '', '', '${approvedPayload}', 'hash-schedule-cli-plan', '2026-07-09T00:00:00.000Z', '2026-07-09T00:00:00.000Z');`);
+    const upserted = workflowCliJson([
+      "workflow-schedule-upsert",
+      "--root", root,
+      "--id", "schedule-cli-human-gate-plan",
+      "--agent", "main",
+      "--runtime", "openclaw",
+      "--workflow", workflowId,
+      "--plan-id", planId,
+      "--human-gate-id", "hg-schedule-cli-plan",
+      "--kind", "interval",
+      "--interval-seconds", "3600",
+      "--next-run-at", "2099-01-01T00:00:00.000Z"
+    ]);
+    assert.equal(upserted.schedule.scheduleId, "schedule-cli-human-gate-plan");
+    assert.equal(upserted.schedule.payload.scheduleExecutionMode, "human_gate_approved_plan");
+    assert.equal(upserted.schedule.payload.productionPlan.workflowId, workflowId);
+    assert.equal(upserted.schedule.payload.productionPlan.planId, planId);
+    assert.equal(upserted.schedule.payload.productionPlan.humanGateId, "hg-schedule-cli-plan");
+    await assertRejectsMessage(
+      () => {
+        try {
+          execFileSync("node", [
+            path.resolve("bin/cat-meeting-governance.mjs"),
+            "workflow-schedule-upsert",
+            "--root", root,
+            "--id", "schedule-cli-raw-enabled-blocked",
+            "--agent", "main",
+            "--runtime", "openclaw",
+            "--prompt", "raw schedule should remain blocked without approved template or plan",
+            "--kind", "interval",
+            "--interval-seconds", "3600"
+          ], { encoding: "utf8", stdio: "pipe" });
+        } catch (error) {
+          throw new Error(error.stderr || error.message);
+        }
+      },
+      /production schedule requires an approved active\/default workflow template/
+    );
+  } finally {
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH", rawScheduleEnv);
+  }
+}
+
+async function testGenericOrchestrationAuthorizedTemplatePlan() {
+  const genericEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
+  try {
+    const root = await tempRoot("generic-orchestration-authorized-template-plan");
+    const dbFile = path.join(root, "tracking.db");
+    const templateId = "template.workflow.generic.authorized";
+    await runAction(root, {
+      action: "workflow.template.record_candidate",
+      templateSpec: workflowTemplateSpec({
+        templateId,
+        title: "Authorized generic orchestration template",
+        description: "Regression template proving approved plans can use worker orchestration."
+      }),
+      sourceWorkflowId: "wf-generic-template-source",
+      sourcePlanId: "plan-generic-template-source"
+    });
+    await runAction(root, {
+      action: "workflow.template.eval.record",
+      templateId,
+      version: 1,
+      fixtureSnapshot: { caseId: "generic-orchestration-authorized-template" },
+      arms: [
+        { kind: "baseline", isolatedRoot: "/tmp/generic-template-baseline" },
+        { kind: "previous_version", isolatedRoot: "/tmp/generic-template-previous" },
+        { kind: "candidate_version", isolatedRoot: "/tmp/generic-template-candidate" }
+      ],
+      metrics: {
+        planGatePassRate: 1,
+        executionSuccessRate: 1,
+        receiptCompletenessRate: 1,
+        evaluatorAcceptRate: 1,
+        ownerRevisionRate: 0,
+        humanGateReturnRate: 0,
+        duplicateWorkRate: 0,
+        toolFeedbackCompleteness: 1,
+        sideEffectUncertainRate: 0,
+        freshnessViolationRate: 0,
+        rollbackReadinessRate: 1
+      },
+      evidenceRefs: ["artifact://generic-template/eval"]
+    });
+    await runAction(root, {
+      action: "workflow.template.promote.record",
+      templateId,
+      version: 1,
+      targetStatus: "default",
+      catBrainAuditId: "brain-generic-template",
+      catClawAuditId: "claw-generic-template",
+      evidenceRefs: ["artifact://generic-template/eval"]
+    });
+    const workflowId = "wf-generic-template-authorized";
+    const planId = "plan-generic-template-authorized";
+    const nodeId = `${planId}.spawn`;
+    await runAction(root, {
+      action: "workflow.template.instantiate.record",
+      templateId,
+      version: 1,
+      variables: {
+        workflowId,
+        planId,
+        objective: "Execute approved template worker orchestration."
+      }
+    });
+    await runAction(root, {
+      action: "workflow.session_pack.upsert",
+      sessionId: "session-generic-template-worker",
+      status: "active",
+      ownerAgent: "cat_body",
+      taskType: "coding",
+      runtimeTarget: "hermers",
+      purpose: "Authorized generic template worker session",
+      systemBrief: "Use the prepared workflow session input and return results through workflow.v2.worker_result.* only.",
+      resourceBudget: { contextLimitTokens: 64000 }
+    });
+    await runAction(root, {
+      action: "workflow.v2.info_stack.record",
+      workflowId,
+      planId,
+      nodeId,
+      infoId: "info-generic-template-worker-input",
+      classification: "internal",
+      contentStorage: "artifact_ref",
+      artifactRef: "artifact://workflow-v2/generic-template/input.json",
+      recipientAgent: "cat_body",
+      summary: "Authorized template worker input pointer"
+    });
+    const worker = await runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId,
+      nodeId,
+      managerAgent: "cat_body",
+      sessionId: "session-generic-template-worker",
+      workerRunId: "worker-generic-template-authorized",
+      taskInputInfoId: "info-generic-template-worker-input",
+      runtimeBackend: "hermers_docker_worker",
+      ...v2WorkerDelegation(),
+      providerModel: "openai-codex/gpt-5.5",
+      receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+      oauth: { expiryOk: true, refreshOk: true },
+      network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+    });
+    assert.equal(worker.operation, "workflow.v2.worker_spawn.create");
+    assert.equal(worker.workerRun.workflowId, workflowId);
+    assert.equal(worker.workerRun.planId, planId);
+    assert.equal(worker.workerRun.nodeId, nodeId);
+    const claim = await runAction(root, {
+      action: "workflow.v2.control_loop.tick",
+      workflowId,
+      claimOwner: "test-generic-template",
+      workerLimit: 1,
+      workerLeaseMs: 60_000,
+      generatedAt: "2026-07-09T00:00:00.000Z"
+    });
+    assert.equal(claim.workerResults[0].status, "leased_waiting_adapter");
+    const lease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
+    const adapterJob = await runAction(root, {
+      action: "workflow.v2.worker_adapter_job.record",
+      workerRunId: worker.workerRun.workerRunId,
+      leaseOwner: lease.leaseOwner,
+      leaseUntil: lease.leaseUntil,
+      generatedAt: "2026-07-09T00:00:01.000Z"
+    });
+    assert.equal(adapterJob.operation, "workflow.v2.worker_adapter_job.record");
+    assert.equal(adapterJob.adapterJob.workerRunId, worker.workerRun.workerRunId);
+    const adapterClaim = await runAction(root, {
+      action: "workflow.v2.worker_adapter_job.claim",
+      workflowId,
+      planId,
+      adapterJobId: adapterJob.adapterJob.adapterJobId,
+      runtimeBackend: "hermers_docker_worker",
+      runnerId: "runner-generic-template-authorized",
+      limit: 1,
+      leaseMs: 30_000,
+      generatedAt: "2026-07-09T00:00:02.000Z"
+    });
+    assert.equal(adapterClaim.operation, "workflow.v2.worker_adapter_job.claim");
+    assert.equal(adapterClaim.count, 1);
+    assert.equal(adapterClaim.claimed[0].adapterJobId, adapterJob.adapterJob.adapterJobId);
+  } finally {
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION", genericEnv);
+  }
+}
+
+async function testGenericOrchestrationHumanGateExactPlanAuthorization() {
+  const genericEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
+  try {
+    const root = await tempRoot("generic-orchestration-human-gate-exact");
+    const dbFile = path.join(root, "tracking.db");
+    const workflowId = "wf-hgate-generic";
+    const planId = "plan-hgate-generic";
+    const nodeId = "node-hgate-generic-spawn";
+    await runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId,
+      planId,
+      objective: "Execute Human Gate authorized worker orchestration.",
+      taskOwnerAgent: "cat_heart",
+      plannerAgent: "main",
+      participantManagers: ["cat_body"],
+      ...v2PlanContract({
+        orchestrationPattern: "manager_worker",
+        orchestrationRationale: "Human Gate authorized plan may use worker orchestration."
+      }),
+      nodes: [
+        {
+          nodeId,
+          nodeType: "manager_worker_spawn",
+          ownerAgent: "cat_body",
+          payload: {
+            domainOwnership: "implementation",
+            expectedArtifacts: ["artifact://hgate-generic/output"],
+            reviewPolicy: "manager review required before owner acceptance"
+          }
+        }
+      ]
+    });
+    const unrelatedPayload = JSON.stringify({ comment: `contains ${workflowId} and ${planId} as prose only` });
+    sqliteExec(dbFile, `
+INSERT INTO protocol_objects(object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hg-substring-only', 'human_gate_record', 'approved', 'test', 'cat_claw', '', '', '${unrelatedPayload}', 'hash-substring-only', '2026-07-09T00:00:00.000Z', '2026-07-09T00:00:00.000Z');`);
+    const substringOnly = await runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId,
+      nodeId,
+      managerAgent: "cat_body",
+      sessionId: "session-hgate-generic-worker",
+      workerRunId: "worker-hgate-substring-only",
+      taskInputInfoId: "info-hgate-generic-worker-input",
+      runtimeBackend: "hermers_docker_worker",
+      ...v2WorkerDelegation()
+    });
+    assert.equal(substringOnly.status, "blocked");
+    assert.equal(substringOnly.reason, "generic_orchestration_context_required");
+
+    const workflowOnlyPayload = JSON.stringify({ workflowId, decisionStatus: "approved" });
+    sqliteExec(dbFile, `
+INSERT INTO protocol_objects(object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hg-workflow-only-generic', 'human_gate_record', 'approved', 'test', 'cat_claw', '${workflowId}', '', '${workflowOnlyPayload}', 'hash-workflow-only-generic', '2026-07-09T00:00:00.500Z', '2026-07-09T00:00:00.500Z');`);
+    const workflowOnly = await runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId,
+      nodeId,
+      managerAgent: "cat_body",
+      sessionId: "session-hgate-generic-worker",
+      workerRunId: "worker-hgate-workflow-only",
+      taskInputInfoId: "info-hgate-generic-worker-input",
+      runtimeBackend: "hermers_docker_worker",
+      ...v2WorkerDelegation()
+    });
+    assert.equal(workflowOnly.status, "blocked");
+    assert.equal(workflowOnly.reason, "generic_orchestration_context_required");
+
+    const approvedPayload = JSON.stringify({ workflowId, planId, decisionStatus: "approved" });
+    sqliteExec(dbFile, `
+INSERT INTO protocol_objects(object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES ('hg-exact-plan', 'human_gate_record', 'approved', 'test', 'cat_claw', '', '', '${approvedPayload}', 'hash-exact-plan', '2026-07-09T00:00:01.000Z', '2026-07-09T00:00:01.000Z');`);
+    await runAction(root, {
+      action: "workflow.session_pack.upsert",
+      sessionId: "session-hgate-generic-worker",
+      status: "active",
+      ownerAgent: "cat_body",
+      taskType: "coding",
+      runtimeTarget: "hermers",
+      purpose: "Human Gate authorized worker session",
+      systemBrief: "Use the prepared workflow session input and return results through workflow.v2.worker_result.* only.",
+      resourceBudget: { contextLimitTokens: 64000 }
+    });
+    await runAction(root, {
+      action: "workflow.v2.info_stack.record",
+      workflowId,
+      planId,
+      nodeId,
+      infoId: "info-hgate-generic-worker-input",
+      classification: "internal",
+      contentStorage: "artifact_ref",
+      artifactRef: "artifact://workflow-v2/hgate-generic/input.json",
+      recipientAgent: "cat_body",
+      summary: "Human Gate authorized worker input pointer"
+    });
+    const worker = await runAction(root, {
+      action: "workflow.v2.worker_spawn.create",
+      workflowId,
+      planId,
+      nodeId,
+      managerAgent: "cat_body",
+      sessionId: "session-hgate-generic-worker",
+      workerRunId: "worker-hgate-exact-plan",
+      taskInputInfoId: "info-hgate-generic-worker-input",
+      runtimeBackend: "hermers_docker_worker",
+      ...v2WorkerDelegation(),
+      providerModel: "openai-codex/gpt-5.5",
+      receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+      oauth: { expiryOk: true, refreshOk: true },
+      network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+    });
+    assert.equal(worker.operation, "workflow.v2.worker_spawn.create");
+    assert.equal(worker.workerRun.workflowId, workflowId);
+    assert.equal(worker.workerRun.planId, planId);
+  } finally {
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION", genericEnv);
+  }
+}
+
+async function testWorkflowSchemaVersionLockstep() {
+  const workflowSource = await fs.readFile(path.join(process.cwd(), "src", "workflow.js"), "utf8");
+  const hermesMcpSource = await fs.readFile(path.join(process.cwd(), "scripts", "trading_agents_workflow_hermes_mcp.py"), "utf8");
+  const workflowVersion = Number(workflowSource.match(/WORKFLOW_SCHEMA_VERSION\s*=\s*(\d+)/)?.[1] || 0);
+  const hermesExpectedVersion = Number(hermesMcpSource.match(/EXPECTED_WORKFLOW_SCHEMA_VERSION\s*=\s*(\d+)/)?.[1] || 0);
+  assert.equal(workflowVersion > 0, true);
+  assert.equal(hermesExpectedVersion, workflowVersion);
 }
 
 async function testControlLoopJobExtractedActionContracts() {
@@ -16193,6 +17220,50 @@ VALUES ('side-effect-permission-uncertain', 'workflow-permission-gate', 'test', 
 }
 
 async function testWorkflowV2PermissionAndConsoleGate() {
+  assert.equal(WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS.has("workflow.v2.plan.preview"), true);
+  assert.equal(WORKFLOW_CONSOLE_READ_ONLY_ACTIONS.has("workflow.v2.plan.preview"), true);
+  assert.equal(WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS.has("workflow.v2.plan.create"), true);
+  assert.equal(WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS.has("workflow.v2.worker_spawn.create"), false);
+  assert.deepEqual(
+    [...workflowConsoleAllowedActions()].sort(),
+    [...WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS].sort(),
+    "default console actions should be composed from action-policy defaults"
+  );
+  const consoleWriteActions = workflowConsoleAllowedActions({ allowWrites: true });
+  for (const action of WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS) {
+    assert.equal(consoleWriteActions.has(action), true, `write-enabled console should include optional write action ${action}`);
+  }
+  for (const action of WORKFLOW_CONSOLE_GENERIC_ORCHESTRATION_WRITE_ACTIONS) {
+    assert.equal(consoleWriteActions.has(action), true, `write-enabled console should include generic orchestration action ${action}`);
+  }
+  for (const action of consoleWriteActions) {
+    const canonical = canonicalWorkflowAction(action);
+    const covered = WORKFLOW_PERMISSION_READ_ACTIONS.has(canonical) || Boolean(WORKFLOW_ACTION_PERMISSION_RULES[canonical]);
+    assert.equal(covered, true, `console-reachable action should be covered by permission metadata: ${action} -> ${canonical}`);
+  }
+  for (const action of WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS) {
+    assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has(action), true, `permission read actions should include console default action ${action}`);
+  }
+  assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.advance.preview"), true);
+  assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.supervise.preview"), true);
+  for (const action of WORKFLOW_GENERIC_ORCHESTRATION_PLAN_ENTRY_ACTIONS) {
+    assert.equal(WORKFLOW_CONSOLE_GENERIC_ORCHESTRATION_WRITE_ACTIONS.has(action), true, `console generic write actions should include ${action}`);
+    assert.equal(Boolean(WORKFLOW_ACTION_PERMISSION_RULES[action]?.capability), true, `permission rules should define capability for ${action}`);
+  }
+  assert.equal(WORKFLOW_CONSOLE_GENERIC_ORCHESTRATION_WRITE_ACTIONS.has("workflow.v2.adapter_runner.drain"), true);
+  assert.equal(WORKFLOW_CONSOLE_GENERIC_ORCHESTRATION_WRITE_ACTIONS.has("workflow.v2.worker_result.submit"), true);
+  for (const action of WORKFLOW_CONSOLE_GENERIC_ORCHESTRATION_WRITE_ACTIONS) {
+    assert.equal(WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS.has(action), true, `core generic gate should cover console generic write action ${action}`);
+  }
+  assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.v2.worker_spawn.preview"), true);
+  assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.template.rollback.preview"), true);
+  assert.equal(WORKFLOW_POLICY_HARD_GATE_ACTIONS.has("trade.intent"), true);
+  assert.equal(WORKFLOW_POLICY_HARD_GATE_ACTIONS.has("workflow.template.promote.record"), true);
+  for (const action of Object.keys(WORKFLOW_V2_ACTION_HANDLER_NAMES)) {
+    const covered = WORKFLOW_PERMISSION_READ_ACTIONS.has(action) || Boolean(WORKFLOW_ACTION_PERMISSION_RULES[action]);
+    assert.equal(covered, true, `workflow v2 action should be covered by permission metadata: ${action}`);
+  }
+
   const root = await tempRoot("workflow-v2-permission-console");
   const dbFile = path.join(root, "tracking.db");
   const bridgeDir = path.join(root, "bridge");
@@ -16493,6 +17564,33 @@ async function testWorkflowV2PermissionAndConsoleGate() {
   });
   assert.equal(rejectedAdapterRunnerDrain.ok, false);
   assert.equal(rejectedAdapterRunnerDrain.errorCode, "action_not_allowed");
+  const genericEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
+  try {
+    const writeGateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { allowWrites: true });
+    const allowWritesGenericDrain = await writeGateway.handle({
+      action: "workflow.v2.adapter_runner.drain",
+      actor: "flashcat",
+      reason: "write-enabled console may reach core generic orchestration gate",
+      payload: {
+        runnerId: "mock-console-runner"
+      }
+    });
+    assert.equal(allowWritesGenericDrain.ok, false);
+    assert.equal(allowWritesGenericDrain.errorCode, "generic_orchestration_context_required");
+    const allowWritesResultSubmit = await writeGateway.handle({
+      action: "workflow.v2.worker_result.submit",
+      actor: "flashcat",
+      reason: "write-enabled console still requires authorized worker context",
+      payload: {
+        workerRunId: "missing-worker"
+      }
+    });
+    assert.equal(allowWritesResultSubmit.ok, false);
+    assert.equal(allowWritesResultSubmit.errorCode, "generic_orchestration_context_required");
+  } finally {
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION", genericEnv);
+  }
 
   const rows = sqliteJson(dbFile, `
 SELECT action, status, dry_run AS dryRun, reason
@@ -16507,6 +17605,7 @@ ORDER BY created_at ASC;`);
   assert.equal(rows.some((row) => row.action === "workflow.v2.worker_retire.record" && row.status === "rejected"), true);
   assert.equal(rows.some((row) => row.action === "workflow.v2.worker_successor.create" && row.status === "rejected"), true);
   assert.equal(rows.some((row) => row.action === "workflow.v2.adapter_runner.drain" && row.status === "rejected"), true);
+  assert.equal(rows.some((row) => row.action === "workflow.v2.worker_result.submit" && row.status === "rejected"), true);
   assert.equal(rows.some((row) => String(row.reason || "").includes("abc")), false);
 }
 
@@ -19340,6 +20439,8 @@ try {
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],
     ["workflow v2 info stack and session binding", testWorkflowV2InfoStackAndSessionBinding],
     ["workflow v2 extracted action contracts", testWorkflowV2ExtractedActionContracts],
+    ["workflow v2 control loop scoped claim", testWorkflowV2ControlLoopScopedClaim],
+    ["workflow v2 control loop unscoped mixed queue", testWorkflowV2ControlLoopUnscopedMixedQueue],
     ["workflow v2 worker spawn and lifecycle gates", testWorkflowV2WorkerSpawnAndLifecycleGates],
     ["workflow v2 autonomous loop runtime enforcement", testWorkflowV2AutonomousLoopRuntimeEnforcement],
     ["workflow v2 evaluator optimizer contract", testWorkflowV2EvaluatorOptimizerContractFocused],
@@ -19358,6 +20459,13 @@ try {
     ["human_gate stage dedup/supersede", testHumanGateStageDedupAndSupersede],
     ["schedule resume semantics", testScheduleResumeSemantics],
     ["schedule control loop dispatch integration", testScheduleControlLoopDispatchIntegration],
+    ["workflow convergence default gates", testWorkflowConvergenceDefaultGates],
+    ["schedule approved template default path", testScheduleApprovedTemplateDefaultPath],
+    ["schedule Human Gate approved plan default path", testScheduleHumanGateApprovedPlanDefaultPath],
+    ["schedule CLI Human Gate plan parameter passthrough", testScheduleCliHumanGatePlanParameterPassthrough],
+    ["generic orchestration authorized template plan", testGenericOrchestrationAuthorizedTemplatePlan],
+    ["generic orchestration Human Gate exact plan authorization", testGenericOrchestrationHumanGateExactPlanAuthorization],
+    ["workflow schema version lockstep", testWorkflowSchemaVersionLockstep],
     ["message_flow extracted action contracts", testMessageFlowExtractedActionContracts],
     ["telegram.live extracted action contracts", testTelegramLiveExtractedActionContracts],
     ["telegram.outbox extracted action contracts", testTelegramOutboxExtractedActionContracts],

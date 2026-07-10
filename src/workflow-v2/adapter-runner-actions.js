@@ -882,12 +882,24 @@ async function workflowV2WorkerAdapterJobClaim(rootDir, input = {}) {
   const runtimeBackend = input.runtimeBackend || input.runtime_backend
     ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
     : "";
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const planId = firstText(input.planId, input.plan_id);
+  const nodeId = firstText(input.nodeId, input.node_id);
+  const workerRunId = firstText(input.workerRunId, input.worker_run_id);
+  const adapterJobId = firstText(input.adapterJobId, input.adapter_job_id, input.jobId, input.job_id);
   const leaseUntil = new Date(new Date(generatedAt).getTime() + workflowV2AdapterJobLeaseMs(input)).toISOString();
   const expiredLeases = await workflowV2ExpireAdapterJobLeases(paths, input, generatedAt);
   const capacity = await workflowV2AdapterRunnerCapacity(paths, input, generatedAt, runtimeBackend);
   const limit = capacity.effectiveLimit;
   const backendClause = runtimeBackend ? `AND j.runtime_backend=${sqlValue(runtimeBackend)}` : "";
   const activeBackendClause = runtimeBackend ? `AND active.runtime_backend=${sqlValue(runtimeBackend)}` : "";
+  const scopeClauses = [];
+  if (workflowId) scopeClauses.push(`j.workflow_id=${sqlValue(workflowId)}`);
+  if (planId) scopeClauses.push(`j.plan_id=${sqlValue(planId)}`);
+  if (nodeId) scopeClauses.push(`j.node_id=${sqlValue(nodeId)}`);
+  if (workerRunId) scopeClauses.push(`j.worker_run_id=${sqlValue(workerRunId)}`);
+  if (adapterJobId) scopeClauses.push(`j.adapter_job_id=${sqlValue(adapterJobId)}`);
+  const scopeClause = scopeClauses.length ? `AND ${scopeClauses.join(" AND ")}` : "";
   if (limit <= 0) {
     return {
       operation: "workflow.v2.worker_adapter_job.claim",
@@ -910,6 +922,7 @@ JOIN workflow_v2_worker_runs w ON w.worker_run_id=j.worker_run_id
 WHERE j.status IN ('queued','retry_scheduled')
   AND (j.next_retry_at='' OR j.next_retry_at <= ${sqlValue(generatedAt)})
   ${backendClause}
+  ${scopeClause}
   AND w.status='running'
   AND w.lease_until > ${sqlValue(generatedAt)}
   AND w.attempt=j.worker_attempt

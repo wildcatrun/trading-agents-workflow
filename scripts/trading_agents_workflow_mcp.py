@@ -1426,7 +1426,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_draft": {
-        "description": "Draft a governed workflow task plan with Cat Brain/Cat Claw defaults, phases, and quality gates. Pure preview; does not dispatch or mutate workflow state.",
+        "description": "Legacy compatibility preview for drafting a governed workflow task plan. Pure preview; does not dispatch or mutate workflow state. Production recurring workflows should use approved workflow templates.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1479,7 +1479,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_launch_prepare": {
-        "description": "Persist a Cat-Claw-drafted Task Launch Package as canonical JSON/Markdown for Cat Brain review. Mutates workflow state but does not launch tasks.",
+        "description": "Legacy compatibility surface for persisting a Cat-Claw-drafted Task Launch Package as canonical JSON/Markdown for Cat Brain review. Mutates workflow state but does not launch tasks; production workflow execution should prefer approved templates.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1539,7 +1539,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_launch_list": {
-        "description": "List persisted Task Launch Packages.",
+        "description": "List persisted legacy Task Launch Packages.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1555,7 +1555,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_launch_approve": {
-        "description": "Approve a Task Launch Package with Flashcat original words and materialize its workflow_tasks. Does not auto-dispatch.",
+        "description": "Legacy compatibility approval that materializes workflow_tasks from a Task Launch Package. Does not auto-dispatch; production execution should prefer approved templates.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1575,7 +1575,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_launch_review": {
-        "description": "Record Cat Brain review of a Task Launch Package before Flashcat launch approval.",
+        "description": "Record Cat Brain review of a legacy Task Launch Package before Flashcat launch approval.",
         "inputSchema": {
             "type": "object",
             "properties": {

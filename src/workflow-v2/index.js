@@ -57,6 +57,7 @@ export const WORKFLOW_V2_ACTION_HANDLER_NAMES = {
   "workflow.template.stats.refresh": "workflowTemplateStatsRefresh",
   "workflow.template.promote.preview": "workflowTemplatePromotePreview",
   "workflow.template.promote.record": "workflowTemplatePromoteRecord",
+  "workflow.template.rollback.preview": "workflowTemplateRollbackPreview",
   "workflow.template.rollback.record": "workflowTemplateRollbackRecord",
   "workflow.template.extract.preview": "workflowTemplateExtractPreview",
   "workflow.template.extract.record": "workflowTemplateExtractRecord"

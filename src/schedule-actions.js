@@ -2,8 +2,13 @@ import {
   boolOption,
   firstText,
   parseJsonValue,
-  safeId
+  safeId,
+  strictBoolOption
 } from "./workflow/json.js";
+import {
+  approvedHumanGatePlanScheduleRef,
+  approvedTemplateScheduleRef
+} from "./workflow/plan-authorization.js";
 import {
   sqlValue,
   sqlite
@@ -41,6 +46,10 @@ function nowIso() {
 
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function rawScheduleDispatchAllowed() {
+  return strictBoolOption(process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH, false);
 }
 
 function cleanFileSegment(value) {
@@ -532,7 +541,34 @@ export function createScheduleActionHandlers(context = {}) {
 
     const runtime = normalizeRuntime(input.runtime || existing.runtime || "hermers");
     const agentId = normalizeAgentId(input.agentId || input.agent_id || input.target || existing.agent_id);
-    const prompt = firstText(input.prompt, input.text, existing.prompt);
+    const existingPayload = parseJsonValue(existing.payload_json, {});
+    const inputPayload = input.payload === undefined ? existingPayload : parseJsonValue(input.payload, input.payload || {});
+    const approvedTemplate = await approvedTemplateScheduleRef(paths, input, inputPayload, existingPayload);
+    const approvedPlan = approvedTemplate ? null : await approvedHumanGatePlanScheduleRef(paths, input, inputPayload, existingPayload);
+    if (!rawScheduleDispatchAllowed() && !approvedTemplate && !approvedPlan) {
+      throw new Error("production schedule requires an approved active/default workflow template or approved Human Gate workflow plan; set TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH=1 only for legacy diagnostics");
+    }
+    let payload = inputPayload;
+    if (approvedTemplate) {
+      payload = {
+        ...inputPayload,
+        scheduleExecutionMode: "approved_template",
+        productionTemplate: approvedTemplate
+      };
+    } else if (approvedPlan) {
+      payload = {
+        ...inputPayload,
+        scheduleExecutionMode: "human_gate_approved_plan",
+        productionPlan: approvedPlan
+      };
+    }
+    const prompt = firstText(
+      input.prompt,
+      input.text,
+      existing.prompt,
+      approvedTemplate ? `Run approved workflow template ${approvedTemplate.templateId} v${approvedTemplate.version}.` : "",
+      approvedPlan ? `Run Human-Gate-approved workflow plan ${approvedPlan.planId} for ${approvedPlan.workflowId}.` : ""
+    );
     if (!prompt) throw new Error("schedule prompt is required");
     const priority = normalizeSchedulePriority(input.priority || existing.priority);
     const concurrencyPolicy = normalizeSchedulePolicy(input.concurrencyPolicy || input.concurrency_policy || existing.concurrency_policy, WORKFLOW_SCHEDULE_CONCURRENCY_POLICIES, "skip");
@@ -540,7 +576,6 @@ export function createScheduleActionHandlers(context = {}) {
     const catchupWindowSeconds = Math.max(0, Math.min(7 * 24 * 3600, Number(input.catchupWindowSeconds || input.catchup_window_seconds || existing.catchup_window_seconds || 900)));
     const timeoutSeconds = Math.max(5, Math.min(1800, Number(input.timeoutSeconds || input.timeout_seconds || existing.timeout_seconds || 45)));
     const maxAttempts = Math.max(1, Math.min(10, Number(input.maxAttempts || input.max_attempts || existing.max_attempts || 1)));
-    const payload = input.payload === undefined ? parseJsonValue(existing.payload_json, {}) : parseJsonValue(input.payload, input.payload || {});
     const now = nowIso();
     const nextRunInput = normalizeIsoTimestamp(input.nextRunAt || input.next_run_at || "", "nextRunAt");
     const resetNextRun = boolOption(input.resetNextRun ?? input.reset_next_run, false);

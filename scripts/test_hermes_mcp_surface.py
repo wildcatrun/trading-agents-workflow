@@ -99,6 +99,50 @@ def main() -> int:
         raise AssertionError("literal runtime:profile target should be normalized to registry id")
     if server.message_flow_target("cat_eyes") != "cat_eyes":
         raise AssertionError("canonical registry target should remain unchanged")
+    captured_schedule: dict[str, object] = {}
+
+    def fake_run_workflow_action(payload: dict[str, object], root_dir=None) -> dict[str, object]:
+        captured_schedule.clear()
+        captured_schedule.update(payload)
+        captured_schedule["rootDir"] = root_dir or ""
+        return {"ok": True, "payload": payload, "rootDir": root_dir}
+
+    original_run_workflow_action = server.run_workflow_action
+    try:
+        server.run_workflow_action = fake_run_workflow_action
+        schedule_result = server.handle_schedule_upsert(
+            {
+                "schedule_id": "mcp.schedule.plan",
+                "agent": "catheart",
+                "runtime": "hermers",
+                "template_id": "template.mcp.schedule",
+                "template_version": 2,
+                "workflow_id": "wf-mcp-schedule",
+                "plan_id": "plan-mcp-schedule",
+                "human_gate_id": "hg-mcp-schedule",
+                "kind": "interval",
+                "interval_seconds": 3600,
+                "next_run_at": "2099-01-01T00:00:00.000Z",
+            }
+        )
+    finally:
+        server.run_workflow_action = original_run_workflow_action
+    if not schedule_result.get("ok"):
+        raise AssertionError(f"schedule upsert monkeypatch should return ok, got {schedule_result}")
+    expected_payload = {
+        "action": "workflow.schedule.upsert",
+        "scheduleId": "mcp.schedule.plan",
+        "agentId": "cat_heart",
+        "runtime": "hermers",
+        "templateId": "template.mcp.schedule",
+        "templateVersion": 2,
+        "workflowId": "wf-mcp-schedule",
+        "planId": "plan-mcp-schedule",
+        "humanGateId": "hg-mcp-schedule",
+    }
+    for key, value in expected_payload.items():
+        if captured_schedule.get(key) != value:
+            raise AssertionError(f"workflow_schedule_upsert should pass {key}={value!r}, got {captured_schedule.get(key)!r}")
 
     assert_tools(
         "message_only profile",

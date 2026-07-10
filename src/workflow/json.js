@@ -9,6 +9,15 @@ export function boolOption(value, defaultValue = false) {
   return Boolean(value);
 }
 
+export function strictBoolOption(value, defaultValue = false) {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  if (typeof value === "boolean") return value;
+  const text = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(text)) return true;
+  if (["0", "false", "no", "n", "off"].includes(text)) return false;
+  return defaultValue;
+}
+
 export function safeId(prefix) {
   return `${prefix}.${Date.now().toString(36)}.${randomUUID().slice(0, 8)}`;
 }

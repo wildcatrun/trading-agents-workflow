@@ -1371,7 +1371,12 @@ function registerCli(api) {
     command.command("workflow-schedule-upsert")
       .requiredOption("--id <scheduleId>", "Schedule id")
       .requiredOption("--agent <agentId>", "Target agent id")
-      .requiredOption("--prompt <prompt>", "Prompt to dispatch when due")
+      .option("--prompt <prompt>", "Optional prompt/operator note; production schedules should use --template-id or --plan-id")
+      .option("--template-id <templateId>", "Approved active/default workflow template id for production scheduling")
+      .option("--template-version <version>", "Approved template version; defaults to active/default")
+      .option("--workflow-id <workflowId>", "Workflow id for Human-Gate-approved plan scheduling")
+      .option("--plan-id <planId>", "Workflow v2 plan id for Human-Gate-approved plan scheduling")
+      .option("--human-gate-id <humanGateId>", "Approved Human Gate record id for plan scheduling")
       .option("--name <name>", "Schedule display name")
       .option("--kind <scheduleKind>", "cron or interval")
       .option("--cron <cronExpr>", "Five-field cron expression")
@@ -1405,6 +1410,11 @@ function registerCli(api) {
           runtime: options.runtime,
           agentId: options.agent,
           prompt: options.prompt,
+          templateId: options.templateId,
+          templateVersion: options.templateVersion ? Number(options.templateVersion) : undefined,
+          workflowId: options.workflowId,
+          planId: options.planId,
+          humanGateId: options.humanGateId,
           dispatchType: options.type,
           priority: options.priority,
           status: options.status,

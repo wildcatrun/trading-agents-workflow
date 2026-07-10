@@ -2,94 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { canonicalWorkflowAction, runWorkflowAction } from "../workflow.js";
+import {
+  WORKFLOW_CONSOLE_READ_ONLY_ACTIONS,
+  workflowConsoleAllowedActions,
+  workflowActionEnvEnabled
+} from "../workflow/action-policy.js";
 import { sqlite, sqlValue } from "./sqlite.js";
-
-const DEFAULT_ALLOWED_ACTIONS = new Set([
-  "workflow.advance.preview",
-  "workflow.supervise.preview",
-  "workflow.pause.preview",
-  "workflow.resume.preview",
-  "workflow.stop.preview",
-  "workflow.incident.from_dead_letter.preview",
-  "workflow.control_loop.job.requeue.preview",
-  "workflow.incident.closeout.cat_claw_report.preview",
-  "workflow.incident.closeout.human_gate_package.preview",
-  "workflow.incident.closeout.worklist.preview",
-  "workflow.incident.closeout.worklist.artifact.preview",
-  "workflow.incident.closeout.evidence.preview",
-  "workflow.incident.closeout.artifact.preview",
-  "workflow.incident.closeout.human_gate_request.preview",
-  "telegram.outbox.delivery.preview",
-  "telegram.outbox.requeue.preview",
-  "telegram.outbox.requeue.execution_package.preview",
-  "workflow.rerun.agent.preview",
-  "workflow.rerun.phase.preview",
-  "workflow.v2.plan.preview",
-  "workflow.v2.info_stack.preview",
-  "workflow.v2.info_stack.read",
-  "workflow.v2.notification.preview",
-  "workflow.v2.worker_backend.preflight",
-  "workflow.v2.worker_spawn.preview",
-  "workflow.v2.owner_review.preview",
-  "workflow.v2.task_group_package.preview",
-  "workflow.v2.cat_brain_audit.preview",
-  "workflow.v2.cat_claw_audit.preview",
-  "workflow.v2.human_gate_package.preview",
-  "workflow.v2.human_gate_request.preview",
-  "workflow.v2.control_loop.preview",
-  "workflow.v2.worker_lifecycle.preview",
-  "workflow.v2.worker_handoff.preview",
-  "workflow.v2.worker_retire.preview",
-  "workflow.v2.worker_successor.preview",
-  "workflow.v2.worker_adapter_job.preview",
-  "workflow.v2.worker_adapter_job.list",
-  "workflow.v2.adapter_runner.preview",
-  "workflow.v2.worker_result.submit.preview",
-  "workflow.v2.worker_result.fail.preview",
-  "workflow.v2.validate"
-]);
-
-const OPTIONAL_WRITE_ACTIONS = new Set([
-  "workflow.checkpoint",
-  "workflow.pause",
-  "workflow.resume",
-  "workflow.stop",
-  "workflow.incident.from_dead_letter",
-  "workflow.control_loop.job.requeue",
-  "workflow.incident.closeout.worklist.artifact",
-  "workflow.incident.closeout.evidence",
-  "workflow.incident.closeout.artifact",
-  "workflow.incident.closeout.human_gate_request",
-  "workflow.v2.plan.create",
-  "workflow.v2.info_stack.record",
-  "workflow.v2.read_receipt.record",
-  "workflow.v2.worker_backend_preflight.record",
-  "workflow.v2.worker_spawn.create",
-  "workflow.v2.worker_handoff.record",
-  "workflow.v2.worker_retire.record",
-  "workflow.v2.worker_successor.create",
-  "workflow.v2.control_loop.tick",
-  "workflow.v2.worker_adapter_job.record",
-  "workflow.v2.worker_adapter_job.claim",
-  "workflow.v2.worker_adapter_job.heartbeat",
-  "workflow.v2.worker_adapter_job.release",
-  "workflow.v2.worker_adapter_job.fail",
-  "workflow.v2.adapter_runner.drain",
-  "workflow.v2.worker_result.submit",
-  "workflow.v2.worker_result.fail",
-  "workflow.v2.manager_review.record",
-  "workflow.v2.owner_review.record",
-  "workflow.v2.task_group_package.record",
-  "workflow.v2.cat_brain_audit.record",
-  "workflow.v2.cat_claw_audit.record",
-  "workflow.v2.human_gate_package.record",
-  "workflow.v2.human_gate_request",
-  "telegram.outbox.delivery",
-  "human_gate.inbox",
-  "human_gate.console"
-]);
-
-const READ_ONLY_ACTIONS = new Set(DEFAULT_ALLOWED_ACTIONS);
 
 function nowIso() {
   return new Date().toISOString();
@@ -101,10 +19,6 @@ function hashJson(value) {
 
 function operationId() {
   return `console_op.${Date.now().toString(36)}.${randomUUID().slice(0, 8)}`;
-}
-
-function boolEnv(name) {
-  return ["1", "true", "yes", "on"].includes(String(process.env[name] || "").toLowerCase());
 }
 
 function redactedResult(value) {
@@ -206,10 +120,9 @@ export class WorkflowActionGateway {
   constructor(paths, options = {}) {
     this.paths = paths;
     this.readOnly = Boolean(options.readOnly);
-    this.allowedActions = new Set(DEFAULT_ALLOWED_ACTIONS);
-    if (options.allowWrites || boolEnv("WORKFLOW_CONSOLE_ALLOW_WRITES")) {
-      for (const action of OPTIONAL_WRITE_ACTIONS) this.allowedActions.add(action);
-    }
+    this.allowedActions = workflowConsoleAllowedActions({
+      allowWrites: options.allowWrites || workflowActionEnvEnabled("WORKFLOW_CONSOLE_ALLOW_WRITES")
+    });
   }
 
   async handle(request = {}) {
@@ -252,7 +165,7 @@ export class WorkflowActionGateway {
         message
       };
     }
-    if (this.readOnly && !READ_ONLY_ACTIONS.has(action)) {
+    if (this.readOnly && !WORKFLOW_CONSOLE_READ_ONLY_ACTIONS.has(action)) {
       const message = "workflow console is running in read-only mode";
       await this.appendOperation({ ...record, status: "rejected", error: message, completedAt: startedAt });
       return {
@@ -271,6 +184,21 @@ export class WorkflowActionGateway {
     try {
       const result = await runWorkflowAction(this.paths.root, { ...input, workflowRootDir: this.paths.root });
       const completedAt = nowIso();
+      if (result?.allowed === false || result?.status === "blocked") {
+        const message = result?.message || `workflow action blocked: ${action}`;
+        await this.appendOperation({ ...record, ts: completedAt, status: "rejected", resultSummary: result?.reason || "blocked", result: result, error: message, completedAt });
+        return {
+          ok: false,
+          operationId: opId,
+          actor,
+          action,
+          riskTier,
+          inputHash,
+          errorCode: result?.reason || "action_blocked",
+          message,
+          result: redactedResult(result)
+        };
+      }
       const response = {
         ok: true,
         operationId: opId,
