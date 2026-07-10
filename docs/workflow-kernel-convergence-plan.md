@@ -2,14 +2,19 @@
 
 Status: active cleanup/convergence pass
 Created: 2026-07-09
-Related design context: `docs/workflow-v2-unified-next-plan.md`
-Scope: organize and converge existing legacy/v2 orchestration surfaces into a safer default workflow path without deleting generic authoring capability or freezing future v2 feature development
+Related design context: `docs/workflow-v2-unified-next-plan.md`, `docs/workflow-v1-v2-function-matrix.md`
+Scope: organize existing legacy/v2/shared orchestration surfaces into safer production defaults without deleting generic authoring capability, pretending legacy diagnostics have no value, or freezing future v2 feature development
 
 ## Operating Principle
 
 `trading-agents-workflow` is a specialized workflow orchestration tool for live-trading operations. Its primary production job should eventually be to execute audited and optimized daily workflow templates. Because the project is still in R&D and no production template set has been finalized, this pass focuses on organizing existing capabilities and making unsafe defaults explicit, not on declaring v2 complete or prohibiting new features.
 
-The convergence target is:
+This convergence pass is a boundary and default-safety pass. It is not an
+internal merge of v1 and v2 implementations, and it is not a deletion plan for
+generic orchestration. The current code-level inventory is maintained in
+`docs/workflow-v1-v2-function-matrix.md`.
+
+The production-oriented convergence target is:
 
 1. approved template version;
 2. instantiated plan and node graph;
@@ -46,14 +51,17 @@ Generic orchestration remains valuable, but it is retained as an authoring, eval
 - Do not introduce a second runtime, second scheduler, or second workflow database to solve convergence.
 - Do not make production safety depend on UI hiding alone; enforce it at `runWorkflowAction` and schedule persistence.
 
-## Immediate Implementation Checklist
+## Current Convergence Checklist
 
-1. Add a unified convergence gate in `runWorkflowAction`.
-2. Add a production schedule gate in `workflowScheduleUpsert`.
-3. Fix Hermes MCP expected schema version drift.
-4. Mark legacy MCP task-launch descriptions as compatibility surfaces.
-5. Add regression tests for default-deny legacy/generic/raw-schedule paths and schema version lockstep.
-6. Keep existing broad regression behavior behind explicit compatibility environment flags.
+These items describe the current convergence contract and should remain covered
+by code and regression tests:
+
+1. Unified convergence gate in `runWorkflowAction`.
+2. Production schedule gate in `workflowScheduleUpsert`.
+3. MCP/core schema version expectations kept in lockstep.
+4. Legacy MCP task-launch descriptions treated as compatibility surfaces.
+5. Regression tests for default-deny legacy/generic/raw-schedule paths and schema version lockstep.
+6. Existing broad regression behavior kept behind explicit compatibility environment flags.
 
 ## Environment Flags
 
