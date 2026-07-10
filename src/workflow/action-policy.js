@@ -152,6 +152,7 @@ export const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
 ]);
 
 export const WORKFLOW_ACTION_PERMISSION_RULES = {
+  "workflow.init": { capability: "workflow.init", risk: "medium", mutating: true },
   "workflow.run.upsert": { capability: "workflow.write", risk: "medium", mutating: true },
   "workflow.swarm.plan": { capability: "workflow.plan", risk: "medium", mutating: true },
   "workflow.task.launch.prepare": { capability: "workflow.task.launch.prepare", risk: "medium", mutating: true },

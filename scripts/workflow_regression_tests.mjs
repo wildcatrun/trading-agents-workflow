@@ -17259,6 +17259,74 @@ VALUES ('side-effect-permission-uncertain', 'workflow-permission-gate', 'test', 
   assert.equal(canonicalForbidden.reason, "action_forbidden_by_policy");
 }
 
+async function testWorkflowActionPolicyRegistryCoverage() {
+  const registries = [
+    ["cat_claw", CAT_CLAW_ACTION_REGISTRY],
+    ["checkpoint", CHECKPOINT_ACTION_REGISTRY],
+    ["control_loop_job", CONTROL_LOOP_JOB_ACTION_REGISTRY],
+    ["control_loop_tick", CONTROL_LOOP_TICK_ACTION_REGISTRY],
+    ["dispatch_reconcile", DISPATCH_RECONCILE_ACTION_REGISTRY],
+    ["event", EVENT_ACTION_REGISTRY],
+    ["human_gate", HUMAN_GATE_ACTION_REGISTRY],
+    ["incident", INCIDENT_ACTION_REGISTRY],
+    ["intervention", INTERVENTION_ACTION_REGISTRY],
+    ["meeting_control", MEETING_CONTROL_ACTION_REGISTRY],
+    ["meeting_dispatch", MEETING_DISPATCH_ACTION_REGISTRY],
+    ["meeting_ingest", MEETING_INGEST_ACTION_REGISTRY],
+    ["meeting_participant", MEETING_PARTICIPANT_ACTION_REGISTRY],
+    ["message_flow", MESSAGE_FLOW_ACTION_REGISTRY],
+    ["permission", PERMISSION_ACTION_REGISTRY],
+    ["protocol", PROTOCOL_ACTION_REGISTRY],
+    ["research", RESEARCH_ACTION_REGISTRY],
+    ["route_shell", ROUTE_SHELL_ACTION_REGISTRY],
+    ["runtime_agent", RUNTIME_AGENT_ACTION_REGISTRY],
+    ["runtime_bridge", RUNTIME_BRIDGE_ACTION_REGISTRY],
+    ["runtime_event", RUNTIME_EVENT_ACTION_REGISTRY],
+    ["schedule", SCHEDULE_ACTION_REGISTRY],
+    ["session", SESSION_ACTION_REGISTRY],
+    ["side_effect", SIDE_EFFECT_ACTION_REGISTRY],
+    ["status", STATUS_ACTION_REGISTRY],
+    ["telegram_live", TELEGRAM_LIVE_ACTION_REGISTRY],
+    ["telegram_outbox", TELEGRAM_OUTBOX_ACTION_REGISTRY],
+    ["topology", TOPOLOGY_ACTION_REGISTRY],
+    ["trade", TRADE_ACTION_REGISTRY],
+    ["verification", VERIFICATION_ACTION_REGISTRY],
+    ["workflow_advance", WORKFLOW_ADVANCE_ACTION_REGISTRY],
+    ["workflow_run", WORKFLOW_RUN_ACTION_REGISTRY],
+    ["workflow_supervisor", WORKFLOW_SUPERVISOR_ACTION_REGISTRY],
+    ["workflow_swarm", WORKFLOW_SWARM_ACTION_REGISTRY],
+    ["workflow_task", WORKFLOW_TASK_ACTION_REGISTRY],
+    ["workflow_task_draft", WORKFLOW_TASK_DRAFT_ACTION_REGISTRY],
+    ["workflow_task_launch", WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY]
+  ];
+  const missing = [];
+  for (const [registryName, registry] of registries) {
+    for (const action of registry.keys()) {
+      const canonical = canonicalWorkflowAction(action);
+      if (!WORKFLOW_PERMISSION_READ_ACTIONS.has(canonical) && !WORKFLOW_ACTION_PERMISSION_RULES[canonical]) {
+        missing.push(`${canonical} (${action} @ ${registryName})`);
+      }
+    }
+  }
+  for (const action of Object.keys(WORKFLOW_V2_ACTION_HANDLER_NAMES)) {
+    const canonical = canonicalWorkflowAction(action);
+    if (!WORKFLOW_PERMISSION_READ_ACTIONS.has(canonical) && !WORKFLOW_ACTION_PERMISSION_RULES[canonical]) {
+      missing.push(`${canonical} (${action} @ workflow_v2)`);
+    }
+  }
+  assert.deepEqual(missing.sort(), [], "every registered workflow action should have read or permission-rule metadata");
+  assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.init"]?.mutating, true);
+  assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.init"]?.capability, "workflow.init");
+  const root = await tempRoot("workflow-action-policy-registry-coverage");
+  const initPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.init"
+  });
+  assert.equal(initPolicy.requiredCapability, "workflow.init");
+  assert.equal(initPolicy.mutating, true);
+  assert.equal(initPolicy.readOnly, false);
+}
+
 async function testWorkflowV2PermissionAndConsoleGate() {
   assert.equal(WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS.has("workflow.v2.plan.preview"), true);
   assert.equal(WORKFLOW_CONSOLE_READ_ONLY_ACTIONS.has("workflow.v2.plan.preview"), true);
@@ -20546,6 +20614,7 @@ try {
     ["workflow event store", testWorkflowEventStore],
     ["automatic workflow events", testAutomaticWorkflowEvents],
     ["workflow permission gate", testWorkflowPermissionGate],
+    ["workflow action policy registry coverage", testWorkflowActionPolicyRegistryCoverage],
     ["workflow v2 permission and console gate", testWorkflowV2PermissionAndConsoleGate],
     ["workflow session store", testWorkflowSessionStore],
     ["workflow session runs legacy schema migration", testWorkflowSessionRunsLegacySchemaMigration],
