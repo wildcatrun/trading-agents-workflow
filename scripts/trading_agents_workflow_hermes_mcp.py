@@ -671,6 +671,9 @@ RAW_ACTION_TOOL: dict[str, dict[str, Any]] = {
 }
 
 
+ACTION_BLOCKED_SCHEMA_VERSIONS = {"workflow_convergence_gate_result.v1"}
+
+
 def tools_for_capability() -> dict[str, dict[str, Any]]:
     mode = capability_mode()
     if mode == "disabled":
@@ -689,7 +692,36 @@ def tools_for_capability() -> dict[str, dict[str, Any]]:
     return BASE_TOOLS
 
 
+def workflow_action_blocked(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("allowed") is False:
+        return True
+    if payload.get("status") != "blocked":
+        return False
+    if payload.get("schemaVersion") in ACTION_BLOCKED_SCHEMA_VERSIONS:
+        return True
+    return False
+
+
+def workflow_blocked_reason(payload: dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("reason") or payload.get("errorCode") or payload.get("status") or "").strip()
+
+
+def normalize_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if not workflow_action_blocked(payload):
+        return payload
+    enriched = dict(payload)
+    enriched["ok"] = False
+    enriched["actionBlocked"] = True
+    enriched["blockedReason"] = workflow_blocked_reason(payload) or "blocked"
+    return enriched
+
+
 def tool_result(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = normalize_tool_payload(payload)
     return {
         "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, indent=2)}],
         "structuredContent": payload,

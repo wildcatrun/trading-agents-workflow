@@ -99,6 +99,36 @@ def main() -> int:
         raise AssertionError("literal runtime:profile target should be normalized to registry id")
     if server.message_flow_target("cat_eyes") != "cat_eyes":
         raise AssertionError("canonical registry target should remain unchanged")
+    blocked_result = server.tool_result({"status": "blocked", "allowed": False, "reason": "legacy_action_disabled"})
+    blocked_payload = blocked_result.get("structuredContent") or {}
+    if blocked_payload.get("ok") is not False:
+        raise AssertionError(f"blocked tool result should expose ok=false, got {blocked_payload}")
+    if blocked_payload.get("actionBlocked") is not True:
+        raise AssertionError(f"blocked tool result should expose actionBlocked=true, got {blocked_payload}")
+    if blocked_payload.get("blockedReason") != "legacy_action_disabled":
+        raise AssertionError(f"blocked tool result should expose reason, got {blocked_payload}")
+    if "legacy_action_disabled" not in str(blocked_result.get("content")):
+        raise AssertionError(f"blocked tool result text should include reason, got {blocked_result}")
+    denied_result = server.tool_result({"allowed": False, "errorCode": "action_forbidden_by_policy"})
+    denied_payload = denied_result.get("structuredContent") or {}
+    if denied_payload.get("ok") is not False or denied_payload.get("blockedReason") != "action_forbidden_by_policy":
+        raise AssertionError(f"allowed=false tool result should expose blocked reason, got {denied_payload}")
+    gate_result = server.tool_result({"schemaVersion": "workflow_convergence_gate_result.v1", "status": "blocked", "reason": "generic_orchestration_context_required"})
+    gate_payload = gate_result.get("structuredContent") or {}
+    if gate_payload.get("actionBlocked") is not True or gate_payload.get("blockedReason") != "generic_orchestration_context_required":
+        raise AssertionError(f"convergence gate blocked result should expose actionBlocked, got {gate_payload}")
+    health_result = server.tool_result({"schemaVersion": "workflow_health.v1", "status": "blocked", "blockers": [{"severity": "critical"}]})
+    health_payload = health_result.get("structuredContent") or {}
+    if health_payload.get("actionBlocked"):
+        raise AssertionError(f"health/status payload should not be treated as actionBlocked, got {health_payload}")
+    health_reason_result = server.tool_result({"schemaVersion": "workflow_health.v1", "status": "blocked", "reason": "action_forbidden_by_policy"})
+    health_reason_payload = health_reason_result.get("structuredContent") or {}
+    if health_reason_payload.get("actionBlocked"):
+        raise AssertionError(f"health/status reason should not be treated as actionBlocked, got {health_reason_payload}")
+    normal_result = server.tool_result({"ok": True, "status": "ok"})
+    normal_payload = normal_result.get("structuredContent") or {}
+    if normal_payload.get("actionBlocked"):
+        raise AssertionError(f"normal tool result should not expose actionBlocked, got {normal_payload}")
     captured_schedule: dict[str, object] = {}
 
     def fake_run_workflow_action(payload: dict[str, object], root_dir=None) -> dict[str, object]:
