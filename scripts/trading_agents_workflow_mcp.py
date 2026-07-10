@@ -165,6 +165,39 @@ def run(cmd: list[str], cwd: Path | None = None, timeout: int = 30) -> dict[str,
     }
 
 
+def workflow_action_blocked(payload: dict[str, Any]) -> bool:
+    return isinstance(payload, dict) and (payload.get("allowed") is False or payload.get("status") == "blocked")
+
+
+def workflow_blocked_reason_from_text(text: str) -> str:
+    for reason in ("legacy_action_disabled", "generic_orchestration_context_required"):
+        if reason in text:
+            return reason
+    return ""
+
+
+def cli_tool_response(source: str, cwd: Path | str, workflow_root: str, result: dict[str, Any], payload: dict[str, Any], cli_args: list[str]) -> dict[str, Any]:
+    action_blocked = workflow_action_blocked(payload)
+    blocked_reason = payload.get("reason") or payload.get("errorCode") or payload.get("status") if isinstance(payload, dict) else ""
+    if not blocked_reason:
+        blocked_reason = workflow_blocked_reason_from_text(f"{result.get('stdout') or ''}\n{result.get('stderr') or ''}")
+    if blocked_reason in {"legacy_action_disabled", "generic_orchestration_context_required"}:
+        action_blocked = True
+    response = {
+        "source": source,
+        "ok": bool(result.get("ok")) and not action_blocked,
+        "codePath": str(cwd),
+        "workflowRoot": workflow_root,
+        "result": payload,
+        "command": cli_args[:3] + ["..."],
+        "runner": result,
+    }
+    if action_blocked:
+        response["actionBlocked"] = True
+        response["blockedReason"] = blocked_reason or "blocked"
+    return response
+
+
 def split_hosts(value: str | None) -> list[str]:
     if not value:
         return []
@@ -997,16 +1030,8 @@ def message_flow_send(args: dict[str, Any]) -> dict[str, Any]:
         payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
     except json.JSONDecodeError:
         payload = {}
-    response = {
-        "source": source,
-        "ok": result.get("ok"),
-        "codePath": str(cwd),
-        "workflowRoot": workflow_root,
-        "result": payload,
-        "command": cli_args[:3] + ["..."],
-        "runner": result,
-    }
-    audit({"event": "message_flow_send", "source": source, "ok": result.get("ok"), "target_count": len(targets)})
+    response = cli_tool_response(source, cwd, workflow_root, result, payload, cli_args)
+    audit({"event": "message_flow_send", "source": source, "ok": response.get("ok"), "target_count": len(targets)})
     return response
 
 
@@ -1066,16 +1091,8 @@ def workflow_task_draft(args: dict[str, Any]) -> dict[str, Any]:
         payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
     except json.JSONDecodeError:
         payload = {}
-    response = {
-        "source": source,
-        "ok": result.get("ok"),
-        "codePath": str(cwd),
-        "workflowRoot": workflow_root,
-        "result": payload,
-        "command": cli_args[:3] + ["..."],
-        "runner": result,
-    }
-    audit({"event": "workflow_task_draft", "source": source, "ok": result.get("ok"), "participant_count": len(participants)})
+    response = cli_tool_response(source, cwd, workflow_root, result, payload, cli_args)
+    audit({"event": "workflow_task_draft", "source": source, "ok": response.get("ok"), "participant_count": len(participants)})
     return response
 
 
@@ -1142,16 +1159,8 @@ def workflow_task_launch_prepare(args: dict[str, Any]) -> dict[str, Any]:
         payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
     except json.JSONDecodeError:
         payload = {}
-    response = {
-        "source": source,
-        "ok": result.get("ok"),
-        "codePath": str(cwd),
-        "workflowRoot": workflow_root,
-        "result": payload,
-        "command": cli_args[:3] + ["..."],
-        "runner": result,
-    }
-    audit({"event": "workflow_task_launch_prepare", "source": source, "ok": result.get("ok"), "participant_count": len(participants)})
+    response = cli_tool_response(source, cwd, workflow_root, result, payload, cli_args)
+    audit({"event": "workflow_task_launch_prepare", "source": source, "ok": response.get("ok"), "participant_count": len(participants)})
     return response
 
 
@@ -1179,8 +1188,8 @@ def workflow_task_launch_list(args: dict[str, Any]) -> dict[str, Any]:
         quoted = " ".join(shlex.quote(part) for part in cli_args)
         result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90)
     payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
-    response = {"source": source, "ok": result.get("ok"), "codePath": str(cwd), "workflowRoot": workflow_root, "result": payload, "command": cli_args[:3] + ["..."], "runner": result}
-    audit({"event": "workflow_task_launch_list", "source": source, "ok": result.get("ok")})
+    response = cli_tool_response(source, cwd, workflow_root, result, payload, cli_args)
+    audit({"event": "workflow_task_launch_list", "source": source, "ok": response.get("ok")})
     return response
 
 
@@ -1213,8 +1222,8 @@ def workflow_task_launch_approve(args: dict[str, Any]) -> dict[str, Any]:
         quoted = " ".join(shlex.quote(part) for part in cli_args)
         result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90, allow_fallback=False)
     payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
-    response = {"source": source, "ok": result.get("ok"), "codePath": str(cwd), "workflowRoot": workflow_root, "result": payload, "command": cli_args[:3] + ["..."], "runner": result}
-    audit({"event": "workflow_task_launch_approve", "source": source, "ok": result.get("ok"), "draft_id": draft_id})
+    response = cli_tool_response(source, cwd, workflow_root, result, payload, cli_args)
+    audit({"event": "workflow_task_launch_approve", "source": source, "ok": response.get("ok"), "draft_id": draft_id})
     return response
 
 
@@ -1248,8 +1257,8 @@ def workflow_task_launch_review(args: dict[str, Any]) -> dict[str, Any]:
         quoted = " ".join(shlex.quote(part) for part in cli_args)
         result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90, allow_fallback=False)
     payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
-    response = {"source": source, "ok": result.get("ok"), "codePath": str(cwd), "workflowRoot": workflow_root, "result": payload, "command": cli_args[:3] + ["..."], "runner": result}
-    audit({"event": "workflow_task_launch_review", "source": source, "ok": result.get("ok"), "draft_id": draft_id})
+    response = cli_tool_response(source, cwd, workflow_root, result, payload, cli_args)
+    audit({"event": "workflow_task_launch_review", "source": source, "ok": response.get("ok"), "draft_id": draft_id})
     return response
 
 
@@ -1479,7 +1488,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_launch_prepare": {
-        "description": "Legacy compatibility surface for persisting a Cat-Claw-drafted Task Launch Package as canonical JSON/Markdown for Cat Brain review. Mutates workflow state but does not launch tasks; production workflow execution should prefer approved templates.",
+        "description": "Legacy compatibility surface for persisting a Cat-Claw-drafted Task Launch Package as canonical JSON/Markdown for Cat Brain review. Mutates workflow state but does not launch tasks; the core legacy action gate blocks it by default unless legacy compatibility is explicitly enabled. Production workflow execution should prefer approved templates.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1555,7 +1564,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_launch_approve": {
-        "description": "Legacy compatibility approval that materializes workflow_tasks from a Task Launch Package. Does not auto-dispatch; production execution should prefer approved templates.",
+        "description": "Legacy compatibility approval that materializes workflow_tasks from a Task Launch Package. Does not auto-dispatch; the core legacy action gate blocks it by default unless legacy compatibility is explicitly enabled. Production execution should prefer approved templates.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1575,7 +1584,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_launch_review": {
-        "description": "Record Cat Brain review of a legacy Task Launch Package before Flashcat launch approval.",
+        "description": "Record Cat Brain review of a legacy Task Launch Package before Flashcat launch approval. Legacy mutation is blocked by default unless compatibility is explicitly enabled.",
         "inputSchema": {
             "type": "object",
             "properties": {

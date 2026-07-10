@@ -10365,6 +10365,46 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(genericAdapterClaim.allowed, false);
     assert.equal(genericAdapterClaim.reason, "generic_orchestration_context_required");
 
+    const blockedLegacyMcpMutation = (name, args) => {
+      const request = {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: { source: "local", ...args } }
+      };
+      const output = execFileSync("python3", [path.resolve("scripts/trading_agents_workflow_mcp.py")], {
+        cwd: process.cwd(),
+        input: `${JSON.stringify(request)}\n`,
+        encoding: "utf8",
+        env: { ...process.env, TRADING_AGENTS_WORKFLOW_ROOT: root }
+      }).trim();
+      const response = JSON.parse(output.split("\n").at(-1));
+      return response.result.structuredContent;
+    };
+    for (const [toolName, toolArgs] of [
+      ["workflow_task_launch_prepare", {
+        objective: "legacy MCP prepare should surface core gate blocking",
+        workflow_id: "wf-convergence-mcp-legacy",
+        participant: ["cat_body"]
+      }],
+      ["workflow_task_launch_review", {
+        draft_id: "missing-draft",
+        opinion: "legacy MCP review should surface core gate blocking"
+      }],
+      ["workflow_task_launch_approve", {
+        draft_id: "missing-draft",
+        feedback_text: "legacy MCP approve should surface core gate blocking"
+      }]
+    ]) {
+      const mcpBlocked = blockedLegacyMcpMutation(toolName, toolArgs);
+      assert.equal(mcpBlocked.runner.ok, true, `${toolName} runner should succeed because core returns structured block JSON`);
+      assert.equal(mcpBlocked.ok, false, `${toolName} top-level ok should reflect blocked workflow action`);
+      assert.equal(mcpBlocked.actionBlocked, true, `${toolName} should expose actionBlocked`);
+      assert.equal(mcpBlocked.blockedReason, "legacy_action_disabled", `${toolName} should expose legacy block reason`);
+      assert.equal(mcpBlocked.result.status, "blocked", `${toolName} core result should be blocked`);
+      assert.equal(mcpBlocked.result.allowed, false, `${toolName} core result should be denied`);
+    }
+
     await assertRejectsMessage(
       () => runAction(root, {
         action: "workflow.schedule.upsert",
