@@ -284,6 +284,7 @@ export function operatorActionSignatureOk(req, options = {}, bodyText = "") {
 
 export async function workflowChildPayload(readModel, workflowId, child = "", query = {}) {
   if (!child) return await readModel.workflowDetail(workflowId);
+  if (child === "v2") return await readModel.workflowV2(workflowId, query);
   if (child === "phases") return await readModel.phases(workflowId);
   if (child === "tasks") return await readModel.tasks(workflowId);
   if (child === "dispatches") return await readModel.dispatches(workflowId, query);

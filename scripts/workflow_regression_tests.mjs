@@ -17960,6 +17960,82 @@ ORDER BY created_at ASC;`);
   assert.equal(rows.some((row) => String(row.reason || "").includes("abc")), false);
 }
 
+async function testWorkflowV2ConsoleReadModelVisibility() {
+  const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-console-read-model");
+  const { root, dbFile, workflowId } = fixture;
+  const worker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
+    workerRunId: "worker-v2-console-read-model",
+    runtimeBackend: "hermers_docker_worker",
+    contextBudgetTokens: 1000,
+    payload: {
+      outputSummary: "Console read model worker payload.",
+      apiKey: "secret-console-read-model"
+    }
+  }));
+  assert.equal(worker.valid, true);
+  const claim = await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-console-read-model",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-08T00:00:00.000Z"
+  });
+  assert.equal(claim.workerResults[0].status, "leased_waiting_adapter");
+  const lease = sqliteJson(dbFile, `
+SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil
+FROM workflow_v2_worker_runs
+WHERE worker_run_id='worker-v2-console-read-model'
+LIMIT 1;`)[0];
+  await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: "worker-v2-console-read-model",
+    leaseOwner: lease.leaseOwner,
+    leaseUntil: lease.leaseUntil,
+    generatedAt: "2026-07-08T00:00:01.000Z"
+  });
+
+  const readModel = new WorkflowReadModel({ dbFile });
+  const v2 = await readModel.workflowV2(workflowId);
+  assert.equal(v2.schemaVersion, "workflow_console_v2_summary.v1");
+  assert.equal(v2.source, "workflow_v2");
+  assert.equal(v2.status, "ok");
+  assert.equal(v2.summary.planCount, 1);
+  assert.equal(v2.summary.nodeCount >= 1, true);
+  assert.equal(v2.summary.workerRunCount, 1);
+  assert.equal(v2.summary.adapterJobCount, 1);
+  assert.equal(v2.summary.selectedPlan.planId, "plan-v2-kernel");
+  assert.equal(v2.plans[0].planId, "plan-v2-kernel");
+  assert.equal(Boolean(v2.nodes.some((row) => row.nodeId === v2KernelManagerWorkerNode(fixture.plan).nodeId)), true);
+  assert.equal(v2.workerRuns[0].workerRunId, "worker-v2-console-read-model");
+  assert.equal(v2.adapterJobs[0].workerRunId, "worker-v2-console-read-model");
+  assert.equal(JSON.stringify(v2).includes("secret-console-read-model"), false);
+  assert.equal(JSON.stringify(v2).includes("[redacted]"), true);
+  const palette = await readModel.commandPalette();
+  const v2Command = palette.commands.find((commandItem) => commandItem.id === `workflow.v2:${workflowId}`);
+  assert.equal(v2Command?.target?.tab, "v2");
+  assert.equal(v2Command?.sourceRefs.some((ref) => ref.source === "workflow_v2_plans"), true);
+
+  const routed = await workflowChildPayload(readModel, workflowId, "v2", { limit: 20 });
+  assert.equal(routed.schemaVersion, "workflow_console_v2_summary.v1");
+  assert.equal(routed.summary.adapterJobCount, 1);
+  assert.equal(await workflowChildPayload(readModel, "wf-v2-console-read-model-missing-id", "v2"), undefined);
+  assert.equal(await readModel.workflowV2("wf-v2-console-read-model-missing-id"), undefined);
+
+  const missingRoot = await tempRoot("workflow-v2-console-read-model-missing");
+  const missingDbFile = path.join(missingRoot, "tracking.db");
+  const missing = await new WorkflowReadModel({ dbFile: missingDbFile }).workflowV2("wf-missing");
+  assert.equal(missing.status, "missing_schema");
+  assert.equal(missing.source, "missing_table");
+  assert.equal(missing.summary.planCount, 0);
+
+  const appSource = await fs.readFile(path.resolve("static/console/app.js"), "utf8");
+  const htmlSource = await fs.readFile(path.resolve("static/console/index.html"), "utf8");
+  assert.equal(appSource.includes("function renderWorkflowV2"), true);
+  assert.equal(appSource.includes('state.tab === "v2"'), true);
+  assert.equal(htmlSource.includes('data-tab="v2"'), true);
+}
+
 async function testWorkflowSessionStoreCli() {
   const root = await tempRoot("session-store-cli");
   const pack = workflowCliJson([
@@ -18520,6 +18596,7 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   assert.equal(palette.commands.some((commandItem) => commandItem.id === "nav.command" && commandItem.target.consoleView === "command-center"), true);
   assert.equal(palette.commands.some((commandItem) => commandItem.id === "nav.activity" && commandItem.target.consoleView === "activity"), true);
   assert.equal(palette.commands.some((commandItem) => commandItem.id === `workflow.open:${workflowId}` && commandItem.target.workflowId === workflowId && commandItem.target.tab === "overview"), true);
+  assert.equal(palette.commands.some((commandItem) => commandItem.id === `workflow.v2:${workflowId}` && commandItem.target.workflowId === workflowId && commandItem.target.tab === "v2"), true);
   assert.equal(palette.commands.some((commandItem) => commandItem.id === `workflow.evidence:${workflowId}` && commandItem.target.consoleView === "evidence-workspace"), true);
   assert.equal(palette.commands.some((commandItem) => commandItem.id === "agent.open:cat_body" && commandItem.target.consoleView === "agent-board" && commandItem.target.agentId === "cat_body"), true);
   assert.equal(JSON.stringify(palette).includes("leakabc"), false);
@@ -20448,6 +20525,8 @@ return { sourceRefDrilldownTargets };`)();
   assert.equal(targetLabels({ source: "human_gate_buttons", field: "button_id", id: "button-a" }, { workflowId: "wf-a" }).includes("Gate Readiness"), true);
   assert.equal(targetLabels({ source: "incident_states", field: "incident_id", id: "incident-a" }, { workflowId: "wf-a" }).includes("Incidents"), true);
   assert.equal(targetLabels({ source: "side_effect_ledger", field: "side_effect_id", id: "side-a" }, { workflowId: "wf-a" }).includes("Evidence Desk"), true);
+  assert.deepEqual(targetLabels({ source: "workflow_v2_plans", field: "workflow_id", id: "wf-a" }), ["Workflow", "V2", "Evidence", "Operations"]);
+  assert.equal(targetLabels({ source: "workflow_v2_worker_runs", field: "worker_run_id", id: "worker-a" }, { workflowId: "wf-a" }).includes("V2"), true);
   assert.deepEqual(targetLabels({ source: "mixed_meeting_dispatches", field: "dispatch_id", id: "dispatch-a" }), ["Operations"]);
   assert.deepEqual(targetLabels({ source: "message_flows", field: "flow_id", id: "flow-a" }), []);
   assert.deepEqual(targetLabels({ source: "telegram_outbox", field: "outbox_id", id: "outbox-a" }), ["Operations"]);
@@ -20860,6 +20939,7 @@ try {
     ["workflow permission gate", testWorkflowPermissionGate],
     ["workflow action policy registry coverage", testWorkflowActionPolicyRegistryCoverage],
     ["workflow v2 permission and console gate", testWorkflowV2PermissionAndConsoleGate],
+    ["workflow v2 console read model visibility", testWorkflowV2ConsoleReadModelVisibility],
     ["workflow session store", testWorkflowSessionStore],
     ["workflow session runs legacy schema migration", testWorkflowSessionRunsLegacySchemaMigration],
     ["workflow task draft pure preview", testWorkflowTaskDraftPurePreview],

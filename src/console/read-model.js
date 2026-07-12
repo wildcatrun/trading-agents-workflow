@@ -64,6 +64,278 @@ function parseWorkflowRow(row) {
   };
 }
 
+function workflowV2JsonObject(value, fallback = {}) {
+  const parsed = parseJson(value, fallback);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
+}
+
+function workflowV2JsonArray(value, fallback = []) {
+  const parsed = parseJson(value, fallback);
+  return Array.isArray(parsed) ? parsed : fallback;
+}
+
+function workflowV2StatusCounts(rows = [], field = "status") {
+  return Object.values(rows.reduce((acc, row) => {
+    const status = String(row[field] || "unknown");
+    acc[status] ||= { status, count: 0 };
+    acc[status].count += 1;
+    return acc;
+  }, {})).sort((a, b) => Number(b.count || 0) - Number(a.count || 0) || a.status.localeCompare(b.status));
+}
+
+function workflowV2LatestAt(groups = []) {
+  return groups
+    .flatMap((group) => group.map((item) => item.updatedAt || item.createdAt || item.completedAt || item.startedAt || ""))
+    .filter(Boolean)
+    .sort()
+    .pop() || "";
+}
+
+function parseWorkflowV2PlanRow(row = {}) {
+  const payload = redactConsoleValue(workflowV2JsonObject(row.payload_json, {}));
+  const templateBinding = workflowV2JsonObject(payload.fixedTemplatePlan, {});
+  const templateRequirement = workflowV2JsonObject(payload.templateRequirement, {});
+  const orchestration = workflowV2JsonObject(payload.orchestration, {});
+  return {
+    planId: redactText(row.plan_id || ""),
+    workflowId: redactText(row.workflow_id || ""),
+    planRevision: toInt(row.plan_revision),
+    status: row.status || "",
+    workflowState: row.workflow_state || "",
+    taskOwnerAgent: redactText(row.task_owner_agent || ""),
+    plannerAgent: redactText(row.planner_agent || ""),
+    objective: redactText(row.objective || ""),
+    participantManagers: redactConsoleValue(workflowV2JsonArray(row.participant_managers_json, [])),
+    acceptanceCriteria: redactConsoleValue(workflowV2JsonArray(row.acceptance_criteria_json, [])),
+    constraints: redactConsoleValue(workflowV2JsonObject(row.constraints_json, {})),
+    humanGatePolicy: redactConsoleValue(workflowV2JsonObject(row.human_gate_policy_json, {})),
+    orchestrationPattern: orchestration.pattern || "",
+    riskTier: templateRequirement.riskTier || payload.riskTier || payload.risk_tier || "",
+    fixedTemplatePlan: Boolean(templateBinding.present && templateBinding.fixedPlan),
+    templateBinding,
+    templateRequirement,
+    planSpecArtifactRef: redactText(row.plan_spec_artifact_ref || payload.planSpecV2ArtifactRef || ""),
+    planSpecArtifactHash: row.plan_spec_artifact_hash || payload.planSpecV2Hash || "",
+    payload,
+    createdBy: redactText(row.created_by || ""),
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function parseWorkflowV2NodeRow(row = {}) {
+  return {
+    nodeId: redactText(row.node_id || ""),
+    planId: redactText(row.plan_id || ""),
+    workflowId: redactText(row.workflow_id || ""),
+    parentNodeId: redactText(row.parent_node_id || ""),
+    nodeType: row.node_type || "",
+    status: row.status || "",
+    ownerAgent: redactText(row.owner_agent || ""),
+    runtimeBackend: redactText(row.runtime_backend || ""),
+    sessionId: redactText(row.session_id || ""),
+    dependsOn: redactConsoleValue(workflowV2JsonArray(row.depends_on_json, [])),
+    inputInfoId: redactText(row.input_info_id || ""),
+    outputInfoId: redactText(row.output_info_id || ""),
+    payload: redactConsoleValue(workflowV2JsonObject(row.payload_json, {})),
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function parseWorkflowV2WorkerRunRow(row = {}) {
+  return {
+    workerRunId: redactText(row.worker_run_id || ""),
+    workflowId: redactText(row.workflow_id || ""),
+    planId: redactText(row.plan_id || ""),
+    nodeId: redactText(row.node_id || ""),
+    parentWorkerRunId: redactText(row.parent_worker_run_id || ""),
+    supersedesWorkerRunId: redactText(row.supersedes_worker_run_id || ""),
+    successorWorkerRunId: redactText(row.successor_worker_run_id || ""),
+    workerGeneration: toInt(row.worker_generation),
+    managerAgent: redactText(row.manager_agent || ""),
+    workerAgentId: redactText(row.worker_agent_id || ""),
+    sessionId: redactText(row.session_id || ""),
+    sessionRunId: redactText(row.session_run_id || ""),
+    preflightId: redactText(row.preflight_id || ""),
+    runtimeBackend: redactText(row.runtime_backend || ""),
+    status: row.status || "",
+    attempt: toInt(row.attempt),
+    maxAttempts: toInt(row.max_attempts),
+    leaseOwner: redactText(row.lease_owner || ""),
+    leaseUntil: row.lease_until || "",
+    nextRetryAt: row.next_retry_at || "",
+    taskInputInfoId: redactText(row.task_input_info_id || ""),
+    outputInfoId: redactText(row.output_info_id || ""),
+    handoffInfoId: redactText(row.handoff_info_id || ""),
+    receiptRef: redactText(row.receipt_ref || ""),
+    lastError: redactText(row.last_error || ""),
+    contextBudgetTokens: toInt(row.context_budget_tokens),
+    contextUsedTokens: toInt(row.context_used_tokens),
+    compactionCount: toInt(row.compaction_count),
+    sourceContextRefs: redactConsoleValue(workflowV2JsonArray(row.source_context_refs_json, [])),
+    payload: redactConsoleValue(workflowV2JsonObject(row.payload_json, {})),
+    startedAt: row.started_at || "",
+    completedAt: row.completed_at || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function parseWorkflowV2AdapterJobRow(row = {}) {
+  return {
+    adapterJobId: redactText(row.adapter_job_id || ""),
+    workflowId: redactText(row.workflow_id || ""),
+    planId: redactText(row.plan_id || ""),
+    nodeId: redactText(row.node_id || ""),
+    workerRunId: redactText(row.worker_run_id || ""),
+    sessionRunId: redactText(row.session_run_id || ""),
+    runtimeBackend: redactText(row.runtime_backend || ""),
+    workerAttempt: toInt(row.worker_attempt),
+    runnerAttempt: toInt(row.runner_attempt),
+    maxRunnerAttempts: toInt(row.max_runner_attempts),
+    status: row.status || "",
+    leaseOwner: redactText(row.lease_owner || ""),
+    leaseUntil: row.lease_until || "",
+    nextRetryAt: row.next_retry_at || "",
+    runnerId: redactText(row.runner_id || ""),
+    artifactRef: redactText(row.artifact_ref || ""),
+    artifactId: redactText(row.artifact_id || ""),
+    infoId: redactText(row.info_id || ""),
+    manifestHash: row.manifest_hash || "",
+    runnerReceiptRef: redactText(row.runner_receipt_ref || ""),
+    lastError: redactText(row.last_error || ""),
+    payload: redactConsoleValue(workflowV2JsonObject(row.payload_json, {})),
+    createdBy: redactText(row.created_by || ""),
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+    completedAt: row.completed_at || ""
+  };
+}
+
+function parseWorkflowV2HandoffRow(row = {}) {
+  return {
+    handoffId: redactText(row.handoff_id || ""),
+    workflowId: redactText(row.workflow_id || ""),
+    planId: redactText(row.plan_id || ""),
+    nodeId: redactText(row.node_id || ""),
+    workerRunId: redactText(row.worker_run_id || ""),
+    managerAgent: redactText(row.manager_agent || ""),
+    successorWorkerRunId: redactText(row.successor_worker_run_id || ""),
+    handoffInfoId: redactText(row.handoff_info_id || ""),
+    status: row.status || "",
+    reason: redactText(row.reason || ""),
+    summary: redactText(row.summary || ""),
+    sourceContextRefs: redactConsoleValue(workflowV2JsonArray(row.source_context_refs_json, [])),
+    artifactRefs: redactConsoleValue(workflowV2JsonArray(row.artifact_refs_json, [])),
+    receiptRefs: redactConsoleValue(workflowV2JsonArray(row.receipt_refs_json, [])),
+    payload: redactConsoleValue(workflowV2JsonObject(row.payload_json, {})),
+    createdBy: redactText(row.created_by || ""),
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function parseWorkflowV2ManagerReviewRow(row = {}) {
+  return {
+    reviewId: redactText(row.review_id || ""),
+    workflowId: redactText(row.workflow_id || ""),
+    planId: redactText(row.plan_id || ""),
+    nodeId: redactText(row.node_id || ""),
+    workerRunId: redactText(row.worker_run_id || ""),
+    reviewerAgent: redactText(row.reviewer_agent || ""),
+    decision: row.decision || "",
+    summary: redactText(row.summary || ""),
+    findings: redactConsoleValue(workflowV2JsonArray(row.findings_json, [])),
+    artifactRefs: redactConsoleValue(workflowV2JsonArray(row.artifact_refs_json, [])),
+    receiptRefs: redactConsoleValue(workflowV2JsonArray(row.receipt_refs_json, [])),
+    blocker: redactConsoleValue(workflowV2JsonObject(row.blocker_json, {})),
+    payload: redactConsoleValue(workflowV2JsonObject(row.payload_json, {})),
+    createdAt: row.created_at || ""
+  };
+}
+
+function parseWorkflowV2OwnerReviewRow(row = {}) {
+  return {
+    reviewId: redactText(row.review_id || ""),
+    workflowId: redactText(row.workflow_id || ""),
+    planId: redactText(row.plan_id || ""),
+    ownerAgent: redactText(row.owner_agent || ""),
+    decision: row.decision || "",
+    summary: redactText(row.summary || ""),
+    managerReviewRefs: redactConsoleValue(workflowV2JsonArray(row.manager_review_refs_json, [])),
+    artifactRefs: redactConsoleValue(workflowV2JsonArray(row.artifact_refs_json, [])),
+    receiptRefs: redactConsoleValue(workflowV2JsonArray(row.receipt_refs_json, [])),
+    findings: redactConsoleValue(workflowV2JsonArray(row.findings_json, [])),
+    payload: redactConsoleValue(workflowV2JsonObject(row.payload_json, {})),
+    createdBy: redactText(row.created_by || ""),
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function parseWorkflowV2TaskGroupPackageRow(row = {}) {
+  return {
+    packageId: redactText(row.package_id || ""),
+    workflowId: redactText(row.workflow_id || ""),
+    planId: redactText(row.plan_id || ""),
+    ownerReviewId: redactText(row.owner_review_id || ""),
+    taskOwnerAgent: redactText(row.task_owner_agent || ""),
+    taskGroupAgents: redactConsoleValue(workflowV2JsonArray(row.task_group_agents_json, [])),
+    status: row.status || "",
+    summary: redactText(row.summary || ""),
+    managerReviewRefs: redactConsoleValue(workflowV2JsonArray(row.manager_review_refs_json, [])),
+    ownerReviewRefs: redactConsoleValue(workflowV2JsonArray(row.owner_review_refs_json, [])),
+    artifactRefs: redactConsoleValue(workflowV2JsonArray(row.artifact_refs_json, [])),
+    evidenceRefs: redactConsoleValue(workflowV2JsonArray(row.evidence_refs_json, [])),
+    payload: redactConsoleValue(workflowV2JsonObject(row.payload_json, {})),
+    createdBy: redactText(row.created_by || ""),
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function parseWorkflowV2AuditRow(row = {}, type = "cat_brain") {
+  return {
+    auditId: redactText(row.audit_id || ""),
+    workflowId: redactText(row.workflow_id || ""),
+    planId: redactText(row.plan_id || ""),
+    taskGroupPackageId: redactText(row.task_group_package_id || ""),
+    catBrainAuditId: redactText(row.cat_brain_audit_id || ""),
+    agent: redactText(type === "cat_claw" ? row.cat_claw_agent || "" : row.cat_brain_agent || ""),
+    decision: row.decision || "",
+    scope: row.scope || "",
+    summary: redactText(row.summary || ""),
+    findings: redactConsoleValue(workflowV2JsonArray(row.findings_json, [])),
+    checks: redactConsoleValue(workflowV2JsonArray(row.checks_json, [])),
+    evidenceRefs: redactConsoleValue(workflowV2JsonArray(row.evidence_refs_json, [])),
+    payload: redactConsoleValue(workflowV2JsonObject(row.payload_json, {})),
+    createdBy: redactText(row.created_by || ""),
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function parseWorkflowV2HumanGatePackageRow(row = {}) {
+  return {
+    packageId: redactText(row.package_id || ""),
+    workflowId: redactText(row.workflow_id || ""),
+    planId: redactText(row.plan_id || ""),
+    sourceReviewId: redactText(row.source_review_id || ""),
+    sourceCatClawAuditId: redactText(row.source_cat_claw_audit_id || ""),
+    catBrainAgent: redactText(row.cat_brain_agent || ""),
+    catClawAgent: redactText(row.cat_claw_agent || ""),
+    status: row.status || "",
+    options: redactConsoleValue(workflowV2JsonArray(row.options_json, [])),
+    requiredControls: redactConsoleValue(workflowV2JsonArray(row.required_controls_json, [])),
+    evidenceRefs: redactConsoleValue(workflowV2JsonArray(row.evidence_refs_json, [])),
+    payload: redactConsoleValue(workflowV2JsonObject(row.payload_json, {})),
+    createdBy: redactText(row.created_by || ""),
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
 function compactText(value, limit = 180) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (text.length <= limit) return text;
@@ -1084,6 +1356,240 @@ LIMIT ${limit};`);
     const list = await this.workflowList({ q: workflowId, limit: 50, view: "" });
     const enriched = list.workflows.find((item) => item.workflowId === workflowId);
     return enriched || parseWorkflowRow(rows[0]);
+  }
+
+  async workflowV2(workflowId, query = {}) {
+    const generatedAt = new Date().toISOString();
+    const id = String(workflowId || "").trim();
+    const limit = clampLimit(query.limit, 100, 500);
+    const tableNames = {
+      plans: "workflow_v2_plans",
+      nodes: "workflow_v2_plan_nodes",
+      workerRuns: "workflow_v2_worker_runs",
+      adapterJobs: "workflow_v2_worker_adapter_jobs",
+      handoffs: "workflow_v2_worker_handoffs",
+      managerReviews: "workflow_v2_manager_reviews",
+      ownerReviews: "workflow_v2_owner_reviews",
+      taskGroupPackages: "workflow_v2_task_group_packages",
+      catBrainAudits: "workflow_v2_cat_brain_audits",
+      catClawAudits: "workflow_v2_cat_claw_audits",
+      humanGatePackages: "workflow_v2_human_gate_packages"
+    };
+    const tableAvailability = {};
+    for (const [key, tableName] of Object.entries(tableNames)) {
+      tableAvailability[key] = await tableExists(this.paths.dbFile, tableName);
+    }
+    const missingTables = Object.entries(tableAvailability)
+      .filter(([, exists]) => !exists)
+      .map(([key]) => tableNames[key]);
+    const emptyPayload = {
+      schemaVersion: "workflow_console_v2_summary.v1",
+      generatedAt,
+      workflowId: redactText(id),
+      source: "missing_table",
+      status: "missing_schema",
+      summary: {
+        planCount: 0,
+        nodeCount: 0,
+        workerRunCount: 0,
+        adapterJobCount: 0,
+        handoffCount: 0,
+        managerReviewCount: 0,
+        ownerReviewCount: 0,
+        taskGroupPackageCount: 0,
+        catBrainAuditCount: 0,
+        catClawAuditCount: 0,
+        humanGatePackageCount: 0,
+        missingTables,
+        queryErrors: []
+      },
+      plans: [],
+      nodes: [],
+      workerRuns: [],
+      adapterJobs: [],
+      handoffs: [],
+      managerReviews: [],
+      ownerReviews: [],
+      taskGroupPackages: [],
+      catBrainAudits: [],
+      catClawAudits: [],
+      humanGatePackages: []
+    };
+    if (!tableAvailability.plans) return emptyPayload;
+
+    const queryErrors = [];
+    const workflowWhere = id ? `workflow_id=${sqlValue(id)}` : "1=1";
+    const readRows = async (key, sql, mapper) => {
+      if (!tableAvailability[key]) return [];
+      try {
+        return (await sqlite(this.paths.dbFile, sql)).map(mapper);
+      } catch (error) {
+        const message = compactText(redactText(String(error?.message || error || "")), 220);
+        missingTables.push(`${tableNames[key]}:query_error`);
+        queryErrors.push({ table: tableNames[key], error: message });
+        return [];
+      }
+    };
+    const plans = await readRows("plans", `
+SELECT *
+FROM workflow_v2_plans
+WHERE ${workflowWhere}
+ORDER BY updated_at DESC
+LIMIT ${sqlValue(limit)};`, parseWorkflowV2PlanRow);
+    const nodes = await readRows("nodes", `
+SELECT *
+FROM workflow_v2_plan_nodes
+WHERE ${workflowWhere}
+ORDER BY updated_at DESC
+LIMIT ${sqlValue(limit)};`, parseWorkflowV2NodeRow);
+    const workerRuns = await readRows("workerRuns", `
+SELECT *
+FROM workflow_v2_worker_runs
+WHERE ${workflowWhere}
+ORDER BY updated_at DESC
+LIMIT ${sqlValue(limit)};`, parseWorkflowV2WorkerRunRow);
+    const adapterJobs = await readRows("adapterJobs", `
+SELECT *
+FROM workflow_v2_worker_adapter_jobs
+WHERE ${workflowWhere}
+ORDER BY updated_at DESC
+LIMIT ${sqlValue(limit)};`, parseWorkflowV2AdapterJobRow);
+    const handoffs = await readRows("handoffs", `
+SELECT *
+FROM workflow_v2_worker_handoffs
+WHERE ${workflowWhere}
+ORDER BY updated_at DESC
+LIMIT ${sqlValue(limit)};`, parseWorkflowV2HandoffRow);
+    const managerReviews = await readRows("managerReviews", `
+SELECT *
+FROM workflow_v2_manager_reviews
+WHERE ${workflowWhere}
+ORDER BY created_at DESC
+LIMIT ${sqlValue(limit)};`, parseWorkflowV2ManagerReviewRow);
+    const ownerReviews = await readRows("ownerReviews", `
+SELECT *
+FROM workflow_v2_owner_reviews
+WHERE ${workflowWhere}
+ORDER BY updated_at DESC
+LIMIT ${sqlValue(limit)};`, parseWorkflowV2OwnerReviewRow);
+    const taskGroupPackages = await readRows("taskGroupPackages", `
+SELECT *
+FROM workflow_v2_task_group_packages
+WHERE ${workflowWhere}
+ORDER BY updated_at DESC
+LIMIT ${sqlValue(limit)};`, parseWorkflowV2TaskGroupPackageRow);
+    const catBrainAudits = await readRows("catBrainAudits", `
+SELECT *
+FROM workflow_v2_cat_brain_audits
+WHERE ${workflowWhere}
+ORDER BY updated_at DESC
+LIMIT ${sqlValue(limit)};`, (row) => parseWorkflowV2AuditRow(row, "cat_brain"));
+    const catClawAudits = await readRows("catClawAudits", `
+SELECT *
+FROM workflow_v2_cat_claw_audits
+WHERE ${workflowWhere}
+ORDER BY updated_at DESC
+LIMIT ${sqlValue(limit)};`, (row) => parseWorkflowV2AuditRow(row, "cat_claw"));
+    const humanGatePackages = await readRows("humanGatePackages", `
+SELECT *
+FROM workflow_v2_human_gate_packages
+WHERE ${workflowWhere}
+ORDER BY updated_at DESC
+LIMIT ${sqlValue(limit)};`, parseWorkflowV2HumanGatePackageRow);
+
+    const hasV2Rows = [
+      plans,
+      nodes,
+      workerRuns,
+      adapterJobs,
+      handoffs,
+      managerReviews,
+      ownerReviews,
+      taskGroupPackages,
+      catBrainAudits,
+      catClawAudits,
+      humanGatePackages
+    ].some((rows) => rows.length > 0);
+    if (id && !hasV2Rows) {
+      const hasWorkflowRuns = await tableExists(this.paths.dbFile, "workflow_runs");
+      const workflowRows = hasWorkflowRuns
+        ? await sqlite(this.paths.dbFile, `SELECT workflow_id FROM workflow_runs WHERE workflow_id=${sqlValue(id)} LIMIT 1;`)
+        : [];
+      if (!workflowRows[0]) return undefined;
+    }
+
+    const latestPlan = plans[0] || null;
+    const riskTiers = new Set(["high", "critical", "production", "trading", "live"]);
+    const summary = {
+      planCount: plans.length,
+      nodeCount: nodes.length,
+      workerRunCount: workerRuns.length,
+      adapterJobCount: adapterJobs.length,
+      handoffCount: handoffs.length,
+      managerReviewCount: managerReviews.length,
+      ownerReviewCount: ownerReviews.length,
+      taskGroupPackageCount: taskGroupPackages.length,
+      catBrainAuditCount: catBrainAudits.length,
+      catClawAuditCount: catClawAudits.length,
+      humanGatePackageCount: humanGatePackages.length,
+      fixedTemplatePlanCount: plans.filter((plan) => plan.fixedTemplatePlan).length,
+      templateBoundPlanCount: plans.filter((plan) => Boolean(plan.templateBinding?.present)).length,
+      highRiskPlanCount: plans.filter((plan) => riskTiers.has(String(plan.riskTier || "").toLowerCase())).length,
+      planStatusCounts: workflowV2StatusCounts(plans),
+      workflowStateCounts: workflowV2StatusCounts(plans, "workflowState"),
+      nodeStatusCounts: workflowV2StatusCounts(nodes),
+      workerStatusCounts: workflowV2StatusCounts(workerRuns),
+      adapterJobStatusCounts: workflowV2StatusCounts(adapterJobs),
+      humanGatePackageStatusCounts: workflowV2StatusCounts(humanGatePackages),
+      selectedPlan: latestPlan ? {
+        planId: latestPlan.planId,
+        planRevision: latestPlan.planRevision,
+        status: latestPlan.status,
+        workflowState: latestPlan.workflowState,
+        orchestrationPattern: latestPlan.orchestrationPattern,
+        taskOwnerAgent: latestPlan.taskOwnerAgent,
+        fixedTemplatePlan: latestPlan.fixedTemplatePlan,
+        templateId: latestPlan.templateBinding?.templateId || "",
+        templateVersion: latestPlan.templateBinding?.version || 0,
+        riskTier: latestPlan.riskTier || "",
+        updatedAt: latestPlan.updatedAt
+      } : null,
+      latestUpdatedAt: workflowV2LatestAt([
+        plans,
+        nodes,
+        workerRuns,
+        adapterJobs,
+        handoffs,
+        managerReviews,
+        ownerReviews,
+        taskGroupPackages,
+        catBrainAudits,
+        catClawAudits,
+        humanGatePackages
+      ]),
+      missingTables,
+      queryErrors
+    };
+    return {
+      schemaVersion: "workflow_console_v2_summary.v1",
+      generatedAt,
+      workflowId: redactText(id),
+      source: "workflow_v2",
+      status: missingTables.length ? "partial" : "ok",
+      limit,
+      summary,
+      plans,
+      nodes,
+      workerRuns,
+      adapterJobs,
+      handoffs,
+      managerReviews,
+      ownerReviews,
+      taskGroupPackages,
+      catBrainAudits,
+      catClawAudits,
+      humanGatePackages
+    };
   }
 
   async globalSearch(query = {}) {
@@ -3950,6 +4456,28 @@ LIMIT 120;`) : Promise.resolve([])
       this.runtimeAgents(),
       this.health()
     ]);
+    let v2PlanRows = [];
+    if (await tableExists(this.paths.dbFile, "workflow_v2_plans")) {
+      const planColumns = await tableColumnSet(this.paths.dbFile, "workflow_v2_plans");
+      const orderBy = planColumns.has("updated_at") ? "updated_at DESC" : "plan_id ASC";
+      try {
+        v2PlanRows = await sqlite(this.paths.dbFile, `
+SELECT
+  ${columnExpr(planColumns, "workflow_id", "''")},
+  ${columnExpr(planColumns, "plan_id", "''")},
+  ${columnExpr(planColumns, "status", "''")},
+  ${columnExpr(planColumns, "workflow_state", "''")},
+  ${columnExpr(planColumns, "task_owner_agent", "''")},
+  ${columnExpr(planColumns, "objective", "''")},
+  ${columnExpr(planColumns, "payload_json", "'{}'")},
+  ${columnExpr(planColumns, "updated_at", "''")}
+FROM workflow_v2_plans
+ORDER BY ${orderBy}
+LIMIT ${sqlValue(workflowLimit)};`);
+      } catch {
+        v2PlanRows = [];
+      }
+    }
     const commands = [];
     const pushCommand = (item = {}) => {
       if (!item.id || !item.title || !item.target?.consoleView) return;
@@ -3988,6 +4516,7 @@ LIMIT 120;`) : Promise.resolve([])
       target,
       keywords: [title, subtitle, target.consoleView]
     }));
+    const workflowIdsWithV2Command = new Set();
     for (const workflow of workflows.workflows || []) {
       const workflowId = workflow.workflowId || "";
       const status = workflow.status || "unknown";
@@ -4002,6 +4531,17 @@ LIMIT 120;`) : Promise.resolve([])
         keywords: [workflowId, status, workflow.ownerAgent, workflow.currentPhase, workflow.currentDecision],
         sourceRefs: [{ source: "workflow_runs", field: "workflow_id", id: workflowId }]
       });
+      pushCommand({
+        id: `workflow.v2:${workflowId}`,
+        group: "workflows",
+        title: `V2 ${workflowId}`,
+        subtitle,
+        tone: status,
+        target: { consoleView: "workflows", workflowId, tab: "v2" },
+        keywords: [workflowId, "v2", "plan", "fixed_template", "worker", "adapter", workflow.ownerAgent],
+        sourceRefs: [{ source: "workflow_runs", field: "workflow_id", id: workflowId }]
+      });
+      workflowIdsWithV2Command.add(workflowId);
       pushCommand({
         id: `workflow.evidence:${workflowId}`,
         group: "evidence",
@@ -4032,6 +4572,26 @@ LIMIT 120;`) : Promise.resolve([])
         keywords: [workflowId, "kanban", "board", "dispatch", "message_flow"],
         sourceRefs: [{ source: "workflow_runs", field: "workflow_id", id: workflowId }]
       });
+    }
+    for (const row of v2PlanRows) {
+      const workflowId = row.workflow_id || "";
+      if (!workflowId || workflowIdsWithV2Command.has(workflowId)) continue;
+      const payload = workflowV2JsonObject(row.payload_json, {});
+      const binding = workflowV2JsonObject(payload.fixedTemplatePlan, {});
+      pushCommand({
+        id: `workflow.v2:${workflowId}`,
+        group: "workflows",
+        title: `V2 ${workflowId}`,
+        subtitle: row.objective || row.plan_id || "Workflow v2 plan",
+        tone: row.workflow_state || row.status || "neutral",
+        target: { consoleView: "workflows", workflowId, tab: "v2" },
+        keywords: [workflowId, row.plan_id, row.status, row.workflow_state, row.task_owner_agent, binding.templateId, "v2", "plan", "fixed_template", "worker", "adapter"],
+        sourceRefs: [
+          { source: "workflow_v2_plans", field: "workflow_id", id: workflowId },
+          { source: "workflow_v2_plans", field: "plan_id", id: row.plan_id || "" }
+        ]
+      });
+      workflowIdsWithV2Command.add(workflowId);
     }
     for (const agent of (runtimeAgents.agents || []).slice(0, agentLimit)) {
       const agentId = agent.agent_id || agent.agentId || "";

@@ -1174,6 +1174,7 @@ function sourceRefDrilldownTargets(ref = {}, context = {}) {
   };
   if (workflowId) {
     pushTarget({ label: "Workflow", consoleView: "workflows", workflowId, tab: "overview" });
+    if (source.startsWith("workflow_v2")) pushTarget({ label: "V2", consoleView: "workflows", workflowId, tab: "v2" });
     pushTarget({ label: "Evidence", consoleView: "evidence-workspace", workflowId });
     pushTarget({ label: "Operations", consoleView: "operations", workflowId });
   }
@@ -2048,6 +2049,7 @@ async function openWorkflowTab(workflowId, tab = "overview") {
 
 function renderCurrentTab(data) {
   if (state.tab === "overview") return renderOverview(data);
+  if (state.tab === "v2") return renderWorkflowV2(data);
   if (state.tab === "phases") return renderPhases(data);
   if (state.tab === "tasks") return renderTasks(data);
   if (state.tab === "dispatches") return renderDispatches(data);
@@ -3190,6 +3192,139 @@ function renderOverview(data) {
       h("code", {}, data.latestCheckpoint.path || "-")
     ]) : emptyState("No checkpoint recorded.")),
     section("Payload", jsonBlock(data.payload || {}))
+  ]);
+  setDetailBody(body);
+}
+
+function renderWorkflowV2(data = {}) {
+  const summary = data.summary || {};
+  const selectedPlan = summary.selectedPlan || {};
+  const statusRows = [
+    ...(summary.planStatusCounts || []).map((row) => ({ source: "plan", status: row.status, count: row.count })),
+    ...(summary.workflowStateCounts || []).map((row) => ({ source: "workflow state", status: row.status, count: row.count })),
+    ...(summary.workerStatusCounts || []).map((row) => ({ source: "worker", status: row.status, count: row.count })),
+    ...(summary.adapterJobStatusCounts || []).map((row) => ({ source: "adapter job", status: row.status, count: row.count })),
+    ...(summary.humanGatePackageStatusCounts || []).map((row) => ({ source: "v2 Human Gate", status: row.status, count: row.count }))
+  ];
+  const fixedTemplateDetail = selectedPlan.templateId
+    ? `${selectedPlan.templateId}@${present(selectedPlan.templateVersion, "-")}`
+    : (summary.fixedTemplatePlanCount ? "bound" : "none");
+  const body = h("div", { className: "stack" }, [
+    data.status === "missing_schema" ? section("V2 State", emptyState("No workflow v2 schema is available in this database.")) : null,
+    section("V2 Summary", h("div", { className: "quick-stats" }, [
+      statCard("Status", data.status || "unknown", data.source || ""),
+      statCard("Plans", summary.planCount || 0, selectedPlan.workflowState || ""),
+      statCard("Fixed Templates", summary.fixedTemplatePlanCount || 0, fixedTemplateDetail),
+      statCard("Nodes", summary.nodeCount || 0),
+      statCard("Workers", summary.workerRunCount || 0),
+      statCard("Adapter Jobs", summary.adapterJobCount || 0),
+      statCard("Reviews", (summary.managerReviewCount || 0) + (summary.ownerReviewCount || 0)),
+      statCard("Human Gate Packages", summary.humanGatePackageCount || 0),
+      statCard("Latest", formatDate(summary.latestUpdatedAt || data.generatedAt))
+    ])),
+    section("Status Counts", renderTable([
+      { label: "Source", key: "source" },
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Count", key: "count" }
+    ], statusRows, "No v2 status counts.")),
+    section("Plans", renderTable([
+      { label: "Status", render: (row) => h("div", {}, [chip(row.status), h("p", { className: "muted" }, row.workflowState || "-")]) },
+      { label: "Plan", render: (row) => h("div", {}, [h("strong", {}, row.planId), h("p", { className: "muted" }, short(row.objective, 140))]) },
+      { label: "Owner", render: (row) => h("div", {}, [present(row.taskOwnerAgent), h("p", { className: "muted" }, `planner ${present(row.plannerAgent)}`)]) },
+      { label: "Pattern", render: (row) => h("div", {}, [present(row.orchestrationPattern), h("p", { className: "muted" }, present(row.riskTier))]) },
+      { label: "Template", render: (row) => h("div", {}, [
+        row.fixedTemplatePlan ? chip("fixed", "ok") : chip(row.templateBinding?.present ? "template" : "none", "neutral"),
+        h("p", { className: "muted" }, row.templateBinding?.templateId ? `${row.templateBinding.templateId}@${present(row.templateBinding.version, "-")}` : "-")
+      ]) },
+      { label: "Updated", render: (row) => formatDate(row.updatedAt) }
+    ], data.plans || [], "No v2 plans recorded.")),
+    section("Plan Nodes", renderTable([
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Node", render: (row) => h("div", {}, [h("strong", {}, row.nodeId), h("p", { className: "muted" }, row.nodeType)]) },
+      { label: "Owner", render: (row) => h("div", {}, [present(row.ownerAgent), h("p", { className: "muted" }, present(row.runtimeBackend))]) },
+      { label: "Depends", render: (row) => (row.dependsOn || []).length ? (row.dependsOn || []).join(", ") : "-" },
+      { label: "Input", key: "inputInfoId" },
+      { label: "Output", key: "outputInfoId" },
+      { label: "Updated", render: (row) => formatDate(row.updatedAt) }
+    ], data.nodes || [], "No v2 plan nodes recorded.")),
+    section("Worker Runs", renderTable([
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Worker", render: (row) => h("div", {}, [h("strong", {}, row.workerRunId), h("p", { className: "muted" }, row.nodeId)]) },
+      { label: "Manager", render: (row) => h("div", {}, [present(row.managerAgent), h("p", { className: "muted" }, present(row.workerAgentId))]) },
+      { label: "Runtime", render: (row) => h("div", {}, [present(row.runtimeBackend), h("p", { className: "muted" }, row.sessionRunId || row.sessionId || "-")]) },
+      { label: "Attempt", render: (row) => `${present(row.attempt, "0")}/${present(row.maxAttempts, "1")}` },
+      { label: "Receipt", render: (row) => h("code", {}, present(row.receiptRef)) },
+      { label: "Updated", render: (row) => formatDate(row.updatedAt) },
+      { label: "Error", render: (row) => short(row.lastError, 120) }
+    ], data.workerRuns || [], "No v2 worker runs recorded.")),
+    section("Adapter Jobs", renderTable([
+      { label: "Status", render: (row) => chip(row.status) },
+      { label: "Job", render: (row) => h("div", {}, [h("strong", {}, row.adapterJobId), h("p", { className: "muted" }, row.workerRunId)]) },
+      { label: "Runtime", render: (row) => h("div", {}, [present(row.runtimeBackend), h("p", { className: "muted" }, present(row.runnerId))]) },
+      { label: "Attempt", render: (row) => `${present(row.runnerAttempt, "0")}/${present(row.maxRunnerAttempts, "1")}` },
+      { label: "Artifact", render: (row) => h("code", {}, present(row.artifactRef || row.artifactId)) },
+      { label: "Receipt", render: (row) => h("code", {}, present(row.runnerReceiptRef)) },
+      { label: "Updated", render: (row) => formatDate(row.updatedAt) },
+      { label: "Error", render: (row) => short(row.lastError, 120) }
+    ], data.adapterJobs || [], "No v2 adapter jobs recorded.")),
+    section("Reviews And Handoffs", h("div", { className: "content-grid" }, [
+      renderTable([
+        { label: "Decision", render: (row) => chip(row.decision) },
+        { label: "Review", render: (row) => h("div", {}, [h("strong", {}, row.reviewId), h("p", { className: "muted" }, row.workerRunId || row.planId)]) },
+        { label: "Reviewer", key: "reviewerAgent" },
+        { label: "Summary", render: (row) => short(row.summary, 120) },
+        { label: "Created", render: (row) => formatDate(row.createdAt) }
+      ], data.managerReviews || [], "No manager reviews."),
+      renderTable([
+        { label: "Decision", render: (row) => chip(row.decision) },
+        { label: "Owner Review", render: (row) => h("div", {}, [h("strong", {}, row.reviewId), h("p", { className: "muted" }, row.planId)]) },
+        { label: "Owner", key: "ownerAgent" },
+        { label: "Summary", render: (row) => short(row.summary, 120) },
+        { label: "Updated", render: (row) => formatDate(row.updatedAt) }
+      ], data.ownerReviews || [], "No owner reviews."),
+      renderTable([
+        { label: "Status", render: (row) => chip(row.status) },
+        { label: "Handoff", render: (row) => h("div", {}, [h("strong", {}, row.handoffId), h("p", { className: "muted" }, row.workerRunId)]) },
+        { label: "Successor", key: "successorWorkerRunId" },
+        { label: "Summary", render: (row) => short(row.summary || row.reason, 120) },
+        { label: "Updated", render: (row) => formatDate(row.updatedAt) }
+      ], data.handoffs || [], "No worker handoffs.")
+    ])),
+    section("Governance And Human Gate", h("div", { className: "content-grid" }, [
+      renderTable([
+        { label: "Status", render: (row) => chip(row.status) },
+        { label: "Package", render: (row) => h("div", {}, [h("strong", {}, row.packageId), h("p", { className: "muted" }, row.planId)]) },
+        { label: "Controls", render: (row) => (row.requiredControls || []).length },
+        { label: "Options", render: (row) => (row.options || []).length },
+        { label: "Updated", render: (row) => formatDate(row.updatedAt) }
+      ], data.humanGatePackages || [], "No v2 Human Gate packages."),
+      renderTable([
+        { label: "Decision", render: (row) => chip(row.decision) },
+        { label: "Cat Brain Audit", render: (row) => h("div", {}, [h("strong", {}, row.auditId), h("p", { className: "muted" }, row.planId)]) },
+        { label: "Agent", key: "agent" },
+        { label: "Summary", render: (row) => short(row.summary, 120) },
+        { label: "Updated", render: (row) => formatDate(row.updatedAt) }
+      ], data.catBrainAudits || [], "No Cat Brain audits."),
+      renderTable([
+        { label: "Decision", render: (row) => chip(row.decision) },
+        { label: "Cat Claw Audit", render: (row) => h("div", {}, [h("strong", {}, row.auditId), h("p", { className: "muted" }, row.catBrainAuditId || row.planId)]) },
+        { label: "Agent", key: "agent" },
+        { label: "Summary", render: (row) => short(row.summary, 120) },
+        { label: "Updated", render: (row) => formatDate(row.updatedAt) }
+      ], data.catClawAudits || [], "No Cat Claw audits."),
+      renderTable([
+        { label: "Status", render: (row) => chip(row.status) },
+        { label: "Package", render: (row) => h("div", {}, [h("strong", {}, row.packageId), h("p", { className: "muted" }, row.planId)]) },
+        { label: "Task Owner", key: "taskOwnerAgent" },
+        { label: "Summary", render: (row) => short(row.summary, 120) },
+        { label: "Updated", render: (row) => formatDate(row.updatedAt) }
+      ], data.taskGroupPackages || [], "No task-group packages.")
+    ])),
+    (summary.missingTables || []).length ? section("Missing Sources", h("div", { className: "chip-list padded" }, (summary.missingTables || []).map((item) => chip(item, "warning")))) : null,
+    section("Raw V2 Payload", h("details", {}, [
+      h("summary", {}, "JSON"),
+      jsonBlock(data)
+    ]))
   ]);
   setDetailBody(body);
 }
