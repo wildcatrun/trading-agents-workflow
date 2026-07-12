@@ -32,6 +32,11 @@ import {
 import {
   workflowV2MarkAdapterJobTerminal
 } from "../src/workflow-v2/adapter-job-state.js";
+import {
+  workflowV2LoadPlanRow,
+  workflowV2PatchPlanWorkflowState,
+  workflowV2PlanOrchestrationPattern
+} from "../src/workflow-v2/plan-state.js";
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
@@ -5921,6 +5926,39 @@ function workflowV2KernelHumanGateOptions() {
       rollback: "补证仍不完整时，保持 workflow 在 review 状态并记录 blocker。"
     }
   ];
+}
+
+async function testWorkflowV2PlanStateHelpers() {
+  const missingRoot = await tempRoot("workflow-v2-plan-state-missing");
+  const missingPaths = { dbFile: path.join(missingRoot, "tracking.db") };
+  assert.equal(await workflowV2LoadPlanRow(missingPaths, "wf-missing", "plan-missing"), null);
+  assert.equal(await workflowV2PlanOrchestrationPattern(missingPaths, "wf-missing", "plan-missing"), "");
+
+  const root = await tempRoot("workflow-v2-plan-state");
+  await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId: "wf-plan-state",
+    planId: "plan-state",
+    objective: "plan state helper smoke",
+    taskOwnerAgent: "cat_heart",
+    workflowState: "planned",
+    ...v2PlanContract({
+      orchestrationPattern: "manager_worker",
+      orchestrationRationale: "Plan-state helper test uses the canonical v2 plan create path.",
+      participantManagers: ["cat_body"]
+    })
+  });
+  const dbFile = path.join(root, "tracking.db");
+  const paths = { dbFile };
+  const row = await workflowV2LoadPlanRow(paths, "wf-plan-state", "plan-state");
+  assert.equal(row?.workflow_state, "planned");
+  assert.equal(await workflowV2PlanOrchestrationPattern(paths, "wf-plan-state", "plan-state"), "manager_worker");
+  assert.equal(await workflowV2PatchPlanWorkflowState(paths, "wf-plan-state", "plan-state", "not_a_state", "2026-07-12T00:01:00.000Z"), 0);
+  assert.equal(sqliteJson(dbFile, "SELECT workflow_state AS workflowState, updated_at AS updatedAt FROM workflow_v2_plans WHERE plan_id='plan-state';")[0].workflowState, "planned");
+  assert.equal(await workflowV2PatchPlanWorkflowState(paths, "wf-plan-state", "plan-state", "waiting_human", "2026-07-12T00:02:00.000Z"), 1);
+  const updated = sqliteJson(dbFile, "SELECT workflow_state AS workflowState, updated_at AS updatedAt FROM workflow_v2_plans WHERE plan_id='plan-state';")[0];
+  assert.equal(updated.workflowState, "waiting_human");
+  assert.equal(updated.updatedAt, "2026-07-12T00:02:00.000Z");
 }
 
 async function testWorkflowV2PlanAdvisoryAndCanonicalArtifact() {
@@ -21466,6 +21504,7 @@ try {
     ["workflow v2 adapter runner drain", testWorkflowV2AdapterRunnerDrain],
     ["workflow v2 adapter manifest validator hardening", testWorkflowV2AdapterManifestValidatorHardening],
     ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
+    ["workflow v2 plan state helpers", testWorkflowV2PlanStateHelpers],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
     ["workflow v2 fixed template plan gate", testWorkflowV2FixedTemplatePlanGate],
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],

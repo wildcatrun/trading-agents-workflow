@@ -112,9 +112,10 @@ Acceptance criteria:
 
 ## Track V2.2: Mechanical V2 Module Split
 
-Status: constants/helpers, v2 registry, plan pure-helper, info-stack preview,
-backend-preflight preview, autonomous-loop runtime helper, and worker-state
-helper splits have landed; deeper DB/action module split remains in progress. A
+Status: constants/helpers, v2 registry, plan pure-helper, plan-state helper,
+info-stack preview, backend-preflight preview, autonomous-loop runtime helper,
+and worker-state helper splits have landed; deeper DB/action module split
+remains in progress. A
 2026-07-05 Anthropic reference refresh also expanded `src/workflow-v2/plan.js` with
 plan-node advisory helpers for manager-worker, parallel section,
 evaluator-optimizer, and autonomous-loop structure. The same checks now act as
@@ -144,9 +145,11 @@ one SQLite transaction instead of relying on post-failure compensation cleanup.
 Adapter manifest artifacts now carry an explicit runner contract version and
 `workflow.v2.validate` checks manifest content against adapter job, worker,
 session, preflight, task input, output action, context, and no-direct-DB/no-secret
-constraints. Remaining work in this track is real runtime-wrapper integration
-and any further no-behavior-change helper splits that reduce `src/workflow.js`
-coupling.
+constraints. Persisted plan row loading, plan workflow-state patching, and
+orchestration-pattern lookup now live in `src/workflow-v2/plan-state.js` while
+the existing review/Human Gate injection seam remains unchanged. Remaining work
+in this track is real runtime-wrapper integration and any further
+no-behavior-change helper splits that reduce `src/workflow.js` coupling.
 
 After the focused tests pass, split the v2 implementation out of
 `src/workflow.js` with no intended behavior change.

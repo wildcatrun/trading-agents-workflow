@@ -1012,6 +1012,29 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
   - `npm run check`
 
+2026-07-12 V2.2 plan-state helper extraction follow-up:
+
+- Added `src/workflow-v2/plan-state.js` for persisted v2 plan row loading,
+  plan `workflow_state` patching, and persisted orchestration-pattern lookup.
+- Updated `src/workflow.js` to import these plan-state helpers instead of
+  owning their SQL bodies inline, while keeping the existing review-chain and
+  Human Gate context injection unchanged for this slice.
+- Added the new module to `npm run check`.
+- This slice is a no-schema-change helper split. It does not start real worker
+  runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or production workflow
+  queues.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/plan-state.js`
+  - `node --check src/workflow.js`
+  - `node --check src/workflow-v2/review-actions.js`
+  - `node --check src/workflow-v2/human-gate-actions.js`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 plan state helpers"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review chain"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 governance human gate bridge"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 fixed template plan gate"`
+  - `npm run check`
+  - `git diff --check`
+
 2026-07-12 V2.4 adapter manifest validator hardening:
 
 - Added filesystem-aware adapter manifest validation to

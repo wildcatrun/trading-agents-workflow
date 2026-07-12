@@ -11,12 +11,13 @@ import { promisify } from "node:util";
 import { WorkflowReadModel } from "./console/read-model.js";
 import { createWorkflowV2ActionRegistry, runWorkflowV2Action } from "./workflow-v2/index.js";
 import {
-  WORKFLOW_V2_WORKFLOW_STATES
-} from "./workflow-v2/constants.js";
-import {
-  workflowV2ErrorMessage,
-  workflowV2JsonObject
+  workflowV2ErrorMessage
 } from "./workflow-v2/helpers.js";
+import {
+  workflowV2LoadPlanRow,
+  workflowV2PatchPlanWorkflowState,
+  workflowV2PlanOrchestrationPattern
+} from "./workflow-v2/plan-state.js";
 import {
   WORKFLOW_V2_AUTONOMOUS_LOOP_NODE_TYPES,
   workflowV2AutonomousLoopMaybeTerminalizeNode,
@@ -248,7 +249,6 @@ import {
   LEGACY_TRACKING_DB,
   LEGACY_WORKFLOW_ROOT,
   WORKFLOW_CONTROL_PLANE_DB,
-  fileExistsSync,
   resolveHome,
   resolveWorkflowRoot,
   workflowPaths
@@ -4790,33 +4790,6 @@ SET workflow_id=${sqlValue(row.workflow_id || "")},
     payload_json=${sqlValue(row.payload_json || "{}")},
     created_at=${sqlValue(row.created_at || nowIso())}
 WHERE review_id=${sqlValue(id)};`);
-}
-
-async function workflowV2LoadPlanRow(paths, workflowId, planId) {
-  if (!workflowId || !planId || !fileExistsSync(paths.dbFile)) return null;
-  const rows = await sqlite(paths.dbFile, `
-SELECT *
-FROM workflow_v2_plans
-WHERE workflow_id=${sqlValue(workflowId)} AND plan_id=${sqlValue(planId)}
-LIMIT 1;`, { json: true });
-  return rows[0] || null;
-}
-
-async function workflowV2PatchPlanWorkflowState(paths, workflowId, planId, workflowState, timestamp = nowIso()) {
-  if (!workflowId || !planId || !WORKFLOW_V2_WORKFLOW_STATES.has(workflowState)) return 0;
-  return sqliteChangeCount(paths.dbFile, `
-UPDATE workflow_v2_plans
-SET workflow_state=${sqlValue(workflowState)},
-    updated_at=${sqlValue(timestamp)}
-WHERE workflow_id=${sqlValue(workflowId)}
-  AND plan_id=${sqlValue(planId)};`);
-}
-
-async function workflowV2PlanOrchestrationPattern(paths, workflowId = "", planId = "") {
-  const row = await workflowV2LoadPlanRow(paths, workflowId, planId);
-  const payload = workflowV2JsonObject(row?.payload_json, {});
-  const orchestration = workflowV2JsonObject(payload.orchestration, {});
-  return firstText(orchestration.pattern, payload.orchestrationPattern, payload.orchestration_pattern);
 }
 
 async function workflowV2PatchSessionRunState(paths, runId = "", patch = {}) {
