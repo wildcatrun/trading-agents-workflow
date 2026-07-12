@@ -5,14 +5,23 @@ import {
 import {
   boolOption,
   firstText,
+  jsonHash,
   safeId
 } from "../workflow/json.js";
 import {
   sqlValue,
   sqlite,
   sqliteChangeCount,
+  sqliteTransaction,
   tableColumns
 } from "../workflow/sqlite.js";
+import {
+  requireWorkflowSessionRunStatus,
+  sessionJsonObject,
+  sessionPackFromRow,
+  sessionRunFromRow,
+  workerInputFromSessionPack
+} from "../session-actions.js";
 import {
   WORKFLOW_V2_DEFAULT_CONTEXT_PRESSURE_THRESHOLD,
   WORKFLOW_V2_DEFAULT_MAX_COMPACTIONS,
@@ -62,13 +71,13 @@ export function createWorkflowV2WorkerLifecycleActionHandlers(context = {}) {
   const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const normalizeOptionalAgentId = requireContextFunction(context, "normalizeOptionalAgentId");
   const nowIso = requireContextFunction(context, "nowIso");
-  const workflowSessionRunStart = requireContextFunction(context, "workflowSessionRunStart");
   const workflowV2AutonomousLoopSpawnGate = requireContextFunction(context, "workflowV2AutonomousLoopSpawnGate");
   const workflowV2CleanupInfoStackItem = requireContextFunction(context, "workflowV2CleanupInfoStackItem");
   const workflowV2InfoStackExistingItem = requireContextFunction(context, "workflowV2InfoStackExistingItem");
   const workflowV2InfoStackPreview = requireContextFunction(context, "workflowV2InfoStackPreview");
   const workflowV2InfoStackRecord = requireContextFunction(context, "workflowV2InfoStackRecord");
   const workflowV2RequireSessionRunPatch = requireContextFunction(context, "workflowV2RequireSessionRunPatch");
+  const workflowTaskPhaseInfo = requireContextFunction(context, "workflowTaskPhaseInfo");
 
 function workflowV2BackendPreflightDeps() {
   return { boolOption, firstText, safeId, workflowPaths };
@@ -110,6 +119,195 @@ ON CONFLICT(preflight_id) DO UPDATE SET
   created_by=excluded.created_by,
   created_at=excluded.created_at;`);
   return { ...preview, operation: "workflow.v2.worker_backend_preflight.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
+}
+
+
+function workflowV2SessionAgentRunUpsertSql(run = {}) {
+  const now = run.updatedAt || nowIso();
+  const agentRunId = run.agentRunId || run.agent_run_id || "";
+  if (!agentRunId) return "";
+  return `
+INSERT INTO workflow_agent_runs(agent_run_id, workflow_id, phase_id, phase_key, task_id, dispatch_id, runtime_run_id, session_run_id, runtime, agent_id, status, attempt, input_hash, output_hash, receipt_ref, error, payload_json, started_at, completed_at, created_at, updated_at)
+VALUES (${sqlValue(agentRunId)}, ${sqlValue(run.workflowId || "")}, ${sqlValue(run.phaseId || "")}, ${sqlValue(run.phaseKey || "")}, ${sqlValue(run.taskId || "")}, ${sqlValue(run.dispatchId || "")}, ${sqlValue(run.runtimeRunId || "")}, ${sqlValue(run.sessionRunId || "")}, ${sqlValue(run.runtime || "")}, ${sqlValue(run.agentId || "")}, ${sqlValue(run.status || "unknown")}, ${Number(run.attempt || 0)}, ${sqlValue(run.inputHash || "")}, ${sqlValue(run.outputHash || "")}, ${sqlValue(run.receiptRef || "")}, ${sqlValue(String(run.error || "").slice(0, 2000))}, ${sqlValue(JSON.stringify(run.payload || {}))}, ${sqlValue(run.startedAt || "")}, ${sqlValue(run.completedAt || "")}, ${sqlValue(run.createdAt || now)}, ${sqlValue(now)})
+ON CONFLICT(agent_run_id) DO UPDATE SET
+  workflow_id=COALESCE(NULLIF(excluded.workflow_id, ''), workflow_agent_runs.workflow_id),
+  phase_id=COALESCE(NULLIF(excluded.phase_id, ''), workflow_agent_runs.phase_id),
+  phase_key=COALESCE(NULLIF(excluded.phase_key, ''), workflow_agent_runs.phase_key),
+  task_id=COALESCE(NULLIF(excluded.task_id, ''), workflow_agent_runs.task_id),
+  dispatch_id=COALESCE(NULLIF(excluded.dispatch_id, ''), workflow_agent_runs.dispatch_id),
+  runtime_run_id=COALESCE(NULLIF(excluded.runtime_run_id, ''), workflow_agent_runs.runtime_run_id),
+  session_run_id=COALESCE(NULLIF(excluded.session_run_id, ''), workflow_agent_runs.session_run_id),
+  runtime=COALESCE(NULLIF(excluded.runtime, ''), workflow_agent_runs.runtime),
+  agent_id=COALESCE(NULLIF(excluded.agent_id, ''), workflow_agent_runs.agent_id),
+  status=excluded.status,
+  attempt=excluded.attempt,
+  input_hash=COALESCE(NULLIF(excluded.input_hash, ''), workflow_agent_runs.input_hash),
+  output_hash=COALESCE(NULLIF(excluded.output_hash, ''), workflow_agent_runs.output_hash),
+  receipt_ref=COALESCE(NULLIF(excluded.receipt_ref, ''), workflow_agent_runs.receipt_ref),
+  error=COALESCE(NULLIF(excluded.error, ''), workflow_agent_runs.error),
+  payload_json=excluded.payload_json,
+  started_at=COALESCE(NULLIF(excluded.started_at, ''), workflow_agent_runs.started_at),
+  completed_at=COALESCE(NULLIF(excluded.completed_at, ''), workflow_agent_runs.completed_at),
+  updated_at=excluded.updated_at;`;
+}
+
+
+async function workflowV2WorkerSpawnSessionRunPlan(paths, run, generatedAt) {
+  const sessionRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_packs WHERE session_id=${sqlValue(run.sessionId)} LIMIT 1;`, { json: true });
+  const pack = sessionPackFromRow(sessionRows[0]);
+  if (!pack) throw new Error(`workflow session pack not found: ${run.sessionId}`);
+  if (!["active", "draft"].includes(pack.status)) throw new Error(`workflow session pack is not runnable: ${pack.status}`);
+  const status = requireWorkflowSessionRunStatus("queued");
+  const inputPayload = sessionJsonObject(workflowV2WorkerSessionRunInput(run), {});
+  const context = {
+    workflowId: run.workflowId,
+    taskId: run.nodeId,
+    traceId: "",
+    dispatchId: ""
+  };
+  const workerId = run.workerAgentId || "";
+  const existingRunRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_runs WHERE run_id=${sqlValue(run.sessionRunId)} LIMIT 1;`, { json: true });
+  if (existingRunRows[0]) {
+    const existingRun = sessionRunFromRow(existingRunRows[0]);
+    const conflicts = [];
+    if (existingRun.sessionId !== run.sessionId) conflicts.push("sessionId");
+    if (existingRun.status !== status) conflicts.push("status");
+    if (context.workflowId && existingRun.workflowId !== context.workflowId) conflicts.push("workflowId");
+    if (context.taskId && existingRun.taskId !== context.taskId) conflicts.push("taskId");
+    if (workerId && existingRun.workerId !== workerId) conflicts.push("workerId");
+    if (jsonHash(existingRun.input) !== jsonHash(inputPayload)) conflicts.push("input");
+    if (conflicts.length) throw new Error(`workflow session run id conflict: ${run.sessionRunId} fields=${conflicts.join(",")}`);
+    const resolvedDispatchId = existingRun.dispatchId || context.dispatchId;
+    const phaseInfo = await workflowTaskPhaseInfo(paths, existingRun.workflowId || context.workflowId, existingRun.taskId || context.taskId);
+    const sessionUpdateSql = resolvedDispatchId && !existingRun.dispatchId
+      ? `
+UPDATE workflow_session_runs
+SET dispatch_id=${sqlValue(resolvedDispatchId)}, updated_at=${sqlValue(generatedAt)}
+WHERE run_id=${sqlValue(run.sessionRunId)}
+  AND (dispatch_id IS NULL OR dispatch_id='');`
+      : "";
+    const agentRunSql = workflowV2SessionAgentRunUpsertSql({
+      agentRunId: `session.${run.sessionRunId}`,
+      workflowId: existingRun.workflowId || context.workflowId,
+      phaseId: phaseInfo.phaseId,
+      phaseKey: phaseInfo.phaseKey,
+      taskId: existingRun.taskId || context.taskId,
+      dispatchId: resolvedDispatchId,
+      sessionRunId: run.sessionRunId,
+      runtime: pack.runtimeTarget || "session_pack",
+      agentId: existingRun.workerId || workerId || pack.ownerAgent || "",
+      status: existingRun.status,
+      attempt: 0,
+      inputHash: jsonHash(existingRun.input),
+      outputHash: jsonHash(existingRun.output),
+      receiptRef: existingRun.receiptRef,
+      error: existingRun.error,
+      payload: { source: "workflow_session_runs", sessionId: run.sessionId, packVersion: existingRun.packVersion, dedupeBackfill: true },
+      startedAt: existingRun.startedAt,
+      completedAt: existingRun.completedAt,
+      updatedAt: generatedAt
+    });
+    return {
+      sessionRun: { ...existingRun, dispatchId: resolvedDispatchId, deduped: true, dbFile: paths.dbFile },
+      sql: [sessionUpdateSql, agentRunSql].filter(Boolean).join("\n")
+    };
+  }
+  const workerInput = workerInputFromSessionPack(pack, inputPayload, context);
+  const phaseInfo = await workflowTaskPhaseInfo(paths, context.workflowId, context.taskId);
+  const sessionRunSql = `
+INSERT INTO workflow_session_runs(run_id, session_id, pack_version, workflow_id, task_id, dispatch_id, worker_id, status, input_json, worker_input_json, output_json, receipt_ref, error, started_at, completed_at, created_at, updated_at)
+VALUES (${sqlValue(run.sessionRunId)}, ${sqlValue(run.sessionId)}, ${sqlValue(pack.version)}, ${sqlValue(context.workflowId)}, ${sqlValue(context.taskId)}, ${sqlValue(context.dispatchId)}, ${sqlValue(workerId)}, ${sqlValue(status)}, ${sqlValue(JSON.stringify(inputPayload))}, ${sqlValue(JSON.stringify(workerInput))}, '{}', '', '', '', '', ${sqlValue(generatedAt)}, ${sqlValue(generatedAt)});`;
+  const agentRunSql = workflowV2SessionAgentRunUpsertSql({
+    agentRunId: `session.${run.sessionRunId}`,
+    workflowId: context.workflowId,
+    phaseId: phaseInfo.phaseId,
+    phaseKey: phaseInfo.phaseKey,
+    taskId: context.taskId,
+    dispatchId: context.dispatchId,
+    sessionRunId: run.sessionRunId,
+    runtime: pack.runtimeTarget || "session_pack",
+    agentId: workerId || pack.ownerAgent || "",
+    status,
+    attempt: 0,
+    inputHash: jsonHash(inputPayload),
+    payload: { source: "workflow_session_runs", sessionId: run.sessionId, packVersion: pack.version },
+    startedAt: "",
+    createdAt: generatedAt,
+    updatedAt: generatedAt
+  });
+  return {
+    sessionRun: { runId: run.sessionRunId, sessionId: run.sessionId, packVersion: pack.version, status, workerInput, dbFile: paths.dbFile },
+    sql: [sessionRunSql, agentRunSql].join("\n")
+  };
+}
+
+
+function workflowV2WorkerSpawnPreflightRecordSql(preview, input = {}, run = {}, generatedAt = "") {
+  const preflight = preview.backendPreflight;
+  const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "main");
+  const findings = [
+    ...preview.errors.map((item) => ({ severity: "error", ...item })),
+    ...preview.warnings.map((item) => ({ severity: "warning", ...item }))
+  ];
+  const payload = {
+    preflight,
+    errors: preview.errors,
+    warnings: preview.warnings,
+    planId: run.planId,
+    nodeId: run.nodeId,
+    workerRunId: run.workerRunId
+  };
+  return `
+INSERT INTO workflow_v2_backend_preflights(preflight_id, workflow_id, backend_id, status, findings_json, payload_json, created_by, created_at)
+VALUES (${sqlValue(preflight.preflightId)}, ${sqlValue(preflight.workflowId)}, ${sqlValue(preflight.backendId)}, ${sqlValue(preflight.status)}, ${sqlValue(JSON.stringify(findings))}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdBy)}, ${sqlValue(generatedAt)})
+ON CONFLICT(preflight_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  backend_id=excluded.backend_id,
+  status=excluded.status,
+  findings_json=excluded.findings_json,
+  payload_json=excluded.payload_json,
+  created_by=excluded.created_by,
+  created_at=excluded.created_at;`;
+}
+
+
+function workflowV2WorkerSpawnRunUpsertSql(run, workerPayload, generatedAt) {
+  return `
+INSERT INTO workflow_v2_worker_runs(worker_run_id, workflow_id, plan_id, node_id, parent_worker_run_id, supersedes_worker_run_id, successor_worker_run_id, worker_generation, manager_agent, worker_agent_id, session_id, session_run_id, preflight_id, runtime_backend, status, attempt, max_attempts, lease_owner, lease_until, next_retry_at, task_input_info_id, output_info_id, handoff_info_id, receipt_ref, last_error, context_budget_tokens, context_used_tokens, compaction_count, source_context_refs_json, payload_json, started_at, completed_at, created_at, updated_at)
+VALUES (${sqlValue(run.workerRunId)}, ${sqlValue(run.workflowId)}, ${sqlValue(run.planId)}, ${sqlValue(run.nodeId)}, ${sqlValue(run.parentWorkerRunId)}, ${sqlValue(run.supersedesWorkerRunId)}, ${sqlValue(run.successorWorkerRunId)}, ${sqlValue(run.workerGeneration)}, ${sqlValue(run.managerAgent)}, ${sqlValue(run.workerAgentId)}, ${sqlValue(run.sessionId)}, ${sqlValue(run.sessionRunId)}, ${sqlValue(run.preflightId)}, ${sqlValue(run.runtimeBackend)}, ${sqlValue(run.status)}, ${sqlValue(run.attempt)}, ${sqlValue(run.maxAttempts)}, ${sqlValue(run.leaseOwner)}, ${sqlValue(run.leaseUntil)}, ${sqlValue(run.nextRetryAt)}, ${sqlValue(run.taskInputInfoId)}, ${sqlValue(run.outputInfoId)}, ${sqlValue(run.handoffInfoId)}, ${sqlValue(run.receiptRef)}, ${sqlValue(run.lastError)}, ${sqlValue(run.contextBudgetTokens)}, ${sqlValue(run.contextUsedTokens)}, ${sqlValue(run.compactionCount)}, ${sqlValue(JSON.stringify(run.sourceContextRefs))}, ${sqlValue(JSON.stringify(workerPayload))}, ${sqlValue(run.startedAt)}, ${sqlValue(run.completedAt)}, ${sqlValue(generatedAt)}, ${sqlValue(generatedAt)})
+ON CONFLICT(worker_run_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  plan_id=excluded.plan_id,
+  node_id=excluded.node_id,
+  parent_worker_run_id=excluded.parent_worker_run_id,
+  supersedes_worker_run_id=excluded.supersedes_worker_run_id,
+  successor_worker_run_id=excluded.successor_worker_run_id,
+  worker_generation=excluded.worker_generation,
+  manager_agent=excluded.manager_agent,
+  worker_agent_id=excluded.worker_agent_id,
+  session_id=excluded.session_id,
+  session_run_id=excluded.session_run_id,
+  preflight_id=excluded.preflight_id,
+  runtime_backend=excluded.runtime_backend,
+  status=excluded.status,
+  attempt=excluded.attempt,
+  max_attempts=excluded.max_attempts,
+  lease_owner=excluded.lease_owner,
+  lease_until=excluded.lease_until,
+  next_retry_at=excluded.next_retry_at,
+  task_input_info_id=excluded.task_input_info_id,
+  output_info_id=excluded.output_info_id,
+  handoff_info_id=excluded.handoff_info_id,
+  receipt_ref=excluded.receipt_ref,
+  last_error=excluded.last_error,
+  context_budget_tokens=excluded.context_budget_tokens,
+  context_used_tokens=excluded.context_used_tokens,
+  compaction_count=excluded.compaction_count,
+  source_context_refs_json=excluded.source_context_refs_json,
+  payload_json=excluded.payload_json,
+  started_at=excluded.started_at,
+  completed_at=excluded.completed_at,
+  updated_at=excluded.updated_at;`;
 }
 
 
@@ -228,85 +426,23 @@ async function workflowV2WorkerSpawnCreate(rootDir, input = {}) {
   const paths = await ensureWorkflowLayout(rootDir, input);
   const now = nowIso();
   const run = preview.workerRun;
-  const existingSessionRows = await sqlite(paths.dbFile, `SELECT run_id FROM workflow_session_runs WHERE run_id=${sqlValue(run.sessionRunId)} LIMIT 1;`, { json: true });
-  const existingPreflightRows = await sqlite(paths.dbFile, `SELECT preflight_id FROM workflow_v2_backend_preflights WHERE preflight_id=${sqlValue(run.preflightId)} LIMIT 1;`, { json: true });
-  let sessionRun = null;
-  try {
-    sessionRun = await workflowSessionRunStart(rootDir, {
-      runId: run.sessionRunId,
-      sessionId: run.sessionId,
-      workflowId: run.workflowId,
-      taskId: run.nodeId,
-      workerId: run.workerAgentId,
-      status: "queued",
-      input: workflowV2WorkerSessionRunInput(run)
-    });
-    await workflowV2WorkerBackendPreflightRecord(rootDir, {
-      ...input,
-      workflowId: run.workflowId,
-      planId: run.planId,
-      nodeId: run.nodeId,
-      workerRunId: run.workerRunId,
-      preflightId: run.preflightId,
-      backendId: run.runtimeBackend
-    });
-    const workerPayload = {
-      ...run.payload,
-      sessionRun: {
-        sessionRunId: sessionRun.runId,
-        sessionId: sessionRun.sessionId,
-        packVersion: sessionRun.packVersion,
-        status: sessionRun.status,
-        source: "workflow_session_runs"
-      }
-    };
-    await sqlite(paths.dbFile, `
-INSERT INTO workflow_v2_worker_runs(worker_run_id, workflow_id, plan_id, node_id, parent_worker_run_id, supersedes_worker_run_id, successor_worker_run_id, worker_generation, manager_agent, worker_agent_id, session_id, session_run_id, preflight_id, runtime_backend, status, attempt, max_attempts, lease_owner, lease_until, next_retry_at, task_input_info_id, output_info_id, handoff_info_id, receipt_ref, last_error, context_budget_tokens, context_used_tokens, compaction_count, source_context_refs_json, payload_json, started_at, completed_at, created_at, updated_at)
-VALUES (${sqlValue(run.workerRunId)}, ${sqlValue(run.workflowId)}, ${sqlValue(run.planId)}, ${sqlValue(run.nodeId)}, ${sqlValue(run.parentWorkerRunId)}, ${sqlValue(run.supersedesWorkerRunId)}, ${sqlValue(run.successorWorkerRunId)}, ${sqlValue(run.workerGeneration)}, ${sqlValue(run.managerAgent)}, ${sqlValue(run.workerAgentId)}, ${sqlValue(run.sessionId)}, ${sqlValue(run.sessionRunId)}, ${sqlValue(run.preflightId)}, ${sqlValue(run.runtimeBackend)}, ${sqlValue(run.status)}, ${sqlValue(run.attempt)}, ${sqlValue(run.maxAttempts)}, ${sqlValue(run.leaseOwner)}, ${sqlValue(run.leaseUntil)}, ${sqlValue(run.nextRetryAt)}, ${sqlValue(run.taskInputInfoId)}, ${sqlValue(run.outputInfoId)}, ${sqlValue(run.handoffInfoId)}, ${sqlValue(run.receiptRef)}, ${sqlValue(run.lastError)}, ${sqlValue(run.contextBudgetTokens)}, ${sqlValue(run.contextUsedTokens)}, ${sqlValue(run.compactionCount)}, ${sqlValue(JSON.stringify(run.sourceContextRefs))}, ${sqlValue(JSON.stringify(workerPayload))}, ${sqlValue(run.startedAt)}, ${sqlValue(run.completedAt)}, ${sqlValue(now)}, ${sqlValue(now)})
-ON CONFLICT(worker_run_id) DO UPDATE SET
-  workflow_id=excluded.workflow_id,
-  plan_id=excluded.plan_id,
-  node_id=excluded.node_id,
-  parent_worker_run_id=excluded.parent_worker_run_id,
-  supersedes_worker_run_id=excluded.supersedes_worker_run_id,
-  successor_worker_run_id=excluded.successor_worker_run_id,
-  worker_generation=excluded.worker_generation,
-  manager_agent=excluded.manager_agent,
-  worker_agent_id=excluded.worker_agent_id,
-  session_id=excluded.session_id,
-  session_run_id=excluded.session_run_id,
-  preflight_id=excluded.preflight_id,
-  runtime_backend=excluded.runtime_backend,
-  status=excluded.status,
-  attempt=excluded.attempt,
-  max_attempts=excluded.max_attempts,
-  lease_owner=excluded.lease_owner,
-  lease_until=excluded.lease_until,
-  next_retry_at=excluded.next_retry_at,
-  task_input_info_id=excluded.task_input_info_id,
-  output_info_id=excluded.output_info_id,
-  handoff_info_id=excluded.handoff_info_id,
-  receipt_ref=excluded.receipt_ref,
-  last_error=excluded.last_error,
-  context_budget_tokens=excluded.context_budget_tokens,
-  context_used_tokens=excluded.context_used_tokens,
-  compaction_count=excluded.compaction_count,
-  source_context_refs_json=excluded.source_context_refs_json,
-  payload_json=excluded.payload_json,
-  started_at=excluded.started_at,
-  completed_at=excluded.completed_at,
-  updated_at=excluded.updated_at;`);
-  } catch (error) {
-    if (!existingPreflightRows[0]) {
-      await sqlite(paths.dbFile, `DELETE FROM workflow_v2_backend_preflights WHERE preflight_id=${sqlValue(run.preflightId)};`);
+  const sessionPlan = await workflowV2WorkerSpawnSessionRunPlan(paths, run, now);
+  const sessionRun = sessionPlan.sessionRun;
+  const workerPayload = {
+    ...run.payload,
+    sessionRun: {
+      sessionRunId: sessionRun.runId,
+      sessionId: sessionRun.sessionId,
+      packVersion: sessionRun.packVersion,
+      status: sessionRun.status,
+      source: "workflow_session_runs"
     }
-    if (!existingSessionRows[0]) {
-      await sqlite(paths.dbFile, `
-DELETE FROM workflow_agent_runs WHERE agent_run_id=${sqlValue(`session.${run.sessionRunId}`)};
-DELETE FROM workflow_session_runs WHERE run_id=${sqlValue(run.sessionRunId)};`);
-    }
-    throw error;
-  }
+  };
+  await sqliteTransaction(paths.dbFile, [
+    sessionPlan.sql,
+    workflowV2WorkerSpawnPreflightRecordSql(preview, input, run, now),
+    workflowV2WorkerSpawnRunUpsertSql(run, workerPayload, now)
+  ].filter(Boolean).join("\n"));
   return { ...preview, operation: "workflow.v2.worker_spawn.create", dryRun: false, previewOnly: false, sessionRun, dbFile: paths.dbFile };
 }
 

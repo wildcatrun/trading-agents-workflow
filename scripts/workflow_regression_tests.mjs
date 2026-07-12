@@ -8076,6 +8076,41 @@ async function legacyWorkflowV2OrchestrationKernelIntegration() {
   );
   assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "worker_run_id='worker-v2-missing-session'"), 0);
   assert.equal(sqliteCount(dbFile, "workflow_v2_backend_preflights", "preflight_id='preflight-v2-missing-session'"), 0);
+  sqliteExec(dbFile, `
+CREATE TRIGGER workflow_v2_worker_spawn_abort
+BEFORE INSERT ON workflow_v2_worker_runs
+WHEN NEW.worker_run_id='worker-v2-transaction-abort'
+BEGIN
+  SELECT RAISE(ABORT, 'worker insert forced abort');
+END;`);
+  try {
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.v2.worker_spawn.create",
+        workflowId,
+        planId: "plan-v2-kernel",
+        nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+        managerAgent: "cat_body",
+        sessionId: "session-cat-body-worker",
+        workerRunId: "worker-v2-transaction-abort",
+        preflightId: "preflight-v2-transaction-abort",
+        taskInputInfoId: "info-v2-task-input",
+        runtimeBackend: "local_deterministic",
+        ...v2WorkerDelegation(),
+        providerModel: "openai-codex/gpt-5.5",
+        receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+        oauth: { expiryOk: true, refreshOk: true },
+        network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+      }),
+      /worker insert forced abort/
+    );
+  } finally {
+    sqliteExec(dbFile, "DROP TRIGGER IF EXISTS workflow_v2_worker_spawn_abort;");
+  }
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", "worker_run_id='worker-v2-transaction-abort'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_backend_preflights", "preflight_id='preflight-v2-transaction-abort'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", "run_id='worker-v2-transaction-abort.session'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_agent_runs", "agent_run_id='session.worker-v2-transaction-abort.session'"), 0);
   await assertRejectsMessage(
     () => runAction(root, {
       action: "workflow.v2.worker_spawn.create",
@@ -8200,6 +8235,34 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}'
 LIMIT 1;`)[0];
   assert.equal(workerSessionRow.sessionRunId, worker.workerRun.sessionRunId);
   assert.equal(workerSessionRow.payloadJson.includes("workflow_session_runs"), true);
+  const replay = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-kernel",
+    nodeId: plan.nodes.find((node) => node.nodeType === "manager_worker_spawn").nodeId,
+    managerAgent: "cat_body",
+    sessionId: "session-cat-body-worker",
+    workerRunId: worker.workerRun.workerRunId,
+    sessionRunId: worker.workerRun.sessionRunId,
+    preflightId: worker.workerRun.preflightId,
+    taskInputInfoId: "info-v2-task-input",
+    runtimeBackend: "local_deterministic",
+    maxAttempts: 2,
+    ...v2WorkerDelegation({ contextBudgetTokens: 1000 }),
+    contextUsedTokens: 920,
+    compactionCount: 2,
+    sourceContextRefs: ["info-v2-task-input"],
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false },
+    payload: { outputSummary: "Deterministic worker output prepared for manager review." }
+  });
+  assert.equal(replay.sessionRun.deduped, true);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${worker.workerRun.workerRunId}'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${worker.workerRun.sessionRunId}'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_agent_runs", `agent_run_id='session.${worker.workerRun.sessionRunId}'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_backend_preflights", `preflight_id='${worker.workerRun.preflightId}'`), 1);
 
   const lifecycleHighPressure = await runAction(root, {
     action: "workflow.v2.worker_lifecycle.preview",

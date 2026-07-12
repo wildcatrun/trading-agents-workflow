@@ -4721,7 +4721,7 @@ const WORKFLOW_V2_WORKER_LIFECYCLE_ACTION_HANDLERS = createWorkflowV2WorkerLifec
   ensureWorkflowLayout,
   normalizeOptionalAgentId,
   nowIso,
-  workflowSessionRunStart,
+  workflowTaskPhaseInfo,
   workflowV2AutonomousLoopSpawnGate,
   workflowV2CleanupInfoStackItem,
   workflowV2InfoStackExistingItem,

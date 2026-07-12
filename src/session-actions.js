@@ -144,7 +144,7 @@ export function sessionRunFromRow(row) {
   };
 }
 
-function workerInputFromSessionPack(pack, inputPayload = {}, context = {}) {
+export function workerInputFromSessionPack(pack, inputPayload = {}, context = {}) {
   return {
     schemaVersion: 1,
     objectType: "workflow_session_worker_input",

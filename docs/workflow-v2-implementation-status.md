@@ -604,9 +604,6 @@ The following remain future slices and require separate authorization:
   `external_command` runner contract;
 - governed production/runtime service that polls v2 adapter jobs continuously;
 - production runtime drain integration for v2 worker runs;
-- single-transaction hardening for the session/preflight/worker insert chain
-  in `workflow.v2.worker_spawn.create` beyond the current compensation cleanup
-  and validator detection;
 - production database migration;
 - OpenClaw Gateway reload/restart or live Gateway code reload verification;
 - secret injection or OAuth device pairing;
@@ -1065,6 +1062,34 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner concurrency/recovery"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter job manifest"`
+  - `npm run check`
+  - `git diff --check`
+
+2026-07-12 V2 worker spawn transaction hardening:
+
+- Replaced the `workflow.v2.worker_spawn.create` session/preflight/worker
+  persistence chain with one `BEGIN IMMEDIATE` SQLite transaction.
+- The create path now prepares the same session run, workflow agent run,
+  backend preflight record, and worker run row, then commits them together
+  instead of relying on best-effort compensation cleanup after partial writes.
+- Added a regression trigger that forces the worker-row insert to abort and
+  asserts no session run, workflow agent run, backend preflight, or worker row
+  remains afterward.
+- Added idempotent replay coverage for an existing queued worker run with the
+  same session/preflight ids, asserting the session run, agent run, preflight,
+  and worker rows remain singletons.
+- This is still a local control-plane persistence slice. It does not start
+  worker runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or production
+  workflow queues.
+- Focused verification passed locally:
+  - `node --check src/session-actions.js`
+  - `node --check src/workflow-v2/worker-lifecycle-actions.js`
+  - `node --check src/workflow.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 autonomous loop runtime enforcement"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2"`
   - `npm run check`
   - `git diff --check`
 
