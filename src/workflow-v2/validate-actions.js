@@ -1,7 +1,12 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   fileExistsSync,
   workflowPaths
 } from "../workflow/paths.js";
+import {
+  jsonHash
+} from "../workflow/json.js";
 import {
   sqlValue,
   sqlite,
@@ -91,6 +96,85 @@ async function workflowV2AdvisoryCheck(dbFile, schema, checkId, requiredTables, 
     return { ...result, status: "advisory", severity: "advisory", advisory: true };
   }
   return { ...result, severity: "advisory", advisory: true };
+}
+
+async function workflowV2AdapterManifestArtifactFile(paths, artifactRef = "") {
+  const text = String(artifactRef || "").trim();
+  const prefix = "artifact://workflow-v2/";
+  if (!text.startsWith(prefix)) {
+    throw new Error(`adapter manifest artifact ref is not workflow-v2 scoped: ${text || "missing"}`);
+  }
+  const suffix = text.slice(prefix.length);
+  if (!suffix || suffix.split("/").some((part) => part === "..")) {
+    throw new Error(`adapter manifest artifact ref has unsafe path: ${text}`);
+  }
+  const base = path.resolve(paths.artifactsDir, "workflow-v2");
+  const filePath = path.resolve(base, suffix);
+  if (filePath !== base && !filePath.startsWith(`${base}${path.sep}`)) {
+    throw new Error(`adapter manifest artifact ref escapes artifact root: ${text}`);
+  }
+  const [realBase, realFile] = await Promise.all([
+    fs.realpath(base),
+    fs.realpath(filePath)
+  ]);
+  if (realFile !== realBase && !realFile.startsWith(`${realBase}${path.sep}`)) {
+    throw new Error(`adapter manifest artifact real path escapes artifact root: ${text}`);
+  }
+  const stat = await fs.lstat(filePath);
+  if (!stat.isFile()) {
+    throw new Error(`adapter manifest artifact is not a regular file: ${text}`);
+  }
+  return filePath;
+}
+
+async function workflowV2AdapterManifestArtifactCheck(paths, schema) {
+  const checkId = "adapter_job_manifest_artifacts_match_hash";
+  const requiredTables = ["workflow_v2_worker_adapter_jobs"];
+  const skipped = requiredTables.filter((table) => !schema[table]?.exists);
+  if (skipped.length) return { checkId, status: "skipped", skippedTables: skipped, count: 0 };
+  const schemaGap = requiredTables.filter((table) => schema[table]?.exists && !schema[table]?.requiredColumnsPresent);
+  if (schemaGap.length) return { checkId, status: "schema_gap", schemaGapTables: schemaGap, count: 0 };
+  const rows = await sqlite(paths.dbFile, `
+SELECT adapter_job_id, workflow_id, worker_run_id, artifact_ref, manifest_hash
+FROM workflow_v2_worker_adapter_jobs
+WHERE artifact_ref!='' AND manifest_hash!=''
+ORDER BY adapter_job_id ASC;`, { json: true });
+  const issues = [];
+  for (const row of rows) {
+    try {
+      const artifactFile = await workflowV2AdapterManifestArtifactFile(paths, row.artifact_ref || "");
+      const manifest = JSON.parse(await fs.readFile(artifactFile, "utf8"));
+      const actualHash = `sha256:${jsonHash(manifest)}`;
+      if (actualHash !== row.manifest_hash) {
+        issues.push({
+          adapterJobId: row.adapter_job_id || "",
+          workflowId: row.workflow_id || "",
+          workerRunId: row.worker_run_id || "",
+          artifactRef: row.artifact_ref || "",
+          expectedHash: row.manifest_hash || "",
+          actualHash,
+          reason: "manifest_hash_mismatch"
+        });
+      }
+    } catch (error) {
+      issues.push({
+        adapterJobId: row.adapter_job_id || "",
+        workflowId: row.workflow_id || "",
+        workerRunId: row.worker_run_id || "",
+        artifactRef: row.artifact_ref || "",
+        expectedHash: row.manifest_hash || "",
+        reason: "manifest_artifact_unreadable",
+        error: String(error?.message || error)
+      });
+    }
+  }
+  return {
+    checkId,
+    status: issues.length ? "fail" : "pass",
+    count: issues.length,
+    checkedCount: rows.length,
+    issues: issues.slice(0, 20)
+  };
 }
 
 async function workflowV2Validate(rootDir, input = {}) {
@@ -310,6 +394,7 @@ WHERE j.status NOT IN (${adapterJobStatusesSql})
    OR (j.status='retry_scheduled' AND j.next_retry_at='')
    OR (j.status IN ('completed','failed','cancelled') AND j.completed_at='')
    OR (j.status IN ('queued','retry_scheduled','completed','failed','cancelled') AND (j.lease_owner!='' OR j.lease_until!=''));`));
+  checks.push(await workflowV2AdapterManifestArtifactCheck(paths, schema));
   checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "accepted_worker_runs_require_accepted_manager_review", ["workflow_v2_worker_runs", "workflow_v2_manager_reviews"], `
 SELECT COUNT(*) AS count
 FROM workflow_v2_worker_runs w

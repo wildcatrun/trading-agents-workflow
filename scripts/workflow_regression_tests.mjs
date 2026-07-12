@@ -349,6 +349,10 @@ function sqliteCount(dbFile, table, where = "1=1") {
   return Number(sqliteJson(dbFile, `SELECT COUNT(*) AS count FROM ${table} WHERE ${where};`)[0]?.count || 0);
 }
 
+function workflowV2TestManifestHash(value) {
+  return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+}
+
 async function pathExists(filePath) {
   try {
     await fs.access(filePath);
@@ -4436,6 +4440,18 @@ process.stdout.write("not-json");
     leaseUntil: badManifestLease.leaseUntil,
     generatedAt: "2026-07-04T01:20:01.000Z"
   });
+  const originalBadManifest = JSON.parse(await fs.readFile(badManifestRecord.artifact.artifactFile, "utf8"));
+  await fs.writeFile(badManifestRecord.artifact.artifactFile, JSON.stringify({
+    ...originalBadManifest,
+    tamperedByRegression: true
+  }, null, 2) + "\n", "utf8");
+  const tamperedManifestValidate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const tamperedManifestCheck = tamperedManifestValidate.checks.find((item) => item.checkId === "adapter_job_manifest_artifacts_match_hash");
+  assert.equal(tamperedManifestCheck?.status, "fail", JSON.stringify(tamperedManifestValidate.failedChecks));
+  assert.equal(tamperedManifestValidate.failedChecks.includes("adapter_job_manifest_artifacts_match_hash"), true);
+  assert.equal(tamperedManifestCheck?.issues?.[0]?.reason, "manifest_hash_mismatch");
   sqliteExec(dbFile, `
 UPDATE workflow_v2_worker_adapter_jobs
 SET manifest_hash=''
@@ -4460,6 +4476,73 @@ WHERE adapter_job_id='${badManifestRecord.adapterJob.adapterJobId}';`);
   });
   const corruptAdapterJobCheck = corruptValidate.checks.find((item) => item.checkId === "adapter_jobs_match_worker_runs");
   assert.equal(corruptAdapterJobCheck?.status, "fail", JSON.stringify(corruptValidate.failedChecks));
+}
+
+async function testWorkflowV2AdapterManifestValidatorHardening() {
+  const root = await tempRoot("workflow-v2-adapter-manifest-validator");
+  const dbFile = path.join(root, "tracking.db");
+  await runAction(root, { action: "workflow.status" });
+  const workflowId = "wf-v2-manifest-validator";
+  const artifactDir = path.join(root, "artifacts", "workflow-v2", workflowId);
+  await fs.mkdir(artifactDir, { recursive: true });
+  const validManifest = { schemaVersion: "workflow_v2_worker_adapter_job.v1", workflowId, adapterJobId: "valid-manifest" };
+  const validHash = workflowV2TestManifestHash(validManifest);
+  await fs.writeFile(path.join(artifactDir, "valid.json"), JSON.stringify(validManifest, null, 2) + "\n", "utf8");
+  const mismatchedManifest = { schemaVersion: "workflow_v2_worker_adapter_job.v1", workflowId, adapterJobId: "zzz-bad-manifest", tampered: true };
+  await fs.writeFile(path.join(artifactDir, "bad.json"), JSON.stringify(mismatchedManifest, null, 2) + "\n", "utf8");
+  const outsideFile = path.join(root, "outside-manifest.json");
+  await fs.writeFile(outsideFile, JSON.stringify(validManifest, null, 2) + "\n", "utf8");
+  await fs.symlink(outsideFile, path.join(artifactDir, "symlink.json"));
+  const rows = [];
+  const adapterJobRow = (id, artifactRef, hash = validHash) => `(${[
+    id,
+    workflowId,
+    "plan-v2-manifest-validator",
+    "node-v2-manifest-validator",
+    `worker-${id}`,
+    `session-${id}`,
+    "hermers_docker_worker",
+    1,
+    0,
+    3,
+    "queued",
+    "",
+    "",
+    "",
+    "",
+    artifactRef,
+    `${id}.json`,
+    `info-${id}`,
+    hash,
+    "",
+    "",
+    "{}",
+    "test",
+    "2026-07-04T00:00:00.000Z",
+    "2026-07-04T00:00:00.000Z",
+    ""
+  ].map((value) => typeof value === "number" ? String(value) : `'${String(value).replace(/'/g, "''")}'`).join(", ")} )`;
+  for (let index = 0; index < 501; index += 1) {
+    rows.push(adapterJobRow(`aaa-valid-${String(index).padStart(3, "0")}`, `artifact://workflow-v2/${workflowId}/valid.json`));
+  }
+  rows.push(adapterJobRow("bad-empty-suffix", "artifact://workflow-v2/"));
+  rows.push(adapterJobRow("bad-scheme", "artifact://workflow-v3/not-allowed.json"));
+  rows.push(adapterJobRow("bad-traversal", "artifact://workflow-v2/../../etc/passwd"));
+  rows.push(adapterJobRow("bad-symlink", `artifact://workflow-v2/${workflowId}/symlink.json`));
+  rows.push(adapterJobRow("zzz-bad-manifest", `artifact://workflow-v2/${workflowId}/bad.json`, validHash));
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_worker_adapter_jobs(adapter_job_id, workflow_id, plan_id, node_id, worker_run_id, session_run_id, runtime_backend, worker_attempt, runner_attempt, max_runner_attempts, status, lease_owner, lease_until, next_retry_at, runner_id, artifact_ref, artifact_id, info_id, manifest_hash, runner_receipt_ref, last_error, payload_json, created_by, created_at, updated_at, completed_at)
+VALUES ${rows.join(",\n")};`);
+  const validate = await runAction(root, { action: "workflow.v2.validate" });
+  const manifestCheck = validate.checks.find((item) => item.checkId === "adapter_job_manifest_artifacts_match_hash");
+  assert.equal(manifestCheck?.status, "fail", JSON.stringify(validate.failedChecks));
+  assert.equal(validate.failedChecks.includes("adapter_job_manifest_artifacts_match_hash"), true);
+  assert.equal(manifestCheck.checkedCount > 500, true);
+  assert.equal(Boolean(manifestCheck.issues.some((item) => item.adapterJobId === "zzz-bad-manifest" && item.reason === "manifest_hash_mismatch")), true);
+  assert.equal(Boolean(manifestCheck.issues.some((item) => item.adapterJobId === "bad-empty-suffix" && item.reason === "manifest_artifact_unreadable")), true);
+  assert.equal(Boolean(manifestCheck.issues.some((item) => item.adapterJobId === "bad-scheme" && item.reason === "manifest_artifact_unreadable")), true);
+  assert.equal(Boolean(manifestCheck.issues.some((item) => item.adapterJobId === "bad-traversal" && item.reason === "manifest_artifact_unreadable")), true);
+  assert.equal(Boolean(manifestCheck.issues.some((item) => item.adapterJobId === "bad-symlink" && item.reason === "manifest_artifact_unreadable")), true);
 }
 
 async function testWorkflowV2AdapterRunnerConcurrencyRecovery() {
@@ -20933,6 +21016,7 @@ try {
     ["workflow v2 adapter job manifest", testWorkflowV2AdapterJobManifest],
     ["workflow v2 adapter job terminal helper", testWorkflowV2AdapterJobTerminalHelper],
     ["workflow v2 adapter runner drain", testWorkflowV2AdapterRunnerDrain],
+    ["workflow v2 adapter manifest validator hardening", testWorkflowV2AdapterManifestValidatorHardening],
     ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
     ["workflow v2 fixed template plan gate", testWorkflowV2FixedTemplatePlanGate],

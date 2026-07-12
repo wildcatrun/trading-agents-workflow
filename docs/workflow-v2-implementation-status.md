@@ -564,6 +564,10 @@ Validator:
   completion fields, manifest hash, status enum, JSON payload validity, and the
   lifecycle invariant that nonterminal adapter jobs only attach to the same
   running worker attempt.
+- The validator also reads recorded adapter manifest artifacts, enforces
+  `artifact://workflow-v2/...` path containment, parses JSON, and recomputes
+  the `sha256:` manifest hash so validate/readiness checks can catch missing or
+  tampered runner manifests before a real adapter consumes them.
 - The validator also checks the worker/session lifecycle mapping for queued,
   retry, running, submitted/reviewed, handoff, successor, retired, blocked,
   failed/timed-out, and cancelled rows.
@@ -1006,6 +1010,32 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner concurrency/recovery"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
   - `npm run check`
+
+2026-07-12 V2.4 adapter manifest validator hardening:
+
+- Added filesystem-aware adapter manifest validation to
+  `workflow.v2.validate`.
+- `adapter_job_manifest_artifacts_match_hash` reads recorded adapter manifest
+  artifacts, requires `artifact://workflow-v2/...` containment, parses JSON, and
+  recomputes the `sha256:` hash against `workflow_v2_worker_adapter_jobs`.
+- Extended the adapter runner regression to tamper with a recorded manifest
+  artifact and assert the new validator check fails closed before runner drain.
+- Added a focused validator hardening regression for more than 500 adapter
+  jobs, non-v2 artifact refs, empty suffixes, traversal refs, symlink refs, and
+  `failedChecks` summary inclusion.
+- This is still a local control-plane validation slice. It does not start
+  worker runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or production
+  workflow queues.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/validate-actions.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter manifest validator hardening"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter job manifest"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner concurrency/recovery"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 lifecycle renewal and validator"`
+  - `npm run check`
+  - `git diff --check`
 
 2026-07-04 advisory-plan correction verification:
 

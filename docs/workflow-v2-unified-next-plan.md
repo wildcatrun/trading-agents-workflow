@@ -284,6 +284,9 @@ Local landed shape:
 - Commands are executed with `execFile`, not shell interpolation; string
   commands with spaces are rejected unless provided as a JSON array in the
   configured environment variable.
+- `workflow.v2.validate` now audits recorded adapter manifest artifacts by
+  enforcing local `artifact://workflow-v2/...` path containment, parsing JSON,
+  and recomputing the stored `sha256:` manifest hash.
 - No WSL/Docker container is started by this local slice.
 
 ## Track V2.5: Workflow Self-Evolution
