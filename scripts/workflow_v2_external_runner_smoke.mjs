@@ -58,18 +58,27 @@ const runnerKind = firstText(argValue("--runner"), "dummy");
 const runnerScriptByKind = {
   dummy: "workflow_v2_external_runner_dummy.mjs",
   "dry-run": "workflow_v2_external_runner_dry_run.mjs",
-  dry_run: "workflow_v2_external_runner_dry_run.mjs"
+  dry_run: "workflow_v2_external_runner_dry_run.mjs",
+  "plan-only": "workflow_v2_external_runner_dry_run.mjs",
+  plan_only: "workflow_v2_external_runner_dry_run.mjs"
 };
 const expectedReceiptRunnerByKind = {
   dummy: "workflow_v2_external_runner_dummy",
   "dry-run": "workflow_v2_external_runner_dry_run",
-  dry_run: "workflow_v2_external_runner_dry_run"
+  dry_run: "workflow_v2_external_runner_dry_run",
+  "plan-only": "workflow_v2_external_runner_dry_run",
+  plan_only: "workflow_v2_external_runner_dry_run"
+};
+const runnerArgsByKind = {
+  "plan-only": ["--plan-only"],
+  plan_only: ["--plan-only"]
 };
 if (!runnerScriptByKind[runnerKind]) {
   throw new Error(`unsupported external runner smoke kind: ${runnerKind}`);
 }
 const runnerId = `${workflowId}.${runnerKind.replace(/_/g, "-")}-runner`;
 const runnerScript = path.join(__dirname, runnerScriptByKind[runnerKind]);
+const runnerArgs = runnerArgsByKind[runnerKind] || [];
 const expectedReceiptRunner = expectedReceiptRunnerByKind[runnerKind];
 const envKey = "TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD";
 const previousEnv = process.env[envKey];
@@ -151,7 +160,7 @@ LIMIT 1;`))[0];
   });
   assert.equal(adapterRecord.adapterJob.workerRunId, workerRunId);
 
-  process.env[envKey] = JSON.stringify([process.execPath, runnerScript]);
+  process.env[envKey] = JSON.stringify([process.execPath, runnerScript, ...runnerArgs]);
   const preview = await runAction(root, {
     action: "workflow.v2.adapter_runner.preview",
     mode: "external_command",
@@ -176,6 +185,13 @@ LIMIT 1;`))[0];
   assert.equal(drain.results[0].externalOutput.status, "success");
   assert.equal(drain.results[0].submit.adapterJobUpdate.job.status, "completed");
   assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.runner, expectedReceiptRunner);
+  if (runnerKind === "plan-only" || runnerKind === "plan_only") {
+    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.planOnly, true);
+    assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.mode, "plan_only");
+    assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.commands.length, 2);
+    assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.constraints.runContainerNow, false);
+    assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.constraints.callModelNow, false);
+  }
   assert.equal(await pathExists(drain.results[0].externalOutput.artifactFile), true);
   assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id=${sqlValue(workerRunId)} AND status='submitted_for_review' AND lease_owner='' AND lease_until=''`), 1);
   assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `worker_run_id=${sqlValue(workerRunId)} AND status='completed'`), 1);

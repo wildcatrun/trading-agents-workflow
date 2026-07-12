@@ -33,6 +33,7 @@
     "smoke:v2-canary": "node scripts/workflow_v2_fixed_template_canary.mjs",
     "smoke:v2-external-runner": "node scripts/workflow_v2_external_runner_smoke.mjs",
     "smoke:v2-external-runner-dry-run": "node scripts/workflow_v2_external_runner_smoke.mjs --runner dry-run",
+    "smoke:v2-external-runner-plan-only": "node scripts/workflow_v2_external_runner_smoke.mjs --runner plan-only",
     "smoke:mcp": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}' '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}' | python3 scripts/trading_agents_workflow_mcp.py",
     "smoke:hermes-mcp": "python3 scripts/test_hermes_mcp_surface.py",
     "test:regression": "node scripts/workflow_regression_tests.mjs",

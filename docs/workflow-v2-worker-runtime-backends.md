@@ -158,6 +158,12 @@ Claude Code, Gateway, production queues, or model calls by itself:
   `npm run smoke:v2-external-runner-dry-run` runs this path end to end and
   still expects the worker to reach `submitted_for_review` only through
   `workflow.v2.worker_result.submit`.
+- `npm run smoke:v2-external-runner-plan-only` runs the same wrapper with
+  `--plan-only`. In addition to dry-run contract checks, it renders the future
+  worker wrapper command plan and planned workspace/log/artifact paths into the
+  runner output. The rendered commands are `executesInThisSmoke=false` plan
+  data and are not authorization to start containers, mount secrets, call
+  models, expose ports, or write the central workflow database.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical

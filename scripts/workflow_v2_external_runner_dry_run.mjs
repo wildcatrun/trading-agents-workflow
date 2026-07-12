@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
+import path from "node:path";
 
 function firstText(...values) {
   for (const value of values) {
@@ -19,8 +20,132 @@ function assertTruthy(value, message) {
   if (!value) throw new Error(message);
 }
 
-const requestFile = firstText(process.argv[2], process.env.WORKFLOW_V2_ADAPTER_RUNNER_REQUEST_FILE);
-const outputFile = firstText(process.argv[3], process.env.WORKFLOW_V2_ADAPTER_RUNNER_OUTPUT_FILE);
+function parseArgs(argv = []) {
+  const flags = new Set();
+  const positionals = [];
+  for (const item of argv) {
+    if (String(item || "").startsWith("--")) {
+      flags.add(String(item).slice(2).trim().toLowerCase().replace(/_/g, "-"));
+    } else {
+      positionals.push(item);
+    }
+  }
+  return { flags, positionals };
+}
+
+function safeSegment(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96) || "workflow-v2-runner";
+}
+
+function plannedRuntimeEntrypoint(runtimeBackend) {
+  if (runtimeBackend === "claude_code_docker_worker") {
+    return {
+      wrapper: "claude_code_worker_wrapper",
+      command: ["node", "/opt/trading-agents-workflow/worker-runners/claude-code-runner.mjs", "/workspace/runner-request.json", "/workspace/runner-output.json"]
+    };
+  }
+  return {
+    wrapper: "hermers_worker_wrapper",
+    command: ["node", "/opt/trading-agents-workflow/worker-runners/hermers-runner.mjs", "/workspace/runner-request.json", "/workspace/runner-output.json"]
+  };
+}
+
+function buildPlanOnlyInvocation({ request, manifest, adapterJob, runtimeBackend, requestFile, outputFile, workerRunId, adapterJobId }) {
+  const artifactDir = path.dirname(outputFile);
+  const planSegment = safeSegment(adapterJobId || workerRunId || runtimeBackend);
+  const planDir = path.join(artifactDir, `${planSegment}.plan-only`);
+  const workspaceDir = path.join(planDir, "workspace");
+  const logsDir = path.join(planDir, "logs");
+  const runnerOutputDir = path.join(planDir, "runner-output");
+  const containerName = `workflow-v2-${safeSegment(runtimeBackend)}-${safeSegment(workerRunId).slice(0, 32)}`;
+  const entrypoint = plannedRuntimeEntrypoint(runtimeBackend);
+  const image = firstText(manifest.backend?.image);
+  const dockerCommand = [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    containerName,
+    "--network",
+    "none",
+    "-e",
+    "WORKFLOW_V2_ADAPTER_RUNNER_REQUEST_FILE=/workspace/runner-request.json",
+    "-e",
+    "WORKFLOW_V2_ADAPTER_RUNNER_OUTPUT_FILE=/workspace/runner-output.json",
+    "-e",
+    `WORKFLOW_V2_RUNTIME_BACKEND=${runtimeBackend}`,
+    "-v",
+    `${artifactDir}:/workflow-artifacts:rw`,
+    "-v",
+    `${workspaceDir}:/workspace:rw`,
+    image,
+    ...entrypoint.command
+  ];
+  return {
+    schemaVersion: "workflow_v2_external_runner_plan_only.v1",
+    mode: "plan_only",
+    executable: false,
+    requiresSeparateAuthorization: true,
+    directDatabaseWritesAllowed: false,
+    runtimeBackend,
+    runnerKind: firstText(manifest.backend?.runnerKind),
+    adapterJobId,
+    workerRunId,
+    hostAlias: firstText(manifest.backend?.hostAlias),
+    image,
+    containerName,
+    paths: {
+      artifactDir,
+      planDir,
+      workspaceDir,
+      logsDir,
+      runnerOutputDir,
+      requestFile,
+      outputFile,
+      manifestFile: firstText(request.manifestFile),
+      stdoutLog: path.join(logsDir, "runner.stdout.log"),
+      stderrLog: path.join(logsDir, "runner.stderr.log"),
+      resultArtifact: path.join(runnerOutputDir, "result.json"),
+      receiptArtifact: path.join(runnerOutputDir, "receipt.json")
+    },
+    commands: [
+      {
+        name: "prepare_runner_directories",
+        command: ["mkdir", "-p", workspaceDir, logsDir, runnerOutputDir],
+        executesInThisSmoke: false
+      },
+      {
+        name: entrypoint.wrapper,
+        command: dockerCommand,
+        executesInThisSmoke: false
+      }
+    ],
+    constraints: {
+      startContainerNow: false,
+      runContainerNow: false,
+      callModelNow: false,
+      exposeNetworkPorts: false,
+      mountSecrets: false,
+      writeCentralDatabase: false,
+      requireGovernedSubmitPath: true,
+      outputMustReturnThrough: firstText(manifest.output?.submitAction)
+    },
+    source: {
+      requestSchemaVersion: request.schemaVersion,
+      manifestSchemaVersion: manifest.schemaVersion,
+      manifestHash: firstText(adapterJob.manifestHash, adapterJob.manifest_hash)
+    }
+  };
+}
+
+const parsedArgs = parseArgs(process.argv.slice(2));
+const planOnly = parsedArgs.flags.has("plan-only");
+const requestFile = firstText(parsedArgs.positionals[0], process.env.WORKFLOW_V2_ADAPTER_RUNNER_REQUEST_FILE);
+const outputFile = firstText(parsedArgs.positionals[1], process.env.WORKFLOW_V2_ADAPTER_RUNNER_OUTPUT_FILE);
 
 if (!requestFile || !outputFile) {
   console.error("usage: workflow_v2_external_runner_dry_run.mjs REQUEST_FILE OUTPUT_FILE");
@@ -62,6 +187,7 @@ assertEqual(manifest.backend?.docker?.directPortExposure, false, "dry-run runner
 
 const plannedInvocation = {
   dryRun: true,
+  planOnly,
   runtimeBackend,
   runnerKind: firstText(manifest.backend?.runnerKind),
   hostAlias: firstText(manifest.backend?.hostAlias),
@@ -74,14 +200,21 @@ const plannedInvocation = {
   requestFile,
   outputFile
 };
+const planOnlyInvocation = planOnly
+  ? buildPlanOnlyInvocation({ request, manifest, adapterJob, runtimeBackend, requestFile, outputFile, workerRunId, adapterJobId })
+  : null;
 
 const output = {
   status: "success",
-  summary: `Dry-run external runner validated ${runtimeBackend} adapter job ${adapterJobId}`,
+  summary: planOnly
+    ? `Plan-only external runner validated ${runtimeBackend} adapter job ${adapterJobId}`
+    : `Dry-run external runner validated ${runtimeBackend} adapter job ${adapterJobId}`,
   plannedInvocation,
+  ...(planOnlyInvocation ? { planOnlyInvocation } : {}),
   receipt: {
     runner: "workflow_v2_external_runner_dry_run",
     dryRun: true,
+    planOnly,
     runtimeBackend,
     adapterJobId,
     workerRunId,
@@ -96,7 +229,8 @@ const output = {
       "session_input_match",
       "submit_fail_return_path",
       "context_budget",
-      "docker_side_effects_disabled"
+      "docker_side_effects_disabled",
+      ...(planOnly ? ["plan_only_command_rendered", "plan_only_paths_rendered"] : [])
     ]
   }
 };
