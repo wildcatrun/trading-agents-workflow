@@ -171,6 +171,14 @@ Claude Code, Gateway, production queues, or model calls by itself:
   refuses execution unless a future explicitly authorized path supplies both an
   execution flag and an environment gate. `npm run
   smoke:v2-external-runner-execute-guard` verifies this fail-closed behavior.
+- `scripts/workflow_v2_runner_execute_human_gate_package.mjs` renders the
+  Chinese Human Gate authorization package for any future real wrapper execute
+  path. It lists the two decision options, Docker host boundary, image digest
+  evidence, secret policy, network policy, log/artifact paths, max concurrency,
+  expiry, rollback, and receipt expectations, then validates the package through
+  `workflow.v2.human_gate_package.preview`. `npm run
+  smoke:v2-runner-execute-hgate-package` only writes JSON/Markdown draft
+  artifacts; it does not execute a worker wrapper.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical
