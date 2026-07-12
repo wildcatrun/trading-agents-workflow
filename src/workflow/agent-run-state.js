@@ -26,11 +26,11 @@ LIMIT 1;`, { json: true });
   return { phaseKey: key || "", phaseId: key ? workflowPhaseRecordId(workflowId, key) : "" };
 }
 
-export async function upsertWorkflowAgentRun(paths, run = {}) {
+export function workflowAgentRunUpsertSql(run = {}) {
   const now = run.updatedAt || nowIso();
   const agentRunId = run.agentRunId || run.agent_run_id || "";
-  if (!agentRunId) return null;
-  await sqlite(paths.dbFile, `
+  if (!agentRunId) return "";
+  return `
 INSERT INTO workflow_agent_runs(agent_run_id, workflow_id, phase_id, phase_key, task_id, dispatch_id, runtime_run_id, session_run_id, runtime, agent_id, status, attempt, input_hash, output_hash, receipt_ref, error, payload_json, started_at, completed_at, created_at, updated_at)
 VALUES (${sqlValue(agentRunId)}, ${sqlValue(run.workflowId || "")}, ${sqlValue(run.phaseId || "")}, ${sqlValue(run.phaseKey || "")}, ${sqlValue(run.taskId || "")}, ${sqlValue(run.dispatchId || "")}, ${sqlValue(run.runtimeRunId || "")}, ${sqlValue(run.sessionRunId || "")}, ${sqlValue(run.runtime || "")}, ${sqlValue(run.agentId || "")}, ${sqlValue(run.status || "unknown")}, ${Number(run.attempt || 0)}, ${sqlValue(run.inputHash || "")}, ${sqlValue(run.outputHash || "")}, ${sqlValue(run.receiptRef || "")}, ${sqlValue(String(run.error || "").slice(0, 2000))}, ${sqlValue(JSON.stringify(run.payload || {}))}, ${sqlValue(run.startedAt || "")}, ${sqlValue(run.completedAt || "")}, ${sqlValue(run.createdAt || now)}, ${sqlValue(now)})
 ON CONFLICT(agent_run_id) DO UPDATE SET
@@ -52,6 +52,13 @@ ON CONFLICT(agent_run_id) DO UPDATE SET
   payload_json=excluded.payload_json,
   started_at=COALESCE(NULLIF(excluded.started_at, ''), workflow_agent_runs.started_at),
   completed_at=COALESCE(NULLIF(excluded.completed_at, ''), workflow_agent_runs.completed_at),
-  updated_at=excluded.updated_at;`);
+  updated_at=excluded.updated_at;`;
+}
+
+export async function upsertWorkflowAgentRun(paths, run = {}) {
+  const agentRunId = run.agentRunId || run.agent_run_id || "";
+  const statement = workflowAgentRunUpsertSql(run);
+  if (!statement) return null;
+  await sqlite(paths.dbFile, statement);
   return agentRunId;
 }

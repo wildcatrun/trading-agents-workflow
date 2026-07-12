@@ -23,6 +23,7 @@ import {
 } from "../src/workflow/action-policy.js";
 import {
   upsertWorkflowAgentRun,
+  workflowAgentRunUpsertSql,
   workflowPhaseRecordId,
   workflowTaskPhaseInfo
 } from "../src/workflow/agent-run-state.js";
@@ -6119,7 +6120,30 @@ VALUES ('task-agent-state', 'wf-agent-state', '', 'phase.alpha', 'cat_body', 'he
   );
 
   assert.equal(await upsertWorkflowAgentRun(paths, {}), null);
+  assert.equal(workflowAgentRunUpsertSql({}), "");
   assert.equal(sqliteCount(dbFile, "workflow_agent_runs"), 0);
+  const builderSql = workflowAgentRunUpsertSql({
+    agentRunId: "agent-run-state-builder",
+    workflowId: "wf-agent-state",
+    phaseId: "phase.wf-agent-state.phase.alpha",
+    phaseKey: "phase.alpha",
+    taskId: "task-agent-state",
+    runtime: "session_pack",
+    agentId: "cat_body",
+    status: "queued",
+    payload: { builder: true },
+    createdAt: "2026-07-12T03:00:30.000Z",
+    updatedAt: "2026-07-12T03:00:30.000Z"
+  });
+  assert.match(builderSql, /INSERT INTO workflow_agent_runs/);
+  sqliteExec(dbFile, builderSql);
+  const builderRow = sqliteJson(dbFile, `
+SELECT status, payload_json AS payloadJson, created_at AS createdAt, updated_at AS updatedAt
+FROM workflow_agent_runs WHERE agent_run_id='agent-run-state-builder' LIMIT 1;`)[0];
+  assert.equal(builderRow.status, "queued");
+  assert.deepEqual(JSON.parse(builderRow.payloadJson), { builder: true });
+  assert.equal(builderRow.createdAt, "2026-07-12T03:00:30.000Z");
+  assert.equal(builderRow.updatedAt, "2026-07-12T03:00:30.000Z");
   assert.equal(await upsertWorkflowAgentRun(paths, {
     agentRunId: "agent-run-state",
     workflowId: "wf-agent-state",

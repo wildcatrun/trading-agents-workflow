@@ -148,9 +148,11 @@ Adapter manifest artifacts now carry an explicit runner contract version and
 session, preflight, task input, output action, context, and no-direct-DB/no-secret
 constraints. Persisted plan row loading, plan workflow-state patching, and
 orchestration-pattern lookup now live in `src/workflow-v2/plan-state.js` while
-shared workflow agent-run phase lookup and upsert helpers now live in
+shared workflow agent-run phase lookup, upsert SQL builder, and async upsert
+helpers now live in
 `src/workflow/agent-run-state.js` for the session action and v2 session-state
-paths.
+paths, with v2 worker spawn transactions reusing the same SQL builder instead
+of carrying a duplicate upsert statement.
 the existing review/Human Gate injection seam remains unchanged. Session-run
 restore, patch/require patch, and retry-delay helpers now live in
 `src/workflow-v2/session-state.js`, with workflow-agent-run sync dependencies

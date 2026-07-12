@@ -16,6 +16,9 @@ import {
   tableColumns
 } from "../workflow/sqlite.js";
 import {
+  workflowAgentRunUpsertSql
+} from "../workflow/agent-run-state.js";
+import {
   requireWorkflowSessionRunStatus,
   sessionJsonObject,
   sessionPackFromRow,
@@ -122,36 +125,6 @@ ON CONFLICT(preflight_id) DO UPDATE SET
 }
 
 
-function workflowV2SessionAgentRunUpsertSql(run = {}) {
-  const now = run.updatedAt || nowIso();
-  const agentRunId = run.agentRunId || run.agent_run_id || "";
-  if (!agentRunId) return "";
-  return `
-INSERT INTO workflow_agent_runs(agent_run_id, workflow_id, phase_id, phase_key, task_id, dispatch_id, runtime_run_id, session_run_id, runtime, agent_id, status, attempt, input_hash, output_hash, receipt_ref, error, payload_json, started_at, completed_at, created_at, updated_at)
-VALUES (${sqlValue(agentRunId)}, ${sqlValue(run.workflowId || "")}, ${sqlValue(run.phaseId || "")}, ${sqlValue(run.phaseKey || "")}, ${sqlValue(run.taskId || "")}, ${sqlValue(run.dispatchId || "")}, ${sqlValue(run.runtimeRunId || "")}, ${sqlValue(run.sessionRunId || "")}, ${sqlValue(run.runtime || "")}, ${sqlValue(run.agentId || "")}, ${sqlValue(run.status || "unknown")}, ${Number(run.attempt || 0)}, ${sqlValue(run.inputHash || "")}, ${sqlValue(run.outputHash || "")}, ${sqlValue(run.receiptRef || "")}, ${sqlValue(String(run.error || "").slice(0, 2000))}, ${sqlValue(JSON.stringify(run.payload || {}))}, ${sqlValue(run.startedAt || "")}, ${sqlValue(run.completedAt || "")}, ${sqlValue(run.createdAt || now)}, ${sqlValue(now)})
-ON CONFLICT(agent_run_id) DO UPDATE SET
-  workflow_id=COALESCE(NULLIF(excluded.workflow_id, ''), workflow_agent_runs.workflow_id),
-  phase_id=COALESCE(NULLIF(excluded.phase_id, ''), workflow_agent_runs.phase_id),
-  phase_key=COALESCE(NULLIF(excluded.phase_key, ''), workflow_agent_runs.phase_key),
-  task_id=COALESCE(NULLIF(excluded.task_id, ''), workflow_agent_runs.task_id),
-  dispatch_id=COALESCE(NULLIF(excluded.dispatch_id, ''), workflow_agent_runs.dispatch_id),
-  runtime_run_id=COALESCE(NULLIF(excluded.runtime_run_id, ''), workflow_agent_runs.runtime_run_id),
-  session_run_id=COALESCE(NULLIF(excluded.session_run_id, ''), workflow_agent_runs.session_run_id),
-  runtime=COALESCE(NULLIF(excluded.runtime, ''), workflow_agent_runs.runtime),
-  agent_id=COALESCE(NULLIF(excluded.agent_id, ''), workflow_agent_runs.agent_id),
-  status=excluded.status,
-  attempt=excluded.attempt,
-  input_hash=COALESCE(NULLIF(excluded.input_hash, ''), workflow_agent_runs.input_hash),
-  output_hash=COALESCE(NULLIF(excluded.output_hash, ''), workflow_agent_runs.output_hash),
-  receipt_ref=COALESCE(NULLIF(excluded.receipt_ref, ''), workflow_agent_runs.receipt_ref),
-  error=COALESCE(NULLIF(excluded.error, ''), workflow_agent_runs.error),
-  payload_json=excluded.payload_json,
-  started_at=COALESCE(NULLIF(excluded.started_at, ''), workflow_agent_runs.started_at),
-  completed_at=COALESCE(NULLIF(excluded.completed_at, ''), workflow_agent_runs.completed_at),
-  updated_at=excluded.updated_at;`;
-}
-
-
 async function workflowV2WorkerSpawnSessionRunPlan(paths, run, generatedAt) {
   const sessionRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_packs WHERE session_id=${sqlValue(run.sessionId)} LIMIT 1;`, { json: true });
   const pack = sessionPackFromRow(sessionRows[0]);
@@ -186,7 +159,7 @@ SET dispatch_id=${sqlValue(resolvedDispatchId)}, updated_at=${sqlValue(generated
 WHERE run_id=${sqlValue(run.sessionRunId)}
   AND (dispatch_id IS NULL OR dispatch_id='');`
       : "";
-    const agentRunSql = workflowV2SessionAgentRunUpsertSql({
+    const agentRunSql = workflowAgentRunUpsertSql({
       agentRunId: `session.${run.sessionRunId}`,
       workflowId: existingRun.workflowId || context.workflowId,
       phaseId: phaseInfo.phaseId,
@@ -217,7 +190,7 @@ WHERE run_id=${sqlValue(run.sessionRunId)}
   const sessionRunSql = `
 INSERT INTO workflow_session_runs(run_id, session_id, pack_version, workflow_id, task_id, dispatch_id, worker_id, status, input_json, worker_input_json, output_json, receipt_ref, error, started_at, completed_at, created_at, updated_at)
 VALUES (${sqlValue(run.sessionRunId)}, ${sqlValue(run.sessionId)}, ${sqlValue(pack.version)}, ${sqlValue(context.workflowId)}, ${sqlValue(context.taskId)}, ${sqlValue(context.dispatchId)}, ${sqlValue(workerId)}, ${sqlValue(status)}, ${sqlValue(JSON.stringify(inputPayload))}, ${sqlValue(JSON.stringify(workerInput))}, '{}', '', '', '', '', ${sqlValue(generatedAt)}, ${sqlValue(generatedAt)});`;
-  const agentRunSql = workflowV2SessionAgentRunUpsertSql({
+  const agentRunSql = workflowAgentRunUpsertSql({
     agentRunId: `session.${run.sessionRunId}`,
     workflowId: context.workflowId,
     phaseId: phaseInfo.phaseId,
