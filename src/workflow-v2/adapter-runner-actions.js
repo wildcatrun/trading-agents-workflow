@@ -235,8 +235,20 @@ function workflowV2CommandArray(value) {
   const text = String(value || "").trim();
   if (!text) return [];
   if (text.startsWith("[")) {
-    const parsed = workflowV2JsonArray(text, []);
-    return parsed.map((item) => String(item || "").trim()).filter(Boolean);
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("workflow v2 external runner command JSON array is invalid");
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error("workflow v2 external runner command must be a JSON array");
+    }
+    const command = parsed.map((item) => String(item || "").trim()).filter(Boolean);
+    if (!command.length) {
+      throw new Error("workflow v2 external runner command JSON array must include an executable");
+    }
+    return command;
   }
   if (/\s/.test(text)) {
     throw new Error("workflow v2 external runner command strings with spaces must be provided as a JSON array");

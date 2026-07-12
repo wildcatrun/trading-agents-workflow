@@ -230,10 +230,12 @@ caller-selected host command execution. Preview exposes the same missing-env,
 invalid-env, and input-command rejection diagnostics in a redacted
 `runnerCommandConfig` object without executing the command. Commands are run
 through `execFile`; string commands with spaces are rejected unless supplied as
-a JSON array in the configured environment variable. The command receives
-request/output file paths as arguments by default and through environment
-variables. The command's output status is normalized to `success`, `fail`, or
-`release`, and missing/invalid output fails closed.
+a JSON array in the configured environment variable. Malformed or empty JSON
+array command values are reported as invalid in the redacted preview/drain
+diagnostics instead of being treated as missing configuration. The command
+receives request/output file paths as arguments by default and through
+environment variables. The command's output status is normalized to `success`,
+`fail`, or `release`, and missing/invalid output fails closed.
 
 `workflow.v2.worker_result.submit` and `workflow.v2.worker_result.fail` are
 adapter-facing control-plane writes. They require the current

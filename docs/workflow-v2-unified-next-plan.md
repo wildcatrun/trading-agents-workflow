@@ -285,7 +285,8 @@ Local landed shape:
   rejected to avoid caller-selected host command execution.
 - Commands are executed with `execFile`, not shell interpolation; string
   commands with spaces are rejected unless provided as a JSON array in the
-  configured environment variable.
+  configured environment variable, and malformed or empty JSON arrays fail
+  closed as invalid configuration without echoing the raw env value.
 - `workflow.v2.validate` now audits recorded adapter manifest artifacts by
   enforcing local `artifact://workflow-v2/...` path containment, parsing JSON,
   and recomputing the stored `sha256:` manifest hash.

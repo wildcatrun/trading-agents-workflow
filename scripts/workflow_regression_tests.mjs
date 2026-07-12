@@ -4387,6 +4387,63 @@ await fs.writeFile(outputFile, JSON.stringify({
   assert.equal(invalidGenericPreview.runnerCommandConfigured, false);
   assert.equal(invalidGenericPreview.runnerCommandConfig.errors[0].code, "external_runner_command_invalid");
   assert.equal(JSON.stringify(invalidGenericPreview.runnerCommandConfig).includes("SECRET_TOKEN_SHOULD_NOT_LEAK"), false);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.adapter_runner.drain",
+      mode: "external_command",
+      runtimeBackend: "claude_code_docker_worker",
+      runnerId: "external-runner-invalid-generic-command",
+      limit: 1,
+      leaseMs: 30_000,
+      generatedAt: "2026-07-04T01:05:15.000Z"
+    }),
+    /strings with spaces must be provided as a JSON array/
+  );
+  process.env[genericRunnerEnvKey] = `["${process.execPath}", "SECRET_TOKEN_JSON_SHOULD_NOT_LEAK"`;
+  const malformedJsonPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:05:16.000Z"
+  });
+  assert.equal(malformedJsonPreview.runnerCommandConfigured, false);
+  assert.equal(malformedJsonPreview.runnerCommandConfig.errors[0].code, "external_runner_command_invalid");
+  assert.equal(JSON.stringify(malformedJsonPreview.runnerCommandConfig).includes("SECRET_TOKEN_JSON_SHOULD_NOT_LEAK"), false);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.adapter_runner.drain",
+      mode: "external_command",
+      runtimeBackend: "claude_code_docker_worker",
+      runnerId: "external-runner-malformed-json-command",
+      limit: 1,
+      leaseMs: 30_000,
+      generatedAt: "2026-07-04T01:05:17.000Z"
+    }),
+    /command JSON array is invalid/
+  );
+  process.env[genericRunnerEnvKey] = "[]";
+  const emptyJsonPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:05:18.000Z"
+  });
+  assert.equal(emptyJsonPreview.runnerCommandConfigured, false);
+  assert.equal(emptyJsonPreview.runnerCommandConfig.errors[0].code, "external_runner_command_invalid");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.adapter_runner.drain",
+      mode: "external_command",
+      runtimeBackend: "claude_code_docker_worker",
+      runnerId: "external-runner-empty-json-command",
+      limit: 1,
+      leaseMs: 30_000,
+      generatedAt: "2026-07-04T01:05:19.000Z"
+    }),
+    /must include an executable/
+  );
   if (previousExternalRunnerCommand === undefined) {
     delete process.env[externalRunnerEnvKey];
   } else {
