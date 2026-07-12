@@ -54,6 +54,8 @@ first executable kernel slice for manager/worker orchestration:
   draft plans remain persistable for refinement;
 - read-only console API routes and local Codex MCP tools for template
   search/detail/stats visibility;
+- workflow v2 console read-model visibility through `/api/workflows/:id/v2`,
+  the V2 console tab, command-palette routes, and source-ref drilldowns;
 - regression coverage for the v2 kernel, permission gate, console gate, and
   workflow-id consistency validator.
 
@@ -950,6 +952,32 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 fixed template plan gate"`
   - `npm run check`
   - `git diff --check`
+
+2026-07-12 V2.2 console read-model visibility follow-up:
+
+- Added a dedicated workflow v2 console read model in
+  `src/console/read-model.js` for persisted v2 plan, node, worker, adapter job,
+  manager/owner review, governance audit, Human Gate package, and summary
+  state visibility.
+- Added the `/api/workflows/:workflowId/v2` child payload route and V2 tab
+  rendering so operators can inspect fixed-template v2 plans without reading
+  the database directly.
+- Wired command-palette entries and source-ref drilldowns for v2 plan rows,
+  including v2-only plan records that do not have a legacy `workflow_runs`
+  parent row.
+- Kept the read model redacted by default: inline sensitive bodies, callback
+  tokens, and secret-ish payload fields are not returned to the console.
+- This slice is read-only console/control-plane visibility only. It does not
+  start worker runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or
+  production workflow queues.
+- Focused verification passed locally:
+  - `npm run check`
+  - `git diff --check`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 console read model visibility"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow console agentic surfaces"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow console static diagnostic matrix contract"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 permission and console gate"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner"`
 
 2026-07-04 advisory-plan correction verification:
 

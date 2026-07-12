@@ -114,8 +114,8 @@ Acceptance criteria:
 
 Status: constants/helpers, v2 registry, plan pure-helper, info-stack preview,
 backend-preflight preview, autonomous-loop runtime helper, and worker-state
-helper splits have landed; deeper DB/action module split remains in progress. A 2026-07-05
-Anthropic reference refresh also expanded `src/workflow-v2/plan.js` with
+helper splits have landed; deeper DB/action module split remains in progress. A
+2026-07-05 Anthropic reference refresh also expanded `src/workflow-v2/plan.js` with
 plan-node advisory helpers for manager-worker, parallel section,
 evaluator-optimizer, and autonomous-loop structure. The same checks now act as
 executable hard gates for non-draft plan admission and worker dispatch while
@@ -134,8 +134,11 @@ draft ad-hoc plans remain available for refinement. Worker run, lease, result
 lookup, lifecycle actor, and handoff state helpers now live in
 `src/workflow-v2/worker-state.js` and are imported directly by the worker
 lifecycle, worker result, adapter runner, control-loop, and review action
-modules. Remaining work in this track is read-model/UI visibility and deeper
-runtime-adapter manifest integration.
+modules. Workflow v2 console read-model/UI visibility landed on 2026-07-12 via
+the dedicated V2 child payload, V2 tab, command-palette routes, and source-ref
+drilldowns. Remaining work in this track is deeper runtime-adapter manifest
+integration and any further no-behavior-change helper splits that reduce
+`src/workflow.js` coupling.
 
 After the focused tests pass, split the v2 implementation out of
 `src/workflow.js` with no intended behavior change.
