@@ -34,6 +34,11 @@ import {
   workflowV2ValidationError,
   workflowV2WorkerRunSummary
 } from "./helpers.js";
+import {
+  workflowV2LeaseCheckAt,
+  workflowV2LeaseErrors,
+  workflowV2LoadWorkerRunForResult
+} from "./worker-state.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -52,9 +57,6 @@ export function createWorkflowV2AdapterRunnerActionHandlers(context = {}) {
   const workflowV2InfoStackExistingItem = requireContextFunction(context, "workflowV2InfoStackExistingItem");
   const workflowV2InfoStackPreview = requireContextFunction(context, "workflowV2InfoStackPreview");
   const workflowV2InfoStackRecord = requireContextFunction(context, "workflowV2InfoStackRecord");
-  const workflowV2LeaseCheckAt = requireContextFunction(context, "workflowV2LeaseCheckAt");
-  const workflowV2LeaseErrors = requireContextFunction(context, "workflowV2LeaseErrors");
-  const workflowV2LoadWorkerRunForResult = requireContextFunction(context, "workflowV2LoadWorkerRunForResult");
   const workflowV2WorkerResultFail = requireContextFunction(context, "workflowV2WorkerResultFail");
   const workflowV2WorkerResultSubmit = requireContextFunction(context, "workflowV2WorkerResultSubmit");
   const writeJsonAtomic = requireContextFunction(context, "writeJsonAtomic");

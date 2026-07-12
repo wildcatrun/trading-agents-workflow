@@ -21,6 +21,9 @@ import {
   workflowV2JsonObject,
   workflowV2WorkerRunSummary
 } from "./helpers.js";
+import {
+  workflowV2RestoreWorkerRunRow
+} from "./worker-state.js";
 
 const WORKFLOW_V2_WORKER_RUN_CONTROL_COLUMNS = [
   "worker_run_id",
@@ -59,7 +62,6 @@ export function createWorkflowV2ControlLoopActionHandlers(context = {}) {
   const workflowV2InfoStackExistingItem = requireContextFunction(context, "workflowV2InfoStackExistingItem");
   const workflowV2InfoStackRecord = requireContextFunction(context, "workflowV2InfoStackRecord");
   const workflowV2RequireSessionRunPatch = requireContextFunction(context, "workflowV2RequireSessionRunPatch");
-  const workflowV2RestoreWorkerRunRow = requireContextFunction(context, "workflowV2RestoreWorkerRunRow");
   const workflowV2WorkerRetryDelayMs = requireContextFunction(context, "workflowV2WorkerRetryDelayMs");
   const writeJsonAtomic = requireContextFunction(context, "writeJsonAtomic");
 

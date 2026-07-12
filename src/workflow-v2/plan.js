@@ -40,6 +40,10 @@ function textHash(value) {
   return createHash("sha256").update(String(value || "")).digest("hex");
 }
 
+const WORKFLOW_V2_APPROVED_TEMPLATE_STATUSES = new Set(["active", "default", "frozen"]);
+const WORKFLOW_V2_HIGH_RISK_PLAN_TIERS = new Set(["high", "critical", "P0", "P1"]);
+const WORKFLOW_V2_FIXED_TEMPLATE_PLAN_TEXT = /\b(P0|P1|trading|trade|production|prod|broker|exchange|order|position|portfolio|deploy|deployment|release|live side[- ]?effect|live trading|real[- ]?trade)\b|实盘|真实交易|生产|部署|发布|交易|下单|订单|持仓|券商|交易所/i;
+
 function normalizeAgentId(value) {
   const agentId = String(value || "").trim();
   if (!agentId) throw new Error("agentId is required");
@@ -430,6 +434,162 @@ export function workflowV2PlanNeedsExecutableNodeHardGate(plan = {}) {
   return !(status === "draft" && workflowState === "draft");
 }
 
+function workflowV2OptionalBool(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value === "object") continue;
+    return boolOption(value, false);
+  }
+  return null;
+}
+
+function workflowV2NormalizePlanRiskTier(value = "medium") {
+  const raw = String(value || "medium").trim();
+  if (raw.toUpperCase() === "P0" || raw.toUpperCase() === "P1") return raw.toUpperCase();
+  return raw.toLowerCase();
+}
+
+function workflowV2PlanPayload(input = {}, plan = {}) {
+  return workflowV2JsonObject(input.payload ?? plan.payload, {});
+}
+
+export function workflowV2PlanTemplateBinding(input = {}, plan = {}) {
+  const payload = workflowV2PlanPayload(input, plan);
+  const fixedTemplatePlanBinding = workflowV2JsonObject(input.fixedTemplatePlan ?? input.fixed_template_plan ?? payload.fixedTemplatePlan ?? payload.fixed_template_plan, {});
+  const template = workflowV2JsonObject(
+    input.template
+      ?? input.workflowTemplate
+      ?? input.workflow_template
+      ?? payload.template
+      ?? payload.workflowTemplate
+      ?? payload.workflow_template
+      ?? fixedTemplatePlanBinding,
+    {}
+  );
+  const templateId = firstText(input.templateId, input.template_id, template.templateId, template.template_id, fixedTemplatePlanBinding.templateId, fixedTemplatePlanBinding.template_id);
+  const fixedPlan = workflowV2OptionalBool(
+    input.fixedTemplatePlan,
+    input.fixed_template_plan,
+    template.fixedPlan,
+    template.fixed_plan,
+    fixedTemplatePlanBinding.fixedPlan,
+    fixedTemplatePlanBinding.fixed_plan,
+    payload.fixedTemplatePlan,
+    payload.fixed_template_plan
+  );
+  return {
+    present: Boolean(templateId),
+    templateId,
+    version: workflowV2NonNegativeInt(firstText(input.templateVersion, input.template_version, template.version, template.templateVersion, template.template_version, fixedTemplatePlanBinding.version), 0),
+    status: String(firstText(input.templateStatus, input.template_status, template.status, template.templateStatus, template.template_status, fixedTemplatePlanBinding.status)).trim().toLowerCase().replace(/-/g, "_"),
+    source: firstText(input.templateSource, input.template_source, template.source, template.templateSource, template.template_source, fixedTemplatePlanBinding.source),
+    artifactRef: firstText(input.templateArtifactRef, input.template_artifact_ref, template.artifactRef, template.artifact_ref, fixedTemplatePlanBinding.artifactRef, fixedTemplatePlanBinding.artifact_ref),
+    artifactHash: firstText(input.templateArtifactHash, input.template_artifact_hash, template.artifactHash, template.artifact_hash, fixedTemplatePlanBinding.artifactHash, fixedTemplatePlanBinding.artifact_hash),
+    fixedPlan: fixedPlan === true
+  };
+}
+
+export function workflowV2PlanTemplateRequirement(input = {}, plan = {}) {
+  const payload = workflowV2PlanPayload(input, plan);
+  const executionMode = firstText(input.executionMode, input.execution_mode, payload.executionMode, payload.execution_mode, payload.trade?.executionMode, payload.trade?.execution_mode, payload.trading?.executionMode, payload.trading?.execution_mode);
+  const workflowType = firstText(input.workflowType, input.workflow_type, payload.workflowType, payload.workflow_type);
+  const sideEffectMode = firstText(input.sideEffectMode, input.side_effect_mode, payload.sideEffectMode, payload.side_effect_mode);
+  const riskTier = workflowV2NormalizePlanRiskTier(firstText(input.riskTier, input.risk_tier, payload.riskTier, payload.risk_tier, plan.riskTier, plan.risk_tier, "medium"));
+  const explicitRequired = workflowV2OptionalBool(
+    input.requireFixedTemplatePlan,
+    input.require_fixed_template_plan,
+    payload.requireFixedTemplatePlan,
+    payload.require_fixed_template_plan,
+    payload.fixedTemplatePlanRequired,
+    payload.fixed_template_plan_required
+  );
+  const explicitLive = workflowV2OptionalBool(
+    input.liveTrading,
+    input.live_trading,
+    input.production,
+    payload.liveTrading,
+    payload.live_trading,
+    payload.production,
+    payload.trade?.live,
+    payload.trading?.live
+  );
+  const reasons = [];
+  if (explicitRequired) reasons.push("explicit_fixed_template_required");
+  if (explicitLive) reasons.push("live_or_production_flag");
+  if (WORKFLOW_V2_HIGH_RISK_PLAN_TIERS.has(riskTier)) reasons.push("high_risk_tier");
+  if (["live", "production", "prod", "real_trade", "real_trading"].includes(String(executionMode || "").trim().toLowerCase().replace(/-/g, "_"))) {
+    reasons.push("live_execution_mode");
+  }
+  if (["live", "production", "prod"].includes(String(sideEffectMode || "").trim().toLowerCase().replace(/-/g, "_"))) {
+    reasons.push("live_side_effect_mode");
+  }
+  const searchableText = [
+    plan.objective,
+    input.objective,
+    input.summary,
+    workflowType,
+    executionMode,
+    sideEffectMode,
+    workflowV2JsonArray(input.tags ?? payload.tags, []).join(" ")
+  ].join(" ");
+  if (WORKFLOW_V2_FIXED_TEMPLATE_PLAN_TEXT.test(searchableText)) reasons.push("live_trading_or_production_text");
+  return {
+    required: reasons.length > 0,
+    reasons: Array.from(new Set(reasons)),
+    riskTier,
+    executionMode,
+    workflowType,
+    sideEffectMode
+  };
+}
+
+export function workflowV2PlanTemplateAdvisories(input = {}, plan = {}) {
+  if (!workflowV2PlanNeedsExecutableNodeHardGate(plan)) return [];
+  const binding = workflowV2PlanTemplateBinding(input, plan);
+  if (binding.present) return [];
+  const requirement = workflowV2PlanTemplateRequirement(input, plan);
+  return [
+    workflowV2ValidationAdvisory(
+      requirement.required ? "fixed_template_plan_required_for_live_execution" : "fixed_template_plan_recommended",
+      requirement.required
+        ? "live, production, trading, or high-risk workflow v2 execution should start from an approved fixed template plan"
+        : "workflow v2 executable plans should prefer approved fixed templates so repeated multi-agent execution is auditable",
+      { reasons: requirement.reasons, riskTier: requirement.riskTier, executionMode: requirement.executionMode, workflowType: requirement.workflowType }
+    )
+  ];
+}
+
+export function workflowV2PlanTemplateHardGateErrors(input = {}, plan = {}) {
+  if (!workflowV2PlanNeedsExecutableNodeHardGate(plan)) return [];
+  const requirement = workflowV2PlanTemplateRequirement(input, plan);
+  if (!requirement.required) return [];
+  const binding = workflowV2PlanTemplateBinding(input, plan);
+  const errors = [];
+  if (!binding.present) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_required", "live, production, trading, or high-risk workflow v2 execution requires an approved fixed template plan", {
+      reasons: requirement.reasons,
+      riskTier: requirement.riskTier,
+      executionMode: requirement.executionMode,
+      workflowType: requirement.workflowType
+    }));
+    return errors;
+  }
+  if (!binding.fixedPlan) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_flag_required", "high-risk workflow v2 execution requires fixedPlan=true template binding", { templateId: binding.templateId }));
+  }
+  if (binding.version < 1) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_version_required", "high-risk workflow v2 execution requires a positive template version", { templateId: binding.templateId }));
+  }
+  if (!WORKFLOW_V2_APPROVED_TEMPLATE_STATUSES.has(binding.status)) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_approved_status_required", "high-risk workflow v2 execution requires an active/default/frozen template binding", {
+      templateId: binding.templateId,
+      version: binding.version,
+      status: binding.status || ""
+    }));
+  }
+  return errors;
+}
+
 export function workflowV2WorkerDelegationContract(input = {}) {
   const payload = workflowV2JsonObject(input.payload, {});
   const delegationInput = workflowV2JsonObject(input.delegation ?? input.delegationContract ?? input.delegation_contract ?? payload.delegation ?? payload.delegationContract ?? payload.delegation_contract, {});
@@ -535,6 +695,8 @@ export function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
   const planRevision = workflowV2NonNegativeInt(plan.planRevision ?? input.planRevision ?? input.plan_revision, 1) || 1;
   const workflowId = plan.workflowId || firstText(input.workflowId, input.workflow_id);
   const planId = plan.planId || firstText(input.planId, input.plan_id) || `${workflowId}.plan`;
+  const templateBinding = workflowV2PlanTemplateBinding(input, plan);
+  const templateRequirement = workflowV2PlanTemplateRequirement(input, plan);
   const participantAgents = workflowV2UniqueTextList([], [
     plan.taskOwnerAgent,
     plan.plannerAgent,
@@ -607,6 +769,18 @@ export function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
       complexityTier: plan.complexityTier || "",
       taskGroupRequired: Boolean(plan.taskGroupRequired),
       workerBudget: workflowV2JsonObject(plan.workerBudget, {})
+    },
+    templateBinding: {
+      required: templateRequirement.required,
+      reasons: templateRequirement.reasons,
+      present: templateBinding.present,
+      templateId: templateBinding.templateId,
+      version: templateBinding.version,
+      status: templateBinding.status,
+      source: templateBinding.source,
+      artifactRef: templateBinding.artifactRef,
+      artifactHash: templateBinding.artifactHash,
+      fixedPlan: templateBinding.fixedPlan
     },
     acceptance: {
       workflowSuccess: Array.isArray(plan.acceptanceCriteria) ? plan.acceptanceCriteria : [],

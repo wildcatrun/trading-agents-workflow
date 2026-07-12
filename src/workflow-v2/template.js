@@ -254,7 +254,9 @@ export function workflowTemplatePlanInput(spec = {}, values = {}, overrides = {}
         schemaVersion: WORKFLOW_TEMPLATE_SCHEMA_VERSION,
         templateId: spec.templateId,
         version: spec.version,
-        status: spec.status
+        status: spec.status,
+        source: "workflow_template_spec",
+        fixedPlan: true
       },
       templateVariables: workflowTemplateRedact(resolvedVariables)
     }

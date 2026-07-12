@@ -5781,6 +5781,249 @@ async function testWorkflowV2PlanAdvisoryAndCanonicalArtifact() {
   assert.equal(Boolean(advisoryPlanValidation.advisoryChecks.some((item) => item.checkId === "plans_anthropic_orchestration_contract" && item.status === "advisory")), true);
 }
 
+async function testWorkflowV2FixedTemplatePlanGate() {
+  const root = await tempRoot("workflow-v2-fixed-template-plan-gate");
+  const liveContract = v2PlanContract({
+    orchestrationPattern: "manager_worker",
+    orchestrationRationale: "Live trading multi-agent orchestration must run from a fixed approved template plan."
+  });
+  const livePlanInput = {
+    objective: "实盘多 agent 交易编排计划必须绑定固定模板。",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    riskTier: "P1",
+    executionMode: "live",
+    workflowType: "live_trading_multi_agent_orchestration",
+    ...liveContract
+  };
+
+  const preview = await runAction(root, {
+    action: "workflow.v2.plan.preview",
+    workflowId: "wf-fixed-template-preview",
+    planId: "plan-fixed-template-preview",
+    status: "planned",
+    workflowState: "planned",
+    ...livePlanInput
+  });
+  assert.equal(preview.valid, true);
+  assert.equal(Boolean(preview.advisoryChecks.some((item) => item.code === "fixed_template_plan_required_for_live_execution")), true);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId: "wf-fixed-template-missing",
+      planId: "plan-fixed-template-missing",
+      ...livePlanInput
+    }),
+    /fixed_template_plan_required/
+  );
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId: "wf-fixed-template-forged",
+      planId: "plan-fixed-template-forged",
+      ...livePlanInput,
+      payload: {
+        template: {
+          schemaVersion: "workflow_template_spec.v1",
+          templateId: "template.workflow.v2.forged.live",
+          version: 1,
+          status: "default",
+          fixedPlan: true
+        }
+      }
+    }),
+    /fixed_template_plan_registry_entry_required/
+  );
+
+  const draft = await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId: "wf-fixed-template-draft",
+    planId: "plan-fixed-template-draft",
+    status: "draft",
+    workflowState: "draft",
+    ...livePlanInput
+  });
+  assert.equal(draft.plan.status, "draft");
+  assert.equal(draft.plan.workflowState, "draft");
+
+  const templateId = "template.workflow.v2.fixed.live";
+  const candidate = await runAction(root, {
+    action: "workflow.template.record_candidate",
+    templateSpec: workflowTemplateSpec({
+      templateId,
+      title: "Fixed live orchestration template",
+      description: "Approved template for fixed-plan live multi-agent orchestration."
+    }),
+    sourceWorkflowId: "wf-fixed-template-source",
+    sourcePlanId: "plan-fixed-template-source"
+  });
+  await runAction(root, {
+    action: "workflow.template.eval.record",
+    templateId,
+    version: 1,
+    fixtureSnapshot: { caseId: "fixed-template-plan-gate" },
+    arms: [
+      { kind: "baseline", isolatedRoot: "/tmp/fixed-template-baseline" },
+      { kind: "previous_version", isolatedRoot: "/tmp/fixed-template-previous" },
+      { kind: "candidate_version", isolatedRoot: "/tmp/fixed-template-candidate" }
+    ],
+    metrics: {
+      planGatePassRate: 1,
+      executionSuccessRate: 1,
+      receiptCompletenessRate: 1,
+      evaluatorAcceptRate: 1,
+      ownerRevisionRate: 0,
+      humanGateReturnRate: 0,
+      duplicateWorkRate: 0,
+      toolFeedbackCompleteness: 1,
+      sideEffectUncertainRate: 0,
+      freshnessViolationRate: 0,
+      rollbackReadinessRate: 1
+    },
+    evidenceRefs: ["artifact://fixed-template/eval"]
+  });
+  await runAction(root, {
+    action: "workflow.template.promote.record",
+    templateId,
+    version: 1,
+    targetStatus: "default",
+    catBrainAuditId: "brain-fixed-template",
+    catClawAuditId: "claw-fixed-template",
+    evidenceRefs: ["artifact://fixed-template/eval"]
+  });
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId: "wf-fixed-template-explicit-false",
+      planId: "plan-fixed-template-explicit-false",
+      ...livePlanInput,
+      payload: {
+        template: {
+          schemaVersion: "workflow_template_spec.v1",
+          templateId,
+          version: 1,
+          status: "default",
+          source: "registry",
+          artifactRef: candidate.artifact.artifactRef,
+          artifactHash: candidate.artifact.artifactHash,
+          fixedPlan: false
+        }
+      }
+    }),
+    /fixed_template_plan_flag_required/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId: "wf-fixed-template-missing-artifact",
+      planId: "plan-fixed-template-missing-artifact",
+      ...livePlanInput,
+      payload: {
+        template: {
+          schemaVersion: "workflow_template_spec.v1",
+          templateId,
+          version: 1,
+          status: "default",
+          source: "registry",
+          fixedPlan: true
+        }
+      }
+    }),
+    /fixed_template_plan_artifact_ref_required/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId: "wf-fixed-template-artifact-mismatch",
+      planId: "plan-fixed-template-artifact-mismatch",
+      ...livePlanInput,
+      payload: {
+        template: {
+          schemaVersion: "workflow_template_spec.v1",
+          templateId,
+          version: 1,
+          status: "default",
+          source: "registry",
+          artifactRef: candidate.artifact.artifactRef,
+          artifactHash: "sha256-not-the-template-hash",
+          fixedPlan: true
+        }
+      }
+    }),
+    /fixed_template_plan_artifact_hash_mismatch/
+  );
+  const orphanTemplateId = "template.workflow.v2.fixed.orphan";
+  const orphanCandidate = await runAction(root, {
+    action: "workflow.template.record_candidate",
+    templateSpec: workflowTemplateSpec({
+      templateId: orphanTemplateId,
+      title: "Orphan fixed live orchestration template",
+      description: "Regression fixture for missing template family metadata."
+    })
+  });
+  sqliteExec(path.join(root, "tracking.db"), `
+UPDATE workflow_v2_template_versions
+SET status='default'
+WHERE template_id='${orphanTemplateId}' AND version=1;
+DELETE FROM workflow_v2_template_specs
+WHERE template_id='${orphanTemplateId}';`);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.plan.create",
+      workflowId: "wf-fixed-template-orphan",
+      planId: "plan-fixed-template-orphan",
+      ...livePlanInput,
+      payload: {
+        template: {
+          schemaVersion: "workflow_template_spec.v1",
+          templateId: orphanTemplateId,
+          version: 1,
+          status: "default",
+          source: "registry",
+          artifactRef: orphanCandidate.artifact.artifactRef,
+          artifactHash: orphanCandidate.artifact.artifactHash,
+          fixedPlan: true
+        }
+      }
+    }),
+    /fixed_template_plan_family_required/
+  );
+  await runAction(root, {
+    action: "workflow.template.record_candidate",
+    templateSpec: workflowTemplateSpec({
+      templateId,
+      version: 2,
+      title: "Unapproved fixed live orchestration candidate",
+      description: "New candidate should not become the implicit production instantiation target."
+    })
+  });
+
+  const instantiated = await runAction(root, {
+    action: "workflow.template.instantiate.record",
+    templateId,
+    variables: {
+      workflowId: "wf-fixed-template-approved",
+      planId: "plan-fixed-template-approved",
+      objective: "使用已批准 default 固定模板执行实盘多 agent 编排。"
+    },
+    planOverrides: {
+      riskTier: "P1",
+      executionMode: "live",
+      workflowType: "live_trading_multi_agent_orchestration"
+    }
+  });
+  assert.equal(instantiated.plan.planId, "plan-fixed-template-approved");
+  assert.equal(instantiated.plan.payload.fixedTemplatePlan.templateId, templateId);
+  assert.equal(instantiated.plan.payload.fixedTemplatePlan.version, 1);
+  assert.equal(instantiated.plan.payload.fixedTemplatePlan.status, "default");
+  assert.equal(instantiated.planSpecV2.templateBinding.required, true);
+  assert.equal(instantiated.planSpecV2.templateBinding.present, true);
+  assert.equal(instantiated.planSpecV2.templateBinding.templateId, templateId);
+  assert.equal(instantiated.planSpecV2.templateBinding.status, "default");
+}
+
 async function testWorkflowTemplateSelfEvolution() {
   const root = await tempRoot("workflow-template-self-evolution");
   const dbFile = path.join(root, "tracking.db");
@@ -20544,6 +20787,7 @@ try {
     ["workflow v2 adapter runner drain", testWorkflowV2AdapterRunnerDrain],
     ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
+    ["workflow v2 fixed template plan gate", testWorkflowV2FixedTemplatePlanGate],
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],
     ["workflow v2 info stack and session binding", testWorkflowV2InfoStackAndSessionBinding],
     ["workflow v2 extracted action contracts", testWorkflowV2ExtractedActionContracts],

@@ -31,6 +31,9 @@ import {
   workflowV2UniqueTextList,
   workflowV2ValidationError
 } from "./helpers.js";
+import {
+  workflowV2RestoreWorkerRunRow
+} from "./worker-state.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -47,7 +50,6 @@ export function createWorkflowV2ReviewActionHandlers(context = {}) {
   const workflowV2PlanOrchestrationPattern = requireContextFunction(context, "workflowV2PlanOrchestrationPattern");
   const workflowV2RequireSessionRunPatch = requireContextFunction(context, "workflowV2RequireSessionRunPatch");
   const workflowV2RestoreManagerReviewRow = requireContextFunction(context, "workflowV2RestoreManagerReviewRow");
-  const workflowV2RestoreWorkerRunRow = requireContextFunction(context, "workflowV2RestoreWorkerRunRow");
 
 function workflowV2EvaluatorDecisionStateForReview(decision = "") {
   const text = String(decision || "").trim().toLowerCase().replace(/-/g, "_");

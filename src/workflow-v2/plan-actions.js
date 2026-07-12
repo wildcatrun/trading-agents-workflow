@@ -37,6 +37,10 @@ import {
   workflowV2PlanNodeAdvisories,
   workflowV2PlanOrchestrationAdvisories,
   workflowV2PlanOrchestrationContract,
+  workflowV2PlanTemplateAdvisories,
+  workflowV2PlanTemplateBinding,
+  workflowV2PlanTemplateHardGateErrors,
+  workflowV2PlanTemplateRequirement,
   workflowV2PlanSpecArtifact
 } from "./plan.js";
 
@@ -60,6 +64,88 @@ async function pathExists(filePath) {
   } catch {
     return false;
   }
+}
+
+const WORKFLOW_V2_APPROVED_TEMPLATE_STATUSES = new Set(["active", "default", "frozen"]);
+
+async function workflowV2TemplateRegistryHardGateErrors(paths, binding = {}, requirement = {}) {
+  if (!requirement.required || !binding.present) return [];
+  const rows = await sqlite(paths.dbFile, `
+SELECT
+  v.template_id,
+  v.version,
+  v.status,
+  v.artifact_ref,
+  v.artifact_hash,
+  s.family_status,
+  s.default_version,
+  s.active_version
+FROM workflow_v2_template_versions v
+LEFT JOIN workflow_v2_template_specs s ON s.template_id=v.template_id
+WHERE v.template_id=${sqlValue(binding.templateId)}
+  AND v.version=${sqlValue(binding.version)}
+LIMIT 1;`, { json: true });
+  const row = rows[0] || null;
+  if (!row) {
+    return [workflowV2ValidationError("fixed_template_plan_registry_entry_required", "high-risk workflow v2 execution requires a registered workflow template version", {
+      templateId: binding.templateId,
+      version: binding.version
+    })];
+  }
+  const errors = [];
+  const registryStatus = String(row.status || "").trim().toLowerCase().replace(/-/g, "_");
+  if (!WORKFLOW_V2_APPROVED_TEMPLATE_STATUSES.has(registryStatus)) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_registry_status_required", "high-risk workflow v2 execution requires a registry template version with active/default/frozen status", {
+      templateId: binding.templateId,
+      version: binding.version,
+      registryStatus
+    }));
+  }
+  const familyStatus = String(row.family_status || "").trim().toLowerCase().replace(/-/g, "_");
+  if (!familyStatus) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_family_required", "high-risk workflow v2 execution requires a registered template family row", {
+      templateId: binding.templateId,
+      version: binding.version
+    }));
+  } else if (familyStatus !== "active" && familyStatus !== "frozen") {
+    errors.push(workflowV2ValidationError("fixed_template_plan_family_active_required", "high-risk workflow v2 execution requires a non-retired template family", {
+      templateId: binding.templateId,
+      familyStatus
+    }));
+  }
+  if (!row.artifact_ref) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_registry_artifact_ref_required", "registered template version must have an artifact_ref before high-risk execution", {
+      templateId: binding.templateId,
+      version: binding.version
+    }));
+  } else if (!binding.artifactRef) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_artifact_ref_required", "high-risk workflow v2 execution requires the plan binding to include the template artifactRef", {
+      templateId: binding.templateId,
+      version: binding.version
+    }));
+  } else if (binding.artifactRef !== row.artifact_ref) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_artifact_ref_mismatch", "template binding artifactRef does not match the registered template version", {
+      templateId: binding.templateId,
+      version: binding.version
+    }));
+  }
+  if (!row.artifact_hash) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_registry_artifact_hash_required", "registered template version must have an artifact_hash before high-risk execution", {
+      templateId: binding.templateId,
+      version: binding.version
+    }));
+  } else if (!binding.artifactHash) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_artifact_hash_required", "high-risk workflow v2 execution requires the plan binding to include the template artifactHash", {
+      templateId: binding.templateId,
+      version: binding.version
+    }));
+  } else if (binding.artifactHash !== row.artifact_hash) {
+    errors.push(workflowV2ValidationError("fixed_template_plan_artifact_hash_mismatch", "template binding artifactHash does not match the registered template version", {
+      templateId: binding.templateId,
+      version: binding.version
+    }));
+  }
+  return errors;
 }
 
 export function createWorkflowV2PlanActionHandlers(context = {}) {
@@ -147,7 +233,8 @@ async function workflowV2PlanPreview(rootDir, input = {}) {
   }) || workflowV2DefaultPlanNodes(plan, input);
   const advisoryChecks = [
     ...orchestrationAdvisories,
-    ...workflowV2PlanNodeAdvisories(orchestration, nodes)
+    ...workflowV2PlanNodeAdvisories(orchestration, nodes),
+    ...workflowV2PlanTemplateAdvisories(input, plan)
   ];
   const planSpecV2 = workflowV2PlanSpecArtifact(plan, nodes, input);
   return {
@@ -198,8 +285,19 @@ async function workflowV2PlanCreate(rootDir, input = {}) {
   const planNodeHardGateErrors = workflowV2PlanNeedsExecutableNodeHardGate(plan)
     ? workflowV2PlanNodeHardGateErrors(workflowV2PlanOrchestrationContract(plan, plan.participantManagers), preview.nodes)
     : [];
-  if (planNodeHardGateErrors.length) {
-    throw new Error(`workflow v2 executable plan hard gate failed: ${planNodeHardGateErrors.map((item) => item.code).join(",")}`);
+  const templateHardGateErrors = workflowV2PlanTemplateHardGateErrors(input, plan);
+  const templateBinding = workflowV2PlanTemplateBinding(input, plan);
+  const templateRequirement = workflowV2PlanTemplateRequirement(input, plan);
+  const templateRegistryHardGateErrors = templateHardGateErrors.length
+    ? []
+    : await workflowV2TemplateRegistryHardGateErrors(paths, templateBinding, templateRequirement);
+  const hardGateErrors = [
+    ...planNodeHardGateErrors,
+    ...templateHardGateErrors,
+    ...templateRegistryHardGateErrors
+  ];
+  if (hardGateErrors.length) {
+    throw new Error(`workflow v2 executable plan hard gate failed: ${hardGateErrors.map((item) => item.code).join(",")}`);
   }
   const artifactId = cleanFileSegment(firstText(input.artifactId, input.artifact_id, `${plan.planId}.workflow_plan_spec.v2`));
   const artifactDir = path.join(paths.artifactsDir, "workflow-v2", cleanFileSegment(plan.workflowId), "plans");
@@ -245,6 +343,7 @@ async function workflowV2PlanCreate(rootDir, input = {}) {
   }
   const planPayload = {
     ...workflowV2JsonObject(plan.payload, {}),
+    ...(templateBinding.present ? { fixedTemplatePlan: templateBinding } : {}),
     orchestration: {
       pattern: plan.orchestrationPattern,
       rationale: plan.orchestrationRationale,

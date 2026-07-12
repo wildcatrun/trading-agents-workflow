@@ -13,6 +13,12 @@ import {
   workflowV2ValidationError,
   workflowV2WorkerRunSummary
 } from "./helpers.js";
+import {
+  workflowV2LeaseCheckAt,
+  workflowV2LeaseErrors,
+  workflowV2LoadWorkerRunForResult,
+  workflowV2RestoreWorkerRunRow
+} from "./worker-state.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -28,13 +34,9 @@ export function createWorkflowV2WorkerResultActionHandlers(context = {}) {
   const workflowV2InfoStackExistingItem = requireContextFunction(context, "workflowV2InfoStackExistingItem");
   const workflowV2InfoStackPreview = requireContextFunction(context, "workflowV2InfoStackPreview");
   const workflowV2InfoStackRecord = requireContextFunction(context, "workflowV2InfoStackRecord");
-  const workflowV2LeaseCheckAt = requireContextFunction(context, "workflowV2LeaseCheckAt");
-  const workflowV2LeaseErrors = requireContextFunction(context, "workflowV2LeaseErrors");
-  const workflowV2LoadWorkerRunForResult = requireContextFunction(context, "workflowV2LoadWorkerRunForResult");
   const workflowV2MarkAdapterJobTerminal = requireContextFunction(context, "workflowV2MarkAdapterJobTerminal");
   const workflowV2RequireSessionRunPatch = requireContextFunction(context, "workflowV2RequireSessionRunPatch");
   const workflowV2RestoreSessionRunRow = requireContextFunction(context, "workflowV2RestoreSessionRunRow");
-  const workflowV2RestoreWorkerRunRow = requireContextFunction(context, "workflowV2RestoreWorkerRunRow");
   const workflowV2WorkerRetryDelayMs = requireContextFunction(context, "workflowV2WorkerRetryDelayMs");
 
 function workflowV2ReceiptRefForResult(row = {}, input = {}, resultKind = "submit") {

@@ -12,7 +12,7 @@ orchestration available for authoring, diagnostics, recovery, compatibility,
 and approved-plan execution, and avoid treating ad-hoc direct writes as the
 default production path.
 
-Status: V2.1-V2.4 local slice landed; Anthropic plan-node executable gates landed; deeper V2.2 split continuing
+Status: V2.1-V2.4 local slice landed; Anthropic plan-node executable gates and fixed-template live-plan gates landed; deeper V2.2 split continuing with autonomous-loop and worker-state helper extraction landed
 Created: 2026-07-05
 Scope: verification, modularization, and runtime-adapter preparation after the
 local v2 orchestration kernel slice
@@ -113,21 +113,29 @@ Acceptance criteria:
 ## Track V2.2: Mechanical V2 Module Split
 
 Status: constants/helpers, v2 registry, plan pure-helper, info-stack preview,
-and backend-preflight preview splits landed on 2026-07-05; deeper DB/action
-module split remains in progress. A 2026-07-05 Anthropic reference refresh also
-expanded `src/workflow-v2/plan.js` with plan-node advisory helpers for
-manager-worker, parallel section, evaluator-optimizer, and autonomous-loop
-structure. The same checks now act as executable hard gates for non-draft plan
-admission and worker dispatch while remaining advisory during draft preview.
-Runtime enforcement for autonomous-loop iteration caps, tool/environment
-feedback checkpoints, and explicit stop-condition terminalization landed on
-2026-07-05 through the existing worker spawn/control-loop/result paths.
-Evaluator-optimizer contract hardening also landed on 2026-07-05 through the
-existing plan node, manager review, owner review, and validator paths: producer
-output, evaluator input, rubric/schema, review artifact, and
-accepted/rejected/needs_revision state are now structured before owner
-acceptance can consume evaluator output. Remaining work in this track is
-read-model/UI visibility and deeper runtime-adapter manifest integration.
+backend-preflight preview, autonomous-loop runtime helper, and worker-state
+helper splits have landed; deeper DB/action module split remains in progress. A 2026-07-05
+Anthropic reference refresh also expanded `src/workflow-v2/plan.js` with
+plan-node advisory helpers for manager-worker, parallel section,
+evaluator-optimizer, and autonomous-loop structure. The same checks now act as
+executable hard gates for non-draft plan admission and worker dispatch while
+remaining advisory during draft preview. Runtime enforcement for
+autonomous-loop iteration caps, tool/environment feedback checkpoints, and
+explicit stop-condition terminalization now lives in
+`src/workflow-v2/autonomous-loop.js` and is injected into the existing worker
+spawn/control-loop/result paths. Evaluator-optimizer contract hardening also
+landed on 2026-07-05 through the existing plan node, manager review, owner
+review, and validator paths: producer output, evaluator input, rubric/schema,
+review artifact, and accepted/rejected/needs_revision state are now structured
+before owner acceptance can consume evaluator output. Fixed-template live-plan
+admission also landed: non-draft live, production, trading, or high-risk plans
+must bind an active/default/frozen workflow template registry version, while
+draft ad-hoc plans remain available for refinement. Worker run, lease, result
+lookup, lifecycle actor, and handoff state helpers now live in
+`src/workflow-v2/worker-state.js` and are imported directly by the worker
+lifecycle, worker result, adapter runner, control-loop, and review action
+modules. Remaining work in this track is read-model/UI visibility and deeper
+runtime-adapter manifest integration.
 
 After the focused tests pass, split the v2 implementation out of
 `src/workflow.js` with no intended behavior change.
@@ -192,8 +200,8 @@ Acceptance criteria:
 
 - `src/workflow.js` no longer owns v2 constants, shared helper/summary details,
   the v2 registry map, plan/delegation pure helpers, info-stack preview bodies,
-  or worker backend preflight preview body; deeper DB/action modules remain
-  future mechanical splits;
+  worker backend preflight preview body, or autonomous-loop runtime helper body;
+  deeper DB/action modules remain future mechanical splits;
 - v2 exports continue to work through existing action names;
 - focused v2 tests pass after every module group;
 - `node --check` passes for all touched modules.

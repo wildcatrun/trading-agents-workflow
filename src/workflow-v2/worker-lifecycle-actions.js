@@ -39,6 +39,14 @@ import {
 import {
   workflowV2WorkerBackendPreflight as workflowV2WorkerBackendPreflightCore
 } from "./backend-preflight.js";
+import {
+  workflowV2LoadWorkerLifecycleActor,
+  workflowV2PersistedPlanNodeHardGateErrors,
+  workflowV2RestoreWorkerHandoffRow,
+  workflowV2RestoreWorkerRunRow,
+  workflowV2WorkerHandoffById,
+  workflowV2WorkerHandoffRow
+} from "./worker-state.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -60,13 +68,7 @@ export function createWorkflowV2WorkerLifecycleActionHandlers(context = {}) {
   const workflowV2InfoStackExistingItem = requireContextFunction(context, "workflowV2InfoStackExistingItem");
   const workflowV2InfoStackPreview = requireContextFunction(context, "workflowV2InfoStackPreview");
   const workflowV2InfoStackRecord = requireContextFunction(context, "workflowV2InfoStackRecord");
-  const workflowV2LoadWorkerLifecycleActor = requireContextFunction(context, "workflowV2LoadWorkerLifecycleActor");
-  const workflowV2PersistedPlanNodeHardGateErrors = requireContextFunction(context, "workflowV2PersistedPlanNodeHardGateErrors");
   const workflowV2RequireSessionRunPatch = requireContextFunction(context, "workflowV2RequireSessionRunPatch");
-  const workflowV2RestoreWorkerHandoffRow = requireContextFunction(context, "workflowV2RestoreWorkerHandoffRow");
-  const workflowV2RestoreWorkerRunRow = requireContextFunction(context, "workflowV2RestoreWorkerRunRow");
-  const workflowV2WorkerHandoffById = requireContextFunction(context, "workflowV2WorkerHandoffById");
-  const workflowV2WorkerHandoffRow = requireContextFunction(context, "workflowV2WorkerHandoffRow");
 
 function workflowV2BackendPreflightDeps() {
   return { boolOption, firstText, safeId, workflowPaths };

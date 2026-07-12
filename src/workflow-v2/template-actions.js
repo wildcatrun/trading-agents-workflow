@@ -132,12 +132,22 @@ async function workflowTemplateResolveSpec(rootDir, input = {}) {
   }
   const paths = await ensureWorkflowLayout(rootDir, input);
   const templateId = workflowTemplateId(input.templateId || input.template_id);
-  const version = input.version === undefined || input.version === null || input.version === ""
+  let version = input.version === undefined || input.version === null || input.version === ""
     ? 0
     : workflowTemplateVersion(input.version, 1);
+  if (!version) {
+    const family = await workflowTemplateSpecRow(paths, templateId);
+    version = Number(family?.default_version || family?.active_version || 0);
+  }
   const versionRow = await workflowTemplateVersionRow(paths, templateId, version);
   if (!versionRow) throw new Error(`template version not found: ${templateId}${version ? ` v${version}` : ""}`);
-  const spec = workflowTemplateNormalizeSpec(await workflowTemplateLoadSpecFromRow(paths, versionRow));
+  const artifactSpec = await workflowTemplateLoadSpecFromRow(paths, versionRow);
+  const spec = workflowTemplateNormalizeSpec({
+    templateSpec: {
+      ...artifactSpec,
+      status: versionRow.status || artifactSpec.status
+    }
+  });
   return { spec, source: "registry", paths, versionRow };
 }
 
@@ -357,6 +367,14 @@ async function workflowTemplateInstantiatePreview(rootDir, input = {}) {
   const variables = workflowV2JsonObject(input.variables || input.variableValues || input.variable_values, {});
   const overrides = workflowV2JsonObject(input.planOverrides || input.plan_overrides, {});
   const planInput = workflowTemplatePlanInput(resolved.spec, variables, overrides);
+  planInput.payload = workflowV2JsonObject(planInput.payload, {});
+  planInput.payload.template = {
+    ...workflowV2JsonObject(planInput.payload.template, {}),
+    source: resolved.source,
+    artifactRef: resolved.versionRow?.artifact_ref || "",
+    artifactHash: resolved.versionRow?.artifact_hash || "",
+    fixedPlan: true
+  };
   const planPreview = await workflowV2PlanPreview(rootDir, planInput);
   return {
     operation: "workflow.template.instantiate.preview",

@@ -1,7 +1,7 @@
 # Workflow v2 Implementation Status
 
-Status: local orchestration kernel plus v2 worker lifecycle, audit-chain, adapter-runner protocol, and template self-evolution slices implemented
-Updated: 2026-07-05
+Status: local orchestration kernel plus v2 worker lifecycle, audit-chain, adapter-runner protocol, template self-evolution, and fixed-template live-plan gates implemented
+Updated: 2026-07-12
 Scope: `trading-agents-workflow`
 
 ## Summary
@@ -43,9 +43,15 @@ first executable kernel slice for manager/worker orchestration:
 - `src/workflow-v2/template.js` for `workflow_template_spec.v1`
   normalization, validation, instantiation helpers, reward scoring, high-risk
   detection, and redacted summaries;
+- `src/workflow-v2/autonomous-loop.js` for autonomous-loop node runtime helper
+  logic, including iteration caps, feedback-evidence checks, and explicit
+  stop-condition terminalization;
 - local template registry/evaluation/promotion actions under
   `workflow.template.*`, with template instantiation delegated back to
   `workflow.v2.plan.preview/create`;
+- executable live, production, trading, or high-risk v2 plans now require an
+  approved fixed template binding and matching template registry entry, while
+  draft plans remain persistable for refinement;
 - read-only console API routes and local Codex MCP tools for template
   search/detail/stats visibility;
 - regression coverage for the v2 kernel, permission gate, console gate, and
@@ -872,6 +878,78 @@ Latest focused verification passed:
   - `node --check scripts/workflow_regression_tests.mjs`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 plan advisory and canonical artifact"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 evaluator optimizer contract"`
+
+2026-07-11 V2.2 autonomous-loop helper extraction follow-up:
+
+- Added `src/workflow-v2/autonomous-loop.js` for autonomous-loop runtime helper
+  logic.
+- Moved autonomous-loop node detection, iteration statistics, feedback evidence
+  checks, spawn gating, stop-condition checks, and node terminalization out of
+  `src/workflow.js`.
+- Kept behavior on the same worker spawn, control-loop, worker-result, and
+  validator paths by importing the helper functions and node-type set back into
+  `src/workflow.js`.
+- Added the new module to `npm run check`.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/autonomous-loop.js`
+  - `node --check src/workflow.js`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 autonomous loop runtime enforcement"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 lifecycle renewal and validator"`
+
+2026-07-12 V2.4 fixed-template live-plan admission gate:
+
+- Added plan-level template binding helpers to `src/workflow-v2/plan.js`.
+- `workflow.v2.plan.preview` now marks executable ad-hoc plans with a
+  fixed-template advisory, and distinguishes live/production/trading/high-risk
+  plans with `fixed_template_plan_required_for_live_execution`.
+- `workflow.v2.plan.create` now blocks non-draft live, production, trading, or
+  high-risk plans unless the plan is bound to an active/default/frozen
+  `workflow_template_spec.v1` registry version. Forged payload-only template
+  bindings fail closed because the registry row, status, artifact ref, and
+  artifact hash are checked.
+- `workflow.template.instantiate.*` now carries registry source, promoted
+  template status, artifact ref/hash, and `fixedPlan=true` into the generated
+  plan payload and `workflow_plan_spec.v2.templateBinding`.
+- This keeps workflow v2's production direction centered on fixed-template
+  multi-agent execution plans, with draft/advisory paths preserved for planning
+  and migration.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/plan.js`
+  - `node --check src/workflow-v2/plan-actions.js`
+  - `node --check src/workflow-v2/template-actions.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 fixed template plan gate"`
+ - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 plan advisory and canonical artifact"`
+ - `node scripts/workflow_regression_tests.mjs --grep "workflow template self-evolution"`
+
+2026-07-12 V2.2 worker-state helper extraction follow-up:
+
+- Added `src/workflow-v2/worker-state.js` for worker run, lease, worker result
+  lookup, lifecycle actor, and worker handoff state helpers.
+- Updated worker lifecycle, worker result, adapter runner, control-loop, and
+  review action modules to import worker-state helpers directly instead of
+  receiving them from `src/workflow.js` context injection.
+- Kept cross-domain session patching, info-stack writes, adapter job terminal
+  updates, and worker-result submit/fail behavior on the existing action paths;
+  this slice is a no-schema-change module split.
+- Added the new module to `npm run check`.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/worker-state.js`
+  - `node --check src/workflow-v2/worker-lifecycle-actions.js`
+  - `node --check src/workflow-v2/worker-result-actions.js`
+  - `node --check src/workflow-v2/adapter-runner-actions.js`
+  - `node --check src/workflow-v2/control-loop-actions.js`
+  - `node --check src/workflow-v2/review-actions.js`
+  - `node --check src/workflow.js`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 control loop"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 autonomous loop runtime enforcement"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 lifecycle renewal and validator"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 fixed template plan gate"`
+  - `npm run check`
+  - `git diff --check`
 
 2026-07-04 advisory-plan correction verification:
 
