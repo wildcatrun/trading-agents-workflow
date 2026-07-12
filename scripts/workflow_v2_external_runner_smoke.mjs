@@ -54,8 +54,23 @@ const nodeId = `${planId}.spawn`;
 const sessionId = `${workflowId}.session`;
 const workerRunId = `${workflowId}.worker`;
 const taskInputInfoId = `${workflowId}.task-input`;
-const runnerId = `${workflowId}.dummy-runner`;
-const dummyRunner = path.join(__dirname, "workflow_v2_external_runner_dummy.mjs");
+const runnerKind = firstText(argValue("--runner"), "dummy");
+const runnerScriptByKind = {
+  dummy: "workflow_v2_external_runner_dummy.mjs",
+  "dry-run": "workflow_v2_external_runner_dry_run.mjs",
+  dry_run: "workflow_v2_external_runner_dry_run.mjs"
+};
+const expectedReceiptRunnerByKind = {
+  dummy: "workflow_v2_external_runner_dummy",
+  "dry-run": "workflow_v2_external_runner_dry_run",
+  dry_run: "workflow_v2_external_runner_dry_run"
+};
+if (!runnerScriptByKind[runnerKind]) {
+  throw new Error(`unsupported external runner smoke kind: ${runnerKind}`);
+}
+const runnerId = `${workflowId}.${runnerKind.replace(/_/g, "-")}-runner`;
+const runnerScript = path.join(__dirname, runnerScriptByKind[runnerKind]);
+const expectedReceiptRunner = expectedReceiptRunnerByKind[runnerKind];
 const envKey = "TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD";
 const previousEnv = process.env[envKey];
 const genericOrchestrationEnvKey = "TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION";
@@ -71,7 +86,7 @@ try {
     ownerAgent: "cat_body",
     taskType: "external_runner_smoke",
     runtimeTarget: "claude_code_docker_worker",
-    purpose: "Workflow v2 external-command dummy runner smoke",
+    purpose: `Workflow v2 external-command ${runnerKind} runner smoke`,
     systemBrief: "Use the prepared workflow session input and return results through workflow.v2.worker_result.* only.",
     resourceBudget: { contextLimitTokens: 64000 }
   });
@@ -85,7 +100,7 @@ try {
     contentStorage: "inline",
     allowInlineContent: true,
     inlineReason: "small deterministic smoke fixture",
-    bodyText: "Dummy external runner smoke input.",
+    bodyText: `${runnerKind} external runner smoke input.`,
     recipientAgent: "cat_body",
     summary: "External runner smoke task input"
   });
@@ -99,10 +114,10 @@ try {
     workerRunId,
     taskInputInfoId,
     runtimeBackend: "claude_code_docker_worker",
-    workerObjective: "Complete the dummy external runner smoke using only the provided input reference.",
+    workerObjective: `Complete the ${runnerKind} external runner smoke using only the provided input reference.`,
     outputFormat: "structured artifact summary with receipt reference",
     toolBoundary: "Do not write directly to workflow state.",
-    acceptanceCriteria: ["dummy output summary is produced", "receipt evidence is available"],
+    acceptanceCriteria: [`${runnerKind} output summary is produced`, "receipt evidence is available"],
     stopCondition: "Stop after producing dummy output.",
     contextBudgetTokens: 64000,
     maxAttempts: 2,
@@ -136,7 +151,7 @@ LIMIT 1;`))[0];
   });
   assert.equal(adapterRecord.adapterJob.workerRunId, workerRunId);
 
-  process.env[envKey] = JSON.stringify([process.execPath, dummyRunner]);
+  process.env[envKey] = JSON.stringify([process.execPath, runnerScript]);
   const preview = await runAction(root, {
     action: "workflow.v2.adapter_runner.preview",
     mode: "external_command",
@@ -160,6 +175,7 @@ LIMIT 1;`))[0];
   assert.equal(drain.results[0].status, "submitted");
   assert.equal(drain.results[0].externalOutput.status, "success");
   assert.equal(drain.results[0].submit.adapterJobUpdate.job.status, "completed");
+  assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.runner, expectedReceiptRunner);
   assert.equal(await pathExists(drain.results[0].externalOutput.artifactFile), true);
   assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id=${sqlValue(workerRunId)} AND status='submitted_for_review' AND lease_owner='' AND lease_until=''`), 1);
   assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `worker_run_id=${sqlValue(workerRunId)} AND status='completed'`), 1);
@@ -176,6 +192,7 @@ LIMIT 1;`))[0];
     workerRunId,
     adapterJobId: adapterRecord.adapterJob.adapterJobId,
     runnerId,
+    runnerKind,
     outputArtifact: drain.results[0].externalOutput.artifactRef,
     status: "submitted_for_review"
   }, null, 2));

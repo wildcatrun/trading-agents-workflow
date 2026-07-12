@@ -12,6 +12,7 @@ const DEFAULT_COMMANDS = [
   "smoke",
   "smoke:v2-canary",
   "smoke:v2-external-runner",
+  "smoke:v2-external-runner-dry-run",
   "smoke:mcp",
   "smoke:hermes-mcp"
 ];

@@ -149,6 +149,15 @@ Claude Code, Gateway, production queues, or model calls by itself:
   smoke uses the existing generic-orchestration diagnostics override inside its
   own process because it builds an isolated temporary workflow instead of an
   approved production template plan.
+- `scripts/workflow_v2_external_runner_dry_run.mjs` is the first
+  real-wrapper-shaped dry run. It validates the request schema, adapter manifest
+  schema, runtime backend, session-input binding, submit/fail return path, 64k
+  context cap, and Docker side-effect-disable flags, then returns a structured
+  dry-run receipt through the same external-command output contract. It does
+  not start Hermers, Claude Code, Docker, WSL, Gateway, or any model call.
+  `npm run smoke:v2-external-runner-dry-run` runs this path end to end and
+  still expects the worker to reach `submitted_for_review` only through
+  `workflow.v2.worker_result.submit`.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical
