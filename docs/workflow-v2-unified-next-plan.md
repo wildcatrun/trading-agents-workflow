@@ -134,11 +134,13 @@ draft ad-hoc plans remain available for refinement. Worker run, lease, result
 lookup, lifecycle actor, and handoff state helpers now live in
 `src/workflow-v2/worker-state.js` and are imported directly by the worker
 lifecycle, worker result, adapter runner, control-loop, and review action
-modules. Workflow v2 console read-model/UI visibility landed on 2026-07-12 via
-the dedicated V2 child payload, V2 tab, command-palette routes, and source-ref
-drilldowns. Remaining work in this track is deeper runtime-adapter manifest
-integration and any further no-behavior-change helper splits that reduce
-`src/workflow.js` coupling.
+modules. Adapter job lookup and terminal CAS updates now live in
+`src/workflow-v2/adapter-job-state.js` and are shared by adapter-runner and
+worker-result action paths. Workflow v2 console read-model/UI visibility landed
+on 2026-07-12 via the dedicated V2 child payload, V2 tab, command-palette
+routes, and source-ref drilldowns. Remaining work in this track is deeper
+runtime-adapter manifest integration and any further no-behavior-change helper
+splits that reduce `src/workflow.js` coupling.
 
 After the focused tests pass, split the v2 implementation out of
 `src/workflow.js` with no intended behavior change.

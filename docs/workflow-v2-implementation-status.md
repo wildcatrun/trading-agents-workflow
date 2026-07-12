@@ -20,6 +20,8 @@ first executable kernel slice for manager/worker orchestration:
 - worker spawn now binds the requested session pack to a queued
   `workflow_session_runs` instance and stores the resulting `session_run_id`
   on the v2 worker run;
+- adapter job lookup and terminal compare-and-swap state updates are factored
+  into `src/workflow-v2/adapter-job-state.js` for shared runner/result use;
 - a v2 worker control-loop preview/tick for local lease, retry, timeout, and
   deterministic worker receipt progression;
 - a v2 worker lifecycle preview for context pressure, compaction signals,
@@ -978,6 +980,32 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow console static diagnostic matrix contract"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 permission and console gate"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner"`
+
+2026-07-12 V2.2 adapter-job state helper extraction follow-up:
+
+- Added `src/workflow-v2/adapter-job-state.js` for adapter job row lookup and
+  lease-bound terminal compare-and-swap updates.
+- Updated `src/workflow-v2/adapter-runner-actions.js` to reuse the shared
+  adapter job lookup helper.
+- Updated `src/workflow-v2/worker-result-actions.js` to import terminal
+  adapter job updates directly instead of receiving them from `src/workflow.js`
+  context injection.
+- Removed the adapter job terminal helper from `src/workflow.js` and added the
+  new module to `npm run check`.
+- This slice is a no-schema-change helper split. It does not start real
+  worker runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or production
+  workflow queues.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/adapter-job-state.js`
+  - `node --check src/workflow-v2/adapter-runner-actions.js`
+  - `node --check src/workflow-v2/worker-result-actions.js`
+  - `node --check src/workflow.js`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter job terminal helper"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter job manifest"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner concurrency/recovery"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
+  - `npm run check`
 
 2026-07-04 advisory-plan correction verification:
 

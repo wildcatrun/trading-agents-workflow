@@ -29,6 +29,9 @@ import {
 import {
   WORKFLOW_V2_ACTION_HANDLER_NAMES
 } from "../src/workflow-v2/index.js";
+import {
+  workflowV2MarkAdapterJobTerminal
+} from "../src/workflow-v2/adapter-job-state.js";
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
@@ -4024,6 +4027,71 @@ WHERE adapter_job_id='${releaseRecord.adapterJob.adapterJobId}';`);
   });
   const staleAdapterJobCheck = staleValidate.checks.find((item) => item.checkId === "adapter_jobs_match_worker_runs");
   assert.equal(staleAdapterJobCheck?.status, "fail");
+}
+
+async function testWorkflowV2AdapterJobTerminalHelper() {
+  const root = await tempRoot("workflow-v2-adapter-job-terminal");
+  const dbFile = path.join(root, "tracking.db");
+  await runAction(root, { action: "workflow.status" });
+  const paths = { dbFile };
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_worker_adapter_jobs(adapter_job_id, workflow_id, plan_id, node_id, worker_run_id, session_run_id, runtime_backend, worker_attempt, runner_attempt, max_runner_attempts, status, lease_owner, lease_until, next_retry_at, runner_id, artifact_ref, artifact_id, info_id, manifest_hash, runner_receipt_ref, last_error, payload_json, created_by, created_at, updated_at, completed_at)
+VALUES ('job-terminal-success', 'wf-terminal-helper', 'plan-terminal-helper', 'node-terminal-helper', 'worker-terminal-success', 'session-terminal-success', 'hermers_docker_worker', 2, 1, 3, 'running', 'runner-terminal-1', '2026-07-04T00:10:00.000Z', '', 'runner-terminal-1', 'artifact://workflow-v2/terminal-helper.json', 'terminal-helper.json', 'info-terminal-helper', 'hash-terminal-helper', '', '', '{}', 'test', '2026-07-04T00:00:00.000Z', '2026-07-04T00:00:00.000Z', '');
+INSERT INTO workflow_v2_worker_adapter_jobs(adapter_job_id, workflow_id, plan_id, node_id, worker_run_id, session_run_id, runtime_backend, worker_attempt, runner_attempt, max_runner_attempts, status, lease_owner, lease_until, next_retry_at, runner_id, artifact_ref, artifact_id, info_id, manifest_hash, runner_receipt_ref, last_error, payload_json, created_by, created_at, updated_at, completed_at)
+VALUES ('job-terminal-completed', 'wf-terminal-helper', 'plan-terminal-helper', 'node-terminal-helper', 'worker-terminal-completed', 'session-terminal-completed', 'hermers_docker_worker', 1, 1, 3, 'completed', 'runner-terminal-2', '2026-07-04T00:10:00.000Z', '', 'runner-terminal-2', 'artifact://workflow-v2/terminal-helper-completed.json', 'terminal-helper-completed.json', 'info-terminal-helper-completed', 'hash-terminal-helper-completed', '', '', '{}', 'test', '2026-07-04T00:00:00.000Z', '2026-07-04T00:00:00.000Z', '2026-07-04T00:01:00.000Z');`);
+  assert.equal(await workflowV2MarkAdapterJobTerminal(paths, {}, "worker-terminal-missing", "completed", "2026-07-04T00:00:01.000Z", 1), null);
+  await assertRejectsMessage(
+    () => workflowV2MarkAdapterJobTerminal(paths, {
+      adapterJobId: "job-terminal-success",
+      adapterJobLeaseOwner: "wrong-runner",
+      adapterJobLeaseUntil: "2026-07-04T00:10:00.000Z"
+    }, "worker-terminal-success", "completed", "2026-07-04T00:00:02.000Z", 2),
+    /adapter_job_lease_owner_mismatch/
+  );
+  await assertRejectsMessage(
+    () => workflowV2MarkAdapterJobTerminal(paths, {
+      adapterJobId: "job-terminal-success",
+      adapterJobLeaseOwner: "runner-terminal-1",
+      adapterJobLeaseUntil: "2026-07-04T00:10:00.000Z",
+      workerAttempt: 3
+    }, "worker-terminal-success", "completed", "2026-07-04T00:00:03.000Z", 2),
+    /found no matching running job/
+  );
+  await assertRejectsMessage(
+    () => workflowV2MarkAdapterJobTerminal(paths, {
+      adapterJobId: "job-terminal-success",
+      adapterJobLeaseOwner: "runner-terminal-1",
+      adapterJobLeaseUntil: "2026-07-04T00:10:00.000Z"
+    }, "worker-terminal-success", "completed", "2026-07-04T00:10:00.000Z", 2),
+    /adapter_job_lease_expired/
+  );
+  await assertRejectsMessage(
+    () => workflowV2MarkAdapterJobTerminal(paths, {
+      adapterJobId: "job-terminal-completed",
+      adapterJobLeaseOwner: "runner-terminal-2",
+      adapterJobLeaseUntil: "2026-07-04T00:10:00.000Z"
+    }, "worker-terminal-completed", "completed", "2026-07-04T00:00:04.000Z", 1),
+    /adapter_job_not_running:completed/
+  );
+  const completed = await workflowV2MarkAdapterJobTerminal(paths, {
+    adapterJobId: "job-terminal-success",
+    adapterJobLeaseOwner: "runner-terminal-1",
+    adapterJobLeaseUntil: "2026-07-04T00:10:00.000Z",
+    runnerReceiptRef: "receipt://workflow-v2/terminal-helper"
+  }, "worker-terminal-success", "completed", "2026-07-04T00:00:05.000Z", 2);
+  assert.equal(completed.changed, 1);
+  assert.equal(completed.job.status, "completed");
+  assert.equal(completed.job.leaseOwner, "");
+  assert.equal(completed.job.runnerReceiptRef, "receipt://workflow-v2/terminal-helper");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "adapter_job_id='job-terminal-success' AND status='completed' AND lease_owner='' AND lease_until='' AND runner_receipt_ref='receipt://workflow-v2/terminal-helper'"), 1);
+  await assertRejectsMessage(
+    () => workflowV2MarkAdapterJobTerminal(paths, {
+      adapterJobId: "job-terminal-success",
+      adapterJobLeaseOwner: "runner-terminal-1",
+      adapterJobLeaseUntil: "2026-07-04T00:10:00.000Z"
+    }, "worker-terminal-success", "completed", "2026-07-04T00:00:06.000Z", 2),
+    /adapter_job_not_running:completed/
+  );
 }
 
 async function testWorkflowV2AdapterRunnerDrain() {
@@ -20863,6 +20931,7 @@ try {
     ["workflow intervention previews", testWorkflowInterventionPreviews],
     ["intervention extracted action contracts", testInterventionExtractedActionContracts],
     ["workflow v2 adapter job manifest", testWorkflowV2AdapterJobManifest],
+    ["workflow v2 adapter job terminal helper", testWorkflowV2AdapterJobTerminalHelper],
     ["workflow v2 adapter runner drain", testWorkflowV2AdapterRunnerDrain],
     ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],

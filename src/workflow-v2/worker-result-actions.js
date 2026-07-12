@@ -19,6 +19,9 @@ import {
   workflowV2LoadWorkerRunForResult,
   workflowV2RestoreWorkerRunRow
 } from "./worker-state.js";
+import {
+  workflowV2MarkAdapterJobTerminal
+} from "./adapter-job-state.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -34,7 +37,6 @@ export function createWorkflowV2WorkerResultActionHandlers(context = {}) {
   const workflowV2InfoStackExistingItem = requireContextFunction(context, "workflowV2InfoStackExistingItem");
   const workflowV2InfoStackPreview = requireContextFunction(context, "workflowV2InfoStackPreview");
   const workflowV2InfoStackRecord = requireContextFunction(context, "workflowV2InfoStackRecord");
-  const workflowV2MarkAdapterJobTerminal = requireContextFunction(context, "workflowV2MarkAdapterJobTerminal");
   const workflowV2RequireSessionRunPatch = requireContextFunction(context, "workflowV2RequireSessionRunPatch");
   const workflowV2RestoreSessionRunRow = requireContextFunction(context, "workflowV2RestoreSessionRunRow");
   const workflowV2WorkerRetryDelayMs = requireContextFunction(context, "workflowV2WorkerRetryDelayMs");

@@ -39,6 +39,9 @@ import {
   workflowV2LeaseErrors,
   workflowV2LoadWorkerRunForResult
 } from "./worker-state.js";
+import {
+  workflowV2AdapterJobById
+} from "./adapter-job-state.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -467,16 +470,6 @@ SELECT *
 FROM workflow_v2_worker_adapter_jobs
 WHERE worker_run_id=${sqlValue(workerRunId)}
   AND worker_attempt=${sqlValue(Number(workerAttempt || 0))}
-LIMIT 1;`, { json: true });
-  return rows[0] || null;
-}
-
-async function workflowV2AdapterJobById(dbFile, adapterJobId = "") {
-  if (!adapterJobId) return null;
-  const rows = await sqlite(dbFile, `
-SELECT *
-FROM workflow_v2_worker_adapter_jobs
-WHERE adapter_job_id=${sqlValue(adapterJobId)}
 LIMIT 1;`, { json: true });
   return rows[0] || null;
 }
