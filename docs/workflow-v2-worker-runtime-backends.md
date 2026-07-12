@@ -179,6 +179,14 @@ Claude Code, Gateway, production queues, or model calls by itself:
   `workflow.v2.human_gate_package.preview`. `npm run
   smoke:v2-runner-execute-hgate-package` only writes JSON/Markdown draft
   artifacts; it does not execute a worker wrapper.
+- `scripts/workflow_v2_runner_execute_human_gate_request_smoke.mjs` exercises
+  the formal Cat Claw-to-Human Gate bridge for the runner execute package. It
+  records a Cat Claw `protocol_ready` audit, records a `cat_claw_audited`
+  package, previews and creates the pending v2 Human Gate request, verifies that
+  preview is read-only, and simulates selecting the "keep execute disabled"
+  option through the token-bound button flow. Its persisted smoke artifact is
+  sanitized and records only token-presence booleans; it does not write callback
+  tokens, deliver Telegram, dispatch runtime jobs, or execute a worker wrapper.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical

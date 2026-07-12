@@ -16,6 +16,7 @@ const DEFAULT_COMMANDS = [
   "smoke:v2-external-runner-plan-only",
   "smoke:v2-external-runner-execute-guard",
   "smoke:v2-runner-execute-hgate-package",
+  "smoke:v2-runner-execute-hgate-request",
   "smoke:mcp",
   "smoke:hermes-mcp"
 ];
