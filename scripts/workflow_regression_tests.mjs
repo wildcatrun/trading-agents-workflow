@@ -43,6 +43,9 @@ import {
   workflowV2RestoreSessionRunRow,
   workflowV2WorkerRetryDelayMs
 } from "../src/workflow-v2/session-state.js";
+import {
+  workflowV2RestoreManagerReviewRow
+} from "../src/workflow-v2/review-state.js";
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
@@ -6073,6 +6076,59 @@ async function testWorkflowV2SessionStateHelpers() {
   assert.equal(workflowV2WorkerRetryDelayMs({ retryDelayMs: 99999999 }, 1), 30 * 60_000);
   assert.equal(workflowV2WorkerRetryDelayMs({ retryDelayMs: "not-a-number" }, 1), 5_000);
   assert.equal(workflowV2WorkerRetryDelayMs({}, 3), 15_000);
+}
+
+async function testWorkflowV2ReviewStateHelpers() {
+  const root = await tempRoot("workflow-v2-review-state");
+  await runAction(root, { action: "workflow.init" });
+  const dbFile = path.join(root, "tracking.db");
+  const paths = { dbFile };
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_manager_reviews(review_id, workflow_id, plan_id, node_id, worker_run_id, reviewer_agent, decision, summary, findings_json, artifact_refs_json, receipt_refs_json, blocker_json, payload_json, created_at)
+VALUES ('review-v2-state-helper', 'wf-v2-review-state', 'plan-v2-review-state', 'node-v2-review-state', 'worker-v2-review-state', 'cat_body', 'accepted', 'original summary', '["original finding"]', '["artifact://original"]', '["receipt://original"]', '{"blocked":false}', '{"original":true}', '2026-07-12T02:00:00.000Z');`);
+  const original = sqliteJson(dbFile, "SELECT * FROM workflow_v2_manager_reviews WHERE review_id='review-v2-state-helper' LIMIT 1;")[0];
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_manager_reviews
+SET workflow_id='wf-mutated',
+    plan_id='plan-mutated',
+    node_id='node-mutated',
+    worker_run_id='worker-mutated',
+    reviewer_agent='cat_nose',
+    decision='revise_required',
+    summary='mutated summary',
+    findings_json='["mutated finding"]',
+    artifact_refs_json='["artifact://mutated"]',
+    receipt_refs_json='["receipt://mutated"]',
+    blocker_json='{"blocked":true}',
+    payload_json='{"mutated":true}',
+    created_at='2026-07-12T02:01:00.000Z'
+WHERE review_id='review-v2-state-helper';`);
+
+  await workflowV2RestoreManagerReviewRow(paths, original, "review-v2-state-helper");
+  const restored = sqliteJson(dbFile, "SELECT * FROM workflow_v2_manager_reviews WHERE review_id='review-v2-state-helper' LIMIT 1;")[0];
+  for (const field of [
+    "workflow_id",
+    "plan_id",
+    "node_id",
+    "worker_run_id",
+    "reviewer_agent",
+    "decision",
+    "summary",
+    "findings_json",
+    "artifact_refs_json",
+    "receipt_refs_json",
+    "blocker_json",
+    "payload_json",
+    "created_at"
+  ]) {
+    assert.equal(restored[field], original[field], `manager review restore should preserve ${field}`);
+  }
+
+  await workflowV2RestoreManagerReviewRow(paths, null, "review-v2-state-helper");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_manager_reviews", "review_id='review-v2-state-helper'"), 0);
+  await workflowV2RestoreManagerReviewRow(paths, null, "");
+  await workflowV2RestoreManagerReviewRow(paths, {}, "");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_manager_reviews"), 0);
 }
 
 async function testWorkflowV2PlanAdvisoryAndCanonicalArtifact() {
@@ -21620,6 +21676,7 @@ try {
     ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
     ["workflow v2 plan state helpers", testWorkflowV2PlanStateHelpers],
     ["workflow v2 session state helpers", testWorkflowV2SessionStateHelpers],
+    ["workflow v2 review state helpers", testWorkflowV2ReviewStateHelpers],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
     ["workflow v2 fixed template plan gate", testWorkflowV2FixedTemplatePlanGate],
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],

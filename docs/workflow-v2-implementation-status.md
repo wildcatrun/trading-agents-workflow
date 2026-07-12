@@ -1059,6 +1059,28 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 control loop scoped claim"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review chain"`
+ - `npm run check`
+ - `git diff --check`
+
+2026-07-12 V2.2 review-state helper extraction follow-up:
+
+- Added `src/workflow-v2/review-state.js` for v2 manager-review rollback
+  restore/delete helper logic.
+- Updated `src/workflow.js` to import the review-state helper while keeping the
+  existing review action context injection unchanged for this slice.
+- Added a direct helper regression for restoring a mutated manager review row
+  to its captured previous state and deleting a newly inserted review row when
+  rollback has no previous row.
+- Added the new module to `npm run check`.
+- This slice is a no-schema-change helper split. It does not start real worker
+  runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or production workflow
+  queues.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/review-state.js`
+  - `node --check src/workflow.js`
+  - `node --check src/workflow-v2/review-actions.js`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review state helpers"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review chain"`
   - `npm run check`
   - `git diff --check`
 
