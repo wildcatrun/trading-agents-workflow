@@ -3801,6 +3801,8 @@ async function testWorkflowV2AdapterJobManifest() {
   assert.equal(preview.manifest.backend.image, "flashcat/hermes-worker:20260704");
   assert.equal(preview.manifest.context.limitTokens, 64000);
   assert.equal(preview.manifest.sessionInput.input.workerRunId, worker.workerRun.workerRunId);
+  assert.equal(preview.manifest.contract.runnerRequestSchemaVersion, "workflow_v2_external_adapter_runner_request.v1");
+  assert.equal(preview.manifest.contract.taskInputReadAction, "workflow.v2.info_stack.read");
   assert.equal(preview.manifest.output.submitAction, "workflow.v2.worker_result.submit");
   assert.equal(preview.manifest.constraints.noDirectDatabaseWrites, true);
   const record = await runAction(root, {
@@ -3817,6 +3819,43 @@ async function testWorkflowV2AdapterJobManifest() {
   const manifest = JSON.parse(await fs.readFile(record.artifact.artifactFile, "utf8"));
   assert.equal(manifest.workerRunId, worker.workerRun.workerRunId);
   assert.equal(manifest.backend.returnPath.directDatabaseWritesAllowed, false);
+  const cleanContractValidate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const cleanContractCheck = cleanContractValidate.checks.find((item) => item.checkId === "adapter_job_manifest_contract_consistency");
+  assert.equal(cleanContractCheck?.status, "pass", JSON.stringify(cleanContractCheck?.issues || cleanContractValidate.failedChecks));
+  const cleanHashCheck = cleanContractValidate.checks.find((item) => item.checkId === "adapter_job_manifest_artifacts_match_hash");
+  assert.equal(cleanHashCheck?.status, "pass", JSON.stringify(cleanHashCheck?.issues || cleanContractValidate.failedChecks));
+  const originalManifestText = await fs.readFile(record.artifact.artifactFile, "utf8");
+  try {
+    const badContractManifest = {
+      ...manifest,
+      taskInput: {
+        ...manifest.taskInput,
+        infoId: "SECRET_CONTRACT_SHOULD_NOT_LEAK"
+      }
+    };
+    await fs.writeFile(record.artifact.artifactFile, JSON.stringify(badContractManifest, null, 2) + "\n", "utf8");
+    sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET manifest_hash='${workflowV2TestManifestHash(badContractManifest)}'
+WHERE adapter_job_id='${record.adapterJob.adapterJobId}';`);
+    const badContractValidate = await runAction(root, {
+      action: "workflow.v2.validate"
+    });
+    const badContractHashCheck = badContractValidate.checks.find((item) => item.checkId === "adapter_job_manifest_artifacts_match_hash");
+    assert.equal(badContractHashCheck?.status, "pass", JSON.stringify(badContractHashCheck?.issues || badContractValidate.failedChecks));
+    const badContractCheck = badContractValidate.checks.find((item) => item.checkId === "adapter_job_manifest_contract_consistency");
+    assert.equal(badContractCheck?.status, "fail", JSON.stringify(badContractValidate.failedChecks));
+    assert.equal(Boolean(badContractCheck?.issues?.some((item) => item.adapterJobId === record.adapterJob.adapterJobId && item.field === "taskInput.infoId")), true);
+    assert.equal(JSON.stringify(badContractCheck?.issues || []).includes("SECRET_CONTRACT_SHOULD_NOT_LEAK"), false);
+  } finally {
+    await fs.writeFile(record.artifact.artifactFile, originalManifestText, "utf8");
+    sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET manifest_hash='${record.manifestHash}'
+WHERE adapter_job_id='${record.adapterJob.adapterJobId}';`);
+  }
   assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", `info_id='${record.adapterJobInfo.infoId}' AND worker_run_id='${worker.workerRun.workerRunId}'`), 1);
   assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `adapter_job_id='${record.adapterJob.adapterJobId}' AND status='queued'`), 1);
   const jobList = await runAction(root, {
@@ -4018,6 +4057,59 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`);
   });
   const adapterJobCheck = validate.checks.find((item) => item.checkId === "adapter_jobs_match_worker_runs");
   assert.equal(adapterJobCheck?.status, "pass", JSON.stringify(validate.failedChecks));
+  const terminalContractCheck = validate.checks.find((item) => item.checkId === "adapter_job_manifest_contract_consistency");
+  assert.equal(terminalContractCheck?.status, "pass", JSON.stringify(terminalContractCheck?.issues || validate.failedChecks));
+  const terminalHashCheck = validate.checks.find((item) => item.checkId === "adapter_job_manifest_artifacts_match_hash");
+  assert.equal(terminalHashCheck?.status, "pass", JSON.stringify(terminalHashCheck?.issues || validate.failedChecks));
+  const terminalManifestText = await fs.readFile(releaseRecord.artifact.artifactFile, "utf8");
+  const terminalManifest = JSON.parse(terminalManifestText);
+  try {
+    const terminalBadContractManifest = {
+      ...terminalManifest,
+      sessionInput: {
+        ...terminalManifest.sessionInput,
+        context: {
+          ...terminalManifest.sessionInput.context,
+          taskId: "SECRET_TERMINAL_CONTRACT_SHOULD_NOT_LEAK"
+        }
+      }
+    };
+    await fs.writeFile(releaseRecord.artifact.artifactFile, JSON.stringify(terminalBadContractManifest, null, 2) + "\n", "utf8");
+    sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET manifest_hash='${workflowV2TestManifestHash(terminalBadContractManifest)}'
+WHERE adapter_job_id='${releaseRecord.adapterJob.adapterJobId}';`);
+    const terminalBadContractValidate = await runAction(root, {
+      action: "workflow.v2.validate"
+    });
+    const terminalBadHashCheck = terminalBadContractValidate.checks.find((item) => item.checkId === "adapter_job_manifest_artifacts_match_hash");
+    assert.equal(terminalBadHashCheck?.status, "pass", JSON.stringify(terminalBadHashCheck?.issues || terminalBadContractValidate.failedChecks));
+    const terminalBadContractCheck = terminalBadContractValidate.checks.find((item) => item.checkId === "adapter_job_manifest_contract_consistency");
+    assert.equal(terminalBadContractCheck?.status, "fail", JSON.stringify(terminalBadContractValidate.failedChecks));
+    assert.equal(Boolean(terminalBadContractCheck?.issues?.some((item) => item.adapterJobId === releaseRecord.adapterJob.adapterJobId && item.field === "sessionInput.context.taskId")), true);
+    assert.equal(JSON.stringify(terminalBadContractCheck?.issues || []).includes("SECRET_TERMINAL_CONTRACT_SHOULD_NOT_LEAK"), false);
+  } finally {
+    await fs.writeFile(releaseRecord.artifact.artifactFile, terminalManifestText, "utf8");
+    sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET manifest_hash='${releaseRecord.manifestHash}'
+WHERE adapter_job_id='${releaseRecord.adapterJob.adapterJobId}';`);
+  }
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET manifest_hash='sha256:wrong-terminal-manifest-hash'
+WHERE adapter_job_id='${releaseRecord.adapterJob.adapterJobId}';`);
+  const terminalBadHashValidate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const terminalBadHashCheck = terminalBadHashValidate.checks.find((item) => item.checkId === "adapter_job_manifest_artifacts_match_hash");
+  assert.equal(terminalBadHashCheck?.status, "fail", JSON.stringify(terminalBadHashValidate.failedChecks));
+  const terminalHashOnlyContractCheck = terminalBadHashValidate.checks.find((item) => item.checkId === "adapter_job_manifest_contract_consistency");
+  assert.equal(terminalHashOnlyContractCheck?.status, "pass", JSON.stringify(terminalHashOnlyContractCheck?.issues || terminalBadHashValidate.failedChecks));
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET manifest_hash='${releaseRecord.manifestHash}'
+WHERE adapter_job_id='${releaseRecord.adapterJob.adapterJobId}';`);
   sqliteExec(dbFile, `
 UPDATE workflow_v2_worker_adapter_jobs
 SET status='running',

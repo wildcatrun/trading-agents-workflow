@@ -689,6 +689,15 @@ LIMIT 1;`, { json: true });
     schemaVersion: "workflow_v2_worker_adapter_job.v1",
     generatedAt,
     adapterJobId,
+    contract: {
+      manifestSchemaVersion: "workflow_v2_worker_adapter_job.v1",
+      runnerRequestSchemaVersion: "workflow_v2_external_adapter_runner_request.v1",
+      taskInputReadAction: "workflow.v2.info_stack.read",
+      submitAction: "workflow.v2.worker_result.submit",
+      failAction: "workflow.v2.worker_result.fail",
+      receiptRequired: true,
+      managerReviewRequired: true
+    },
     workflowId: row.workflow_id || "",
     planId: row.plan_id || "",
     nodeId: row.node_id || "",

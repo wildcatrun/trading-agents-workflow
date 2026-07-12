@@ -1038,6 +1038,36 @@ Latest focused verification passed:
   - `npm run check`
   - `git diff --check`
 
+2026-07-12 V2.4 adapter manifest contract hardening:
+
+- Added explicit adapter manifest contract metadata:
+  `manifestSchemaVersion`, `runnerRequestSchemaVersion`, task input read
+  action, submit/fail actions, and review/receipt requirements.
+- Added `adapter_job_manifest_contract_consistency` to
+  `workflow.v2.validate`. The check reads each recorded adapter manifest
+  artifact and compares it to the adapter job row, worker row, session run,
+  backend preflight, task input pointer, output action contract, context
+  budget, and no-direct-DB/no-secret constraints. Field mismatch issues report
+  the field, expected value, actual type, and presence only; they do not echo
+  raw manifest values.
+- Extended the adapter job manifest regression so a manifest with a recomputed
+  valid hash but wrong `taskInput.infoId` passes the hash check and fails the
+  new contract check.
+- Added terminal adapter job coverage proving completed/failed manifests still
+  pass the contract check when their audit rows are intact, and that terminal
+  hash-only vs contract-only failures stay separated.
+- This is still a local control-plane validation slice. It does not start
+  worker runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or production
+  workflow queues.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/adapter-runner-actions.js`
+  - `node --check src/workflow-v2/validate-actions.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter job manifest"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter manifest validator hardening"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner concurrency/recovery"`
+
 2026-07-12 V2.4 external runner preview diagnostics:
 
 - Added a redacted `runnerCommandConfig` diagnostic object to

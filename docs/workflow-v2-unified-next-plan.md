@@ -141,8 +141,11 @@ on 2026-07-12 via the dedicated V2 child payload, V2 tab, command-palette
 routes, and source-ref drilldowns. `workflow.v2.worker_spawn.create` now commits
 the session run, workflow agent run, backend preflight record, and worker run in
 one SQLite transaction instead of relying on post-failure compensation cleanup.
-Remaining work in this track is deeper runtime-adapter manifest integration and
-any further no-behavior-change helper splits that reduce `src/workflow.js`
+Adapter manifest artifacts now carry an explicit runner contract version and
+`workflow.v2.validate` checks manifest content against adapter job, worker,
+session, preflight, task input, output action, context, and no-direct-DB/no-secret
+constraints. Remaining work in this track is real runtime-wrapper integration
+and any further no-behavior-change helper splits that reduce `src/workflow.js`
 coupling.
 
 After the focused tests pass, split the v2 implementation out of

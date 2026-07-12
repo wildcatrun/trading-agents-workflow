@@ -177,6 +177,166 @@ ORDER BY adapter_job_id ASC;`, { json: true });
   };
 }
 
+function workflowV2ObjectValue(object, dottedPath) {
+  return String(dottedPath || "").split(".").reduce((current, key) => {
+    if (!current || typeof current !== "object") return undefined;
+    return current[key];
+  }, object);
+}
+
+function workflowV2AdapterManifestContractIssue(row, reason, details = {}) {
+  return {
+    adapterJobId: row.adapter_job_id || "",
+    workflowId: row.workflow_id || "",
+    workerRunId: row.worker_run_id || "",
+    artifactRef: row.artifact_ref || "",
+    reason,
+    ...details
+  };
+}
+
+function workflowV2CompareManifestField(issues, row, manifest, fieldPath, expected, reason = "manifest_field_mismatch") {
+  const actual = workflowV2ObjectValue(manifest, fieldPath);
+  if (actual !== expected) {
+    issues.push(workflowV2AdapterManifestContractIssue(row, reason, {
+      field: fieldPath,
+      expected,
+      actualPresent: actual !== undefined && actual !== null && actual !== "",
+      actualType: Array.isArray(actual) ? "array" : typeof actual
+    }));
+  }
+}
+
+async function workflowV2AdapterManifestContractCheck(paths, schema) {
+  const checkId = "adapter_job_manifest_contract_consistency";
+  const requiredTables = ["workflow_v2_worker_adapter_jobs", "workflow_v2_worker_runs", "workflow_session_runs", "workflow_v2_backend_preflights", "workflow_v2_info_items"];
+  const skipped = requiredTables.filter((table) => !schema[table]?.exists);
+  if (skipped.length) return { checkId, status: "skipped", skippedTables: skipped, count: 0 };
+  const schemaGap = requiredTables.filter((table) => schema[table]?.exists && !schema[table]?.requiredColumnsPresent);
+  if (schemaGap.length) return { checkId, status: "schema_gap", schemaGapTables: schemaGap, count: 0 };
+  const rows = await sqlite(paths.dbFile, `
+SELECT
+  j.adapter_job_id,
+  j.workflow_id,
+  j.plan_id,
+  j.node_id,
+  j.worker_run_id,
+  j.session_run_id,
+  j.runtime_backend,
+  j.worker_attempt,
+  j.artifact_ref,
+  j.manifest_hash,
+  j.info_id,
+  w.worker_run_id AS worker_row_id,
+  w.session_id AS worker_session_id,
+  w.manager_agent AS worker_manager_agent,
+  w.worker_agent_id AS worker_agent_id,
+  w.preflight_id AS worker_preflight_id,
+  w.task_input_info_id AS worker_task_input_info_id,
+  w.output_info_id AS worker_output_info_id,
+  w.context_budget_tokens AS worker_context_budget_tokens,
+  w.context_used_tokens AS worker_context_used_tokens,
+  w.compaction_count AS worker_compaction_count,
+  s.run_id AS session_row_id,
+  s.session_id AS session_id,
+  s.workflow_id AS session_workflow_id,
+  s.task_id AS session_task_id,
+  s.worker_id AS session_worker_id,
+  s.worker_input_json AS session_worker_input_json,
+  p.preflight_id AS preflight_row_id,
+  p.workflow_id AS preflight_workflow_id,
+  p.backend_id AS preflight_backend_id,
+  p.status AS preflight_status,
+  task.info_id AS task_info_row_id
+FROM workflow_v2_worker_adapter_jobs j
+LEFT JOIN workflow_v2_worker_runs w ON w.worker_run_id=j.worker_run_id
+LEFT JOIN workflow_session_runs s ON s.run_id=j.session_run_id
+LEFT JOIN workflow_v2_backend_preflights p ON p.preflight_id=w.preflight_id
+LEFT JOIN workflow_v2_info_items task ON task.info_id=w.task_input_info_id
+WHERE j.artifact_ref!='' AND j.manifest_hash!=''
+ORDER BY j.adapter_job_id ASC;`, { json: true });
+  const issues = [];
+  for (const row of rows) {
+    try {
+      const artifactFile = await workflowV2AdapterManifestArtifactFile(paths, row.artifact_ref || "");
+      const manifest = JSON.parse(await fs.readFile(artifactFile, "utf8"));
+      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+        issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_not_object"));
+        continue;
+      }
+      if (!row.worker_row_id) issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_worker_row_missing"));
+      if (!row.session_row_id) issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_session_run_missing"));
+      if (!row.preflight_row_id) issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_preflight_missing"));
+      if (!row.task_info_row_id) issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_task_input_info_missing"));
+      workflowV2CompareManifestField(issues, row, manifest, "schemaVersion", "workflow_v2_worker_adapter_job.v1");
+      workflowV2CompareManifestField(issues, row, manifest, "contract.manifestSchemaVersion", "workflow_v2_worker_adapter_job.v1");
+      workflowV2CompareManifestField(issues, row, manifest, "contract.runnerRequestSchemaVersion", "workflow_v2_external_adapter_runner_request.v1");
+      workflowV2CompareManifestField(issues, row, manifest, "contract.taskInputReadAction", "workflow.v2.info_stack.read");
+      workflowV2CompareManifestField(issues, row, manifest, "contract.submitAction", "workflow.v2.worker_result.submit");
+      workflowV2CompareManifestField(issues, row, manifest, "contract.failAction", "workflow.v2.worker_result.fail");
+      workflowV2CompareManifestField(issues, row, manifest, "contract.receiptRequired", true);
+      workflowV2CompareManifestField(issues, row, manifest, "contract.managerReviewRequired", true);
+      workflowV2CompareManifestField(issues, row, manifest, "adapterJobId", row.adapter_job_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "workflowId", row.workflow_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "planId", row.plan_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "nodeId", row.node_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "workerRunId", row.worker_run_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "sessionRunId", row.session_run_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "sessionId", row.worker_session_id || row.session_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "managerAgent", row.worker_manager_agent || "");
+      workflowV2CompareManifestField(issues, row, manifest, "workerAgentId", row.worker_agent_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "runtimeBackend", row.runtime_backend || "");
+      workflowV2CompareManifestField(issues, row, manifest, "lease.attempt", Number(row.worker_attempt || 0));
+      workflowV2CompareManifestField(issues, row, manifest, "taskInput.infoId", row.worker_task_input_info_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "taskInput.readAction", "workflow.v2.info_stack.read");
+      workflowV2CompareManifestField(issues, row, manifest, "output.expectedOutputInfoId", row.worker_output_info_id || `${row.worker_run_id || ""}.output`);
+      workflowV2CompareManifestField(issues, row, manifest, "output.submitAction", "workflow.v2.worker_result.submit");
+      workflowV2CompareManifestField(issues, row, manifest, "output.failAction", "workflow.v2.worker_result.fail");
+      workflowV2CompareManifestField(issues, row, manifest, "output.receiptRequired", true);
+      workflowV2CompareManifestField(issues, row, manifest, "output.managerReviewRequired", true);
+      workflowV2CompareManifestField(issues, row, manifest, "constraints.noDirectDatabaseWrites", true);
+      workflowV2CompareManifestField(issues, row, manifest, "constraints.noProductionSecrets", true);
+      if (row.preflight_row_id) {
+        workflowV2CompareManifestField(issues, row, manifest, "preflight.preflightId", row.preflight_row_id || "");
+        workflowV2CompareManifestField(issues, row, manifest, "preflight.backendId", row.preflight_backend_id || "");
+        workflowV2CompareManifestField(issues, row, manifest, "preflight.status", row.preflight_status || "");
+        if (!["pass", "warn"].includes(row.preflight_status || "")) {
+          issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_preflight_status_not_runnable", {
+            status: row.preflight_status || ""
+          }));
+        }
+      }
+      const sessionWorkerInput = (() => {
+        try {
+          return JSON.parse(row.session_worker_input_json || "{}");
+        } catch {
+          return {};
+        }
+      })();
+      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.schemaVersion", sessionWorkerInput.schemaVersion);
+      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.input.schemaVersion", workflowV2ObjectValue(sessionWorkerInput, "input.schemaVersion"));
+      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.input.workerRunId", row.worker_run_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.input.taskInputInfoId", row.worker_task_input_info_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.context.workflowId", row.workflow_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.context.taskId", row.node_id || "");
+      workflowV2CompareManifestField(issues, row, manifest, "context.limitTokens", Number(row.worker_context_budget_tokens || 0));
+      workflowV2CompareManifestField(issues, row, manifest, "context.usedTokens", Number(row.worker_context_used_tokens || 0));
+      workflowV2CompareManifestField(issues, row, manifest, "context.compactionCount", Number(row.worker_compaction_count || 0));
+    } catch (error) {
+      issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_contract_unreadable", {
+        error: String(error?.message || error)
+      }));
+    }
+  }
+  return {
+    checkId,
+    status: issues.length ? "fail" : "pass",
+    count: issues.length,
+    checkedCount: rows.length,
+    issues: issues.slice(0, 20)
+  };
+}
+
 async function workflowV2Validate(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
   if (!fileExistsSync(paths.dbFile)) {
@@ -395,6 +555,7 @@ WHERE j.status NOT IN (${adapterJobStatusesSql})
    OR (j.status IN ('completed','failed','cancelled') AND j.completed_at='')
    OR (j.status IN ('queued','retry_scheduled','completed','failed','cancelled') AND (j.lease_owner!='' OR j.lease_until!=''));`));
   checks.push(await workflowV2AdapterManifestArtifactCheck(paths, schema));
+  checks.push(await workflowV2AdapterManifestContractCheck(paths, schema));
   checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "accepted_worker_runs_require_accepted_manager_review", ["workflow_v2_worker_runs", "workflow_v2_manager_reviews"], `
 SELECT COUNT(*) AS count
 FROM workflow_v2_worker_runs w
