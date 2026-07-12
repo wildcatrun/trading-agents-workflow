@@ -14,6 +14,7 @@ const DEFAULT_COMMANDS = [
   "smoke:v2-external-runner",
   "smoke:v2-external-runner-dry-run",
   "smoke:v2-external-runner-plan-only",
+  "smoke:v2-external-runner-execute-guard",
   "smoke:mcp",
   "smoke:hermes-mcp"
 ];

@@ -60,14 +60,18 @@ const runnerScriptByKind = {
   "dry-run": "workflow_v2_external_runner_dry_run.mjs",
   dry_run: "workflow_v2_external_runner_dry_run.mjs",
   "plan-only": "workflow_v2_external_runner_dry_run.mjs",
-  plan_only: "workflow_v2_external_runner_dry_run.mjs"
+  plan_only: "workflow_v2_external_runner_dry_run.mjs",
+  "execute-guard": "workflow_v2_external_runner_execute_guard.mjs",
+  execute_guard: "workflow_v2_external_runner_execute_guard.mjs"
 };
 const expectedReceiptRunnerByKind = {
   dummy: "workflow_v2_external_runner_dummy",
   "dry-run": "workflow_v2_external_runner_dry_run",
   dry_run: "workflow_v2_external_runner_dry_run",
   "plan-only": "workflow_v2_external_runner_dry_run",
-  plan_only: "workflow_v2_external_runner_dry_run"
+  plan_only: "workflow_v2_external_runner_dry_run",
+  "execute-guard": "workflow_v2_external_runner_execute_guard",
+  execute_guard: "workflow_v2_external_runner_execute_guard"
 };
 const runnerArgsByKind = {
   "plan-only": ["--plan-only"],
@@ -80,6 +84,7 @@ const runnerId = `${workflowId}.${runnerKind.replace(/_/g, "-")}-runner`;
 const runnerScript = path.join(__dirname, runnerScriptByKind[runnerKind]);
 const runnerArgs = runnerArgsByKind[runnerKind] || [];
 const expectedReceiptRunner = expectedReceiptRunnerByKind[runnerKind];
+const expectRelease = runnerKind === "execute-guard" || runnerKind === "execute_guard";
 const envKey = "TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD";
 const previousEnv = process.env[envKey];
 const genericOrchestrationEnvKey = "TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION";
@@ -180,38 +185,68 @@ LIMIT 1;`))[0];
     leaseMs: 30_000
   });
   assert.equal(drain.mode, "external_command");
-  assert.equal(drain.submittedCount, 1);
-  assert.equal(drain.results[0].status, "submitted");
-  assert.equal(drain.results[0].externalOutput.status, "success");
-  assert.equal(drain.results[0].submit.adapterJobUpdate.job.status, "completed");
+  assert.equal(drain.results.length, 1);
   assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.runner, expectedReceiptRunner);
-  if (runnerKind === "plan-only" || runnerKind === "plan_only") {
-    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.planOnly, true);
-    assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.mode, "plan_only");
-    assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.commands.length, 2);
-    assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.constraints.runContainerNow, false);
-    assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.constraints.callModelNow, false);
-  }
-  assert.equal(await pathExists(drain.results[0].externalOutput.artifactFile), true);
-  assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id=${sqlValue(workerRunId)} AND status='submitted_for_review' AND lease_owner='' AND lease_until=''`), 1);
-  assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `worker_run_id=${sqlValue(workerRunId)} AND status='completed'`), 1);
-  assert.equal(await sqliteCount(dbFile, "workflow_session_runs", `run_id=${sqlValue(worker.workerRun.sessionRunId)} AND status='completed'`), 1);
+  if (expectRelease) {
+    assert.equal(drain.submittedCount, 0);
+    assert.equal(drain.releasedCount, 1);
+    assert.equal(drain.results[0].status, "released");
+    assert.equal(drain.results[0].externalOutput.status, "release");
+    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.refused, true);
+    assert.equal(drain.results[0].externalOutput.rawOutput.plannedInvocation.constraints.runContainerNow, false);
+    assert.equal(drain.results[0].externalOutput.rawOutput.plannedInvocation.constraints.callModelNow, false);
+    assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `worker_run_id=${sqlValue(workerRunId)} AND status='retry_scheduled'`), 1);
+    assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id=${sqlValue(workerRunId)} AND status='running'`), 1);
+    assert.equal(await pathExists(drain.results[0].externalOutput.artifactFile), true);
+    console.log(JSON.stringify({
+      ok: true,
+      root,
+      dbFile,
+      workflowId,
+      planId,
+      nodeId,
+      sessionId,
+      workerRunId,
+      adapterJobId: adapterRecord.adapterJob.adapterJobId,
+      runnerId,
+      runnerKind,
+      outputArtifact: drain.results[0].externalOutput.artifactRef,
+      status: "released_retry_scheduled"
+    }, null, 2));
+  } else {
+    assert.equal(drain.submittedCount, 1);
+    assert.equal(drain.results[0].status, "submitted");
+    assert.equal(drain.results[0].externalOutput.status, "success");
+    assert.equal(drain.results[0].submit.adapterJobUpdate.job.status, "completed");
+    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.runner, expectedReceiptRunner);
+    if (runnerKind === "plan-only" || runnerKind === "plan_only") {
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.planOnly, true);
+      assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.mode, "plan_only");
+      assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.commands.length, 2);
+      assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.constraints.runContainerNow, false);
+      assert.equal(drain.results[0].externalOutput.rawOutput.planOnlyInvocation.constraints.callModelNow, false);
+    }
+    assert.equal(await pathExists(drain.results[0].externalOutput.artifactFile), true);
+    assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id=${sqlValue(workerRunId)} AND status='submitted_for_review' AND lease_owner='' AND lease_until=''`), 1);
+    assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `worker_run_id=${sqlValue(workerRunId)} AND status='completed'`), 1);
+    assert.equal(await sqliteCount(dbFile, "workflow_session_runs", `run_id=${sqlValue(worker.workerRun.sessionRunId)} AND status='completed'`), 1);
 
-  console.log(JSON.stringify({
-    ok: true,
-    root,
-    dbFile,
-    workflowId,
-    planId,
-    nodeId,
-    sessionId,
-    workerRunId,
-    adapterJobId: adapterRecord.adapterJob.adapterJobId,
-    runnerId,
-    runnerKind,
-    outputArtifact: drain.results[0].externalOutput.artifactRef,
-    status: "submitted_for_review"
-  }, null, 2));
+    console.log(JSON.stringify({
+      ok: true,
+      root,
+      dbFile,
+      workflowId,
+      planId,
+      nodeId,
+      sessionId,
+      workerRunId,
+      adapterJobId: adapterRecord.adapterJob.adapterJobId,
+      runnerId,
+      runnerKind,
+      outputArtifact: drain.results[0].externalOutput.artifactRef,
+      status: "submitted_for_review"
+    }, null, 2));
+  }
 } finally {
   if (previousEnv === undefined) delete process.env[envKey];
   else process.env[envKey] = previousEnv;

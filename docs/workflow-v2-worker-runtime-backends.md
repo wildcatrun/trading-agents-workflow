@@ -164,6 +164,13 @@ Claude Code, Gateway, production queues, or model calls by itself:
   runner output. The rendered commands are `executesInThisSmoke=false` plan
   data and are not authorization to start containers, mount secrets, call
   models, expose ports, or write the central workflow database.
+- `scripts/workflow_v2_external_runner_execute_guard.mjs` is the first
+  real-wrapper skeleton. By default it validates the same request and manifest,
+  renders an execute-guard plan, and returns `release` instead of `success`, so
+  the adapter job is rescheduled and the worker is not marked complete. It
+  refuses execution unless a future explicitly authorized path supplies both an
+  execution flag and an environment gate. `npm run
+  smoke:v2-external-runner-execute-guard` verifies this fail-closed behavior.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical
