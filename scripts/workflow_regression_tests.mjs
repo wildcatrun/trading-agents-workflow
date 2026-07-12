@@ -21,6 +21,11 @@ import {
   WORKFLOW_POLICY_HARD_GATE_ACTIONS,
   workflowConsoleAllowedActions
 } from "../src/workflow/action-policy.js";
+import {
+  upsertWorkflowAgentRun,
+  workflowPhaseRecordId,
+  workflowTaskPhaseInfo
+} from "../src/workflow/agent-run-state.js";
 import { kanbanPreviewActionModel } from "../static/console/preview-actions.js";
 import {
   DEFAULT_MESSAGE_FLOW_SEMANTIC_TIMEOUT_SECONDS,
@@ -6080,6 +6085,126 @@ async function testWorkflowV2SessionStateHelpers() {
   assert.equal(workflowV2WorkerRetryDelayMs({ retryDelayMs: 99999999 }, 1), 30 * 60_000);
   assert.equal(workflowV2WorkerRetryDelayMs({ retryDelayMs: "not-a-number" }, 1), 5_000);
   assert.equal(workflowV2WorkerRetryDelayMs({}, 3), 15_000);
+}
+
+async function testWorkflowAgentRunStateHelpers() {
+  const root = await tempRoot("workflow-agent-run-state");
+  await runAction(root, { action: "workflow.init" });
+  const dbFile = path.join(root, "tracking.db");
+  const paths = { dbFile };
+
+  assert.equal(workflowPhaseRecordId("wf bad/id", "phase bad/key"), "phase.wf-bad-id.phase-bad-key");
+  assert.deepEqual(
+    await workflowTaskPhaseInfo(paths, "", "", "fallback phase"),
+    { phaseKey: "fallback phase", phaseId: "phase.workflow.fallback-phase" }
+  );
+  assert.deepEqual(
+    await workflowTaskPhaseInfo(paths, "wf-agent-state", "missing-task", "fallback phase"),
+    { phaseKey: "fallback phase", phaseId: "phase.wf-agent-state.fallback-phase" }
+  );
+
+  await runAction(root, {
+    action: "workflow.run.upsert",
+    workflowId: "wf-agent-state",
+    status: "active",
+    phase: "phase.alpha",
+    summary: "Agent-run helper workflow"
+  });
+  sqliteExec(dbFile, `
+INSERT INTO workflow_tasks(task_id, workflow_id, parent_task_id, phase, owner_agent, runtime, agent_id, task_type, status, priority, depends_on_json, expected_artifact, actual_artifact_ref, receipt_required, human_gate_required, summary, prompt, payload_json, blocked_reason, created_by, created_at, due_at, started_at, completed_at, updated_at)
+VALUES ('task-agent-state', 'wf-agent-state', '', 'phase.alpha', 'cat_body', 'hermers', 'cat_body', 'regression', 'queued', 'normal', '[]', '', '', 1, 0, 'agent state task', '', '{}', '', 'main', '2026-07-12T03:00:00.000Z', '', '', '', '2026-07-12T03:00:00.000Z');`);
+  assert.deepEqual(
+    await workflowTaskPhaseInfo(paths, "wf-agent-state", "task-agent-state", "fallback phase"),
+    { phaseKey: "phase.alpha", phaseId: "phase.wf-agent-state.phase.alpha" }
+  );
+
+  assert.equal(await upsertWorkflowAgentRun(paths, {}), null);
+  assert.equal(sqliteCount(dbFile, "workflow_agent_runs"), 0);
+  assert.equal(await upsertWorkflowAgentRun(paths, {
+    agentRunId: "agent-run-state",
+    workflowId: "wf-agent-state",
+    phaseId: "phase.wf-agent-state.phase.alpha",
+    phaseKey: "phase.alpha",
+    taskId: "task-agent-state",
+    dispatchId: "dispatch-agent-state",
+    runtimeRunId: "runtime-agent-state",
+    sessionRunId: "session-agent-state",
+    runtime: "hermers",
+    agentId: "cat_body",
+    status: "running",
+    attempt: 1,
+    inputHash: "input-1",
+    outputHash: "output-1",
+    receiptRef: "receipt://agent-state",
+    payload: { original: true },
+    startedAt: "2026-07-12T03:01:00.000Z",
+    completedAt: "",
+    createdAt: "2026-07-12T03:01:00.000Z",
+    updatedAt: "2026-07-12T03:01:01.000Z"
+  }), "agent-run-state");
+  const inserted = sqliteJson(dbFile, `
+SELECT workflow_id AS workflowId, phase_id AS phaseId, phase_key AS phaseKey, task_id AS taskId,
+       dispatch_id AS dispatchId, runtime_run_id AS runtimeRunId, session_run_id AS sessionRunId,
+       runtime, agent_id AS agentId, status, attempt, input_hash AS inputHash, output_hash AS outputHash,
+       receipt_ref AS receiptRef, error, payload_json AS payloadJson, started_at AS startedAt,
+       completed_at AS completedAt, created_at AS createdAt, updated_at AS updatedAt
+FROM workflow_agent_runs WHERE agent_run_id='agent-run-state' LIMIT 1;`)[0];
+  assert.equal(inserted.workflowId, "wf-agent-state");
+  assert.equal(inserted.phaseId, "phase.wf-agent-state.phase.alpha");
+  assert.equal(inserted.phaseKey, "phase.alpha");
+  assert.equal(inserted.taskId, "task-agent-state");
+  assert.equal(inserted.dispatchId, "dispatch-agent-state");
+  assert.equal(inserted.runtimeRunId, "runtime-agent-state");
+  assert.equal(inserted.sessionRunId, "session-agent-state");
+  assert.equal(inserted.runtime, "hermers");
+  assert.equal(inserted.agentId, "cat_body");
+  assert.equal(inserted.status, "running");
+  assert.equal(inserted.attempt, 1);
+  assert.equal(inserted.inputHash, "input-1");
+  assert.equal(inserted.outputHash, "output-1");
+  assert.equal(inserted.receiptRef, "receipt://agent-state");
+  assert.equal(inserted.error, "");
+  assert.deepEqual(JSON.parse(inserted.payloadJson), { original: true });
+  assert.equal(inserted.startedAt, "2026-07-12T03:01:00.000Z");
+  assert.equal(inserted.completedAt, "");
+  assert.equal(inserted.createdAt, "2026-07-12T03:01:00.000Z");
+  assert.equal(inserted.updatedAt, "2026-07-12T03:01:01.000Z");
+
+  assert.equal(await upsertWorkflowAgentRun(paths, {
+    agentRunId: "agent-run-state",
+    status: "completed",
+    attempt: 2,
+    error: "finished",
+    payload: { updated: true },
+    updatedAt: "2026-07-12T03:02:00.000Z"
+  }), "agent-run-state");
+  const updated = sqliteJson(dbFile, `
+SELECT workflow_id AS workflowId, phase_id AS phaseId, phase_key AS phaseKey, task_id AS taskId,
+       dispatch_id AS dispatchId, runtime_run_id AS runtimeRunId, session_run_id AS sessionRunId,
+       runtime, agent_id AS agentId, status, attempt, input_hash AS inputHash, output_hash AS outputHash,
+       receipt_ref AS receiptRef, error, payload_json AS payloadJson, started_at AS startedAt,
+       completed_at AS completedAt, created_at AS createdAt, updated_at AS updatedAt
+FROM workflow_agent_runs WHERE agent_run_id='agent-run-state' LIMIT 1;`)[0];
+  assert.equal(updated.workflowId, "wf-agent-state");
+  assert.equal(updated.phaseId, "phase.wf-agent-state.phase.alpha");
+  assert.equal(updated.phaseKey, "phase.alpha");
+  assert.equal(updated.taskId, "task-agent-state");
+  assert.equal(updated.dispatchId, "dispatch-agent-state");
+  assert.equal(updated.runtimeRunId, "runtime-agent-state");
+  assert.equal(updated.sessionRunId, "session-agent-state");
+  assert.equal(updated.runtime, "hermers");
+  assert.equal(updated.agentId, "cat_body");
+  assert.equal(updated.status, "completed");
+  assert.equal(updated.attempt, 2);
+  assert.equal(updated.inputHash, "input-1");
+  assert.equal(updated.outputHash, "output-1");
+  assert.equal(updated.receiptRef, "receipt://agent-state");
+  assert.equal(updated.error, "finished");
+  assert.deepEqual(JSON.parse(updated.payloadJson), { updated: true });
+  assert.equal(updated.startedAt, "2026-07-12T03:01:00.000Z");
+  assert.equal(updated.completedAt, "");
+  assert.equal(updated.createdAt, "2026-07-12T03:01:00.000Z");
+  assert.equal(updated.updatedAt, "2026-07-12T03:02:00.000Z");
 }
 
 async function testWorkflowV2ReviewStateHelpers() {
@@ -21741,6 +21866,7 @@ try {
     ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
     ["workflow v2 plan state helpers", testWorkflowV2PlanStateHelpers],
     ["workflow v2 session state helpers", testWorkflowV2SessionStateHelpers],
+    ["workflow agent-run state helpers", testWorkflowAgentRunStateHelpers],
     ["workflow v2 review state helpers", testWorkflowV2ReviewStateHelpers],
     ["workflow v2 info stack state helpers", testWorkflowV2InfoStackStateHelpers],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],

@@ -1112,6 +1112,33 @@ Latest focused verification passed:
   - `npm run check`
   - `git diff --check`
 
+2026-07-12 V2.2 shared agent-run-state helper extraction follow-up:
+
+- Added `src/workflow/agent-run-state.js` for shared workflow agent-run phase
+  id generation, task phase lookup, and workflow agent-run upsert logic.
+- Updated `src/workflow.js` to import those helpers while preserving the
+  existing session action and workflow-v2 session-state dependency injection
+  seams.
+- Added a direct helper regression for phase id sanitization, fallback phase
+  lookup, task-backed phase lookup, empty run no-op, initial agent-run insert,
+  and conflict update field preservation/replacement behavior.
+- Added the new module to `npm run check`.
+- This slice is a no-schema-change helper split. It does not start real worker
+  runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or production workflow
+  queues.
+- Focused verification passed locally:
+  - `node --check src/workflow/agent-run-state.js`
+  - `node --check src/workflow.js`
+  - `node --check src/session-actions.js`
+  - `node --check src/workflow-v2/session-state.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow agent-run state helpers"`
+  - `node scripts/workflow_regression_tests.mjs --grep "session extracted action contracts"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 session state helpers"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
+  - `npm run check`
+  - `git diff --check`
+
 2026-07-12 V2.4 adapter manifest validator hardening:
 
 - Added filesystem-aware adapter manifest validation to

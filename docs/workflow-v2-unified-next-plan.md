@@ -12,7 +12,7 @@ orchestration available for authoring, diagnostics, recovery, compatibility,
 and approved-plan execution, and avoid treating ad-hoc direct writes as the
 default production path.
 
-Status: V2.1-V2.4 local slice landed; Anthropic plan-node executable gates and fixed-template live-plan gates landed; deeper V2.2 split continuing with autonomous-loop, worker-state, plan-state, session-state, review-state, and info-stack-state helper extraction landed; adapter runner manifest contract gate landed locally
+Status: V2.1-V2.4 local slice landed; Anthropic plan-node executable gates and fixed-template live-plan gates landed; deeper V2.2 split continuing with autonomous-loop, worker-state, plan-state, session-state, review-state, info-stack-state, and shared agent-run-state helper extraction landed; adapter runner manifest contract gate landed locally
 Created: 2026-07-05
 Scope: verification, modularization, and runtime-adapter preparation after the
 local v2 orchestration kernel slice
@@ -148,6 +148,9 @@ Adapter manifest artifacts now carry an explicit runner contract version and
 session, preflight, task input, output action, context, and no-direct-DB/no-secret
 constraints. Persisted plan row loading, plan workflow-state patching, and
 orchestration-pattern lookup now live in `src/workflow-v2/plan-state.js` while
+shared workflow agent-run phase lookup and upsert helpers now live in
+`src/workflow/agent-run-state.js` for the session action and v2 session-state
+paths.
 the existing review/Human Gate injection seam remains unchanged. Session-run
 restore, patch/require patch, and retry-delay helpers now live in
 `src/workflow-v2/session-state.js`, with workflow-agent-run sync dependencies
