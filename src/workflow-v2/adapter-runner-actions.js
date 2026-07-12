@@ -251,22 +251,60 @@ function workflowV2InputRunnerCommandProvided(input = {}) {
     || input.external_runner_command !== undefined;
 }
 
-function workflowV2ExternalRunnerCommand(input = {}, runtimeBackend = "") {
-  if (workflowV2InputRunnerCommandProvided(input)) {
-    throw new Error("workflow v2 external adapter runner command must be configured by environment, not action input");
-  }
+function workflowV2ExternalRunnerCommandConfig(input = {}, runtimeBackend = "") {
   const backendKey = String(runtimeBackend || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_");
   const backendEnvKey = backendKey ? `TRADING_AGENTS_WORKFLOW_V2_${backendKey}_RUNNER_CMD` : "";
+  const config = {
+    required: true,
+    configured: false,
+    source: "",
+    executable: "",
+    argc: 0,
+    inputCommandRejected: workflowV2InputRunnerCommandProvided(input),
+    backendEnvKey,
+    genericEnvKey: "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD",
+    errors: []
+  };
+  if (workflowV2InputRunnerCommandProvided(input)) {
+    config.errors.push(workflowV2ValidationError("external_runner_command_input_disallowed", "workflow v2 external adapter runner command must be configured by environment, not action input"));
+    return config;
+  }
   const candidates = [
     { source: backendEnvKey, value: backendEnvKey ? process.env[backendEnvKey] : "" },
     { source: "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD", value: process.env.TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD }
   ];
   for (const candidate of candidates) {
     if (candidate.value === undefined || candidate.value === null || candidate.value === "") continue;
-    const command = workflowV2CommandArray(candidate.value);
-    if (command.length) return { command, source: candidate.source };
+    try {
+      const command = workflowV2CommandArray(candidate.value);
+      if (command.length) {
+        return {
+          ...config,
+          configured: true,
+          source: candidate.source,
+          executable: command[0],
+          argc: command.length,
+          command
+        };
+      }
+    } catch (error) {
+      config.errors.push(workflowV2ValidationError("external_runner_command_invalid", String(error?.message || error), { source: candidate.source }));
+      return config;
+    }
   }
-  throw new Error(`workflow v2 external adapter runner requires ${backendEnvKey || "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD"}`);
+  config.errors.push(workflowV2ValidationError("external_runner_command_missing", `workflow v2 external adapter runner requires ${backendEnvKey || "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD"}`, {
+    backendEnvKey,
+    genericEnvKey: "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD"
+  }));
+  return config;
+}
+
+function workflowV2ExternalRunnerCommand(input = {}, runtimeBackend = "") {
+  const config = workflowV2ExternalRunnerCommandConfig(input, runtimeBackend);
+  if (config.errors.length) {
+    throw new Error(config.errors.map((error) => error.message || error.code).join("; "));
+  }
+  return { command: config.command, source: config.source };
 }
 
 function workflowV2ExternalRunnerTimeoutMs(input = {}) {
@@ -1171,6 +1209,9 @@ async function workflowV2AdapterRunnerPreview(rootDir, input = {}) {
     ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
     : "";
   const mode = workflowV2AdapterRunnerMode(input);
+  const runnerCommandConfig = mode === "external_command"
+    ? workflowV2ExternalRunnerCommandConfig(input, runtimeBackend)
+    : { required: false, configured: false, source: "", executable: "", argc: 0, inputCommandRejected: false, errors: [] };
   const capacity = await workflowV2AdapterRunnerCapacity(paths, input, generatedAt, runtimeBackend);
   const backendClause = runtimeBackend ? `AND j.runtime_backend=${sqlValue(runtimeBackend)}` : "";
   const rows = await sqlite(paths.dbFile, `
@@ -1195,10 +1236,18 @@ LIMIT ${capacity.effectiveLimit};`, { json: true });
     runtimeBackend,
     mode,
     runnerCommandRequired: mode === "external_command",
-    runnerCommandConfigured: mode === "external_command" && !workflowV2InputRunnerCommandProvided(input)
-      ? Boolean(runtimeBackend && process.env[`TRADING_AGENTS_WORKFLOW_V2_${runtimeBackend.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_RUNNER_CMD`])
-        || Boolean(process.env.TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD)
-      : false,
+    runnerCommandConfigured: runnerCommandConfig.configured,
+    runnerCommandConfig: {
+      required: runnerCommandConfig.required,
+      configured: runnerCommandConfig.configured,
+      source: runnerCommandConfig.source,
+      executable: runnerCommandConfig.executable,
+      argc: runnerCommandConfig.argc,
+      inputCommandRejected: runnerCommandConfig.inputCommandRejected,
+      backendEnvKey: runnerCommandConfig.backendEnvKey || "",
+      genericEnvKey: runnerCommandConfig.genericEnvKey || "",
+      errors: runnerCommandConfig.errors
+    },
     count: rows.length,
     dueCount: capacity.dueCount,
     capacity,

@@ -4230,6 +4230,36 @@ await fs.writeFile(outputFile, JSON.stringify({
     leaseUntil: externalLease.leaseUntil,
     generatedAt: "2026-07-04T01:05:01.000Z"
   });
+  const externalRunnerEnvKey = "TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD";
+  const genericRunnerEnvKey = "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD";
+  const previousExternalRunnerCommand = process.env[externalRunnerEnvKey];
+  const previousGenericRunnerCommand = process.env[genericRunnerEnvKey];
+  delete process.env[externalRunnerEnvKey];
+  delete process.env[genericRunnerEnvKey];
+  const inputCommandPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    runnerCommand: [process.execPath, externalRunnerScript],
+    limit: 1,
+    generatedAt: "2026-07-04T01:05:02.000Z"
+  });
+  assert.equal(inputCommandPreview.runnerCommandRequired, true);
+  assert.equal(inputCommandPreview.runnerCommandConfigured, false);
+  assert.equal(inputCommandPreview.runnerCommandConfig.inputCommandRejected, true);
+  assert.equal(inputCommandPreview.runnerCommandConfig.errors[0].code, "external_runner_command_input_disallowed");
+  const missingCommandPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:05:02.000Z"
+  });
+  assert.equal(missingCommandPreview.runnerCommandRequired, true);
+  assert.equal(missingCommandPreview.runnerCommandConfigured, false);
+  assert.equal(missingCommandPreview.runnerCommandConfig.source, "");
+  assert.equal(missingCommandPreview.runnerCommandConfig.backendEnvKey, externalRunnerEnvKey);
+  assert.equal(missingCommandPreview.runnerCommandConfig.errors[0].code, "external_runner_command_missing");
   await assertRejectsMessage(
     () => runAction(root, {
       action: "workflow.v2.adapter_runner.drain",
@@ -4256,8 +4286,6 @@ await fs.writeFile(outputFile, JSON.stringify({
     /requires TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD/
   );
   assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `worker_run_id='${externalWorker.workerRun.workerRunId}' AND status='queued'`), 1);
-  const externalRunnerEnvKey = "TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD";
-  const previousExternalRunnerCommand = process.env[externalRunnerEnvKey];
   process.env[externalRunnerEnvKey] = JSON.stringify([process.execPath, externalRunnerScript]);
   const externalPreview = await runAction(root, {
     action: "workflow.v2.adapter_runner.preview",
@@ -4269,6 +4297,10 @@ await fs.writeFile(outputFile, JSON.stringify({
   assert.equal(externalPreview.mode, "external_command");
   assert.equal(externalPreview.runnerCommandRequired, true);
   assert.equal(externalPreview.runnerCommandConfigured, true);
+  assert.equal(externalPreview.runnerCommandConfig.source, externalRunnerEnvKey);
+  assert.equal(externalPreview.runnerCommandConfig.executable, process.execPath);
+  assert.equal(externalPreview.runnerCommandConfig.argc, 2);
+  assert.equal(externalPreview.runnerCommandConfig.errors.length, 0);
   assert.equal(externalPreview.count, 1);
   const externalDrain = await runAction(root, {
     action: "workflow.v2.adapter_runner.drain",
@@ -4288,10 +4320,82 @@ await fs.writeFile(outputFile, JSON.stringify({
   assert.equal(Boolean(await pathExists(externalDrain.results[0].externalOutput.artifactFile)), true);
   assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${externalWorker.workerRun.workerRunId}' AND status='submitted_for_review' AND lease_owner='' AND lease_until=''`), 1);
   assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${externalWorker.workerRun.sessionRunId}' AND status='completed'`), 1);
+  delete process.env[externalRunnerEnvKey];
+  process.env[genericRunnerEnvKey] = JSON.stringify([process.execPath, externalRunnerScript]);
+  const genericExternalWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-runner",
+    nodeId: "node-v2-runner",
+    managerAgent: "cat_body",
+    sessionId: "session-v2-runner-worker",
+    workerRunId: "worker-v2-runner-external-generic",
+    taskInputInfoId: "info-v2-runner-task-input",
+    runtimeBackend: "claude_code_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-runner-external-generic-worker",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-04T01:05:10.000Z"
+  });
+  const genericExternalLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${genericExternalWorker.workerRun.workerRunId}';`)[0];
+  await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: genericExternalWorker.workerRun.workerRunId,
+    leaseOwner: genericExternalLease.leaseOwner,
+    leaseUntil: genericExternalLease.leaseUntil,
+    generatedAt: "2026-07-04T01:05:11.000Z"
+  });
+  const genericExternalPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:05:12.000Z"
+  });
+  assert.equal(genericExternalPreview.runnerCommandConfigured, true);
+  assert.equal(genericExternalPreview.runnerCommandConfig.source, genericRunnerEnvKey);
+  const genericExternalDrain = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    runnerId: "external-runner-generic-success",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T01:05:13.000Z"
+  });
+  assert.equal(genericExternalDrain.submittedCount, 1);
+  assert.equal(genericExternalDrain.results[0].externalOutput.receipt.adapterRunner, "external_command");
+  assert.equal(genericExternalDrain.results[0].submit.adapterJobUpdate.job.status, "completed");
+  process.env[genericRunnerEnvKey] = `${process.execPath} SECRET_TOKEN_SHOULD_NOT_LEAK`;
+  const invalidGenericPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:05:14.000Z"
+  });
+  assert.equal(invalidGenericPreview.runnerCommandConfigured, false);
+  assert.equal(invalidGenericPreview.runnerCommandConfig.errors[0].code, "external_runner_command_invalid");
+  assert.equal(JSON.stringify(invalidGenericPreview.runnerCommandConfig).includes("SECRET_TOKEN_SHOULD_NOT_LEAK"), false);
   if (previousExternalRunnerCommand === undefined) {
     delete process.env[externalRunnerEnvKey];
   } else {
     process.env[externalRunnerEnvKey] = previousExternalRunnerCommand;
+  }
+  if (previousGenericRunnerCommand === undefined) {
+    delete process.env[genericRunnerEnvKey];
+  } else {
+    process.env[genericRunnerEnvKey] = previousGenericRunnerCommand;
   }
 
   const badExternalRunnerScript = path.join(root, "external-runner-bad-output.mjs");

@@ -267,8 +267,10 @@ Acceptance criteria:
 
 Local landed shape:
 
-- `workflow.v2.adapter_runner.preview` reports `mode` and whether an external
-  runner command is configured.
+- `workflow.v2.adapter_runner.preview` reports `mode`, whether an external
+  runner command is configured, and a redacted `runnerCommandConfig`
+  diagnostic object with environment source, executable, argc, and config
+  errors.
 - `workflow.v2.adapter_runner.drain` supports the existing `mock` mode and a new
   `external_command` mode.
 - `external_command` mode writes a bounded request JSON artifact for a wrapper
