@@ -21,6 +21,10 @@ import {
   WORKFLOW_V2_WORKER_PATTERNS,
   WORKFLOW_V2_WORKER_RUN_STATUSES
 } from "./constants.js";
+import {
+  workflowV2AdapterManifestContractIssue,
+  workflowV2AdapterManifestContractIssues
+} from "./adapter-manifest-contract.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -137,7 +141,7 @@ async function workflowV2AdapterManifestArtifactCheck(paths, schema) {
   const rows = await sqlite(paths.dbFile, `
 SELECT adapter_job_id, workflow_id, worker_run_id, artifact_ref, manifest_hash
 FROM workflow_v2_worker_adapter_jobs
-WHERE artifact_ref!='' AND manifest_hash!=''
+WHERE artifact_ref!=''
 ORDER BY adapter_job_id ASC;`, { json: true });
   const issues = [];
   for (const row of rows) {
@@ -145,7 +149,16 @@ ORDER BY adapter_job_id ASC;`, { json: true });
       const artifactFile = await workflowV2AdapterManifestArtifactFile(paths, row.artifact_ref || "");
       const manifest = JSON.parse(await fs.readFile(artifactFile, "utf8"));
       const actualHash = `sha256:${jsonHash(manifest)}`;
-      if (actualHash !== row.manifest_hash) {
+      if (!row.manifest_hash) {
+        issues.push({
+          adapterJobId: row.adapter_job_id || "",
+          workflowId: row.workflow_id || "",
+          workerRunId: row.worker_run_id || "",
+          artifactRef: row.artifact_ref || "",
+          actualHash,
+          reason: "manifest_hash_missing"
+        });
+      } else if (actualHash !== row.manifest_hash) {
         issues.push({
           adapterJobId: row.adapter_job_id || "",
           workflowId: row.workflow_id || "",
@@ -175,36 +188,6 @@ ORDER BY adapter_job_id ASC;`, { json: true });
     checkedCount: rows.length,
     issues: issues.slice(0, 20)
   };
-}
-
-function workflowV2ObjectValue(object, dottedPath) {
-  return String(dottedPath || "").split(".").reduce((current, key) => {
-    if (!current || typeof current !== "object") return undefined;
-    return current[key];
-  }, object);
-}
-
-function workflowV2AdapterManifestContractIssue(row, reason, details = {}) {
-  return {
-    adapterJobId: row.adapter_job_id || "",
-    workflowId: row.workflow_id || "",
-    workerRunId: row.worker_run_id || "",
-    artifactRef: row.artifact_ref || "",
-    reason,
-    ...details
-  };
-}
-
-function workflowV2CompareManifestField(issues, row, manifest, fieldPath, expected, reason = "manifest_field_mismatch") {
-  const actual = workflowV2ObjectValue(manifest, fieldPath);
-  if (actual !== expected) {
-    issues.push(workflowV2AdapterManifestContractIssue(row, reason, {
-      field: fieldPath,
-      expected,
-      actualPresent: actual !== undefined && actual !== null && actual !== "",
-      actualType: Array.isArray(actual) ? "array" : typeof actual
-    }));
-  }
 }
 
 async function workflowV2AdapterManifestContractCheck(paths, schema) {
@@ -253,75 +236,14 @@ LEFT JOIN workflow_v2_worker_runs w ON w.worker_run_id=j.worker_run_id
 LEFT JOIN workflow_session_runs s ON s.run_id=j.session_run_id
 LEFT JOIN workflow_v2_backend_preflights p ON p.preflight_id=w.preflight_id
 LEFT JOIN workflow_v2_info_items task ON task.info_id=w.task_input_info_id
-WHERE j.artifact_ref!='' AND j.manifest_hash!=''
+WHERE j.artifact_ref!=''
 ORDER BY j.adapter_job_id ASC;`, { json: true });
   const issues = [];
   for (const row of rows) {
     try {
       const artifactFile = await workflowV2AdapterManifestArtifactFile(paths, row.artifact_ref || "");
       const manifest = JSON.parse(await fs.readFile(artifactFile, "utf8"));
-      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-        issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_not_object"));
-        continue;
-      }
-      if (!row.worker_row_id) issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_worker_row_missing"));
-      if (!row.session_row_id) issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_session_run_missing"));
-      if (!row.preflight_row_id) issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_preflight_missing"));
-      if (!row.task_info_row_id) issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_task_input_info_missing"));
-      workflowV2CompareManifestField(issues, row, manifest, "schemaVersion", "workflow_v2_worker_adapter_job.v1");
-      workflowV2CompareManifestField(issues, row, manifest, "contract.manifestSchemaVersion", "workflow_v2_worker_adapter_job.v1");
-      workflowV2CompareManifestField(issues, row, manifest, "contract.runnerRequestSchemaVersion", "workflow_v2_external_adapter_runner_request.v1");
-      workflowV2CompareManifestField(issues, row, manifest, "contract.taskInputReadAction", "workflow.v2.info_stack.read");
-      workflowV2CompareManifestField(issues, row, manifest, "contract.submitAction", "workflow.v2.worker_result.submit");
-      workflowV2CompareManifestField(issues, row, manifest, "contract.failAction", "workflow.v2.worker_result.fail");
-      workflowV2CompareManifestField(issues, row, manifest, "contract.receiptRequired", true);
-      workflowV2CompareManifestField(issues, row, manifest, "contract.managerReviewRequired", true);
-      workflowV2CompareManifestField(issues, row, manifest, "adapterJobId", row.adapter_job_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "workflowId", row.workflow_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "planId", row.plan_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "nodeId", row.node_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "workerRunId", row.worker_run_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "sessionRunId", row.session_run_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "sessionId", row.worker_session_id || row.session_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "managerAgent", row.worker_manager_agent || "");
-      workflowV2CompareManifestField(issues, row, manifest, "workerAgentId", row.worker_agent_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "runtimeBackend", row.runtime_backend || "");
-      workflowV2CompareManifestField(issues, row, manifest, "lease.attempt", Number(row.worker_attempt || 0));
-      workflowV2CompareManifestField(issues, row, manifest, "taskInput.infoId", row.worker_task_input_info_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "taskInput.readAction", "workflow.v2.info_stack.read");
-      workflowV2CompareManifestField(issues, row, manifest, "output.expectedOutputInfoId", row.worker_output_info_id || `${row.worker_run_id || ""}.output`);
-      workflowV2CompareManifestField(issues, row, manifest, "output.submitAction", "workflow.v2.worker_result.submit");
-      workflowV2CompareManifestField(issues, row, manifest, "output.failAction", "workflow.v2.worker_result.fail");
-      workflowV2CompareManifestField(issues, row, manifest, "output.receiptRequired", true);
-      workflowV2CompareManifestField(issues, row, manifest, "output.managerReviewRequired", true);
-      workflowV2CompareManifestField(issues, row, manifest, "constraints.noDirectDatabaseWrites", true);
-      workflowV2CompareManifestField(issues, row, manifest, "constraints.noProductionSecrets", true);
-      if (row.preflight_row_id) {
-        workflowV2CompareManifestField(issues, row, manifest, "preflight.preflightId", row.preflight_row_id || "");
-        workflowV2CompareManifestField(issues, row, manifest, "preflight.backendId", row.preflight_backend_id || "");
-        workflowV2CompareManifestField(issues, row, manifest, "preflight.status", row.preflight_status || "");
-        if (!["pass", "warn"].includes(row.preflight_status || "")) {
-          issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_preflight_status_not_runnable", {
-            status: row.preflight_status || ""
-          }));
-        }
-      }
-      const sessionWorkerInput = (() => {
-        try {
-          return JSON.parse(row.session_worker_input_json || "{}");
-        } catch {
-          return {};
-        }
-      })();
-      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.schemaVersion", sessionWorkerInput.schemaVersion);
-      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.input.schemaVersion", workflowV2ObjectValue(sessionWorkerInput, "input.schemaVersion"));
-      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.input.workerRunId", row.worker_run_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.input.taskInputInfoId", row.worker_task_input_info_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.context.workflowId", row.workflow_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "sessionInput.context.taskId", row.node_id || "");
-      workflowV2CompareManifestField(issues, row, manifest, "context.limitTokens", Number(row.worker_context_budget_tokens || 0));
-      workflowV2CompareManifestField(issues, row, manifest, "context.usedTokens", Number(row.worker_context_used_tokens || 0));
-      workflowV2CompareManifestField(issues, row, manifest, "context.compactionCount", Number(row.worker_compaction_count || 0));
+      issues.push(...workflowV2AdapterManifestContractIssues(row, manifest));
     } catch (error) {
       issues.push(workflowV2AdapterManifestContractIssue(row, "manifest_contract_unreadable", {
         error: String(error?.message || error)

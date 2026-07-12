@@ -42,6 +42,10 @@ import {
 import {
   workflowV2AdapterJobById
 } from "./adapter-job-state.js";
+import {
+  workflowV2AdapterManifestContractErrorMessage,
+  workflowV2AdapterManifestContractIssues
+} from "./adapter-manifest-contract.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -188,7 +192,7 @@ WHERE j.status IN ('queued','retry_scheduled')
   };
 }
 
-function workflowV2ArtifactRefToFile(paths, artifactRef = "") {
+async function workflowV2ArtifactRefToFile(paths, artifactRef = "") {
   const text = String(artifactRef || "").trim();
   const prefix = "artifact://workflow-v2/";
   if (!text.startsWith(prefix)) {
@@ -203,11 +207,22 @@ function workflowV2ArtifactRefToFile(paths, artifactRef = "") {
   if (filePath !== base && !filePath.startsWith(`${base}${path.sep}`)) {
     throw new Error(`workflow v2 artifact ref escapes artifact root: ${text}`);
   }
+  const [realBase, realFile] = await Promise.all([
+    fs.realpath(base),
+    fs.realpath(filePath)
+  ]);
+  if (realFile !== realBase && !realFile.startsWith(`${realBase}${path.sep}`)) {
+    throw new Error(`workflow v2 artifact ref real path escapes artifact root: ${text}`);
+  }
+  const stat = await fs.lstat(filePath);
+  if (!stat.isFile()) {
+    throw new Error(`workflow v2 artifact ref is not a regular file: ${text}`);
+  }
   return filePath;
 }
 
 async function workflowV2AdapterJobManifest(paths, job = {}) {
-  const artifactFile = workflowV2ArtifactRefToFile(paths, job.artifactRef || job.artifact_ref || "");
+  const artifactFile = await workflowV2ArtifactRefToFile(paths, job.artifactRef || job.artifact_ref || "");
   const manifest = JSON.parse(await fs.readFile(artifactFile, "utf8"));
   const expectedHash = job.manifestHash || job.manifest_hash || "";
   const actualHash = `sha256:${jsonHash(manifest)}`;
@@ -218,6 +233,73 @@ async function workflowV2AdapterJobManifest(paths, job = {}) {
     throw new Error(`workflow v2 adapter job manifest hash mismatch: ${job.adapterJobId || job.adapter_job_id || ""}`);
   }
   return { manifest, artifactFile, manifestHash: actualHash };
+}
+
+async function workflowV2AdapterRunnerManifestContractRow(paths, job = {}, workerRow = {}) {
+  const workerRunId = job.workerRunId || job.worker_run_id || workerRow.worker_run_id || "";
+  const rows = await sqlite(paths.dbFile, `
+SELECT
+  s.run_id AS session_row_id,
+  s.session_id AS session_id,
+  s.workflow_id AS session_workflow_id,
+  s.task_id AS session_task_id,
+  s.worker_id AS session_worker_id,
+  s.worker_input_json AS session_worker_input_json,
+  p.preflight_id AS preflight_row_id,
+  p.workflow_id AS preflight_workflow_id,
+  p.backend_id AS preflight_backend_id,
+  p.status AS preflight_status,
+  task.info_id AS task_info_row_id
+FROM workflow_v2_worker_runs w
+LEFT JOIN workflow_session_runs s ON s.run_id=w.session_run_id
+LEFT JOIN workflow_v2_backend_preflights p ON p.preflight_id=w.preflight_id
+LEFT JOIN workflow_v2_info_items task ON task.info_id=w.task_input_info_id
+WHERE w.worker_run_id=${sqlValue(workerRunId)}
+LIMIT 1;`, { json: true });
+  const linked = rows[0] || {};
+  return {
+    adapter_job_id: job.adapterJobId || job.adapter_job_id || "",
+    workflow_id: job.workflowId || job.workflow_id || workerRow.workflow_id || "",
+    plan_id: job.planId || job.plan_id || workerRow.plan_id || "",
+    node_id: job.nodeId || job.node_id || workerRow.node_id || "",
+    worker_run_id: workerRunId,
+    session_run_id: job.sessionRunId || job.session_run_id || workerRow.session_run_id || "",
+    runtime_backend: job.runtimeBackend || job.runtime_backend || workerRow.runtime_backend || "",
+    worker_attempt: Number(job.workerAttempt ?? job.worker_attempt ?? workerRow.attempt ?? 0),
+    artifact_ref: job.artifactRef || job.artifact_ref || "",
+    manifest_hash: job.manifestHash || job.manifest_hash || "",
+    info_id: job.infoId || job.info_id || "",
+    worker_row_id: workerRow.worker_run_id || "",
+    worker_session_id: workerRow.session_id || "",
+    worker_manager_agent: workerRow.manager_agent || "",
+    worker_agent_id: workerRow.worker_agent_id || "",
+    worker_preflight_id: workerRow.preflight_id || "",
+    worker_task_input_info_id: workerRow.task_input_info_id || "",
+    worker_output_info_id: workerRow.output_info_id || "",
+    worker_context_budget_tokens: workerRow.context_budget_tokens || 0,
+    worker_context_used_tokens: workerRow.context_used_tokens || 0,
+    worker_compaction_count: workerRow.compaction_count || 0,
+    session_row_id: linked.session_row_id || "",
+    session_id: linked.session_id || "",
+    session_workflow_id: linked.session_workflow_id || "",
+    session_task_id: linked.session_task_id || "",
+    session_worker_id: linked.session_worker_id || "",
+    session_worker_input_json: linked.session_worker_input_json || "",
+    preflight_row_id: linked.preflight_row_id || "",
+    preflight_workflow_id: linked.preflight_workflow_id || "",
+    preflight_backend_id: linked.preflight_backend_id || "",
+    preflight_status: linked.preflight_status || "",
+    task_info_row_id: linked.task_info_row_id || ""
+  };
+}
+
+async function workflowV2RequireAdapterRunnerManifestContract(paths, job = {}, workerRow = {}, manifest = {}) {
+  const contractRow = await workflowV2AdapterRunnerManifestContractRow(paths, job, workerRow);
+  const issues = workflowV2AdapterManifestContractIssues(contractRow, manifest);
+  if (issues.length) {
+    throw new Error(workflowV2AdapterManifestContractErrorMessage(contractRow.adapter_job_id, issues));
+  }
+  return { contractRow };
 }
 
 function workflowV2AdapterRunnerMode(input = {}) {
@@ -1335,6 +1417,7 @@ LIMIT 1;`, { json: true });
       if (!workerRow) throw new Error(`adapter runner worker row not found: ${job.workerRunId}`);
       if (workerRow.status !== "running") throw new Error(`adapter runner worker is not running: ${job.workerRunId} status=${workerRow.status || ""}`);
       if (Number(workerRow.attempt || 0) !== Number(job.workerAttempt || 0)) throw new Error(`adapter runner worker attempt mismatch: ${job.workerRunId}`);
+      await workflowV2RequireAdapterRunnerManifestContract(paths, job, workerRow, manifest);
       if (mode === "external_command") {
         const externalOutput = await workflowV2AdapterRunnerExternalCommand(paths, job, manifest, manifestFile, { ...input, runnerId }, generatedAt);
         if (externalOutput.status === "release") {

@@ -12,7 +12,7 @@ orchestration available for authoring, diagnostics, recovery, compatibility,
 and approved-plan execution, and avoid treating ad-hoc direct writes as the
 default production path.
 
-Status: V2.1-V2.4 local slice landed; Anthropic plan-node executable gates and fixed-template live-plan gates landed; deeper V2.2 split continuing with autonomous-loop and worker-state helper extraction landed
+Status: V2.1-V2.4 local slice landed; Anthropic plan-node executable gates and fixed-template live-plan gates landed; deeper V2.2 split continuing with autonomous-loop and worker-state helper extraction landed; adapter runner manifest contract gate landed locally
 Created: 2026-07-05
 Scope: verification, modularization, and runtime-adapter preparation after the
 local v2 orchestration kernel slice
@@ -295,7 +295,15 @@ Local landed shape:
   closed as invalid configuration without echoing the raw env value.
 - `workflow.v2.validate` now audits recorded adapter manifest artifacts by
   enforcing local `artifact://workflow-v2/...` path containment, parsing JSON,
-  and recomputing the stored `sha256:` manifest hash.
+  recomputing the stored `sha256:` manifest hash, and comparing manifest
+  contract fields to adapter job, worker, session, preflight, task input,
+  output, context, and safety constraints.
+- `workflow.v2.adapter_runner.drain` reuses the same manifest contract rules
+  before consuming a claimed job manifest, so a hash-valid but contract-invalid
+  artifact fails through the governed adapter-job/worker failure path before
+  mock or external runner execution. Runtime manifest reads also enforce
+  realpath boundary and regular-file checks, and validation reports
+  `manifest_hash_missing` instead of skipping artifact rows with empty hashes.
 - No WSL/Docker container is started by this local slice.
 
 ## Track V2.5: Workflow Self-Evolution

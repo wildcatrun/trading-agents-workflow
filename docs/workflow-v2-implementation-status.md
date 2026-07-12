@@ -1068,6 +1068,40 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner concurrency/recovery"`
 
+2026-07-12 V2.4 adapter runner contract gate:
+
+- Extracted adapter manifest contract comparison into
+  `src/workflow-v2/adapter-manifest-contract.js` so `workflow.v2.validate` and
+  `workflow.v2.adapter_runner.drain` use the same field-level rules.
+- `workflow.v2.adapter_runner.drain` now rechecks a claimed job's manifest
+  against the current adapter job, worker, session run, backend preflight, task
+  input, output contract, context, and no-direct-DB/no-secret facts before
+  invoking either the mock runner or external command runner.
+- Runtime manifest reads now use the same local path hardening as validation:
+  `artifact://workflow-v2/...` containment, realpath boundary checks, and
+  regular-file checks before JSON parsing.
+- The manifest artifact/hash validator no longer skips rows with a recorded
+  artifact but empty `manifest_hash`; those rows report `manifest_hash_missing`
+  while drain still fails closed before execution.
+- A manifest whose hash is valid but whose contract points at the wrong task
+  input fails closed as an internal runner error and is recorded through the
+  governed adapter-job/worker failure path. The execution error reports only
+  reason, field, and count; it does not echo raw manifest values.
+- This is still a local control-plane execution gate. It does not start worker
+  runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or production workflow
+  queues.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/adapter-manifest-contract.js`
+  - `node --check src/workflow-v2/adapter-runner-actions.js`
+  - `node --check src/workflow-v2/validate-actions.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter job manifest"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter manifest validator hardening"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner concurrency/recovery"`
+  - `npm run check`
+  - `git diff --check`
+
 2026-07-12 V2.4 external runner preview diagnostics:
 
 - Added a redacted `runnerCommandConfig` diagnostic object to

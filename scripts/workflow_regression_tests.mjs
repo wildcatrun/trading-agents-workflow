@@ -4709,6 +4709,12 @@ process.stdout.write("not-json");
 UPDATE workflow_v2_worker_adapter_jobs
 SET manifest_hash=''
 WHERE adapter_job_id='${badManifestRecord.adapterJob.adapterJobId}';`);
+  const missingHashValidate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const missingHashCheck = missingHashValidate.checks.find((item) => item.checkId === "adapter_job_manifest_artifacts_match_hash");
+  assert.equal(missingHashCheck?.status, "fail", JSON.stringify(missingHashValidate.failedChecks));
+  assert.equal(Boolean(missingHashCheck?.issues?.some((item) => item.adapterJobId === badManifestRecord.adapterJob.adapterJobId && item.reason === "manifest_hash_missing")), true);
   const badManifestDrain = await runAction(root, {
     action: "workflow.v2.adapter_runner.drain",
     runtimeBackend: "hermers_docker_worker",
@@ -4723,6 +4729,132 @@ WHERE adapter_job_id='${badManifestRecord.adapterJob.adapterJobId}';`);
   assert.equal(badManifestDrain.results[0].failure.job.status, "failed");
   assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${badManifestWorker.workerRun.workerRunId}' AND status='failed' AND lease_owner='' AND lease_until=''`), 1);
   assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${badManifestWorker.workerRun.sessionRunId}' AND status='failed'`), 1);
+
+  const symlinkManifestWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-runner",
+    nodeId: "node-v2-runner",
+    managerAgent: "cat_body",
+    sessionId: "session-v2-runner-worker",
+    workerRunId: "worker-v2-runner-symlink-manifest",
+    taskInputInfoId: "info-v2-runner-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-runner-symlink-manifest-worker",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-04T01:22:00.000Z"
+  });
+  const symlinkManifestLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${symlinkManifestWorker.workerRun.workerRunId}';`)[0];
+  const symlinkManifestRecord = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: symlinkManifestWorker.workerRun.workerRunId,
+    leaseOwner: symlinkManifestLease.leaseOwner,
+    leaseUntil: symlinkManifestLease.leaseUntil,
+    generatedAt: "2026-07-04T01:22:01.000Z"
+  });
+  const outsideManifestFile = path.join(root, "outside-runner-manifest.json");
+  await fs.writeFile(outsideManifestFile, await fs.readFile(symlinkManifestRecord.artifact.artifactFile, "utf8"), "utf8");
+  await fs.rm(symlinkManifestRecord.artifact.artifactFile, { force: true });
+  await fs.symlink(outsideManifestFile, symlinkManifestRecord.artifact.artifactFile);
+  const symlinkManifestValidate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const symlinkManifestCheck = symlinkManifestValidate.checks.find((item) => item.checkId === "adapter_job_manifest_artifacts_match_hash");
+  assert.equal(symlinkManifestCheck?.status, "fail", JSON.stringify(symlinkManifestValidate.failedChecks));
+  assert.equal(Boolean(symlinkManifestCheck?.issues?.some((item) => item.adapterJobId === symlinkManifestRecord.adapterJob.adapterJobId && item.reason === "manifest_artifact_unreadable")), true);
+  const symlinkManifestDrain = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "mock-runner-symlink-manifest",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T01:22:03.000Z"
+  });
+  assert.equal(symlinkManifestDrain.failedCount, 1);
+  assert.equal(symlinkManifestDrain.results[0].status, "error");
+  assert.match(symlinkManifestDrain.results[0].error, /regular file|real path escapes/);
+  assert.equal(symlinkManifestDrain.results[0].failure.job.status, "failed");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${symlinkManifestWorker.workerRun.workerRunId}' AND status='failed' AND lease_owner='' AND lease_until=''`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${symlinkManifestWorker.workerRun.sessionRunId}' AND status='failed'`), 1);
+
+  const badContractWorker = await runAction(root, {
+    action: "workflow.v2.worker_spawn.create",
+    workflowId,
+    planId: "plan-v2-runner",
+    nodeId: "node-v2-runner",
+    managerAgent: "cat_body",
+    sessionId: "session-v2-runner-worker",
+    workerRunId: "worker-v2-runner-bad-contract",
+    taskInputInfoId: "info-v2-runner-task-input",
+    runtimeBackend: "hermers_docker_worker",
+    ...v2WorkerDelegation(),
+    maxAttempts: 2,
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  await runAction(root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId,
+    claimOwner: "test-v2-runner-bad-contract-worker",
+    workerLimit: 1,
+    workerLeaseMs: 60_000,
+    generatedAt: "2026-07-04T01:25:00.000Z"
+  });
+  const badContractLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${badContractWorker.workerRun.workerRunId}';`)[0];
+  const badContractRecord = await runAction(root, {
+    action: "workflow.v2.worker_adapter_job.record",
+    workerRunId: badContractWorker.workerRun.workerRunId,
+    leaseOwner: badContractLease.leaseOwner,
+    leaseUntil: badContractLease.leaseUntil,
+    generatedAt: "2026-07-04T01:25:01.000Z"
+  });
+  const originalBadContractManifest = JSON.parse(await fs.readFile(badContractRecord.artifact.artifactFile, "utf8"));
+  const badContractManifest = {
+    ...originalBadContractManifest,
+    taskInput: {
+      ...originalBadContractManifest.taskInput,
+      infoId: "SECRET_DRAIN_CONTRACT_SHOULD_NOT_LEAK"
+    }
+  };
+  await fs.writeFile(badContractRecord.artifact.artifactFile, JSON.stringify(badContractManifest, null, 2) + "\n", "utf8");
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_worker_adapter_jobs
+SET manifest_hash='${workflowV2TestManifestHash(badContractManifest)}'
+WHERE adapter_job_id='${badContractRecord.adapterJob.adapterJobId}';`);
+  const badContractValidate = await runAction(root, {
+    action: "workflow.v2.validate"
+  });
+  const badContractHashCheck = badContractValidate.checks.find((item) => item.checkId === "adapter_job_manifest_artifacts_match_hash");
+  assert.equal(Boolean(badContractHashCheck?.issues?.some((item) => item.adapterJobId === badContractRecord.adapterJob.adapterJobId)), false);
+  const badContractDrain = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "mock-runner-bad-contract",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T01:25:03.000Z"
+  });
+  assert.equal(badContractDrain.failedCount, 1);
+  assert.equal(badContractDrain.results[0].status, "error");
+  assert.match(badContractDrain.results[0].error, /manifest contract invalid/);
+  assert.match(badContractDrain.results[0].error, /taskInput\.infoId/);
+  assert.equal(badContractDrain.results[0].error.includes("SECRET_DRAIN_CONTRACT_SHOULD_NOT_LEAK"), false);
+  assert.equal(badContractDrain.results[0].failure.job.status, "failed");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${badContractWorker.workerRun.workerRunId}' AND status='failed' AND lease_owner='' AND lease_until=''`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${badContractWorker.workerRun.sessionRunId}' AND status='failed'`), 1);
 
   const corruptValidate = await runAction(root, {
     action: "workflow.v2.validate"
