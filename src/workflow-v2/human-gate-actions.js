@@ -1,5 +1,4 @@
 import {
-  fileExistsSync,
   workflowPaths
 } from "../workflow/paths.js";
 import {
@@ -26,6 +25,10 @@ import {
   workflowV2UniqueTextList,
   workflowV2ValidationError
 } from "./helpers.js";
+import {
+  workflowV2CatClawAuditRowById,
+  workflowV2HumanGatePackageRow
+} from "./human-gate-state.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -56,44 +59,6 @@ export function createWorkflowV2HumanGateActionHandlers(context = {}) {
   const workflowV2PatchPlanWorkflowState = requireContextFunction(context, "workflowV2PatchPlanWorkflowState");
   const HUMAN_GATE_APPROVE_OPTION_MIN = contextNumber(context, "humanGateApproveOptionMin", 2);
   const HUMAN_GATE_APPROVE_OPTION_MAX = contextNumber(context, "humanGateApproveOptionMax", 5);
-
-async function workflowV2CatClawAuditRowById(paths, auditId) {
-  if (!auditId || !fileExistsSync(paths.dbFile)) return null;
-  const rows = await sqlite(paths.dbFile, `
-SELECT *
-FROM workflow_v2_cat_claw_audits
-WHERE audit_id=${sqlValue(auditId)}
-LIMIT 1;`, { json: true });
-  return rows[0] || null;
-}
-
-async function workflowV2HumanGatePackageRow(paths, input = {}) {
-  if (!fileExistsSync(paths.dbFile)) return null;
-  const packageId = firstText(input.packageId, input.package_id, input.humanGatePackageId, input.human_gate_package_id);
-  if (packageId) {
-    const rows = await sqlite(paths.dbFile, `
-SELECT *
-FROM workflow_v2_human_gate_packages
-WHERE package_id=${sqlValue(packageId)}
-LIMIT 1;`, { json: true });
-    return rows[0] || null;
-  }
-  const workflowId = firstText(input.workflowId, input.workflow_id);
-  const planId = firstText(input.planId, input.plan_id);
-  const sourceCatClawAuditId = firstText(input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id);
-  const filters = [];
-  if (workflowId) filters.push(`workflow_id=${sqlValue(workflowId)}`);
-  if (planId) filters.push(`plan_id=${sqlValue(planId)}`);
-  if (sourceCatClawAuditId) filters.push(`source_cat_claw_audit_id=${sqlValue(sourceCatClawAuditId)}`);
-  if (!filters.length) return null;
-  const rows = await sqlite(paths.dbFile, `
-SELECT *
-FROM workflow_v2_human_gate_packages
-WHERE ${filters.join(" AND ")}
-ORDER BY updated_at DESC, created_at DESC
-LIMIT 1;`, { json: true });
-  return rows[0] || null;
-}
 
 async function workflowV2HumanGatePackagePreview(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);

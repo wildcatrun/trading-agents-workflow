@@ -113,8 +113,9 @@ Acceptance criteria:
 ## Track V2.2: Mechanical V2 Module Split
 
 Status: constants/helpers, v2 registry, plan pure-helper, plan-state helper,
-session-state helper, review-state helper, info-stack state/preview, backend-preflight preview,
-autonomous-loop runtime helper, and worker-state helper splits have landed;
+session-state helper, review-state helper, info-stack state/preview, Human Gate
+state helper, backend-preflight preview, autonomous-loop runtime helper, and
+worker-state helper splits have landed;
 deeper DB/action module split
 remains in progress. A
 2026-07-05 Anthropic reference refresh also expanded `src/workflow-v2/plan.js` with
@@ -152,8 +153,8 @@ shared workflow agent-run phase lookup, upsert SQL builder, and async upsert
 helpers now live in
 `src/workflow/agent-run-state.js` for the session action and v2 session-state
 paths, with v2 worker spawn transactions reusing the same SQL builder instead
-of carrying a duplicate upsert statement.
-the existing review/Human Gate injection seam remains unchanged. Session-run
+of carrying a duplicate upsert statement. The existing review/Human Gate
+injection seam remains unchanged. Session-run
 restore, patch/require patch, and retry-delay helpers now live in
 `src/workflow-v2/session-state.js`, with workflow-agent-run sync dependencies
 still injected from the existing workflow control-plane layer. Manager-review

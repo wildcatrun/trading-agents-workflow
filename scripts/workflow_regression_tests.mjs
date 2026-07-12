@@ -56,6 +56,10 @@ import {
   workflowV2CleanupInfoStackItem,
   workflowV2InfoStackExistingItem
 } from "../src/workflow-v2/info-stack-state.js";
+import {
+  workflowV2CatClawAuditRowById,
+  workflowV2HumanGatePackageRow
+} from "../src/workflow-v2/human-gate-state.js";
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
@@ -6229,6 +6233,60 @@ FROM workflow_agent_runs WHERE agent_run_id='agent-run-state' LIMIT 1;`)[0];
   assert.equal(updated.completedAt, "");
   assert.equal(updated.createdAt, "2026-07-12T03:01:00.000Z");
   assert.equal(updated.updatedAt, "2026-07-12T03:02:00.000Z");
+}
+
+async function testWorkflowV2HumanGateStateHelpers() {
+  const missingRoot = await tempRoot("workflow-v2-human-gate-state-missing");
+  const missingPaths = { dbFile: path.join(missingRoot, "tracking.db") };
+  assert.equal(await workflowV2CatClawAuditRowById(missingPaths, "audit-missing"), null);
+  assert.equal(await workflowV2HumanGatePackageRow(missingPaths, { packageId: "package-missing" }), null);
+
+  const root = await tempRoot("workflow-v2-human-gate-state");
+  await runAction(root, { action: "workflow.init" });
+  const dbFile = path.join(root, "tracking.db");
+  const paths = { dbFile };
+  assert.equal(await workflowV2CatClawAuditRowById(paths, ""), null);
+  assert.equal(await workflowV2HumanGatePackageRow(paths, {}), null);
+
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_cat_claw_audits(audit_id, workflow_id, plan_id, cat_brain_audit_id, cat_claw_agent, decision, summary, checks_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES ('audit-hgate-state', 'wf-hgate-state', 'plan-hgate-state', 'brain-audit-hgate-state', 'cat_claw', 'protocol_ready', 'Human Gate state audit ready', '["options_present"]', '["artifact://hgate-state"]', '{"scope":"state"}', 'cat_claw', '2026-07-12T04:00:00.000Z', '2026-07-12T04:00:00.000Z');
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES
+  ('package-hgate-state-old', 'wf-hgate-state', 'plan-hgate-state', '', 'audit-hgate-state', 'main', 'cat_claw', 'cat_claw_audited', '[]', '["pause"]', '["artifact://old"]', '{"order":"old"}', 'cat_claw', '2026-07-12T04:01:00.000Z', '2026-07-12T04:01:00.000Z'),
+  ('package-hgate-state-latest', 'wf-hgate-state', 'plan-hgate-state', '', 'audit-hgate-state', 'main', 'cat_claw', 'cat_claw_audited', '[]', '["pause","terminate"]', '["artifact://latest"]', '{"order":"latest"}', 'cat_claw', '2026-07-12T04:02:00.000Z', '2026-07-12T04:02:00.000Z'),
+  ('package-hgate-state-other', 'wf-hgate-state', 'plan-other', '', 'audit-hgate-state', 'main', 'cat_claw', 'draft', '[]', '[]', '[]', '{"order":"other"}', 'cat_claw', '2026-07-12T04:03:00.000Z', '2026-07-12T04:03:00.000Z');`);
+
+  const audit = await workflowV2CatClawAuditRowById(paths, "audit-hgate-state");
+  assert.equal(audit.audit_id, "audit-hgate-state");
+  assert.equal(audit.decision, "protocol_ready");
+  assert.equal(await workflowV2CatClawAuditRowById(paths, "audit-unknown"), null);
+
+  const byPackageId = await workflowV2HumanGatePackageRow(paths, { humanGatePackageId: "package-hgate-state-old" });
+  assert.equal(byPackageId.package_id, "package-hgate-state-old");
+  assert.equal(JSON.parse(byPackageId.payload_json).order, "old");
+
+  const latestByFilters = await workflowV2HumanGatePackageRow(paths, {
+    workflowId: "wf-hgate-state",
+    planId: "plan-hgate-state",
+    sourceCatClawAuditId: "audit-hgate-state"
+  });
+  assert.equal(latestByFilters.package_id, "package-hgate-state-latest");
+  assert.equal(JSON.parse(latestByFilters.payload_json).order, "latest");
+
+  const byAliasFilters = await workflowV2HumanGatePackageRow(paths, {
+    workflow_id: "wf-hgate-state",
+    plan_id: "plan-hgate-state",
+    cat_claw_audit_id: "audit-hgate-state"
+  });
+  assert.equal(byAliasFilters.package_id, "package-hgate-state-latest");
+
+  const byPlanOnly = await workflowV2HumanGatePackageRow(paths, {
+    workflowId: "wf-hgate-state",
+    planId: "plan-other"
+  });
+  assert.equal(byPlanOnly.package_id, "package-hgate-state-other");
+  assert.equal(await workflowV2HumanGatePackageRow(paths, { workflowId: "wf-unknown" }), null);
 }
 
 async function testWorkflowV2ReviewStateHelpers() {
@@ -21891,6 +21949,7 @@ try {
     ["workflow v2 plan state helpers", testWorkflowV2PlanStateHelpers],
     ["workflow v2 session state helpers", testWorkflowV2SessionStateHelpers],
     ["workflow agent-run state helpers", testWorkflowAgentRunStateHelpers],
+    ["workflow v2 Human Gate state helpers", testWorkflowV2HumanGateStateHelpers],
     ["workflow v2 review state helpers", testWorkflowV2ReviewStateHelpers],
     ["workflow v2 info stack state helpers", testWorkflowV2InfoStackStateHelpers],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],

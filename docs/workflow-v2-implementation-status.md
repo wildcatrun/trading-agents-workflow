@@ -1162,6 +1162,30 @@ Latest focused verification passed:
   - `npm run check`
   - `git diff --check`
 
+2026-07-12 V2.2 Human Gate state helper extraction follow-up:
+
+- Added `src/workflow-v2/human-gate-state.js` for Cat Claw audit row lookup
+  and v2 Human Gate package row selection by exact package id or scoped
+  workflow/plan/source-audit filters.
+- Updated `src/workflow-v2/human-gate-actions.js` to import those helpers while
+  preserving existing package preview, package record, Human Gate request
+  preview, and request write behavior.
+- Added a direct helper regression for missing DB behavior, empty selectors,
+  audit lookup, package-id aliases, filter aliases, latest package ordering, and
+  no-match results.
+- Added the new module to `npm run check`.
+- This slice is a no-schema-change helper split. It does not start real worker
+  runtimes, WSL, Docker, Hermers, Claude Code, Gateway, Telegram delivery, or
+  production workflow queues.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/human-gate-state.js`
+  - `node --check src/workflow-v2/human-gate-actions.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 Human Gate state helpers"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 governance human gate bridge"`
+  - `npm run check`
+  - `git diff --check`
+
 2026-07-12 V2.4 adapter manifest validator hardening:
 
 - Added filesystem-aware adapter manifest validation to
