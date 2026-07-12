@@ -12,7 +12,7 @@ orchestration available for authoring, diagnostics, recovery, compatibility,
 and approved-plan execution, and avoid treating ad-hoc direct writes as the
 default production path.
 
-Status: V2.1-V2.4 local slice landed; Anthropic plan-node executable gates and fixed-template live-plan gates landed; deeper V2.2 split continuing with autonomous-loop, worker-state, plan-state, session-state, and review-state helper extraction landed; adapter runner manifest contract gate landed locally
+Status: V2.1-V2.4 local slice landed; Anthropic plan-node executable gates and fixed-template live-plan gates landed; deeper V2.2 split continuing with autonomous-loop, worker-state, plan-state, session-state, review-state, and info-stack-state helper extraction landed; adapter runner manifest contract gate landed locally
 Created: 2026-07-05
 Scope: verification, modularization, and runtime-adapter preparation after the
 local v2 orchestration kernel slice
@@ -113,7 +113,7 @@ Acceptance criteria:
 ## Track V2.2: Mechanical V2 Module Split
 
 Status: constants/helpers, v2 registry, plan pure-helper, plan-state helper,
-session-state helper, review-state helper, info-stack preview, backend-preflight preview,
+session-state helper, review-state helper, info-stack state/preview, backend-preflight preview,
 autonomous-loop runtime helper, and worker-state helper splits have landed;
 deeper DB/action module split
 remains in progress. A
@@ -155,7 +155,10 @@ still injected from the existing workflow control-plane layer. Manager-review
 rollback restore now lives in `src/workflow-v2/review-state.js` while the review
 action injection seam remains unchanged. Remaining work in this track is real
 runtime-wrapper integration and any further no-behavior-change helper splits
-that reduce `src/workflow.js` coupling.
+that reduce `src/workflow.js` coupling. Info-stack item lookup and cleanup
+cascade helpers now live in `src/workflow-v2/info-stack-state.js`, while the
+worker lifecycle, control loop, worker result, and adapter runner action modules
+continue to receive them through the existing context injection seam.
 
 After the focused tests pass, split the v2 implementation out of
 `src/workflow.js` with no intended behavior change.

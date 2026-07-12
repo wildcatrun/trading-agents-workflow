@@ -46,6 +46,10 @@ import {
 import {
   workflowV2RestoreManagerReviewRow
 } from "../src/workflow-v2/review-state.js";
+import {
+  workflowV2CleanupInfoStackItem,
+  workflowV2InfoStackExistingItem
+} from "../src/workflow-v2/info-stack-state.js";
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
@@ -6129,6 +6133,67 @@ WHERE review_id='review-v2-state-helper';`);
   await workflowV2RestoreManagerReviewRow(paths, null, "");
   await workflowV2RestoreManagerReviewRow(paths, {}, "");
   assert.equal(sqliteCount(dbFile, "workflow_v2_manager_reviews"), 0);
+}
+
+async function testWorkflowV2InfoStackStateHelpers() {
+  const root = await tempRoot("workflow-v2-info-stack-state");
+  const workflowId = "wf-v2-info-stack-state";
+  const recorded = await runAction(root, {
+    action: "workflow.v2.info_stack.record",
+    workflowId,
+    infoId: "info-v2-state-helper",
+    workerRunId: "worker-v2-state-helper",
+    classification: "internal",
+    contentStorage: "artifact_ref",
+    artifactRef: "artifact://workflow-v2/info-state-helper.json",
+    recipientAgent: "cat_body",
+    summary: "Info-stack state helper regression item."
+  });
+  const dbFile = path.join(root, "tracking.db");
+  assert.equal(await workflowV2InfoStackExistingItem(dbFile, ""), null);
+  assert.equal(await workflowV2InfoStackExistingItem(dbFile, "missing-info-id"), null);
+  const existing = await workflowV2InfoStackExistingItem(dbFile, "info-v2-state-helper");
+  assert.deepEqual(existing, {
+    info_id: "info-v2-state-helper",
+    workflow_id: workflowId,
+    worker_run_id: "worker-v2-state-helper"
+  });
+
+  const readInfo = await runAction(root, {
+    action: "workflow.v2.info_stack.read",
+    inboxItemId: recorded.inboxItem.inboxItemId,
+    principalKind: "agent",
+    principalId: "cat_body"
+  });
+  await runAction(root, {
+    action: "workflow.v2.read_receipt.record",
+    workflowId,
+    infoId: readInfo.item.infoId,
+    inboxItemId: readInfo.access.inboxItemId,
+    grantId: readInfo.access.grantId,
+    readerKind: "agent",
+    readerId: "cat_body"
+  });
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", "info_id='info-v2-state-helper'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_inbox_items", "info_id='info-v2-state-helper'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_access_grants", "info_id='info-v2-state-helper'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_notifications", "info_id='info-v2-state-helper'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_read_receipts", "info_id='info-v2-state-helper'"), 1);
+
+  await workflowV2CleanupInfoStackItem(dbFile, "");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", "info_id='info-v2-state-helper'"), 1);
+  await workflowV2CleanupInfoStackItem(dbFile, "missing-info-id");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", "info_id='info-v2-state-helper'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_inbox_items", "info_id='info-v2-state-helper'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_access_grants", "info_id='info-v2-state-helper'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_notifications", "info_id='info-v2-state-helper'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_read_receipts", "info_id='info-v2-state-helper'"), 1);
+  await workflowV2CleanupInfoStackItem(dbFile, "info-v2-state-helper");
+  assert.equal(sqliteCount(dbFile, "workflow_v2_info_items", "info_id='info-v2-state-helper'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_inbox_items", "info_id='info-v2-state-helper'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_access_grants", "info_id='info-v2-state-helper'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_notifications", "info_id='info-v2-state-helper'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_read_receipts", "info_id='info-v2-state-helper'"), 0);
 }
 
 async function testWorkflowV2PlanAdvisoryAndCanonicalArtifact() {
@@ -21677,6 +21742,7 @@ try {
     ["workflow v2 plan state helpers", testWorkflowV2PlanStateHelpers],
     ["workflow v2 session state helpers", testWorkflowV2SessionStateHelpers],
     ["workflow v2 review state helpers", testWorkflowV2ReviewStateHelpers],
+    ["workflow v2 info stack state helpers", testWorkflowV2InfoStackStateHelpers],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
     ["workflow v2 fixed template plan gate", testWorkflowV2FixedTemplatePlanGate],
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],

@@ -1081,6 +1081,34 @@ Latest focused verification passed:
   - `node --check src/workflow-v2/review-actions.js`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review state helpers"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review chain"`
+ - `npm run check`
+ - `git diff --check`
+
+2026-07-12 V2.2 info-stack-state helper extraction follow-up:
+
+- Added `src/workflow-v2/info-stack-state.js` for v2 info item lookup and
+  cleanup cascade helper logic.
+- Updated `src/workflow.js` to import the info-stack-state helpers while
+  keeping the existing worker lifecycle, control-loop, worker-result, and
+  adapter-runner context injection seams unchanged for this slice.
+- Added a direct helper regression for empty/missing info lookup, existing info
+  row lookup, no-op empty cleanup, and cascade deletion across info item,
+  inbox, access grant, notification, and read receipt rows.
+- Added the new module to `npm run check`.
+- This slice is a no-schema-change helper split. It does not start real worker
+  runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or production workflow
+  queues.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/info-stack-state.js`
+  - `node --check src/workflow.js`
+  - `node --check src/workflow-v2/worker-lifecycle-actions.js`
+  - `node --check src/workflow-v2/control-loop-actions.js`
+  - `node --check src/workflow-v2/worker-result-actions.js`
+  - `node --check src/workflow-v2/adapter-runner-actions.js`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 info stack state helpers"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 control loop scoped claim"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter runner drain"`
   - `npm run check`
   - `git diff --check`
 

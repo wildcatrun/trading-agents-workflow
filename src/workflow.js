@@ -24,6 +24,10 @@ import {
   workflowV2RestoreManagerReviewRow
 } from "./workflow-v2/review-state.js";
 import {
+  workflowV2CleanupInfoStackItem,
+  workflowV2InfoStackExistingItem
+} from "./workflow-v2/info-stack-state.js";
+import {
   WORKFLOW_V2_AUTONOMOUS_LOOP_NODE_TYPES,
   workflowV2AutonomousLoopMaybeTerminalizeNode,
   workflowV2AutonomousLoopSpawnGate
@@ -4820,26 +4824,6 @@ export const {
   workflowV2AdapterRunnerPreview,
   workflowV2AdapterRunnerDrain
 } = WORKFLOW_V2_ADAPTER_RUNNER_ACTION_HANDLERS;
-
-async function workflowV2InfoStackExistingItem(dbFile, infoId = "") {
-  if (!infoId) return null;
-  const rows = await sqlite(dbFile, `
-SELECT info_id, workflow_id, worker_run_id
-FROM workflow_v2_info_items
-WHERE info_id=${sqlValue(infoId)}
-LIMIT 1;`, { json: true });
-  return rows[0] || null;
-}
-
-async function workflowV2CleanupInfoStackItem(dbFile, infoId = "") {
-  if (!infoId) return;
-  await sqlite(dbFile, `
-DELETE FROM workflow_v2_read_receipts WHERE info_id=${sqlValue(infoId)};
-DELETE FROM workflow_v2_notifications WHERE info_id=${sqlValue(infoId)};
-DELETE FROM workflow_v2_access_grants WHERE info_id=${sqlValue(infoId)};
-DELETE FROM workflow_v2_inbox_items WHERE info_id=${sqlValue(infoId)};
-DELETE FROM workflow_v2_info_items WHERE info_id=${sqlValue(infoId)};`);
-}
 
 const WORKFLOW_V2_REVIEW_ACTION_HANDLERS = createWorkflowV2ReviewActionHandlers({
   ensureWorkflowLayout,
