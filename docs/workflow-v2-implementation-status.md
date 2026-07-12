@@ -1031,7 +1031,34 @@ Latest focused verification passed:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 plan state helpers"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review chain"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 governance human gate bridge"`
-  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 fixed template plan gate"`
+ - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 fixed template plan gate"`
+ - `npm run check`
+ - `git diff --check`
+
+2026-07-12 V2.2 session-state helper extraction follow-up:
+
+- Added `src/workflow-v2/session-state.js` for v2 session-run restore,
+  patch/require patch, and retry-delay helper logic.
+- Updated `src/workflow.js` to import the session-state helpers while keeping
+  `workflowTaskPhaseInfo` and `upsertWorkflowAgentRun` as explicit dependencies
+  supplied by the existing workflow control-plane layer.
+- Added a direct helper regression for session-run patching, redacted output
+  persistence, restore behavior, missing-run failure, and retry-delay bounds.
+- Added the new module to `npm run check`.
+- This slice is a no-schema-change helper split. It does not start real worker
+  runtimes, WSL, Docker, Hermers, Claude Code, Gateway, or production workflow
+  queues.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/session-state.js`
+  - `node --check src/workflow.js`
+  - `node --check src/workflow-v2/worker-lifecycle-actions.js`
+  - `node --check src/workflow-v2/worker-result-actions.js`
+  - `node --check src/workflow-v2/control-loop-actions.js`
+  - `node --check src/workflow-v2/review-actions.js`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 session state helpers"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 worker spawn and lifecycle gates"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 control loop scoped claim"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review chain"`
   - `npm run check`
   - `git diff --check`
 

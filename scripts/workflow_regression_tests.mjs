@@ -37,6 +37,12 @@ import {
   workflowV2PatchPlanWorkflowState,
   workflowV2PlanOrchestrationPattern
 } from "../src/workflow-v2/plan-state.js";
+import {
+  workflowV2PatchSessionRunState,
+  workflowV2RequireSessionRunPatch,
+  workflowV2RestoreSessionRunRow,
+  workflowV2WorkerRetryDelayMs
+} from "../src/workflow-v2/session-state.js";
 import { runAction as runActionRaw } from "../src/core.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
@@ -5959,6 +5965,114 @@ async function testWorkflowV2PlanStateHelpers() {
   const updated = sqliteJson(dbFile, "SELECT workflow_state AS workflowState, updated_at AS updatedAt FROM workflow_v2_plans WHERE plan_id='plan-state';")[0];
   assert.equal(updated.workflowState, "waiting_human");
   assert.equal(updated.updatedAt, "2026-07-12T00:02:00.000Z");
+}
+
+async function testWorkflowV2SessionStateHelpers() {
+  const root = await tempRoot("workflow-v2-session-state");
+  await runAction(root, {
+    action: "workflow.session_pack.upsert",
+    sessionId: "session-v2-state-helper",
+    ownerAgent: "cat_body",
+    runtimeTarget: "hermers",
+    taskType: "session_state_helper",
+    purpose: "Session-state helper regression pack.",
+    systemBrief: "Use only referenced inputs and report structured output."
+  });
+  const started = await runAction(root, {
+    action: "workflow.session.run.start",
+    runId: "session-v2-state-helper-run",
+    sessionId: "session-v2-state-helper",
+    workflowId: "wf-v2-session-state",
+    taskId: "node-v2-session-state",
+    dispatchId: "dispatch-v2-session-state",
+    workerId: "cat_body",
+    status: "queued",
+    input: { inputSummary: "session state helper input" }
+  });
+  assert.equal(started.status, "queued");
+
+  const dbFile = path.join(root, "tracking.db");
+  const paths = { dbFile };
+  const syncedAgentRuns = [];
+  const deps = {
+    workflowTaskPhaseInfo: async (_paths, workflowId, taskId) => ({
+      phaseKey: `phase-${taskId}`,
+      phaseId: `phase.${workflowId}.${taskId}`
+    }),
+    upsertWorkflowAgentRun: async (_paths, run) => {
+      syncedAgentRuns.push(run);
+      return run.agentRunId;
+    }
+  };
+
+  const running = await workflowV2PatchSessionRunState(paths, started.runId, {
+    status: "running",
+    timestamp: "2026-07-12T01:00:00.000Z"
+  }, deps);
+  assert.equal(running.status, "running");
+  assert.equal(running.startedAt, "2026-07-12T01:00:00.000Z");
+  assert.equal(running.completedAt, "");
+  assert.equal(running.agentRunSyncError, "");
+  assert.equal(syncedAgentRuns.at(-1).agentRunId, "session.session-v2-state-helper-run");
+  assert.equal(syncedAgentRuns.at(-1).phaseKey, "phase-node-v2-session-state");
+  assert.equal(syncedAgentRuns.at(-1).status, "running");
+  const runningRaw = sqliteJson(dbFile, "SELECT * FROM workflow_session_runs WHERE run_id='session-v2-state-helper-run' LIMIT 1;")[0];
+
+  const failed = await workflowV2RequireSessionRunPatch(paths, started.runId, {
+    status: "failed",
+    output: { status: "failed", apiKey: "must-redact" },
+    receiptRef: "receipt://workflow-v2/session-state-helper",
+    error: "session helper failure",
+    timestamp: "2026-07-12T01:01:00.000Z"
+  }, "session state helper", deps);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.completedAt, "2026-07-12T01:01:00.000Z");
+  assert.equal(failed.receiptRef, "receipt://workflow-v2/session-state-helper");
+  assert.equal(failed.output.apiKey, "[redacted]");
+  assert.equal(syncedAgentRuns.at(-1).status, "failed");
+  const failedRaw = sqliteJson(dbFile, "SELECT status, output_json AS outputJson, receipt_ref AS receiptRef, error FROM workflow_session_runs WHERE run_id='session-v2-state-helper-run' LIMIT 1;")[0];
+  assert.equal(failedRaw.status, "failed");
+  assert.equal(failedRaw.outputJson.includes("must-redact"), false);
+  assert.equal(failedRaw.receiptRef, "receipt://workflow-v2/session-state-helper");
+
+  await workflowV2RestoreSessionRunRow(paths, runningRaw);
+  const restored = sqliteJson(dbFile, "SELECT status, completed_at AS completedAt, receipt_ref AS receiptRef, error FROM workflow_session_runs WHERE run_id='session-v2-state-helper-run' LIMIT 1;")[0];
+  assert.equal(restored.status, "running");
+  assert.equal(restored.completedAt, "");
+  assert.equal(restored.receiptRef, "");
+  assert.equal(restored.error, "");
+
+  await assertRejectsMessage(
+    () => workflowV2PatchSessionRunState(paths, started.runId, { status: "running" }),
+    /workflow v2 session state dependency missing: workflowTaskPhaseInfo/
+  );
+  await assertRejectsMessage(
+    () => workflowV2PatchSessionRunState(paths, started.runId, { status: "running" }, { workflowTaskPhaseInfo: deps.workflowTaskPhaseInfo }),
+    /workflow v2 session state dependency missing: upsertWorkflowAgentRun/
+  );
+  const syncFailure = await workflowV2PatchSessionRunState(paths, started.runId, {
+    status: "failed",
+    error: "sync failure still returns session row",
+    timestamp: "2026-07-12T01:02:00.000Z"
+  }, {
+    workflowTaskPhaseInfo: deps.workflowTaskPhaseInfo,
+    upsertWorkflowAgentRun: async () => {
+      throw new Error("forced agent-run sync failure");
+    }
+  });
+  assert.equal(syncFailure.status, "failed");
+  assert.equal(syncFailure.agentRunSyncError, "forced agent-run sync failure");
+
+  assert.equal(await workflowV2PatchSessionRunState(paths, "missing-session-run", { status: "running" }, deps), null);
+  await assertRejectsMessage(
+    () => workflowV2RequireSessionRunPatch(paths, "missing-session-run", { status: "running" }, "session state helper", deps),
+    /workflow v2 session run patch failed: session state helper session_run_id=missing-session-run/
+  );
+  assert.equal(workflowV2WorkerRetryDelayMs({ retryDelayMs: 1500 }, 1), 1500);
+  assert.equal(workflowV2WorkerRetryDelayMs({ retry_delay_ms: -1 }, 1), 0);
+  assert.equal(workflowV2WorkerRetryDelayMs({ retryDelayMs: 99999999 }, 1), 30 * 60_000);
+  assert.equal(workflowV2WorkerRetryDelayMs({ retryDelayMs: "not-a-number" }, 1), 5_000);
+  assert.equal(workflowV2WorkerRetryDelayMs({}, 3), 15_000);
 }
 
 async function testWorkflowV2PlanAdvisoryAndCanonicalArtifact() {
@@ -21505,6 +21619,7 @@ try {
     ["workflow v2 adapter manifest validator hardening", testWorkflowV2AdapterManifestValidatorHardening],
     ["workflow v2 adapter runner concurrency/recovery", testWorkflowV2AdapterRunnerConcurrencyRecovery],
     ["workflow v2 plan state helpers", testWorkflowV2PlanStateHelpers],
+    ["workflow v2 session state helpers", testWorkflowV2SessionStateHelpers],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
     ["workflow v2 fixed template plan gate", testWorkflowV2FixedTemplatePlanGate],
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],

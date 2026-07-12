@@ -11,13 +11,15 @@ import { promisify } from "node:util";
 import { WorkflowReadModel } from "./console/read-model.js";
 import { createWorkflowV2ActionRegistry, runWorkflowV2Action } from "./workflow-v2/index.js";
 import {
-  workflowV2ErrorMessage
-} from "./workflow-v2/helpers.js";
-import {
   workflowV2LoadPlanRow,
   workflowV2PatchPlanWorkflowState,
   workflowV2PlanOrchestrationPattern
 } from "./workflow-v2/plan-state.js";
+import {
+  workflowV2RequireSessionRunPatch as workflowV2RequireSessionRunPatchCore,
+  workflowV2RestoreSessionRunRow,
+  workflowV2WorkerRetryDelayMs
+} from "./workflow-v2/session-state.js";
 import {
   WORKFLOW_V2_AUTONOMOUS_LOOP_NODE_TYPES,
   workflowV2AutonomousLoopMaybeTerminalizeNode,
@@ -218,11 +220,7 @@ import {
 import {
   createSessionActionHandlers,
   createSessionActionRegistry,
-  isTerminalWorkflowSessionRunStatus,
-  requireWorkflowSessionRunStatus,
   runSessionAction,
-  sessionJsonObject,
-  sessionPackFromRow,
   sessionRunFromRow
 } from "./session-actions.js";
 import {
@@ -4717,6 +4715,15 @@ export const {
   workflowV2ReadReceiptRecord
 } = WORKFLOW_V2_INFO_STACK_ACTION_HANDLERS;
 
+const WORKFLOW_V2_SESSION_STATE_DEPS = {
+  workflowTaskPhaseInfo,
+  upsertWorkflowAgentRun
+};
+
+const workflowV2RequireSessionRunPatch = (paths, runId = "", patch = {}, context = "worker lifecycle") => (
+  workflowV2RequireSessionRunPatchCore(paths, runId, patch, context, WORKFLOW_V2_SESSION_STATE_DEPS)
+);
+
 const WORKFLOW_V2_WORKER_LIFECYCLE_ACTION_HANDLERS = createWorkflowV2WorkerLifecycleActionHandlers({
   ensureWorkflowLayout,
   normalizeOptionalAgentId,
@@ -4744,29 +4751,6 @@ export const {
   workflowV2WorkerSuccessorCreate
 } = WORKFLOW_V2_WORKER_LIFECYCLE_ACTION_HANDLERS;
 
-async function workflowV2RestoreSessionRunRow(paths, row = {}) {
-  if (!row?.run_id) return;
-  await sqlite(paths.dbFile, `
-UPDATE workflow_session_runs
-SET session_id=${sqlValue(row.session_id || "")},
-    pack_version=${sqlValue(Number(row.pack_version || 0))},
-    workflow_id=${sqlValue(row.workflow_id || "")},
-    task_id=${sqlValue(row.task_id || "")},
-    dispatch_id=${sqlValue(row.dispatch_id || "")},
-    worker_id=${sqlValue(row.worker_id || "")},
-    status=${sqlValue(row.status || "")},
-    input_json=${sqlValue(row.input_json || "{}")},
-    worker_input_json=${sqlValue(row.worker_input_json || "{}")},
-    output_json=${sqlValue(row.output_json || "{}")},
-    receipt_ref=${sqlValue(row.receipt_ref || "")},
-    error=${sqlValue(row.error || "")},
-    started_at=${sqlValue(row.started_at || "")},
-    completed_at=${sqlValue(row.completed_at || "")},
-    created_at=${sqlValue(row.created_at || nowIso())},
-    updated_at=${sqlValue(row.updated_at || nowIso())}
-WHERE run_id=${sqlValue(row.run_id)};`);
-}
-
 async function workflowV2RestoreManagerReviewRow(paths, row = null, reviewId = "") {
   const id = row?.review_id || reviewId;
   if (!id) return;
@@ -4790,78 +4774,6 @@ SET workflow_id=${sqlValue(row.workflow_id || "")},
     payload_json=${sqlValue(row.payload_json || "{}")},
     created_at=${sqlValue(row.created_at || nowIso())}
 WHERE review_id=${sqlValue(id)};`);
-}
-
-async function workflowV2PatchSessionRunState(paths, runId = "", patch = {}) {
-  if (!runId) return null;
-  const rows = await sqlite(paths.dbFile, `
-SELECT *
-FROM workflow_session_runs
-WHERE run_id=${sqlValue(runId)}
-LIMIT 1;`, { json: true });
-  const current = sessionRunFromRow(rows[0]);
-  if (!current) return null;
-  const timestamp = firstText(patch.timestamp, patch.updatedAt, patch.updated_at, nowIso());
-  const status = requireWorkflowSessionRunStatus(patch.status || current.status, current.status);
-  const output = patch.output !== undefined ? sessionJsonObject(patch.output) : current.output;
-  const receiptRef = patch.receiptRef !== undefined || patch.receipt_ref !== undefined ? firstText(patch.receiptRef, patch.receipt_ref) : current.receiptRef;
-  const errorText = patch.error !== undefined ? String(patch.error || "") : current.error;
-  const startedAt = status === "running" && !current.startedAt ? timestamp : current.startedAt;
-  const completedAt = isTerminalWorkflowSessionRunStatus(status) ? (current.completedAt || timestamp) : "";
-  await sqlite(paths.dbFile, `
-UPDATE workflow_session_runs
-SET status=${sqlValue(status)},
-    output_json=${sqlValue(JSON.stringify(output))},
-    receipt_ref=${sqlValue(receiptRef)},
-    error=${sqlValue(errorText)},
-    started_at=${sqlValue(startedAt)},
-    completed_at=${sqlValue(completedAt)},
-    updated_at=${sqlValue(timestamp)}
-WHERE run_id=${sqlValue(runId)};`);
-  const packRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_packs WHERE session_id=${sqlValue(current.sessionId)} LIMIT 1;`, { json: true });
-  const pack = sessionPackFromRow(packRows[0]) || {};
-  const phaseInfo = await workflowTaskPhaseInfo(paths, current.workflowId, current.taskId);
-  let agentRunSyncError = "";
-  try {
-    await upsertWorkflowAgentRun(paths, {
-      agentRunId: `session.${runId}`,
-      workflowId: current.workflowId,
-      phaseId: phaseInfo.phaseId,
-      phaseKey: phaseInfo.phaseKey,
-      taskId: current.taskId,
-      dispatchId: current.dispatchId,
-      sessionRunId: runId,
-      runtime: pack.runtimeTarget || "session_pack",
-      agentId: current.workerId || pack.ownerAgent || "",
-      status,
-      inputHash: jsonHash(current.input),
-      outputHash: jsonHash(output),
-      receiptRef,
-      error: errorText,
-      payload: { source: "workflow_session_runs", sessionId: current.sessionId, packVersion: current.packVersion, v2Patch: true },
-      startedAt,
-      completedAt,
-      updatedAt: timestamp
-    });
-  } catch (error) {
-    agentRunSyncError = workflowV2ErrorMessage(error);
-  }
-  const updatedRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_session_runs WHERE run_id=${sqlValue(runId)} LIMIT 1;`, { json: true });
-  const updated = sessionRunFromRow(updatedRows[0]);
-  return updated ? { ...updated, agentRunSyncError } : null;
-}
-
-async function workflowV2RequireSessionRunPatch(paths, runId = "", patch = {}, context = "worker lifecycle") {
-  const sessionRun = await workflowV2PatchSessionRunState(paths, runId, patch);
-  if (!sessionRun) {
-    throw new Error(`workflow v2 session run patch failed: ${context} session_run_id=${runId || ""}`);
-  }
-  return sessionRun;
-}
-
-function workflowV2WorkerRetryDelayMs(input = {}, attempt = 1) {
-  const value = Number(input.retryDelayMs || input.retry_delay_ms || 5_000 * Math.max(1, attempt));
-  return Math.max(0, Math.min(30 * 60_000, Number.isFinite(value) ? value : 5_000));
 }
 
 const WORKFLOW_V2_CONTROL_LOOP_ACTION_HANDLERS = createWorkflowV2ControlLoopActionHandlers({
