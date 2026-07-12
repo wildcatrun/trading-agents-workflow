@@ -2,7 +2,7 @@
 
 Status: requirements plus authorized WSL testbed smoke, not runtime code
 Created: 2026-07-03
-Updated: 2026-07-04
+Updated: 2026-07-13
 Scope: worker runtime assumptions for the v2 orchestration kernel
 
 ## Purpose
@@ -138,6 +138,17 @@ Claude Code, Gateway, production queues, or model calls by itself:
 - The runner requires a stored manifest hash and fails closed on missing or
   mismatched manifest hashes. Structural runner errors default to terminal
   adapter/worker failure unless retry is explicitly enabled.
+- `scripts/workflow_v2_external_runner_smoke.mjs` exercises the first
+  process-level external runner loop with a governed dummy wrapper. The smoke
+  creates a v2 worker, leases it, records an adapter job, invokes
+  `external_command`, captures the external output artifact, and verifies that
+  the worker reaches `submitted_for_review` through
+  `workflow.v2.worker_result.submit`. The dummy wrapper is intentionally not a
+  Hermers, Claude Code, Docker, WSL, Gateway, or model invocation; it exists to
+  freeze the adapter command contract before a real wrapper is authorized. The
+  smoke uses the existing generic-orchestration diagnostics override inside its
+  own process because it builds an isolated temporary workflow instead of an
+  approved production template plan.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical
