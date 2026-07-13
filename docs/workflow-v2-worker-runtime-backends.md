@@ -183,9 +183,12 @@ Claude Code, Gateway, production queues, or model calls by itself:
   smoke:v2-external-runner-execute-guard` verifies default fail-closed behavior,
   `npm run smoke:v2-external-runner-execute-guard-authorized` verifies the
   Human Gate authorization contract while still refusing real execution, and
-  the `missing-binding` / `invalid-auth` variants verify malformed or
-  under-bound authorization still standardizes to
-  `human_gate_authorization_required`.
+  the negative variants verify missing environment gate, missing authorization
+  JSON, missing binding, missing workflow/plan/worker binding, worker-run
+  mismatch, malformed JSON, and non-object JSON. Under-bound or malformed
+  authorization standardizes to `human_gate_authorization_required`; a missing
+  environment gate standardizes to
+  `execute_requested_without_environment_gate`.
 - `scripts/workflow_v2_runner_execute_human_gate_package.mjs` renders the
   Chinese Human Gate authorization package for any future real wrapper execute
   path. It lists the two decision options, Docker host boundary, image digest

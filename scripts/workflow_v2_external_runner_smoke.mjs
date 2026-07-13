@@ -68,7 +68,17 @@ const runnerScriptByKind = {
   "execute-guard-missing-binding": "workflow_v2_external_runner_execute_guard.mjs",
   execute_guard_missing_binding: "workflow_v2_external_runner_execute_guard.mjs",
   "execute-guard-invalid-auth": "workflow_v2_external_runner_execute_guard.mjs",
-  execute_guard_invalid_auth: "workflow_v2_external_runner_execute_guard.mjs"
+  execute_guard_invalid_auth: "workflow_v2_external_runner_execute_guard.mjs",
+  "execute-guard-missing-env-gate": "workflow_v2_external_runner_execute_guard.mjs",
+  execute_guard_missing_env_gate: "workflow_v2_external_runner_execute_guard.mjs",
+  "execute-guard-missing-core-bindings": "workflow_v2_external_runner_execute_guard.mjs",
+  execute_guard_missing_core_bindings: "workflow_v2_external_runner_execute_guard.mjs",
+  "execute-guard-mismatched-worker": "workflow_v2_external_runner_execute_guard.mjs",
+  execute_guard_mismatched_worker: "workflow_v2_external_runner_execute_guard.mjs",
+  "execute-guard-auth-non-object": "workflow_v2_external_runner_execute_guard.mjs",
+  execute_guard_auth_non_object: "workflow_v2_external_runner_execute_guard.mjs",
+  "execute-guard-missing-auth-json": "workflow_v2_external_runner_execute_guard.mjs",
+  execute_guard_missing_auth_json: "workflow_v2_external_runner_execute_guard.mjs"
 };
 const expectedReceiptRunnerByKind = {
   dummy: "workflow_v2_external_runner_dummy",
@@ -83,7 +93,17 @@ const expectedReceiptRunnerByKind = {
   "execute-guard-missing-binding": "workflow_v2_external_runner_execute_guard",
   execute_guard_missing_binding: "workflow_v2_external_runner_execute_guard",
   "execute-guard-invalid-auth": "workflow_v2_external_runner_execute_guard",
-  execute_guard_invalid_auth: "workflow_v2_external_runner_execute_guard"
+  execute_guard_invalid_auth: "workflow_v2_external_runner_execute_guard",
+  "execute-guard-missing-env-gate": "workflow_v2_external_runner_execute_guard",
+  execute_guard_missing_env_gate: "workflow_v2_external_runner_execute_guard",
+  "execute-guard-missing-core-bindings": "workflow_v2_external_runner_execute_guard",
+  execute_guard_missing_core_bindings: "workflow_v2_external_runner_execute_guard",
+  "execute-guard-mismatched-worker": "workflow_v2_external_runner_execute_guard",
+  execute_guard_mismatched_worker: "workflow_v2_external_runner_execute_guard",
+  "execute-guard-auth-non-object": "workflow_v2_external_runner_execute_guard",
+  execute_guard_auth_non_object: "workflow_v2_external_runner_execute_guard",
+  "execute-guard-missing-auth-json": "workflow_v2_external_runner_execute_guard",
+  execute_guard_missing_auth_json: "workflow_v2_external_runner_execute_guard"
 };
 const runnerArgsByKind = {
   "plan-only": ["--plan-only"],
@@ -93,7 +113,17 @@ const runnerArgsByKind = {
   "execute-guard-missing-binding": ["--execute"],
   execute_guard_missing_binding: ["--execute"],
   "execute-guard-invalid-auth": ["--execute"],
-  execute_guard_invalid_auth: ["--execute"]
+  execute_guard_invalid_auth: ["--execute"],
+  "execute-guard-missing-env-gate": ["--execute"],
+  execute_guard_missing_env_gate: ["--execute"],
+  "execute-guard-missing-core-bindings": ["--execute"],
+  execute_guard_missing_core_bindings: ["--execute"],
+  "execute-guard-mismatched-worker": ["--execute"],
+  execute_guard_mismatched_worker: ["--execute"],
+  "execute-guard-auth-non-object": ["--execute"],
+  execute_guard_auth_non_object: ["--execute"],
+  "execute-guard-missing-auth-json": ["--execute"],
+  execute_guard_missing_auth_json: ["--execute"]
 };
 if (!runnerScriptByKind[runnerKind]) {
   throw new Error(`unsupported external runner smoke kind: ${runnerKind}`);
@@ -102,12 +132,38 @@ const runnerId = `${workflowId}.${runnerKind.replace(/_/g, "-")}-runner`;
 const runnerScript = path.join(__dirname, runnerScriptByKind[runnerKind]);
 const runnerArgs = runnerArgsByKind[runnerKind] || [];
 const expectedReceiptRunner = expectedReceiptRunnerByKind[runnerKind];
-const executeGuardKinds = new Set(["execute-guard", "execute_guard", "execute-guard-authorized", "execute_guard_authorized", "execute-guard-missing-binding", "execute_guard_missing_binding", "execute-guard-invalid-auth", "execute_guard_invalid_auth"]);
+const executeGuardKinds = new Set([
+  "execute-guard",
+  "execute_guard",
+  "execute-guard-authorized",
+  "execute_guard_authorized",
+  "execute-guard-missing-binding",
+  "execute_guard_missing_binding",
+  "execute-guard-invalid-auth",
+  "execute_guard_invalid_auth",
+  "execute-guard-missing-env-gate",
+  "execute_guard_missing_env_gate",
+  "execute-guard-missing-core-bindings",
+  "execute_guard_missing_core_bindings",
+  "execute-guard-mismatched-worker",
+  "execute_guard_mismatched_worker",
+  "execute-guard-auth-non-object",
+  "execute_guard_auth_non_object",
+  "execute-guard-missing-auth-json",
+  "execute_guard_missing_auth_json"
+]);
 const expectRelease = executeGuardKinds.has(runnerKind);
 const expectAuthorizedGuard = runnerKind === "execute-guard-authorized" || runnerKind === "execute_guard_authorized";
 const expectMissingBindingGuard = runnerKind === "execute-guard-missing-binding" || runnerKind === "execute_guard_missing_binding";
 const expectInvalidAuthGuard = runnerKind === "execute-guard-invalid-auth" || runnerKind === "execute_guard_invalid_auth";
-const expectExecuteRequested = expectAuthorizedGuard || expectMissingBindingGuard || expectInvalidAuthGuard;
+const expectMissingEnvGate = runnerKind === "execute-guard-missing-env-gate" || runnerKind === "execute_guard_missing_env_gate";
+const expectMissingCoreBindings = runnerKind === "execute-guard-missing-core-bindings" || runnerKind === "execute_guard_missing_core_bindings";
+const expectMismatchedWorker = runnerKind === "execute-guard-mismatched-worker" || runnerKind === "execute_guard_mismatched_worker";
+const expectAuthNonObject = runnerKind === "execute-guard-auth-non-object" || runnerKind === "execute_guard_auth_non_object";
+const expectMissingAuthJson = runnerKind === "execute-guard-missing-auth-json" || runnerKind === "execute_guard_missing_auth_json";
+const expectExecuteRequested = expectAuthorizedGuard || expectMissingBindingGuard || expectInvalidAuthGuard || expectMissingEnvGate || expectMissingCoreBindings || expectMismatchedWorker || expectAuthNonObject || expectMissingAuthJson;
+const expectExecuteEnvAllowed = expectExecuteRequested && !expectMissingEnvGate;
+const expectAuthorizationReady = expectAuthorizedGuard || expectMissingEnvGate;
 const envKey = "TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD";
 const previousEnv = process.env[envKey];
 const executeGateEnvKey = "TRADING_AGENTS_WORKFLOW_V2_ALLOW_REAL_RUNNER_EXECUTE";
@@ -194,7 +250,7 @@ LIMIT 1;`))[0];
 
   process.env[envKey] = JSON.stringify([process.execPath, runnerScript, ...runnerArgs]);
   if (expectExecuteRequested) {
-    process.env[executeGateEnvKey] = "1";
+    if (!expectMissingEnvGate) process.env[executeGateEnvKey] = "1";
     const authorization = {
       humanGateId: `${workflowId}.human-gate.synthetic-approval`,
       catClawAuditId: `${workflowId}.cat-claw-audit.synthetic-approval`,
@@ -213,7 +269,19 @@ LIMIT 1;`))[0];
       expiresAt: "2099-01-01T00:00:00.000Z"
     };
     if (expectMissingBindingGuard) delete authorization.adapterJobId;
-    process.env[executeAuthEnvKey] = expectInvalidAuthGuard ? "{invalid-json" : JSON.stringify(authorization);
+    if (expectMissingCoreBindings) {
+      delete authorization.workflowId;
+      delete authorization.planId;
+      delete authorization.workerRunId;
+    }
+    if (expectMismatchedWorker) authorization.workerRunId = `${workerRunId}.mismatch`;
+    if (expectMissingAuthJson) {
+      delete process.env[executeAuthEnvKey];
+    } else {
+      process.env[executeAuthEnvKey] = expectInvalidAuthGuard
+        ? "{invalid-json"
+        : (expectAuthNonObject ? JSON.stringify([authorization]) : JSON.stringify(authorization));
+    }
   }
   const preview = await runAction(root, {
     action: "workflow.v2.adapter_runner.preview",
@@ -243,14 +311,30 @@ LIMIT 1;`))[0];
     assert.equal(drain.results[0].externalOutput.status, "release");
     assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.refused, true);
     assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeRequested, expectExecuteRequested);
-    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeEnvAllowed, expectExecuteRequested);
-    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.ready, expectAuthorizedGuard);
-    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.refusedReason, expectAuthorizedGuard ? "executor_not_implemented_after_authorization_gate" : (expectExecuteRequested ? "human_gate_authorization_required" : "execute_flag_required"));
+    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeEnvAllowed, expectExecuteEnvAllowed);
+    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.ready, expectAuthorizationReady);
+    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.refusedReason, expectAuthorizedGuard ? "executor_not_implemented_after_authorization_gate" : (expectMissingEnvGate ? "execute_requested_without_environment_gate" : (expectExecuteRequested ? "human_gate_authorization_required" : "execute_flag_required")));
     if (expectMissingBindingGuard) {
       assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("adapter_job_id_required"), true);
     }
     if (expectInvalidAuthGuard) {
       assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("authorization_json_invalid"), true);
+    }
+    if (expectMissingCoreBindings) {
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("workflow_id_required"), true);
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("plan_id_required"), true);
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("worker_run_id_required"), true);
+    }
+    if (expectMismatchedWorker) {
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("worker_run_id_mismatch"), true);
+    }
+    if (expectAuthNonObject) {
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("authorization_json_object_required"), true);
+    }
+    if (expectMissingAuthJson) {
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.configured, false);
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("human_gate_id_required"), true);
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("authorization_expiry_required"), true);
     }
     assert.equal(drain.results[0].externalOutput.rawOutput.plannedInvocation.constraints.runContainerNow, false);
     assert.equal(drain.results[0].externalOutput.rawOutput.plannedInvocation.constraints.callModelNow, false);
