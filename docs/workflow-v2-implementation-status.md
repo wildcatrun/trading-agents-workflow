@@ -1372,3 +1372,23 @@ The full regression suite was not rerun in this slice.
   - `npm run check`
   - `npm run smoke:release -- --run-id local-v2-hgate-message-flow-boundary`
   - `git diff --check`
+
+2026-07-14 V2 Human Gate request delivery flag guard:
+
+- Extended the v2 governance/Human Gate bridge regression so
+  `workflow.v2.human_gate_request` is called with a bound Telegram target plus
+  explicit `autoDeliver` / `auto_deliver` / `deliver` / `deliverOutbox` flags
+  and a fake OpenClaw binary.
+- The regression asserts the v2 request action still stays inside the
+  `human_gate_request_only` boundary: it creates or reuses the formal pending
+  Human Gate request and queued `human_gate_request` outbox, keeps
+  `didSendTelegram=false`, writes no `telegram.outbox.delivery.executed` event,
+  and leaves the outbox without a delivery payload.
+- This reinforces that v2 Human Gate request creation is not a delivery action.
+  The v2 request input is normalized with `autoDeliver` / `auto_deliver` /
+  `deliver` forced false. Actual outward notification remains a separate governed
+  `telegram.outbox.delivery` step with its own operator reason, Cat Claw audit
+  evidence, idempotency key, receipt, and replay guards.
+- This is a regression/documentation slice only. It does not change production
+  delivery behavior, start worker runtimes, WSL, Docker, Hermers, Claude Code,
+  Gateway, Telegram delivery, or production workflow queues.

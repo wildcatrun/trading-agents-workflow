@@ -205,6 +205,11 @@ Claude Code, Gateway, production queues, or model calls by itself:
   option through the token-bound button flow. Its persisted smoke artifact is
   sanitized and records only token-presence booleans; it does not write callback
   tokens, deliver Telegram, dispatch runtime jobs, or execute a worker wrapper.
+  The v2 request path is request-only even when callers pass delivery-shaped
+  flags such as `autoDeliver`, `deliver`, or `deliverOutbox`; the v2 request
+  input is normalized with `autoDeliver` / `auto_deliver` / `deliver` forced
+  false, and actual outward notification remains a separate governed
+  `telegram.outbox.delivery` action.
 - `scripts/workflow_v2_runner_execute_human_gate_delivery_preview_smoke.mjs`
   extends the same Cat Claw request path into Telegram outbox delivery
   governance. It verifies that the queued `human_gate_request` outbox targets

@@ -9534,10 +9534,18 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`);
   assert.equal(sqliteCount(dbFile, "protocol_objects", "object_type='human_gate_record'"), humanGateRequestCountsBefore.records);
   assert.equal(sqliteCount(dbFile, "human_gate_buttons"), humanGateRequestCountsBefore.buttons);
   assert.equal(sqliteCount(dbFile, "telegram_outbox", "message_type='human_gate_request'"), humanGateRequestCountsBefore.outbox);
+  const deliveryEventWhere = `event_type='telegram.outbox.delivery.executed' AND workflow_id='${workflowId}' AND artifact_ref LIKE 'hgate-%'`;
+  const humanGateRequestDeliveryEventsBefore = sqliteCount(dbFile, "workflow_events", deliveryEventWhere);
 
   const humanGateRequest = await runAction(root, {
     action: "workflow.v2.human_gate_request",
-    ...humanGateRequestInteractionInput
+    ...humanGateRequestInteractionInput,
+    targetRef: "8390724843",
+    autoDeliver: true,
+    auto_deliver: true,
+    deliver: true,
+    deliverOutbox: true,
+    openclawBin: "/bin/false"
   });
   assert.equal(humanGateRequest.schemaVersion, "workflow_v2_human_gate_request_result.v1");
   assert.equal(humanGateRequest.writeBoundary, "human_gate_request_only");
@@ -9551,6 +9559,7 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`);
   assert.equal(humanGateRequest.didCreateTelegramOutbox, true);
   assert.equal(humanGateRequest.didSendTelegram, false);
   assert.equal(humanGateRequest.didDispatchRuntime, false);
+  assert.equal(sqliteCount(dbFile, "workflow_events", deliveryEventWhere), humanGateRequestDeliveryEventsBefore);
   assert.equal(humanGateRequest.didUpdateWorkflowStatus, true);
   assert.equal(humanGateRequest.didLinkPackage, true);
   assert.equal(humanGateRequest.didWritePackageLink, true);
@@ -9563,6 +9572,7 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`);
   assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${humanGateRequest.humanGateId}' AND button_role='pause' AND status='active'`), 1);
   assert.equal(sqliteCount(dbFile, "human_gate_buttons", `human_gate_id='${humanGateRequest.humanGateId}' AND button_role='terminate' AND status='active'`), 1);
   assert.equal(sqliteCount(dbFile, "telegram_outbox", `outbox_id='${humanGateRequest.telegramOutboxId}' AND message_type='human_gate_request' AND status='queued'`), 1);
+  assert.equal(sqliteCount(dbFile, "telegram_outbox", `outbox_id='${humanGateRequest.telegramOutboxId}' AND json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.delivery') IS NULL`), 1);
   assert.equal(sqliteCount(dbFile, "workflow_events", `event_type='human_gate.requested' AND human_gate_id='${humanGateRequest.humanGateId}'`), 1);
   const linkedPackage = sqliteJson(dbFile, `
 SELECT payload_json AS payloadJson
