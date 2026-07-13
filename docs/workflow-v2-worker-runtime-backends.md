@@ -187,6 +187,16 @@ Claude Code, Gateway, production queues, or model calls by itself:
   option through the token-bound button flow. Its persisted smoke artifact is
   sanitized and records only token-presence booleans; it does not write callback
   tokens, deliver Telegram, dispatch runtime jobs, or execute a worker wrapper.
+- `scripts/workflow_v2_runner_execute_human_gate_delivery_preview_smoke.mjs`
+  extends the same Cat Claw request path into Telegram outbox delivery
+  governance. It verifies that the queued `human_gate_request` outbox targets
+  Flashcat's private Telegram chat through the `cat_claw` account, has five
+  buttons, and is eligible for `telegram.outbox.delivery` only with an operator
+  reason and Cat Claw audit evidence. It also previews queued/no-requeue,
+  failed/retry, stale-delivering/reclaim, and sent/idempotent-replay branches.
+  The smoke restores the outbox to `queued`, persists only sanitized summaries,
+  and does not send Telegram, create parallel Human Gate records, dispatch
+  runtime jobs, touch trading state, or execute a worker wrapper.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical
