@@ -471,6 +471,8 @@ ON CONFLICT(flow_id) DO UPDATE SET
   }
 
   async function updateMessageFlowFromTelegramDelivery(paths, row, result = {}) {
+    const messageType = String(row.message_type || row.messageType || "").trim();
+    if (messageType !== "message_flow_reply") return null;
     const payload = parseJsonValue(row.payload_json, {});
     const flowId = String(payload.messageFlowId || payload.message_flow_id || "").trim();
     if (!flowId) return null;

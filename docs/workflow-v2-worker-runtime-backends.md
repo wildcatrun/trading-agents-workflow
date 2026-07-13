@@ -216,11 +216,15 @@ Claude Code, Gateway, production queues, or model calls by itself:
   gates are absent, the outbox must remain `queued` and no delivery execution
   event is written. This harness validates only the Cat Claw / Human Gate
   outward-notification exit; it does not replace cross-platform `message_flow`,
-  runtime dispatch, runtime receipt, or worker execution. The delivery execution
-  path follows the existing outbox action's runtime receipt persistence rules;
-  smoke stdout and persisted smoke artifacts must include only sanitized
-  delivery status/counts and redacted or hashed targets, never callback tokens
-  or raw transport receipts.
+  runtime dispatch, runtime receipt, or worker execution. The smoke snapshots
+  `message_flows` and `message_flow_events` row counts and seeds a negative
+  control where a `human_gate_request` outbox incorrectly carries a
+  `messageFlowId`; the delivery mark path must leave that flow row and its event
+  count unchanged, so OpenClaw message-send cannot silently stand in for
+  cross-platform `message_flow` closure. The delivery execution path follows the existing
+  outbox action's runtime receipt persistence rules; smoke stdout and persisted
+  smoke artifacts must include only sanitized delivery status/counts and
+  redacted or hashed targets, never callback tokens or raw transport receipts.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical

@@ -73,6 +73,8 @@ async function deliverySnapshot(dbFile) {
     outboxSent: await optionalSqliteCount(dbFile, "telegram_outbox", "status='sent'"),
     outboxFailed: await optionalSqliteCount(dbFile, "telegram_outbox", "status='failed'"),
     deliveryExecutionEvents: await optionalSqliteCount(dbFile, "workflow_events", "event_type='telegram.outbox.delivery.executed'"),
+    messageFlows: await optionalSqliteCount(dbFile, "message_flows"),
+    messageFlowEvents: await optionalSqliteCount(dbFile, "message_flow_events"),
     runtimeRuns: await optionalSqliteCount(dbFile, "runtime_runs"),
     dispatches: await optionalSqliteCount(dbFile, "mixed_meeting_dispatches"),
     sideEffects: await optionalSqliteCount(dbFile, "side_effects")
@@ -81,6 +83,29 @@ async function deliverySnapshot(dbFile) {
 
 async function outboxRow(dbFile, outboxId) {
   return sqliteOne(dbFile, `SELECT outbox_id AS outboxId, status, target_kind AS targetKind, target_ref AS targetRef, message_type AS messageType, payload_json AS payloadJson FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`);
+}
+
+async function messageFlowDigest(dbFile, flowId) {
+  const row = await sqliteOne(dbFile, `
+SELECT flow_id AS flowId, status, outbox_id AS outboxId, delivery_receipt_present AS deliveryReceiptPresent,
+       telegram_sent_at AS telegramSentAt, telegram_failed_at AS telegramFailedAt,
+       last_error AS lastError, payload_json AS payloadJson, updated_at AS updatedAt
+FROM message_flows
+WHERE flow_id=${sqlValue(flowId)}
+LIMIT 1;`);
+  const eventCount = Number((await sqliteOne(dbFile, `SELECT COUNT(*) AS count FROM message_flow_events WHERE flow_id=${sqlValue(flowId)};`)).count || 0);
+  return {
+    flowId: row.flowId || "",
+    status: row.status || "",
+    outboxId: row.outboxId || "",
+    deliveryReceiptPresent: Number(row.deliveryReceiptPresent || 0),
+    telegramSentAt: row.telegramSentAt || "",
+    telegramFailedAt: row.telegramFailedAt || "",
+    lastError: row.lastError || "",
+    payloadJson: row.payloadJson || "",
+    updatedAt: row.updatedAt || "",
+    eventCount
+  };
 }
 
 function fixtureButtons() {
@@ -108,6 +133,8 @@ const executeDelivery = deliverRequested && deliveryGateEnabled;
 const workflowId = firstText(argValue("--workflow-id"), `wf-v2-runner-execute-hgate-gateway-delivery-${runId}`);
 const humanGateId = `${workflowId}.human-gate`;
 const outboxId = `hgate-${humanGateId}`;
+const poisonFlowId = `${workflowId}.poison-flow`;
+const poisonOutboxId = `hgate-${humanGateId}.poison-message-flow`;
 const catClawAuditId = `${workflowId}.cat-claw-audit`;
 const idempotencyKey = `${workflowId}:openclaw-gateway-delivery-smoke`;
 const createdAt = "2026-07-13T00:00:00.000Z";
@@ -129,12 +156,36 @@ const payload = {
   presentation: { kind: "human_gate_request", buttonCount: 5 },
   textPolicyVersion: "gateway-delivery-smoke"
 };
+const poisonPayload = {
+  ...payload,
+  humanGateId: `${humanGateId}.poison`,
+  messageFlowId: poisonFlowId,
+  message_flow_id: poisonFlowId
+};
 
 await runAction(root, { action: "workflow.init" });
 const dbFile = path.join(root, "workflow_control_plane.db");
 await sqlite(dbFile, `
 INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
 VALUES (${sqlValue(outboxId)}, ${sqlValue(workflowId)}, 'private', ${sqlValue(targetRef)}, 'human_gate_request', 'queued', ${sqlValue(text)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
+await sqlite(dbFile, `
+INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, outbox_id, target_runtime, target_agent_id, return_policy, status, final_output_present, delivery_receipt_present, payload_json, created_at, updated_at)
+VALUES (${sqlValue(poisonFlowId)}, ${sqlValue(`${workflowId}:trace`)}, ${sqlValue(`${workflowId}:poison`)}, ${sqlValue(workflowId)}, ${sqlValue(workflowId)}, 'dispatch-poison', ${sqlValue(poisonOutboxId)}, 'hermers', 'cat_body', 'telegram', 'runtime_completed', 1, 0, ${sqlValue(JSON.stringify({ seededFor: "human_gate_request_message_flow_guard" }))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});
+INSERT INTO message_flow_events(event_id, flow_id, status, event_type, payload_json, created_at)
+VALUES (${sqlValue(`${poisonFlowId}.event.seed`)}, ${sqlValue(poisonFlowId)}, 'runtime_completed', 'seeded_negative_control', ${sqlValue(JSON.stringify({ outboxId: poisonOutboxId }))}, ${sqlValue(createdAt)});
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES (${sqlValue(poisonOutboxId)}, ${sqlValue(workflowId)}, 'private', ${sqlValue(targetRef)}, 'human_gate_request', 'queued', ${sqlValue("poison human_gate_request must not close message_flow")}, ${sqlValue(JSON.stringify(poisonPayload))}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)});`);
+const poisonFlowBefore = await messageFlowDigest(dbFile, poisonFlowId);
+const poisonMark = await runAction(root, {
+  action: "telegram.outbox",
+  operation: "mark",
+  outboxId: poisonOutboxId,
+  status: "sent"
+});
+assert.equal(poisonMark.status, "sent");
+assert.equal(poisonMark.messageFlowSync, null);
+const poisonFlowAfter = await messageFlowDigest(dbFile, poisonFlowId);
+assert.deepEqual(poisonFlowAfter, poisonFlowBefore);
 
 const before = await deliverySnapshot(dbFile);
 const preview = await runAction(root, {
@@ -154,6 +205,7 @@ assert.equal(preview.buttonSummary.buttonCount, 5);
 assert.equal(preview.deliveryPath.directBotApiWebAppCandidate, false);
 assert.deepEqual(preview.deliveryPath.modeOrder, ["openclaw_message_send"]);
 assert.equal(preview.wouldReadBotToken, "no");
+assert.equal(preview.receiptPolicy.messageFlowSync, "not_required_for_message_type");
 assert.equal((await outboxRow(dbFile, outboxId)).status, "queued");
 
 let delivery = null;
@@ -181,6 +233,8 @@ if (executeDelivery) {
   assert.equal(after.runtimeRuns, before.runtimeRuns);
   assert.equal(after.dispatches, before.dispatches);
   assert.equal(after.sideEffects, before.sideEffects);
+  assert.equal(after.messageFlows, before.messageFlows);
+  assert.equal(after.messageFlowEvents, before.messageFlowEvents);
   assert.equal(after.deliveryExecutionEvents - before.deliveryExecutionEvents, 1);
   assert.equal(finalOutbox.status, delivery.deliveryStatus);
 } else {
@@ -204,7 +258,9 @@ const summary = {
     directBotApiCandidate: false,
     credentialRead: "no",
     scope: "cat_claw_human_gate_outward_notification_only",
-    messageFlowRole: "not_replaced"
+    messageFlowRole: "not_replaced",
+    messageFlowRowCountsUnchanged: after.messageFlows === before.messageFlows && after.messageFlowEvents === before.messageFlowEvents,
+    poisonedHumanGateMessageFlowUnchanged: JSON.stringify(poisonFlowAfter) === JSON.stringify(poisonFlowBefore)
   },
   gates: {
     deliverRequested,
@@ -217,6 +273,10 @@ const summary = {
     governanceReady: preview.executionPolicy.governanceReady,
     wouldUseGatewaySend: preview.wouldSendTelegram,
     deliveryPath: preview.deliveryPath,
+    receiptPolicy: {
+      messageFlowSync: preview.receiptPolicy.messageFlowSync,
+      humanGateDeliveryEvidence: preview.receiptPolicy.humanGateDeliveryEvidence
+    },
     buttonCount: preview.buttonSummary.buttonCount
   },
   delivery: delivery ? {
