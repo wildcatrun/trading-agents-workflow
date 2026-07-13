@@ -7494,6 +7494,19 @@ async function testWorkflowV2WorkerSpawnAndLifecycleGates() {
   assert.equal(revocationUnverified.preflight.allowed, false);
   assert.equal(Boolean(revocationUnverified.errors.some((item) => item.code === "oauth_revocation_unverified")), true);
 
+  const revocationUnverifiedSnakeCase = await runAction(root, {
+    action: "workflow.v2.worker_backend.preflight",
+    workflowId,
+    backendId: "hermers_docker_worker",
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiry_ok: true, refresh_ok: true, revocation_verified: false },
+    network: { host_only_tailscale: true, wsl_tailscaled_active: false, direct_container_port_exposed: false }
+  });
+  assert.equal(revocationUnverifiedSnakeCase.valid, false);
+  assert.equal(revocationUnverifiedSnakeCase.preflight.allowed, false);
+  assert.equal(Boolean(revocationUnverifiedSnakeCase.errors.some((item) => item.code === "oauth_revocation_unverified")), true);
+
   await assertRejectsMessage(
     () => runAction(root, workflowV2KernelWorkerInput(fixture, {
       workerRunId: "worker-v2-missing-session",
@@ -8770,6 +8783,19 @@ async function legacyWorkflowV2OrchestrationKernelIntegration() {
   assert.equal(revocationUnverified.valid, false);
   assert.equal(revocationUnverified.preflight.allowed, false);
   assert.equal(Boolean(revocationUnverified.errors.some((item) => item.code === "oauth_revocation_unverified")), true);
+
+  const revocationUnverifiedSnakeCase = await runAction(root, {
+    action: "workflow.v2.worker_backend.preflight",
+    workflowId,
+    backendId: "hermers_docker_worker",
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiry_ok: true, refresh_ok: true, revocation_verified: false },
+    network: { host_only_tailscale: true, wsl_tailscaled_active: false, direct_container_port_exposed: false }
+  });
+  assert.equal(revocationUnverifiedSnakeCase.valid, false);
+  assert.equal(revocationUnverifiedSnakeCase.preflight.allowed, false);
+  assert.equal(Boolean(revocationUnverifiedSnakeCase.errors.some((item) => item.code === "oauth_revocation_unverified")), true);
 
   const fallbackMismatch = await runAction(root, {
     action: "workflow.v2.worker_backend.preflight",
