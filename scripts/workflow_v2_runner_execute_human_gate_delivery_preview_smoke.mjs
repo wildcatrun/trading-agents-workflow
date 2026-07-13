@@ -449,9 +449,13 @@ assert.equal(queuedDeliveryPreview.claimEligible, true);
 assert.equal(queuedDeliveryPreview.executionPolicy.governanceReady, true);
 assert.equal(queuedDeliveryPreview.buttonSummary.buttonCount, 5);
 assert.equal(queuedDeliveryPreview.buttonSummary.payloadButtonCount, 5);
+assert.equal(queuedDeliveryPreview.deliveryPath.directBotApiWebAppCandidate, false);
+assert.deepEqual(queuedDeliveryPreview.deliveryPath.modeOrder, ["openclaw_message_send"]);
+assert.equal(queuedDeliveryPreview.wouldReadBotToken, "no");
 assert.equal(queuedDeliveryPreview.wouldSendTelegram, true);
 assert.equal(queuedDeliveryPreview.wouldInvokeOpenClawCli, true);
 assert.equal(queuedDeliveryPreview.wouldUpdate.telegramOutboxStatus, "delivering_then_sent_or_failed");
+assert.equal(queuedDeliveryPreview.wouldUpdate.messageFlowDelivery, "unchanged");
 const deliveryPreviewCountsAfter = {
   outbox: Number((await sqliteOne(dbFile, "SELECT COUNT(*) AS count FROM telegram_outbox;")).count || 0),
   protocolObjects: Number((await sqliteOne(dbFile, "SELECT COUNT(*) AS count FROM protocol_objects;")).count || 0),

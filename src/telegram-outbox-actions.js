@@ -360,6 +360,7 @@ VALUES (${sqlValue(outboxId)}, ${sqlValue(input.meetingId || input.meeting_id ||
   }
 
   async function deliverTelegramOutboxRowViaWebApp(paths, row, input, deliveryContext) {
+    if (String(row.message_type || "").trim() === "human_gate_request") return null;
     const payload = deliveryContext.payload || {};
     const replyMarkup = payload.telegramReplyMarkup || payload.reply_markup || null;
     if (!replyMarkup?.inline_keyboard?.length) return null;
@@ -670,7 +671,7 @@ LIMIT 1;`, { json: true });
     if (targetRequired && !normalizedTarget) {
       governanceViolations.push({ code: "governed_target_required", detail: "Governed delivery cannot proceed without a bound Telegram target." });
     }
-    const directBotApiWebAppCandidate = Boolean(inlineKeyboard.length && normalizedTarget);
+    const directBotApiWebAppCandidate = messageType !== "human_gate_request" && Boolean(inlineKeyboard.length && normalizedTarget);
     const eligible = violations.length === 0;
     const governanceReady = eligible && governanceViolations.length === 0;
     return {
@@ -743,7 +744,7 @@ LIMIT 1;`, { json: true });
       wouldUpdate: {
         telegramOutboxStatus: eligible ? "delivering_then_sent_or_failed" : "unchanged",
         deliveryClaim: eligible,
-        messageFlowDelivery: eligible ? "sent_or_failed" : "unchanged"
+        messageFlowDelivery: eligible && messageType === "message_flow_reply" ? "sent_or_failed" : "unchanged"
       },
       violations,
       warnings,

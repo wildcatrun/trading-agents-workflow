@@ -192,8 +192,11 @@ Claude Code, Gateway, production queues, or model calls by itself:
   governance. It verifies that the queued `human_gate_request` outbox targets
   Flashcat's private Telegram chat through the `cat_claw` account, has five
   buttons, and is eligible for `telegram.outbox.delivery` only with an operator
-  reason and Cat Claw audit evidence. It also previews queued/no-requeue,
-  failed/retry, stale-delivering/reclaim, and sent/idempotent-replay branches.
+  reason and Cat Claw audit evidence. Human Gate request delivery is fixed to
+  the OpenClaw message-send path even when the payload carries inline keyboard
+  metadata; it must not read bot credentials or use the direct Bot API WebApp
+  candidate. It also previews queued/no-requeue, failed/retry,
+  stale-delivering/reclaim, and sent/idempotent-replay branches.
   The smoke restores the outbox to `queued`, persists only sanitized summaries,
   and does not send Telegram, create parallel Human Gate records, dispatch
   runtime jobs, touch trading state, or execute a worker wrapper.
@@ -216,12 +219,14 @@ Claude Code, Gateway, production queues, or model calls by itself:
   gates are absent, the outbox must remain `queued` and no delivery execution
   event is written. This harness validates only the Cat Claw / Human Gate
   outward-notification exit; it does not replace cross-platform `message_flow`,
-  runtime dispatch, runtime receipt, or worker execution. The smoke snapshots
-  `message_flows` and `message_flow_events` row counts and seeds a negative
-  control where a `human_gate_request` outbox incorrectly carries a
-  `messageFlowId`; the delivery mark path must leave that flow row and its event
-  count unchanged, so OpenClaw message-send cannot silently stand in for
-  cross-platform `message_flow` closure. The delivery execution path follows the existing
+  runtime dispatch, runtime receipt, or worker execution. The smoke also carries
+  an inline-keyboard fixture and proves Human Gate request delivery remains
+  Gateway-only rather than direct Bot API. It snapshots `message_flows` and
+  `message_flow_events` row counts and seeds a negative control where a
+  `human_gate_request` outbox incorrectly carries a `messageFlowId`; the
+  delivery mark path must leave that flow row and its event count unchanged, so
+  OpenClaw message-send cannot silently stand in for cross-platform
+  `message_flow` closure. The delivery execution path follows the existing
   outbox action's runtime receipt persistence rules; smoke stdout and persisted
   smoke artifacts must include only sanitized delivery status/counts and
   redacted or hashed targets, never callback tokens or raw transport receipts.

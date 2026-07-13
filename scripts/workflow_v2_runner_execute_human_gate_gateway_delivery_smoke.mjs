@@ -53,6 +53,48 @@ async function writeJson(filePath, payload) {
   await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
+async function createFakeOpenclawBin(rootDir) {
+  const binDir = path.join(rootDir, "bin");
+  const logFile = path.join(rootDir, "fake-openclaw-message-send-log.jsonl");
+  const binFile = path.join(binDir, "openclaw");
+  await fs.mkdir(binDir, { recursive: true });
+  await fs.writeFile(binFile, `#!/usr/bin/env node
+import fs from "node:fs";
+import crypto from "node:crypto";
+const args = process.argv.slice(2);
+const valueAfter = (name) => {
+  const index = args.indexOf(name);
+  return index >= 0 && index + 1 < args.length ? args[index + 1] : "";
+};
+const target = valueAfter("--target");
+const message = valueAfter("--message");
+const safe = {
+  at: new Date().toISOString(),
+  commandPrefix: args.slice(0, 4),
+  channel: valueAfter("--channel"),
+  account: valueAfter("--account"),
+  targetHash: target ? "sha256:" + crypto.createHash("sha256").update(target).digest("hex") : "",
+  messageLength: message.length,
+  hasPresentation: args.includes("--presentation"),
+  argsLength: args.length
+};
+fs.appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(safe) + "\\n");
+console.log(JSON.stringify({ ok: true, payload: { ok: true, mode: "fake_openclaw_message_send", argsLength: args.length } }));
+`, "utf8");
+  await fs.chmod(binFile, 0o700);
+  return { binFile, logFile };
+}
+
+async function readJsonl(filePath) {
+  try {
+    const text = await fs.readFile(filePath, "utf8");
+    return text.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 async function sqliteOne(dbFile, query) {
   const rows = await sqlite(dbFile, query, { json: true });
   return rows[0] || {};
@@ -83,6 +125,11 @@ async function deliverySnapshot(dbFile) {
 
 async function outboxRow(dbFile, outboxId) {
   return sqliteOne(dbFile, `SELECT outbox_id AS outboxId, status, target_kind AS targetKind, target_ref AS targetRef, message_type AS messageType, payload_json AS payloadJson FROM telegram_outbox WHERE outbox_id=${sqlValue(outboxId)} LIMIT 1;`);
+}
+
+async function outboxPayload(dbFile, outboxId) {
+  const row = await outboxRow(dbFile, outboxId);
+  return row.payloadJson ? JSON.parse(row.payloadJson) : {};
 }
 
 async function messageFlowDigest(dbFile, flowId) {
@@ -128,6 +175,7 @@ const root = firstText(argValue("--root"), await fs.mkdtemp(path.join(os.tmpdir(
 const outDir = path.resolve(firstText(argValue("--out"), path.join(root, "artifacts", "workflow-v2", "runner-execute-human-gate-gateway-delivery", runId)));
 const targetRef = firstText(argValue("--target"), argValue("--target-ref"), "8390724843");
 const deliverRequested = boolFlag("--deliver");
+const fakeOpenclawRequested = boolFlag("--fake-openclaw");
 const deliveryGateEnabled = process.env.TRADING_AGENTS_WORKFLOW_ALLOW_OPENCLAW_GATEWAY_DELIVERY_SMOKE === "1";
 const executeDelivery = deliverRequested && deliveryGateEnabled;
 const workflowId = firstText(argValue("--workflow-id"), `wf-v2-runner-execute-hgate-gateway-delivery-${runId}`);
@@ -153,6 +201,12 @@ const payload = {
   targetKind: "private",
   targetRef,
   buttons: fixtureButtons(),
+  telegramReplyMarkup: {
+    inline_keyboard: fixtureButtons().map((button) => [{
+      text: button.label,
+      url: "https://example.invalid/workflow-v2-human-gate-gateway-delivery-smoke"
+    }])
+  },
   presentation: { kind: "human_gate_request", buttonCount: 5 },
   textPolicyVersion: "gateway-delivery-smoke"
 };
@@ -162,6 +216,7 @@ const poisonPayload = {
   messageFlowId: poisonFlowId,
   message_flow_id: poisonFlowId
 };
+const fakeOpenclaw = fakeOpenclawRequested ? await createFakeOpenclawBin(root) : null;
 
 await runAction(root, { action: "workflow.init" });
 const dbFile = path.join(root, "workflow_control_plane.db");
@@ -202,10 +257,12 @@ assert.equal(preview.targetKind, "private");
 assert.equal(preview.targetRef, targetRef);
 assert.equal(preview.account, "cat_claw");
 assert.equal(preview.buttonSummary.buttonCount, 5);
+assert.equal(preview.buttonSummary.hasInlineKeyboard, true);
 assert.equal(preview.deliveryPath.directBotApiWebAppCandidate, false);
 assert.deepEqual(preview.deliveryPath.modeOrder, ["openclaw_message_send"]);
 assert.equal(preview.wouldReadBotToken, "no");
 assert.equal(preview.receiptPolicy.messageFlowSync, "not_required_for_message_type");
+assert.equal(preview.wouldUpdate.messageFlowDelivery, "unchanged");
 assert.equal((await outboxRow(dbFile, outboxId)).status, "queued");
 
 let delivery = null;
@@ -218,11 +275,28 @@ if (executeDelivery) {
     catClawAuditId,
     actor: "local_codex",
     sourceAgent: "local_codex",
-    workflowId
+    workflowId,
+    ...(fakeOpenclaw ? {
+      openclawBin: fakeOpenclaw.binFile,
+      telegramBotToken: "fake-token-that-must-not-be-used-for-human-gate-request"
+    } : {})
   });
   assert.equal(delivery.didTouchTradingState, false);
   assert.equal(delivery.didUpdateMessageFlow, false);
   assert.equal(["sent", "failed"].includes(delivery.deliveryStatus), true);
+  if (fakeOpenclaw) {
+    const fakeCalls = await readJsonl(fakeOpenclaw.logFile);
+    assert.equal(fakeCalls.length, 1);
+    assert.deepEqual(fakeCalls[0].commandPrefix, ["message", "send", "--channel", "telegram"]);
+    assert.equal(fakeCalls[0].hasPresentation, true);
+    assert.equal(fakeCalls[0].targetHash, `sha256:${sha256(targetRef)}`);
+    assert.equal(Object.prototype.hasOwnProperty.call(fakeCalls[0], "message"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(fakeCalls[0], "target"), false);
+    const deliveredPayload = await outboxPayload(dbFile, outboxId);
+    assert.equal(Boolean(deliveredPayload.webAppDirectDeliveryFallback), false);
+    assert.notEqual(deliveredPayload.delivery?.mode, "direct_bot_api_web_app");
+    assert.equal(delivery.deliveryStatus, "sent");
+  }
 } else {
   assert.equal(deliverRequested && !deliveryGateEnabled, deliverRequested ? true : false);
 }
@@ -265,7 +339,8 @@ const summary = {
   gates: {
     deliverRequested,
     environmentGate: deliveryGateEnabled,
-    executeDelivery
+    executeDelivery,
+    fakeOpenclaw: Boolean(fakeOpenclaw)
   },
   preview: {
     readOnly: preview.readOnly,
@@ -277,7 +352,9 @@ const summary = {
       messageFlowSync: preview.receiptPolicy.messageFlowSync,
       humanGateDeliveryEvidence: preview.receiptPolicy.humanGateDeliveryEvidence
     },
-    buttonCount: preview.buttonSummary.buttonCount
+    buttonCount: preview.buttonSummary.buttonCount,
+    hasInlineKeyboard: preview.buttonSummary.hasInlineKeyboard,
+    messageFlowDeliveryUpdate: preview.wouldUpdate.messageFlowDelivery
   },
   delivery: delivery ? {
     deliveryStatus: delivery.deliveryStatus,
@@ -285,7 +362,8 @@ const summary = {
     didUpdateOutbox: delivery.didUpdateOutbox,
     didUpdateMessageFlow: delivery.didUpdateMessageFlow,
     didTouchTradingState: delivery.didTouchTradingState,
-    receiptCount: delivery.receiptCount
+    receiptCount: delivery.receiptCount,
+    fakeOpenclawCallCount: fakeOpenclaw ? (await readJsonl(fakeOpenclaw.logFile)).length : 0
   } : {
     deliveryStatus: "not_executed",
     didUseGatewaySend: false,
