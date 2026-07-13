@@ -168,9 +168,24 @@ Claude Code, Gateway, production queues, or model calls by itself:
   real-wrapper skeleton. By default it validates the same request and manifest,
   renders an execute-guard plan, and returns `release` instead of `success`, so
   the adapter job is rescheduled and the worker is not marked complete. It
-  refuses execution unless a future explicitly authorized path supplies both an
-  execution flag and an environment gate. `npm run
-  smoke:v2-external-runner-execute-guard` verifies this fail-closed behavior.
+  refuses execution unless a future explicitly authorized path supplies all
+  three gates: `--execute`,
+  `TRADING_AGENTS_WORKFLOW_V2_ALLOW_REAL_RUNNER_EXECUTE=1`, and a structured
+  `TRADING_AGENTS_WORKFLOW_V2_REAL_RUNNER_EXECUTE_AUTH_JSON` Human Gate
+  authorization object. The authorization object must bind the Human Gate id,
+  Cat Claw audit id, package id, selected synthetic execute option, Flashcat
+  original words, workflow/plan/job/worker ids, `syntheticOnly=true`,
+  `allowSecrets=false`, `allowTrading=false`, `networkMode=none`,
+  `maxActiveJobs=1`, and an unexpired expiry timestamp. Even when all gates are
+  present, this wrapper still returns `release` with
+  `executor_not_implemented_after_authorization_gate`; no container, model,
+  WSL, Gateway, or trading side effect is executed. `npm run
+  smoke:v2-external-runner-execute-guard` verifies default fail-closed behavior,
+  `npm run smoke:v2-external-runner-execute-guard-authorized` verifies the
+  Human Gate authorization contract while still refusing real execution, and
+  the `missing-binding` / `invalid-auth` variants verify malformed or
+  under-bound authorization still standardizes to
+  `human_gate_authorization_required`.
 - `scripts/workflow_v2_runner_execute_human_gate_package.mjs` renders the
   Chinese Human Gate authorization package for any future real wrapper execute
   path. It lists the two decision options, Docker host boundary, image digest

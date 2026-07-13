@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -18,6 +19,35 @@ function assertEqual(actual, expected, message) {
 
 function assertTruthy(value, message) {
   if (!value) throw new Error(message);
+}
+
+function sha256(value) {
+  return createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function parseJsonObject(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { __parseError: "authorization_json_object_required" };
+    }
+    return parsed;
+  } catch {
+    return { __parseError: "authorization_json_invalid" };
+  }
+}
+
+function boolValue(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
+}
+
+function intValue(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.floor(parsed) : fallback;
 }
 
 function parseArgs(argv = []) {
@@ -134,6 +164,15 @@ function buildPlannedInvocation({ request, manifest, adapterJob, runtimeBackend,
       requireGovernedSubmitPath: true,
       outputMustReturnThrough: firstText(manifest.output?.submitAction)
     },
+    authorization: {
+      requiredBeforeExecution: true,
+      requiredGateKeys: [
+        "--execute",
+        "TRADING_AGENTS_WORKFLOW_V2_ALLOW_REAL_RUNNER_EXECUTE=1",
+        "TRADING_AGENTS_WORKFLOW_V2_REAL_RUNNER_EXECUTE_AUTH_JSON"
+      ],
+      executionImplemented: false
+    },
     source: {
       requestSchemaVersion: request.schemaVersion,
       manifestSchemaVersion: manifest.schemaVersion,
@@ -142,9 +181,75 @@ function buildPlannedInvocation({ request, manifest, adapterJob, runtimeBackend,
   };
 }
 
+function executeAuthorizationSummary(auth = {}, context = {}) {
+  const errors = [];
+  if (auth.__parseError) errors.push(auth.__parseError);
+  const humanGateId = firstText(auth.humanGateId, auth.human_gate_id, auth.humanGate?.id);
+  const catClawAuditId = firstText(auth.catClawAuditId, auth.cat_claw_audit_id, auth.secretaryAuditId, auth.secretary_audit_id);
+  const packageId = firstText(auth.packageId, auth.package_id, auth.humanGatePackageId, auth.human_gate_package_id);
+  const decision = firstText(auth.decision, auth.selectedOption, auth.selected_option, auth.optionId, auth.option_id);
+  const flashcatOriginalWords = firstText(auth.flashcatOriginalWords, auth.flashcat_original_words, auth.operatorOriginalWords, auth.operator_original_words);
+  const networkMode = firstText(auth.networkMode, auth.network_mode);
+  const maxActiveJobs = intValue(auth.maxActiveJobs ?? auth.max_active_jobs, 0);
+  const expiresAt = firstText(auth.expiresAt, auth.expires_at);
+  const workflowId = firstText(auth.workflowId, auth.workflow_id);
+  const planId = firstText(auth.planId, auth.plan_id);
+  const adapterJobId = firstText(auth.adapterJobId, auth.adapter_job_id);
+  const workerRunId = firstText(auth.workerRunId, auth.worker_run_id);
+  if (!humanGateId) errors.push("human_gate_id_required");
+  if (!catClawAuditId) errors.push("cat_claw_audit_id_required");
+  if (!packageId) errors.push("human_gate_package_id_required");
+  if (decision !== "approve_single_synthetic_execute_smoke") errors.push("approved_synthetic_execute_option_required");
+  if (!flashcatOriginalWords) errors.push("flashcat_original_words_required");
+  if (!boolValue(auth.syntheticOnly ?? auth.synthetic_only, false)) errors.push("synthetic_only_required");
+  if (boolValue(auth.allowSecrets ?? auth.allow_secrets, false)) errors.push("secrets_must_be_disallowed");
+  if (boolValue(auth.allowTrading ?? auth.allow_trading, false)) errors.push("trading_must_be_disallowed");
+  if (networkMode !== "none") errors.push("network_mode_none_required");
+  if (maxActiveJobs !== 1) errors.push("max_active_jobs_must_be_1");
+  if (!workflowId) errors.push("workflow_id_required");
+  else if (workflowId !== context.workflowId) errors.push("workflow_id_mismatch");
+  if (!planId) errors.push("plan_id_required");
+  else if (planId !== context.planId) errors.push("plan_id_mismatch");
+  if (!adapterJobId) errors.push("adapter_job_id_required");
+  else if (adapterJobId !== context.adapterJobId) errors.push("adapter_job_id_mismatch");
+  if (!workerRunId) errors.push("worker_run_id_required");
+  else if (workerRunId !== context.workerRunId) errors.push("worker_run_id_mismatch");
+  if (expiresAt) {
+    const expiresMs = Date.parse(expiresAt);
+    if (!Number.isFinite(expiresMs) || expiresMs <= Date.now()) errors.push("authorization_expired_or_invalid");
+  } else {
+    errors.push("authorization_expiry_required");
+  }
+  return {
+    configured: Object.keys(auth).length > 0,
+    ready: errors.length === 0,
+    issueCodes: errors,
+    parseError: auth.__parseError || "",
+    evidence: {
+      humanGateId,
+      catClawAuditId,
+      packageId,
+      decision,
+      flashcatOriginalWordsPresent: Boolean(flashcatOriginalWords),
+      flashcatOriginalWordsHash: flashcatOriginalWords ? `sha256:${sha256(flashcatOriginalWords)}` : "",
+      syntheticOnly: boolValue(auth.syntheticOnly ?? auth.synthetic_only, false),
+      allowSecrets: boolValue(auth.allowSecrets ?? auth.allow_secrets, false),
+      allowTrading: boolValue(auth.allowTrading ?? auth.allow_trading, false),
+      networkMode,
+      maxActiveJobs,
+      expiresAt,
+      workflowId,
+      planId,
+      adapterJobId,
+      workerRunId
+    }
+  };
+}
+
 const parsedArgs = parseArgs(process.argv.slice(2));
 const executeRequested = parsedArgs.flags.has("execute");
 const executeEnvAllowed = process.env.TRADING_AGENTS_WORKFLOW_V2_ALLOW_REAL_RUNNER_EXECUTE === "1";
+const executeAuthEnv = process.env.TRADING_AGENTS_WORKFLOW_V2_REAL_RUNNER_EXECUTE_AUTH_JSON || "";
 const requestFile = firstText(parsedArgs.positionals[0], process.env.WORKFLOW_V2_ADAPTER_RUNNER_REQUEST_FILE);
 const outputFile = firstText(parsedArgs.positionals[1], process.env.WORKFLOW_V2_ADAPTER_RUNNER_OUTPUT_FILE);
 
@@ -167,6 +272,8 @@ if (!supportedBackends.has(runtimeBackend)) {
 
 const workerRunId = firstText(adapterJob.workerRunId, adapterJob.worker_run_id, manifest.workerRunId);
 const adapterJobId = firstText(adapterJob.adapterJobId, adapterJob.adapter_job_id, manifest.adapterJobId);
+const workflowId = firstText(adapterJob.workflowId, adapterJob.workflow_id, manifest.workflowId);
+const planId = firstText(adapterJob.planId, adapterJob.plan_id, manifest.planId);
 const sessionInputWorkerRunId = firstText(manifest.sessionInput?.input?.workerRunId, manifest.session_input?.input?.workerRunId);
 const manifestRuntimeBackend = firstText(manifest.runtimeBackend, manifest.backend?.runtimeBackend);
 const manifestWorkerRunId = firstText(manifest.workerRunId);
@@ -187,9 +294,15 @@ assertEqual(manifest.backend?.docker?.runContainer, false, "execute guard manife
 assertEqual(manifest.backend?.docker?.directPortExposure, false, "execute guard manifest must not expose direct ports");
 
 const plannedInvocation = buildPlannedInvocation({ request, manifest, adapterJob, runtimeBackend, requestFile, outputFile, workerRunId, adapterJobId });
-const refusedReason = executeRequested && !executeEnvAllowed
-  ? "execute_requested_without_environment_gate"
-  : "execute_flag_required";
+const executeAuthorization = executeAuthorizationSummary(parseJsonObject(executeAuthEnv), { workflowId, planId, adapterJobId, workerRunId });
+let refusedReason = "execute_flag_required";
+if (executeRequested && !executeEnvAllowed) {
+  refusedReason = "execute_requested_without_environment_gate";
+} else if (executeRequested && executeEnvAllowed && !executeAuthorization.ready) {
+  refusedReason = "human_gate_authorization_required";
+} else if (executeRequested && executeEnvAllowed && executeAuthorization.ready) {
+  refusedReason = "executor_not_implemented_after_authorization_gate";
+}
 const output = {
   status: "release",
   retryAllowed: false,
@@ -199,6 +312,7 @@ const output = {
     runner: "workflow_v2_external_runner_execute_guard",
     executeRequested,
     executeEnvAllowed,
+    executeAuthorization,
     refused: true,
     refusedReason,
     runtimeBackend,
@@ -216,6 +330,7 @@ const output = {
       "submit_fail_return_path",
       "context_budget",
       "docker_side_effects_disabled",
+      ...(executeAuthorization.ready ? ["human_gate_authorization_ready"] : []),
       "execute_guard_refused"
     ]
   }

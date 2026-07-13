@@ -62,7 +62,13 @@ const runnerScriptByKind = {
   "plan-only": "workflow_v2_external_runner_dry_run.mjs",
   plan_only: "workflow_v2_external_runner_dry_run.mjs",
   "execute-guard": "workflow_v2_external_runner_execute_guard.mjs",
-  execute_guard: "workflow_v2_external_runner_execute_guard.mjs"
+  execute_guard: "workflow_v2_external_runner_execute_guard.mjs",
+  "execute-guard-authorized": "workflow_v2_external_runner_execute_guard.mjs",
+  execute_guard_authorized: "workflow_v2_external_runner_execute_guard.mjs",
+  "execute-guard-missing-binding": "workflow_v2_external_runner_execute_guard.mjs",
+  execute_guard_missing_binding: "workflow_v2_external_runner_execute_guard.mjs",
+  "execute-guard-invalid-auth": "workflow_v2_external_runner_execute_guard.mjs",
+  execute_guard_invalid_auth: "workflow_v2_external_runner_execute_guard.mjs"
 };
 const expectedReceiptRunnerByKind = {
   dummy: "workflow_v2_external_runner_dummy",
@@ -71,11 +77,23 @@ const expectedReceiptRunnerByKind = {
   "plan-only": "workflow_v2_external_runner_dry_run",
   plan_only: "workflow_v2_external_runner_dry_run",
   "execute-guard": "workflow_v2_external_runner_execute_guard",
-  execute_guard: "workflow_v2_external_runner_execute_guard"
+  execute_guard: "workflow_v2_external_runner_execute_guard",
+  "execute-guard-authorized": "workflow_v2_external_runner_execute_guard",
+  execute_guard_authorized: "workflow_v2_external_runner_execute_guard",
+  "execute-guard-missing-binding": "workflow_v2_external_runner_execute_guard",
+  execute_guard_missing_binding: "workflow_v2_external_runner_execute_guard",
+  "execute-guard-invalid-auth": "workflow_v2_external_runner_execute_guard",
+  execute_guard_invalid_auth: "workflow_v2_external_runner_execute_guard"
 };
 const runnerArgsByKind = {
   "plan-only": ["--plan-only"],
-  plan_only: ["--plan-only"]
+  plan_only: ["--plan-only"],
+  "execute-guard-authorized": ["--execute"],
+  execute_guard_authorized: ["--execute"],
+  "execute-guard-missing-binding": ["--execute"],
+  execute_guard_missing_binding: ["--execute"],
+  "execute-guard-invalid-auth": ["--execute"],
+  execute_guard_invalid_auth: ["--execute"]
 };
 if (!runnerScriptByKind[runnerKind]) {
   throw new Error(`unsupported external runner smoke kind: ${runnerKind}`);
@@ -84,9 +102,18 @@ const runnerId = `${workflowId}.${runnerKind.replace(/_/g, "-")}-runner`;
 const runnerScript = path.join(__dirname, runnerScriptByKind[runnerKind]);
 const runnerArgs = runnerArgsByKind[runnerKind] || [];
 const expectedReceiptRunner = expectedReceiptRunnerByKind[runnerKind];
-const expectRelease = runnerKind === "execute-guard" || runnerKind === "execute_guard";
+const executeGuardKinds = new Set(["execute-guard", "execute_guard", "execute-guard-authorized", "execute_guard_authorized", "execute-guard-missing-binding", "execute_guard_missing_binding", "execute-guard-invalid-auth", "execute_guard_invalid_auth"]);
+const expectRelease = executeGuardKinds.has(runnerKind);
+const expectAuthorizedGuard = runnerKind === "execute-guard-authorized" || runnerKind === "execute_guard_authorized";
+const expectMissingBindingGuard = runnerKind === "execute-guard-missing-binding" || runnerKind === "execute_guard_missing_binding";
+const expectInvalidAuthGuard = runnerKind === "execute-guard-invalid-auth" || runnerKind === "execute_guard_invalid_auth";
+const expectExecuteRequested = expectAuthorizedGuard || expectMissingBindingGuard || expectInvalidAuthGuard;
 const envKey = "TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD";
 const previousEnv = process.env[envKey];
+const executeGateEnvKey = "TRADING_AGENTS_WORKFLOW_V2_ALLOW_REAL_RUNNER_EXECUTE";
+const executeAuthEnvKey = "TRADING_AGENTS_WORKFLOW_V2_REAL_RUNNER_EXECUTE_AUTH_JSON";
+const previousExecuteGateEnv = process.env[executeGateEnvKey];
+const previousExecuteAuthEnv = process.env[executeAuthEnvKey];
 const genericOrchestrationEnvKey = "TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION";
 const previousGenericOrchestrationEnv = process.env[genericOrchestrationEnvKey];
 
@@ -166,6 +193,28 @@ LIMIT 1;`))[0];
   assert.equal(adapterRecord.adapterJob.workerRunId, workerRunId);
 
   process.env[envKey] = JSON.stringify([process.execPath, runnerScript, ...runnerArgs]);
+  if (expectExecuteRequested) {
+    process.env[executeGateEnvKey] = "1";
+    const authorization = {
+      humanGateId: `${workflowId}.human-gate.synthetic-approval`,
+      catClawAuditId: `${workflowId}.cat-claw-audit.synthetic-approval`,
+      packageId: `${workflowId}.hgate.execute`,
+      decision: "approve_single_synthetic_execute_smoke",
+      flashcatOriginalWords: "批准一次 synthetic-only execute guard smoke；不挂载 secrets；network=none；不触达交易。",
+      workflowId,
+      planId,
+      adapterJobId: adapterRecord.adapterJob.adapterJobId,
+      workerRunId,
+      syntheticOnly: true,
+      allowSecrets: false,
+      allowTrading: false,
+      networkMode: "none",
+      maxActiveJobs: 1,
+      expiresAt: "2099-01-01T00:00:00.000Z"
+    };
+    if (expectMissingBindingGuard) delete authorization.adapterJobId;
+    process.env[executeAuthEnvKey] = expectInvalidAuthGuard ? "{invalid-json" : JSON.stringify(authorization);
+  }
   const preview = await runAction(root, {
     action: "workflow.v2.adapter_runner.preview",
     mode: "external_command",
@@ -193,8 +242,20 @@ LIMIT 1;`))[0];
     assert.equal(drain.results[0].status, "released");
     assert.equal(drain.results[0].externalOutput.status, "release");
     assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.refused, true);
+    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeRequested, expectExecuteRequested);
+    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeEnvAllowed, expectExecuteRequested);
+    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.ready, expectAuthorizedGuard);
+    assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.refusedReason, expectAuthorizedGuard ? "executor_not_implemented_after_authorization_gate" : (expectExecuteRequested ? "human_gate_authorization_required" : "execute_flag_required"));
+    if (expectMissingBindingGuard) {
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("adapter_job_id_required"), true);
+    }
+    if (expectInvalidAuthGuard) {
+      assert.equal(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.issueCodes.includes("authorization_json_invalid"), true);
+    }
     assert.equal(drain.results[0].externalOutput.rawOutput.plannedInvocation.constraints.runContainerNow, false);
     assert.equal(drain.results[0].externalOutput.rawOutput.plannedInvocation.constraints.callModelNow, false);
+    assert.equal(drain.results[0].externalOutput.rawOutput.plannedInvocation.authorization.requiredBeforeExecution, true);
+    assert.equal(drain.results[0].externalOutput.rawOutput.plannedInvocation.authorization.executionImplemented, false);
     assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", `worker_run_id=${sqlValue(workerRunId)} AND status='retry_scheduled'`), 1);
     assert.equal(await sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id=${sqlValue(workerRunId)} AND status='running'`), 1);
     assert.equal(await pathExists(drain.results[0].externalOutput.artifactFile), true);
@@ -211,7 +272,9 @@ LIMIT 1;`))[0];
       runnerId,
       runnerKind,
       outputArtifact: drain.results[0].externalOutput.artifactRef,
-      status: "released_retry_scheduled"
+      status: "released_retry_scheduled",
+      executeAuthorizationReady: Boolean(drain.results[0].externalOutput.receipt.runnerReceipt.executeAuthorization.ready),
+      refusedReason: drain.results[0].externalOutput.receipt.runnerReceipt.refusedReason
     }, null, 2));
   } else {
     assert.equal(drain.submittedCount, 1);
@@ -250,6 +313,10 @@ LIMIT 1;`))[0];
 } finally {
   if (previousEnv === undefined) delete process.env[envKey];
   else process.env[envKey] = previousEnv;
+  if (previousExecuteGateEnv === undefined) delete process.env[executeGateEnvKey];
+  else process.env[executeGateEnvKey] = previousExecuteGateEnv;
+  if (previousExecuteAuthEnv === undefined) delete process.env[executeAuthEnvKey];
+  else process.env[executeAuthEnvKey] = previousExecuteAuthEnv;
   if (previousGenericOrchestrationEnv === undefined) delete process.env[genericOrchestrationEnvKey];
   else process.env[genericOrchestrationEnvKey] = previousGenericOrchestrationEnv;
 }
