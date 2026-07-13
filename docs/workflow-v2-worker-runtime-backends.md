@@ -197,6 +197,15 @@ Claude Code, Gateway, production queues, or model calls by itself:
   The smoke restores the outbox to `queued`, persists only sanitized summaries,
   and does not send Telegram, create parallel Human Gate records, dispatch
   runtime jobs, touch trading state, or execute a worker wrapper.
+- `scripts/workflow_v2_runner_execute_human_gate_delivery_guard_smoke.mjs`
+  fixes the execution-entry guard for that same delivery path. It creates an
+  isolated `human_gate_request` outbox fixture and calls `telegram.outbox.delivery`
+  only on fail-closed cases: missing idempotency key, missing delivery operator
+  reason, missing Cat Claw audit evidence, missing Telegram target, and
+  incomplete Human Gate button structure. Each blocked case must leave the outbox
+  queued and unsent. The only non-blocking delivery action in this smoke is a
+  `sent` idempotent replay, which must return without sending Telegram or
+  updating the outbox. It does not execute queued delivery.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical
