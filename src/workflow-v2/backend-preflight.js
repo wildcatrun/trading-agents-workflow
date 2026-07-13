@@ -70,7 +70,7 @@ export async function workflowV2WorkerBackendPreflight(rootDir, input = {}, deps
     errors.push(workflowV2ValidationError("oauth_refresh_failed", "OpenAI/Codex OAuth refresh check failed"));
   }
   if (oauth.revocationVerified === false || oauth.revocation_verified === false) {
-    warnings.push(workflowV2ValidationError("oauth_revocation_unverified", "OAuth revocation/rotation evidence is not verified"));
+    errors.push(workflowV2ValidationError("oauth_revocation_unverified", "OAuth revocation/rotation evidence is not verified"));
   }
   const networkInput = input.network ?? input.networkPolicy ?? input.network_policy;
   const networkProvided = networkInput !== undefined && networkInput !== null && networkInput !== "";

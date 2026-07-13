@@ -1104,7 +1104,7 @@ LIMIT ${limit};`, { json: true });
     const cutoff = new Date(Date.now() - stuckAfterMs).toISOString();
     const recoveredSemanticContinuations = await recoverAckedMessageFlowSemanticContinuations(paths, { cutoff, limit });
     const rows = await sqlite(paths.dbFile, `
-SELECT mf.*, o.status AS outbox_status, o.updated_at AS outbox_updated_at, o.target_kind, o.target_ref, o.payload_json AS outbox_payload_json
+SELECT mf.*, o.status AS outbox_status, o.updated_at AS outbox_updated_at, o.target_kind, o.target_ref, o.message_type AS outbox_message_type, o.payload_json AS outbox_payload_json
 FROM message_flows mf
 LEFT JOIN telegram_outbox o ON o.outbox_id=mf.outbox_id
 WHERE (
@@ -1136,6 +1136,7 @@ LIMIT ${limit};`, { json: true });
         const outboxPayload = parseJsonValue(row.outbox_payload_json, {});
         const synced = await updateMessageFlowFromTelegramDelivery(paths, {
           outbox_id: row.outbox_id,
+          message_type: row.outbox_message_type || "",
           target_ref: row.target_ref || "",
           payload_json: JSON.stringify({
             ...outboxPayload,

@@ -7481,6 +7481,19 @@ async function testWorkflowV2WorkerSpawnAndLifecycleGates() {
   assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "oauth_status_required")), true);
   assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "network_policy_required")), true);
 
+  const revocationUnverified = await runAction(root, {
+    action: "workflow.v2.worker_backend.preflight",
+    workflowId,
+    backendId: "hermers_docker_worker",
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true, revocationVerified: false },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  assert.equal(revocationUnverified.valid, false);
+  assert.equal(revocationUnverified.preflight.allowed, false);
+  assert.equal(Boolean(revocationUnverified.errors.some((item) => item.code === "oauth_revocation_unverified")), true);
+
   await assertRejectsMessage(
     () => runAction(root, workflowV2KernelWorkerInput(fixture, {
       workerRunId: "worker-v2-missing-session",
@@ -8744,6 +8757,19 @@ async function legacyWorkflowV2OrchestrationKernelIntegration() {
   assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "model_receipt_missing_required_fields")), true);
   assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "oauth_status_required")), true);
   assert.equal(Boolean(emptyEvidence.errors.some((item) => item.code === "network_policy_required")), true);
+
+  const revocationUnverified = await runAction(root, {
+    action: "workflow.v2.worker_backend.preflight",
+    workflowId,
+    backendId: "hermers_docker_worker",
+    providerModel: "openai-codex/gpt-5.5",
+    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
+    oauth: { expiryOk: true, refreshOk: true, revocationVerified: false },
+    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
+  });
+  assert.equal(revocationUnverified.valid, false);
+  assert.equal(revocationUnverified.preflight.allowed, false);
+  assert.equal(Boolean(revocationUnverified.errors.some((item) => item.code === "oauth_revocation_unverified")), true);
 
   const fallbackMismatch = await runAction(root, {
     action: "workflow.v2.worker_backend.preflight",
