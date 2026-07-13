@@ -1349,3 +1349,26 @@ Latest focused verification passed:
   under a longer CI-style timeout.
 
 The full regression suite was not rerun in this slice.
+
+2026-07-13 V2 Human Gate Gateway/message_flow boundary regression:
+
+- Extended the fake OpenClaw Gateway delivery execution regression so a
+  `human_gate_request` Telegram outbox deliberately carries poison
+  `messageFlowId` / `message_flow_id` references.
+- The regression now asserts the governed `telegram.outbox.delivery` path keeps
+  `didUpdateMessageFlow=false`, leaves the linked `message_flows` row unchanged,
+  and does not append `message_flow_events`. This locks the boundary that Cat
+  Claw / Human Gate outward notification via OpenClaw Gateway cannot silently
+  stand in for cross-platform `message_flow` closure.
+- The runtime boundary document now records that only `message_flow_reply`
+  outbox rows may close `message_flow` delivery state; poisoned
+  `human_gate_request` rows must remain delivery-only evidence.
+- This is a regression/documentation slice only. It does not change production
+  delivery behavior, start worker runtimes, WSL, Docker, Hermers, Claude Code,
+  Gateway, Telegram delivery, or production workflow queues.
+- Focused verification passed locally:
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow operations console audit"`
+  - `npm run check`
+  - `npm run smoke:release -- --run-id local-v2-hgate-message-flow-boundary`
+  - `git diff --check`

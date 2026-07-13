@@ -248,6 +248,11 @@ Claude Code, Gateway, production queues, or model calls by itself:
   outbox action's runtime receipt persistence rules; smoke stdout and persisted
   smoke artifacts must include only sanitized delivery status/counts and
   redacted or hashed targets, never callback tokens or raw transport receipts.
+  The console regression suite also covers a fake OpenClaw Gateway delivery
+  execution where a `human_gate_request` outbox is deliberately poisoned with
+  `messageFlowId` / `message_flow_id`; delivery must still leave the
+  `message_flows` row and its events unchanged. Only `message_flow_reply` rows
+  may close `message_flow` delivery state.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical

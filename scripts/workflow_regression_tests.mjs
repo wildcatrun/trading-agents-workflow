@@ -2565,12 +2565,24 @@ LIMIT 1;`)[0].status, "queued");
   await fs.chmod(fakeTelegramBin, 0o755);
   const deliveryExecutionWorkflowId = `${workflowId}-delivery-exec-clean`;
   const deliveryExecutionOutboxId = "outbox-delivery-exec-clean";
+  const deliveryExecutionPoisonFlowId = `${deliveryExecutionWorkflowId}-poison-flow`;
   const deliveryExecutionCreatedAt = new Date().toISOString();
   sqliteExec(dbFile, `
 INSERT INTO workflow_runs(workflow_id, workflow_type, status, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
 VALUES ('${deliveryExecutionWorkflowId}', 'regression', 'running', 'main', 'Telegram delivery execution regression', 'Verify governed Telegram delivery execution.', 'Delivery writes terminal outbox receipt only.', 'manual stop', 'delivery', '', '{}', '${deliveryExecutionCreatedAt}', '${deliveryExecutionCreatedAt}');
+INSERT INTO message_flows(flow_id, trace_id, idempotency_key, meeting_id, workflow_id, dispatch_id, outbox_id, target_runtime, target_agent_id, return_policy, status, runtime_completed_at, final_output_present, delivery_receipt_present, last_error, payload_json, created_at, updated_at)
+VALUES ('${deliveryExecutionPoisonFlowId}', '${deliveryExecutionWorkflowId}:trace', '${deliveryExecutionWorkflowId}:poison', '${deliveryExecutionWorkflowId}', '${deliveryExecutionWorkflowId}', 'dispatch-delivery-poison', '${deliveryExecutionOutboxId}', 'hermers', 'cat_body', 'report_to_flashcat', 'runtime_completed', '${deliveryExecutionCreatedAt}', 1, 0, 'must stay untouched', '{"seededFor":"human_gate_request_delivery_message_flow_guard"}', '${deliveryExecutionCreatedAt}', '${deliveryExecutionCreatedAt}');
+INSERT INTO message_flow_events(event_id, flow_id, status, event_type, payload_json, created_at)
+VALUES ('${deliveryExecutionPoisonFlowId}.event.seed', '${deliveryExecutionPoisonFlowId}', 'runtime_completed', 'seeded_negative_control', '{"outboxId":"${deliveryExecutionOutboxId}"}', '${deliveryExecutionCreatedAt}');
 INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
-VALUES ('${deliveryExecutionOutboxId}', '${deliveryExecutionWorkflowId}', 'private', '8390724843', 'human_gate_request', 'queued', 'delivery execution regression text', '{"account":"cat_claw","buttons":[{"optionId":"A"},{"optionId":"B"},{"optionId":"C"},{"control":"pause"},{"control":"terminate"}]}', '${deliveryExecutionCreatedAt}', '${deliveryExecutionCreatedAt}');`);
+VALUES ('${deliveryExecutionOutboxId}', '${deliveryExecutionWorkflowId}', 'private', '8390724843', 'human_gate_request', 'queued', 'delivery execution regression text', '{"account":"cat_claw","messageFlowId":"${deliveryExecutionPoisonFlowId}","message_flow_id":"${deliveryExecutionPoisonFlowId}","buttons":[{"optionId":"A"},{"optionId":"B"},{"optionId":"C"},{"control":"pause"},{"control":"terminate"}]}', '${deliveryExecutionCreatedAt}', '${deliveryExecutionCreatedAt}');`);
+  const deliveryPoisonFlowBefore = sqliteJson(dbFile, `
+SELECT flow_id AS flowId, status, delivery_receipt_present AS deliveryReceiptPresent, telegram_sent_at AS telegramSentAt, telegram_failed_at AS telegramFailedAt, last_error AS lastError, payload_json AS payloadJson, updated_at AS updatedAt
+FROM message_flows
+WHERE flow_id='${deliveryExecutionPoisonFlowId}'
+LIMIT 1;`)[0];
+  assert.equal(Boolean(deliveryPoisonFlowBefore), true);
+  const deliveryPoisonEventCountBefore = sqliteCount(dbFile, "message_flow_events", `flow_id='${deliveryExecutionPoisonFlowId}'`);
   const deliveryExecutionBlockedEventsBefore = sqliteCount(dbFile, "workflow_events");
   const gatewayTelegramDeliveryBlocked = await writeGateway.handle({
     action: "telegram.outbox.delivery",
@@ -2608,9 +2620,18 @@ VALUES ('${deliveryExecutionOutboxId}', '${deliveryExecutionWorkflowId}', 'priva
   assert.equal(gatewayTelegramDeliveryExecuted.result.writeBoundary, "telegram_delivery_only");
   assert.equal(gatewayTelegramDeliveryExecuted.result.didSendTelegram, true);
   assert.equal(gatewayTelegramDeliveryExecuted.result.didTouchTradingState, false);
+  assert.equal(gatewayTelegramDeliveryExecuted.result.didUpdateMessageFlow, false);
   assert.equal(gatewayTelegramDeliveryExecuted.result.deliveryStatus, "sent");
   assert.equal(gatewayTelegramDeliveryExecuted.result.executionPolicy.previewOnly, false);
   assert.equal(gatewayTelegramDeliveryExecuted.result.receiptPolicy.deliveryReceiptRequired, true);
+  const deliveryPoisonFlowAfter = sqliteJson(dbFile, `
+SELECT flow_id AS flowId, status, delivery_receipt_present AS deliveryReceiptPresent, telegram_sent_at AS telegramSentAt, telegram_failed_at AS telegramFailedAt, last_error AS lastError, payload_json AS payloadJson, updated_at AS updatedAt
+FROM message_flows
+WHERE flow_id='${deliveryExecutionPoisonFlowId}'
+LIMIT 1;`)[0];
+  assert.equal(Boolean(deliveryPoisonFlowAfter), true);
+  assert.deepEqual(deliveryPoisonFlowAfter, deliveryPoisonFlowBefore);
+  assert.equal(sqliteCount(dbFile, "message_flow_events", `flow_id='${deliveryExecutionPoisonFlowId}'`), deliveryPoisonEventCountBefore);
   const deliveredOutboxRow = sqliteJson(dbFile, `
 SELECT status, payload_json AS payloadJson
 FROM telegram_outbox
