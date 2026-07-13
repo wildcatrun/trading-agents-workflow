@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +20,19 @@ function argValue(name, fallback = "") {
   const idx = process.argv.indexOf(name);
   if (idx === -1 || idx + 1 >= process.argv.length) return fallback;
   return process.argv[idx + 1];
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function publicTarget(kind, ref) {
+  const text = String(ref || "");
+  return {
+    kind: kind || "",
+    refRedacted: text ? `${text.slice(0, 2)}...${text.slice(-2)}` : "",
+    refHash: text ? `sha256:${sha256(text)}` : ""
+  };
 }
 
 function safeSegment(value) {
@@ -121,8 +135,7 @@ function publicDeliveryPreviewSummary(preview = {}) {
     outboxId: preview.outboxId || "",
     status: preview.status || "",
     messageType: preview.messageType || "",
-    targetKind: preview.targetKind || "",
-    targetRef: preview.targetRef || "",
+    target: publicTarget(preview.targetKind, preview.targetRef),
     targetRequired: Boolean(preview.targetRequired),
     account: preview.account || "",
     eligible: Boolean(preview.eligible),
@@ -155,8 +168,7 @@ function publicRequeuePreviewSummary(preview = {}) {
     outboxId: preview.outboxId || "",
     status: preview.status || "",
     messageType: preview.messageType || "",
-    targetKind: preview.targetKind || "",
-    targetRef: preview.targetRef || "",
+    target: publicTarget(preview.targetKind, preview.targetRef),
     account: preview.account || "",
     eligible: Boolean(preview.eligible),
     requeueEligible: Boolean(preview.requeueEligible),
@@ -586,8 +598,7 @@ const deliveryGovernance = {
   outbox: {
     outboxId,
     meetingId: queuedOutbox.meetingId,
-    targetKind: queuedOutbox.targetKind,
-    targetRef: queuedOutbox.targetRef,
+    target: publicTarget(queuedOutbox.targetKind, queuedOutbox.targetRef),
     messageType: queuedOutbox.messageType,
     status: "queued",
     textLength: queuedOutbox.text.length,
@@ -692,8 +703,7 @@ const sanitizedRequest = {
   didDispatchRuntime: requestResult.didDispatchRuntime,
   deliveryRequired: requestResult.deliveryRequired,
   telegramOutboxId: requestResult.telegramOutboxId,
-  targetKind: requestResult.targetKind,
-  targetRef: requestResult.targetRef,
+  target: publicTarget(requestResult.targetKind, requestResult.targetRef),
   buttons: publicButtonSummary(requestResult.buttons)
 };
 assertNoTokenLeak("sanitizedRequest", sanitizedRequest);
@@ -728,6 +738,7 @@ const summary = {
   },
   planStateAfterCloseout: planState.workflowState
 };
+assert.equal(JSON.stringify(summary).includes("8390724843"), false, "summary leaked raw target ref");
 
 const indexFile = path.join(outDir, "index.json");
 await writeJson(indexFile, summary);

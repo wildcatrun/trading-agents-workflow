@@ -206,6 +206,21 @@ Claude Code, Gateway, production queues, or model calls by itself:
   queued and unsent. The only non-blocking delivery action in this smoke is a
   `sent` idempotent replay, which must return without sending Telegram or
   updating the outbox. It does not execute queued delivery.
+- `scripts/workflow_v2_runner_execute_human_gate_gateway_delivery_smoke.mjs`
+  is the first Cat Claw Human Gate Gateway-delivery harness for a one-message
+  smoke. Default release-smoke mode is preview-only: it creates an isolated
+  queued outbox, proves the Cat Claw outward delivery candidate uses the
+  OpenClaw message-send path rather than direct bot API delivery, and exits
+  without sending. Real Gateway delivery requires both `--deliver` and
+  `TRADING_AGENTS_WORKFLOW_ALLOW_OPENCLAW_GATEWAY_DELIVERY_SMOKE=1`; when those
+  gates are absent, the outbox must remain `queued` and no delivery execution
+  event is written. This harness validates only the Cat Claw / Human Gate
+  outward-notification exit; it does not replace cross-platform `message_flow`,
+  runtime dispatch, runtime receipt, or worker execution. The delivery execution
+  path follows the existing outbox action's runtime receipt persistence rules;
+  smoke stdout and persisted smoke artifacts must include only sanitized
+  delivery status/counts and redacted or hashed targets, never callback tokens
+  or raw transport receipts.
 - The mock runner bridge is capacity-aware. `maxLogicalWorkers` describes the
   logical queue/fan-out target, while `backendMaxActiveJobs` and
   `modelMaxConcurrentCalls` / `providerMaxConcurrentCalls` define physical
