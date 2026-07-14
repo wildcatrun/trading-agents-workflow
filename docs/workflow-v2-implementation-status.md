@@ -1,8 +1,11 @@
 # Workflow v2 Implementation Status
 
 Status: local orchestration kernel plus v2 worker lifecycle, audit-chain, adapter-runner protocol, template self-evolution, and fixed-template live-plan gates implemented
-Updated: 2026-07-12
+Updated: 2026-07-14
 Scope: `trading-agents-workflow`
+
+Pause note: current development pause/resume state is recorded in
+`docs/workflow-v2-development-pause-note-2026-07-14.md`.
 
 ## Summary
 
