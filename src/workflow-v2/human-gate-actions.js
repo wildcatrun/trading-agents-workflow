@@ -60,6 +60,143 @@ export function createWorkflowV2HumanGateActionHandlers(context = {}) {
   const HUMAN_GATE_APPROVE_OPTION_MIN = contextNumber(context, "humanGateApproveOptionMin", 2);
   const HUMAN_GATE_APPROVE_OPTION_MAX = contextNumber(context, "humanGateApproveOptionMax", 5);
 
+function workflowV2PackageAuditCheck(key, pass, detail = "", extra = {}) {
+  return {
+    key,
+    status: pass ? "pass" : "fail",
+    detail,
+    ...extra
+  };
+}
+
+function workflowV2PackageOptionEvidenceRefs(option = {}) {
+  return Array.from(new Set([
+    ...workflowV2JsonArray(option.evidenceRefs ?? option.evidence_refs, []),
+    ...workflowV2JsonArray(option.artifactRefs ?? option.artifact_refs, []),
+    ...workflowV2JsonArray(option.sourceRefs ?? option.source_refs, []),
+    ...workflowV2JsonArray(option.receiptRefs ?? option.receipt_refs, []),
+    firstText(option.artifactRef, option.artifact_ref),
+    firstText(option.receiptRef, option.receipt_ref)
+  ].map((item) => String(item || "").trim()).filter(Boolean)));
+}
+
+function workflowV2PackageHasDeliveryPayload(value) {
+  if (value === null || value === undefined) return false;
+  if (Array.isArray(value)) return value.some((item) => workflowV2PackageHasDeliveryPayload(item));
+  if (typeof value !== "object") return false;
+  for (const [key, item] of Object.entries(value)) {
+    const normalized = String(key || "").replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+    if (["delivery", "deliver", "auto_deliver", "auto_delivery", "telegram_delivery", "runtime_dispatch", "message_flow_dispatch"].includes(normalized)) return true;
+    if (workflowV2PackageHasDeliveryPayload(item)) return true;
+  }
+  return false;
+}
+
+function workflowV2PackageSensitiveRedactionChanged(value) {
+  return JSON.stringify(redactSensitiveForPersistence(value)) !== JSON.stringify(value);
+}
+
+async function workflowV2CatClawPackageAuditPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const generatedAt = nowIso();
+  const warnings = [];
+  const inlinePackage = workflowV2JsonObject(input.humanGatePackage ?? input.human_gate_package ?? input.package, {});
+  const hasInlinePackage = Object.keys(inlinePackage).length > 0;
+  const packageSelectorId = firstText(input.packageId, input.package_id, input.humanGatePackageId, input.human_gate_package_id);
+  const hasMixedSelectors = Boolean(packageSelectorId && hasInlinePackage);
+  const packageRow = !hasInlinePackage && packageSelectorId ? await workflowV2HumanGatePackageRow(paths, { packageId: packageSelectorId }) : null;
+  const pkg = packageRow
+    ? workflowV2HumanGatePackageSummary(packageRow)
+    : hasInlinePackage
+      ? inlinePackage
+      : {
+          packageId: firstText(input.packageId, input.package_id, input.humanGatePackageId, input.human_gate_package_id),
+          workflowId: firstText(input.workflowId, input.workflow_id),
+          planId: firstText(input.planId, input.plan_id),
+          sourceCatClawAuditId: firstText(input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id),
+          catBrainAgent: firstText(input.catBrainAgent, input.cat_brain_agent, "main"),
+          catClawAgent: firstText(input.catClawAgent, input.cat_claw_agent, "cat_claw"),
+          status: firstText(input.status, "draft"),
+          options: workflowV2JsonArray(input.options, []),
+          requiredControls: workflowV2JsonArray(input.requiredControls ?? input.required_controls, []),
+          evidenceRefs: workflowV2UniqueTextList(input.evidenceRefs ?? input.evidence_refs),
+          payload: workflowV2JsonObject(input.payload, {})
+        };
+  const options = workflowV2JsonArray(pkg.options, []);
+  const evidenceRefs = workflowV2UniqueTextList(pkg.evidenceRefs ?? pkg.evidence_refs);
+  const requiredControls = workflowV2UniqueTextList(pkg.requiredControls ?? pkg.required_controls);
+  const missingOptionDetails = [];
+  const missingOptionEvidence = [];
+  for (const [index, rawOption] of options.entries()) {
+    const option = workflowV2JsonObject(rawOption, {});
+    const optionId = firstText(option.optionId, option.option_id, option.id, `option_${index + 1}`);
+    const hasDetails = Boolean(
+      firstText(option.optionId, option.option_id, option.id)
+      && firstText(option.title, option.name)
+      && firstText(option.body, option.content, option.text, option.description)
+      && firstText(option.summary)
+      && firstText(option.prompt, option.nextAction, option.next_action)
+      && firstText(option.rollback, option.rollbackPlan, option.rollback_plan, option.recovery, option.restore)
+    );
+    if (!hasDetails) missingOptionDetails.push(optionId);
+    if (workflowV2PackageOptionEvidenceRefs(option).length === 0) missingOptionEvidence.push(optionId);
+  }
+  const deliveryPayloadPresent = workflowV2PackageHasDeliveryPayload(pkg);
+  const sensitiveRedactionRequired = workflowV2PackageSensitiveRedactionChanged(pkg);
+  if (sensitiveRedactionRequired) {
+    warnings.push({ code: "sensitive_values_redacted_in_preview", detail: "Sensitive-looking package values were redacted from preview output; persisted package data should not contain raw tokens or credentials." });
+  }
+  const checks = [
+    workflowV2PackageAuditCheck("exact_selector_or_inline_package", Boolean(packageSelectorId || hasInlinePackage) && !hasMixedSelectors, "preview requires exactly one selector source: packageId or inline humanGatePackage input", { packageSelectorId, hasInlinePackage }),
+    workflowV2PackageAuditCheck("package_available", Boolean(packageRow || hasInlinePackage), "exact package row or inline package is available"),
+    workflowV2PackageAuditCheck("workflow_scope_present", Boolean(firstText(pkg.workflowId, pkg.workflow_id) && firstText(pkg.planId, pkg.plan_id)), "package is bound to workflowId and planId"),
+    workflowV2PackageAuditCheck("cat_claw_source_present", Boolean(firstText(pkg.sourceCatClawAuditId, pkg.source_cat_claw_audit_id)), "package references sourceCatClawAuditId"),
+    workflowV2PackageAuditCheck("option_count_in_range", options.length >= HUMAN_GATE_APPROVE_OPTION_MIN && options.length <= HUMAN_GATE_APPROVE_OPTION_MAX, `package has ${options.length} approve options`, {
+      min: HUMAN_GATE_APPROVE_OPTION_MIN,
+      max: HUMAN_GATE_APPROVE_OPTION_MAX
+    }),
+    workflowV2PackageAuditCheck("option_details_present", missingOptionDetails.length === 0, "each option has id, title, body, summary, prompt, and rollback", { missingOptionIds: missingOptionDetails }),
+    workflowV2PackageAuditCheck("option_evidence_present", missingOptionEvidence.length === 0, "each option has artifact/evidence/source/receipt refs", { missingOptionIds: missingOptionEvidence }),
+    workflowV2PackageAuditCheck("package_evidence_present", evidenceRefs.length > 0, "package has evidenceRefs"),
+    workflowV2PackageAuditCheck("controls_present", requiredControls.includes("pause") && requiredControls.includes("terminate"), "package keeps pause and terminate controls"),
+    workflowV2PackageAuditCheck("delivery_boundary_clean", !deliveryPayloadPresent, "package does not carry delivery/runtime dispatch instructions"),
+    workflowV2PackageAuditCheck("token_redaction_clean", !sensitiveRedactionRequired, "package preview does not expose raw token/secret-like values")
+  ];
+  const violations = checks
+    .filter((check) => check.status !== "pass")
+    .map((check) => workflowV2ValidationError(check.key, check.detail, check));
+  return {
+    schemaVersion: "workflow_v2_cat_claw_package_audit_preview.v1",
+    action: "workflow.v2.cat_claw_package_audit.preview",
+    preview: true,
+    readOnly: true,
+    generatedAt,
+    valid: violations.length === 0,
+    packageId: firstText(pkg.packageId, pkg.package_id),
+    workflowId: firstText(pkg.workflowId, pkg.workflow_id),
+    planId: firstText(pkg.planId, pkg.plan_id),
+    sourceCatClawAuditId: firstText(pkg.sourceCatClawAuditId, pkg.source_cat_claw_audit_id),
+    status: firstText(pkg.status),
+    checks,
+    violations,
+    warnings,
+    humanGatePackage: redactSensitiveForPersistence(pkg),
+    wouldCreate: {
+      humanGateRecords: 0,
+      telegramOutbox: 0,
+      telegramDeliveries: 0,
+      runtimeDispatches: 0,
+      workflowStatusUpdates: 0
+    },
+    limitations: [
+      "Preview is read-only and does not create or mutate Human Gate packages, Human Gate requests, Telegram outbox rows, runtime dispatches, or workflow state.",
+      "Cat Claw package audit preview checks structure and boundaries only; it does not make Flashcat decisions or complete Human Gate.",
+      "Actual outward notification remains the separate governed workflow.v2.human_gate_request and telegram.outbox.delivery path."
+    ],
+    dbFile: paths.dbFile
+  };
+}
+
 async function workflowV2HumanGatePackagePreview(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
   const errors = [];
@@ -552,6 +689,7 @@ WHERE package_id=${sqlValue(preview.packageId)};`);
 }
 
 return {
+  workflowV2CatClawPackageAuditPreview,
   workflowV2HumanGatePackagePreview,
   workflowV2HumanGatePackageRecord,
   workflowV2HumanGateRequestPreview,

@@ -170,6 +170,8 @@ const executeGateEnvKey = "TRADING_AGENTS_WORKFLOW_V2_ALLOW_REAL_RUNNER_EXECUTE"
 const executeAuthEnvKey = "TRADING_AGENTS_WORKFLOW_V2_REAL_RUNNER_EXECUTE_AUTH_JSON";
 const previousExecuteGateEnv = process.env[executeGateEnvKey];
 const previousExecuteAuthEnv = process.env[executeAuthEnvKey];
+const fixtureRunnerGateEnvKey = "TRADING_AGENTS_WORKFLOW_V2_ALLOW_INTERNAL_FIXTURE_RUNNER";
+const previousFixtureRunnerGateEnv = process.env[fixtureRunnerGateEnvKey];
 const genericOrchestrationEnvKey = "TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION";
 const previousGenericOrchestrationEnv = process.env[genericOrchestrationEnvKey];
 
@@ -249,6 +251,7 @@ LIMIT 1;`))[0];
   assert.equal(adapterRecord.adapterJob.workerRunId, workerRunId);
 
   process.env[envKey] = JSON.stringify([process.execPath, runnerScript, ...runnerArgs]);
+  if (!executeGuardKinds.has(runnerKind)) process.env[fixtureRunnerGateEnvKey] = "1";
   if (expectExecuteRequested) {
     if (!expectMissingEnvGate) process.env[executeGateEnvKey] = "1";
     const authorization = {
@@ -401,6 +404,8 @@ LIMIT 1;`))[0];
   else process.env[executeGateEnvKey] = previousExecuteGateEnv;
   if (previousExecuteAuthEnv === undefined) delete process.env[executeAuthEnvKey];
   else process.env[executeAuthEnvKey] = previousExecuteAuthEnv;
+  if (previousFixtureRunnerGateEnv === undefined) delete process.env[fixtureRunnerGateEnvKey];
+  else process.env[fixtureRunnerGateEnvKey] = previousFixtureRunnerGateEnv;
   if (previousGenericOrchestrationEnv === undefined) delete process.env[genericOrchestrationEnvKey];
   else process.env[genericOrchestrationEnvKey] = previousGenericOrchestrationEnv;
 }

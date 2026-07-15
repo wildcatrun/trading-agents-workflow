@@ -757,6 +757,189 @@ async function workflowV2CatBrainAuditPreview(rootDir, input = {}) {
   };
 }
 
+function workflowV2SemanticCheckRow(key, status, message, details = {}) {
+  return { key, status, message, ...details };
+}
+
+function workflowV2SemanticCheckPass(key, message, details = {}) {
+  return workflowV2SemanticCheckRow(key, "pass", message, details);
+}
+
+function workflowV2SemanticCheckFail(key, message, details = {}) {
+  return workflowV2SemanticCheckRow(key, "fail", message, details);
+}
+
+function workflowV2ObjectHasKeys(value = {}) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length);
+}
+
+async function workflowV2WorkerRunRowsForManagerReviews(paths, reviews = []) {
+  const rows = [];
+  if (!fileExistsSync(paths.dbFile)) return rows;
+  for (const review of reviews) {
+    if (!review?.worker_run_id) continue;
+    const found = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_worker_runs
+WHERE worker_run_id=${sqlValue(review.worker_run_id)}
+LIMIT 1;`, { json: true });
+    if (found[0]) rows.push(found[0]);
+  }
+  return rows;
+}
+
+async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const workflowId = firstText(input.workflowId, input.workflow_id);
+  const planId = firstText(input.planId, input.plan_id);
+  const taskGroupPackageId = firstText(input.taskGroupPackageId, input.task_group_package_id, input.packageId, input.package_id);
+  const ownerReviewIdInput = firstText(input.ownerReviewId, input.owner_review_id, input.sourceReviewId, input.source_review_id);
+  const hasMixedSelectors = Boolean(taskGroupPackageId && ownerReviewIdInput);
+  const checks = [];
+  if (!workflowId) checks.push(workflowV2SemanticCheckFail("workflow_id_present", "Cat Brain semantic check requires workflowId"));
+  if (!planId) checks.push(workflowV2SemanticCheckFail("plan_id_present", "Cat Brain semantic check requires planId"));
+  if (hasMixedSelectors) {
+    checks.push(workflowV2SemanticCheckFail("exact_selector_present", "Cat Brain semantic check requires exactly one selector: taskGroupPackageId or ownerReviewId", {
+      taskGroupPackageId,
+      ownerReviewId: ownerReviewIdInput
+    }));
+  } else if (!taskGroupPackageId && !ownerReviewIdInput) {
+    checks.push(workflowV2SemanticCheckFail("exact_selector_present", "Cat Brain semantic check requires exact taskGroupPackageId or ownerReviewId"));
+  } else {
+    checks.push(workflowV2SemanticCheckPass("exact_selector_present", "semantic check selector is exact", {
+      sourceKind: taskGroupPackageId ? "task_group_package" : "owner_review"
+    }));
+  }
+
+  const planRow = await workflowV2LoadPlanRow(paths, workflowId, planId);
+  if (workflowId && planId && planRow) {
+    checks.push(workflowV2SemanticCheckPass("plan_present", "v2 plan exists", { workflowState: planRow.workflow_state || "" }));
+  } else if (workflowId && planId) {
+    checks.push(workflowV2SemanticCheckFail("plan_present", "Cat Brain semantic check requires an existing v2 plan"));
+  }
+
+  const taskGroupPackageRow = taskGroupPackageId ? await workflowV2TaskGroupPackageRow(paths, workflowId, planId, taskGroupPackageId) : null;
+  if (taskGroupPackageId && taskGroupPackageRow?.status === "ready") {
+    checks.push(workflowV2SemanticCheckPass("task_group_package_ready", "task group package is ready"));
+  } else if (taskGroupPackageId) {
+    checks.push(workflowV2SemanticCheckFail("task_group_package_ready", "task group package must exist and be ready", {
+      taskGroupPackageId,
+      status: taskGroupPackageRow?.status || "missing"
+    }));
+  }
+
+  const pkg = workflowV2TaskGroupPackageSummary(taskGroupPackageRow);
+  const ownerReviewId = taskGroupPackageId ? (taskGroupPackageRow?.owner_review_id || "") : ownerReviewIdInput;
+  const ownerReviewRow = ownerReviewId ? await workflowV2OwnerReviewRow(paths, workflowId, planId, ownerReviewId) : null;
+  if (ownerReviewId && ownerReviewRow?.decision === "accepted") {
+    checks.push(workflowV2SemanticCheckPass("owner_review_accepted", "owner review is accepted"));
+  } else if (ownerReviewId) {
+    checks.push(workflowV2SemanticCheckFail("owner_review_accepted", "owner review must exist and be accepted", {
+      ownerReviewId,
+      decision: ownerReviewRow?.decision || "missing"
+    }));
+  }
+
+  const ownerReview = workflowV2OwnerReviewSummary(ownerReviewRow);
+  const managerReviewIds = workflowV2UniqueTextList(input.managerReviewIds ?? input.manager_review_ids, ownerReview?.managerReviewRefs || pkg?.managerReviewRefs || []);
+  const acceptedManagerRows = await workflowV2AcceptedManagerReviewRows(paths, workflowId, planId, managerReviewIds);
+  if (managerReviewIds.length && !acceptedManagerRows.missingIds.length && !acceptedManagerRows.nonAcceptedIds.length && acceptedManagerRows.rows.length === managerReviewIds.length) {
+    checks.push(workflowV2SemanticCheckPass("manager_reviews_accepted", "all referenced manager reviews are accepted", { count: acceptedManagerRows.rows.length }));
+  } else {
+    checks.push(workflowV2SemanticCheckFail("manager_reviews_accepted", "all referenced manager reviews must exist, be accepted, and match accepted worker runs", {
+      expectedCount: managerReviewIds.length,
+      acceptedCount: acceptedManagerRows.rows.length,
+      missingIds: acceptedManagerRows.missingIds,
+      nonAcceptedIds: acceptedManagerRows.nonAcceptedIds
+    }));
+  }
+
+  const managerRows = acceptedManagerRows.rows;
+  const managerRowsMissingArtifacts = managerRows.filter((row) => !workflowV2JsonArray(row.artifact_refs_json, []).length).map((row) => row.review_id);
+  const managerRowsMissingReceipts = managerRows.filter((row) => !workflowV2JsonArray(row.receipt_refs_json, []).length).map((row) => row.review_id);
+  checks.push(managerRows.length && !managerRowsMissingArtifacts.length
+    ? workflowV2SemanticCheckPass("manager_artifacts_present", "manager reviews include artifact references")
+    : workflowV2SemanticCheckFail("manager_artifacts_present", "manager reviews must include artifact references", { missingReviewIds: managerRowsMissingArtifacts }));
+  checks.push(managerRows.length && !managerRowsMissingReceipts.length
+    ? workflowV2SemanticCheckPass("manager_receipts_present", "manager reviews include receipt references")
+    : workflowV2SemanticCheckFail("manager_receipts_present", "manager reviews must include receipt references", { missingReviewIds: managerRowsMissingReceipts }));
+
+  const workerRows = await workflowV2WorkerRunRowsForManagerReviews(paths, managerRows);
+  const workerRowsMissingReceipts = workerRows.filter((row) => row.status !== "accepted" || !row.output_info_id || !row.receipt_ref).map((row) => row.worker_run_id);
+  checks.push(workerRows.length === managerRows.length && !workerRowsMissingReceipts.length
+    ? workflowV2SemanticCheckPass("worker_receipts_present", "accepted worker runs include output info and receipt references")
+    : workflowV2SemanticCheckFail("worker_receipts_present", "accepted worker runs must include output info and receipt references", {
+      expectedCount: managerRows.length,
+      workerCount: workerRows.length,
+      missingWorkerRunIds: workerRowsMissingReceipts
+    }));
+
+  const evidenceRefs = workflowV2UniqueTextList(input.evidenceRefs ?? input.evidence_refs, [
+    ...(pkg?.evidenceRefs || []),
+    ...(ownerReview?.artifactRefs || []),
+    ...(ownerReview?.receiptRefs || [])
+  ]);
+  checks.push(evidenceRefs.length
+    ? workflowV2SemanticCheckPass("evidence_refs_present", "semantic check has evidence references", { count: evidenceRefs.length })
+    : workflowV2SemanticCheckFail("evidence_refs_present", "semantic check requires evidence references"));
+
+  const rollbackRefs = workflowV2UniqueTextList(input.rollbackRefs ?? input.rollback_refs, [
+    ...workflowV2JsonArray(pkg?.payload?.rollbackRefs ?? pkg?.payload?.rollback_refs ?? pkg?.payload?.rollbackAnchors ?? pkg?.payload?.rollback_anchors, []),
+    ...workflowV2JsonArray(ownerReview?.payload?.rollbackRefs ?? ownerReview?.payload?.rollback_refs ?? ownerReview?.payload?.rollbackAnchors ?? ownerReview?.payload?.rollback_anchors, [])
+  ]);
+  checks.push(rollbackRefs.length
+    ? workflowV2SemanticCheckPass("rollback_anchors_present", "rollback anchors are present", { count: rollbackRefs.length })
+    : workflowV2SemanticCheckFail("rollback_anchors_present", "Cat Brain semantic check requires rollback anchors"));
+
+  const blockingReviews = managerRows.filter((row) => workflowV2ObjectHasKeys(workflowV2JsonObject(row.blocker_json, {}))).map((row) => row.review_id);
+  checks.push(!blockingReviews.length
+    ? workflowV2SemanticCheckPass("blockers_absent", "accepted evidence chain has no unresolved blockers")
+    : workflowV2SemanticCheckFail("blockers_absent", "accepted evidence chain must not contain unresolved blockers", { blockingReviewIds: blockingReviews }));
+
+  const unresolvedEvidenceGaps = workflowV2UniqueTextList(
+    input.unresolvedEvidenceGaps ?? input.unresolved_evidence_gaps,
+    workflowV2JsonArray(pkg?.payload?.unresolvedEvidenceGaps ?? pkg?.payload?.unresolved_evidence_gaps ?? ownerReview?.payload?.unresolvedEvidenceGaps ?? ownerReview?.payload?.unresolved_evidence_gaps, [])
+  );
+  checks.push(!unresolvedEvidenceGaps.length
+    ? workflowV2SemanticCheckPass("unresolved_evidence_gaps_absent", "no unresolved evidence gaps declared")
+    : workflowV2SemanticCheckFail("unresolved_evidence_gaps_absent", "Cat Brain semantic check must surface unresolved evidence gaps", { unresolvedEvidenceGaps }));
+
+  const violations = checks.filter((check) => check.status !== "pass");
+  return {
+    schemaVersion: "workflow_v2_cat_brain_semantic_check_preview.v1",
+    action: "workflow.v2.cat_brain_semantic_check.preview",
+    operation: "workflow.v2.cat_brain_semantic_check.preview",
+    dryRun: true,
+    previewOnly: true,
+    readOnly: true,
+    valid: violations.length === 0,
+    checks,
+    violations,
+    wouldCreate: {
+      catBrainAudits: 0,
+      workflowStateMutations: 0,
+      runtimeDispatches: 0,
+      humanGateBatches: 0,
+      telegramOutbox: 0
+    },
+    semanticCheck: {
+      workflowId,
+      planId,
+      sourceKind: taskGroupPackageId ? "task_group_package" : "owner_review",
+      sourceId: taskGroupPackageId || ownerReviewIdInput || "",
+      catBrainAgent: "main",
+      evidenceRefs,
+      rollbackRefs,
+      nextAllowedAction: violations.length === 0 ? "workflow.v2.cat_brain_audit.record" : "repair_evidence_before_cat_brain_audit"
+    },
+    taskGroupPackage: pkg,
+    ownerReview,
+    plan: workflowV2PlanSummary(planRow),
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
 async function workflowV2CatBrainAuditRecord(rootDir, input = {}) {
   const preview = await workflowV2CatBrainAuditPreview(rootDir, input);
   if (!preview.valid) throw new Error(`workflow v2 Cat Brain audit is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
@@ -876,6 +1059,7 @@ ON CONFLICT(audit_id) DO UPDATE SET
     workflowV2TaskGroupPackagePreview,
     workflowV2TaskGroupPackageRecord,
     workflowV2CatBrainAuditPreview,
+    workflowV2CatBrainSemanticCheckPreview,
     workflowV2CatBrainAuditRecord,
     workflowV2CatClawAuditPreview,
     workflowV2CatClawAuditRecord

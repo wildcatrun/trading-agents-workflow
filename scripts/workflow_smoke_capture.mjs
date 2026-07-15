@@ -28,6 +28,8 @@ const DEFAULT_COMMANDS = [
   "smoke:v2-runner-execute-hgate-delivery-preview",
   "smoke:v2-runner-execute-hgate-delivery-guard",
   "smoke:v2-runner-execute-hgate-gateway-delivery",
+  "smoke:v2-non-trading-rehearsal",
+  "smoke:v2-trading-pre-execution",
   "smoke:mcp",
   "smoke:hermes-mcp"
 ];

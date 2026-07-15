@@ -32,6 +32,292 @@ This plan turns the next work into a single ordered track:
 The goal is not to pause product progress for refactoring. The goal is to make
 future worker/runtime work measurable, reviewable, and reversible.
 
+## Unified P0-P7 Development Flow
+
+Status: active execution plan from 2026-07-15.
+
+This section supersedes ad-hoc "slice-first" planning. Future workflow v2 work
+should advance through one ordered multi-step development flow. A local helper,
+preview, adapter, or test change may still be implemented as a small patch, but
+it must be mapped to the current P0-P7 stage and must not create unplanned
+workflow execution paths.
+
+Global constraints:
+
+- `trading-agents-workflow` is a multi-agent orchestration control plane for
+  audited, professional trading-oriented workflows; it is not a generic
+  task-runner for unplanned work.
+- Workflow execution/write surfaces are responsible only for approved/audited
+  v2 plans, approved templates, or explicit Human-Gate-authorized plans.
+- Work without plan authorization stays in read-only audit, diagnostics,
+  documentation, development, or the owning business/stability platform; it
+  must not use workflow dispatch, control-loop, message_flow, runtime adapter,
+  Human Gate, outbox, incident, checkpoint, side-effect, or trading handoff
+  writes to advance real work.
+- Each stage must keep code, tests, docs, evidence, rollback boundary, and
+  independent review in sync before being marked complete.
+
+### P0 Baseline Freeze
+
+Goal: establish the current v2 state as the baseline for this unified plan.
+
+Required outputs:
+
+- current Git HEAD and working-tree state;
+- implemented v2 action inventory and runtime boundaries;
+- explicit list of remaining unsafe/gated items;
+- evidence path for local checks;
+- rollback boundary for the next stage.
+
+Completion criteria:
+
+- `docs/workflow-v2-implementation-status.md` and this plan agree on current
+  status;
+- `npm run check`, focused v2 regressions, release smoke, and `git diff --check`
+  pass or have explicit documented limitations;
+- independent review is complete for behavior-affecting changes.
+
+Current baseline snapshot, 2026-07-15:
+
+- source repo: `/Users/Flashcat/multi-agent-hedge-fund-framework/github-upload-staging-20260517T2258/trading-agents-workflow`;
+- baseline HEAD: `4060a43bf2148735df3ab450c86055c4ff2a070f`;
+- package: `@flashcat/trading-agents-workflow@0.7.0`;
+- v2 action registry count after P4 service plan preview addition: `68`;
+- current local working tree contains the active P1 Cat Claw package audit
+  preview, Cat Brain semantic check preview, adapter runner drain readiness
+  preview, and documentation updates; it has not been committed, pushed,
+  deployed, or loaded into the development-server active checkout;
+- latest local release-smoke evidence:
+  `.tmp-smoke-release/local-v2-cat-claw-package-audit-preview-r2/index.json`;
+- latest independent review: subagent `Cicero` reviewed the Cat Claw package
+  audit preview diff; the selector ambiguity and coverage findings were fixed
+  before this baseline was recorded.
+- P1 local progress after baseline: Cat Brain semantic check preview and adapter
+  runner drain readiness preview are implemented and covered by focused
+  regressions.
+
+P0 status: complete for local development baseline. P1 remains active.
+
+### P1 Governance Preview Layer
+
+Goal: complete read-only governance automation before any real runtime worker
+execution.
+
+Required outputs:
+
+- Cat Brain semantic check preview over manager artifacts, receipts, readiness,
+  rollback anchors, blockers, and unresolved evidence gaps: implemented locally;
+- Cat Claw package audit preview over package structure, option evidence,
+  delivery boundary, controls, and token redaction: implemented locally;
+- read-only production/runtime drain readiness inspection for v2 adapter jobs:
+  implemented locally;
+- no Human Gate creation, Telegram delivery, runtime dispatch, queue drain, or
+  workflow state mutation from these preview surfaces.
+
+Completion criteria:
+
+- preview actions are registered, read-only, and covered by focused regression
+  tests;
+- previews report zero writes and reject ambiguous selectors;
+- docs record limitations and operator handoff.
+
+### P2 Fixed Template Productionization
+
+Goal: turn daily trading workflow intent into governed reusable templates
+without enabling automatic live selection.
+
+Required outputs:
+
+- draft daily trading workflow template families;
+- evaluation fixtures and scoring criteria;
+- promotion/rollback policy evidence;
+- high-risk default promotion Human Gate requirements.
+
+Local progress after P1:
+
+- `workflow.template.daily_trading_catalog.preview` provides candidate-only
+  daily trading template drafts for morning readiness, intraday signal review,
+  and end-of-day closeout.
+- The catalog is read-only and does not record candidates, instantiate plans,
+  promote defaults, enable automatic live selection, or create trading side
+  effects.
+
+Completion criteria:
+
+- templates remain JSON artifacts, not executable scripts;
+- template instantiation passes only through `workflow.v2.plan.preview/create`;
+- no automatic default template selection for live workflows is enabled.
+
+### P3 Real Worker Adapter Wiring
+
+Goal: wire real worker execution behind existing execute guards.
+
+Required outputs:
+
+- Hermers Docker worker wrapper command integration;
+- Claude Code worker wrapper command integration;
+- dry-run and execute-guard tests before real execution;
+- explicit secret/OAuth/environment injection plan.
+
+Local progress after P2:
+
+- `workflow.v2.adapter_runner.wrapper_contract.preview` provides a read-only
+  P3 wrapper contract for both `hermers_docker_worker` and
+  `claude_code_docker_worker`.
+- The contract exposes backend-specific env keys for configured JSON-array
+  runner commands, pins the production wrapper to
+  `scripts/workflow_v2_external_runner_execute_guard.mjs`, and keeps
+  caller-selected host commands disallowed.
+- `workflow.v2.adapter_runner.drain` now fails closed unless the configured
+  external command uses the execute guard. Internal dummy/dry-run runner
+  scripts are allowed only for local smoke fixtures when the explicit
+  `TRADING_AGENTS_WORKFLOW_V2_ALLOW_INTERNAL_FIXTURE_RUNNER=1` test gate is
+  set.
+- The contract records the secret/OAuth/environment injection plan by
+  reference only: mac-codex remains the OAuth refresh owner, server-side
+  refresh is disallowed, and no secret values are emitted.
+- Real execution remains unavailable until a future executor implementation is
+  added behind `--execute`, the env gate, and Human Gate authorization JSON.
+
+Completion criteria:
+
+- no caller-selected host command execution;
+- real execute remains gated by explicit flag, env gate, and Human Gate
+  authorization JSON;
+- worker output returns through `workflow.v2.worker_result.*` with receipts.
+
+### P4 Runtime Drain Service
+
+Goal: introduce a governed runtime drain service for v2 adapter jobs.
+
+Required outputs:
+
+- service design with lease, limit, backoff, idempotency, log, and failure
+  closure;
+- dry-run/readiness mode;
+- action ledger and rollback procedure;
+- no trading side effects.
+
+Completion criteria:
+
+- service can be disabled without corrupting adapter job state;
+- stuck jobs, expired leases, failed jobs, and retries are auditable;
+- deployment requires separate server evidence and postcheck.
+
+Local progress after P3:
+
+- `workflow.v2.adapter_runner.service_plan.preview` provides a read-only P4
+  service contract for one runtime backend, reusing
+  `workflow.v2.adapter_runner.drain_readiness.preview`.
+- `scripts/workflow_v2_adapter_runner_service.mjs` is a one-shot dry-run runner
+  by default. It only attempts drain when `--execute`,
+  `TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_SERVICE_EXECUTE=1`,
+  `mode=external_command`, valid execute-guard runner config, and the existing
+  generic orchestration/action-policy gate are all satisfied.
+- The preview records disable/rollback procedures, lease/backoff/idempotency
+  policy, action-ledger schema, and zero `wouldCreate` counts for service files,
+  systemd units, job claims, runtime dispatches, Docker, model calls, and
+  trading side effects.
+
+### P5 End-to-End Non-Trading Rehearsal
+
+Goal: prove the full v2 chain without real trading or production side effects.
+
+Required flow:
+
+approved template -> plan/node -> worker -> manager/owner review -> Cat Brain
+audit -> Cat Claw package audit -> Human Gate request -> receipt/readiness
+closeout.
+
+Completion criteria:
+
+- all receipts, artifacts, review rows, Human Gate request rows, outbox rows, and
+  readiness checks are present;
+- no real Telegram delivery or live side effects unless separately authorized;
+- recovery and rollback evidence is complete.
+
+Local progress after P4:
+
+- `scripts/workflow_v2_non_trading_rehearsal_smoke.mjs` provides the explicit P5
+  non-trading rehearsal entrypoint.
+- The smoke runs the existing focused fixed-template plan gate, review-chain,
+  and governance/Human Gate bridge regressions as one named rehearsal, covering
+  approved template instantiation, worker result, manager/owner review, task
+  group package, Cat Brain audit, Cat Claw audit, Human Gate package/request,
+  idempotent replay, and queued outbox without real Telegram delivery, Docker,
+  model calls, or trading side effects.
+
+### P6 Trading Pre-Execution Integration
+
+Goal: connect only to deterministic paper/dry-run `trading_core` handoff.
+
+Required outputs:
+
+- typed `executable_trade_intent` / paper handoff contract;
+- risk decision and Human Gate binding;
+- idempotency key and side-effect ledger coverage;
+- paper smoke and fail-closed behavior.
+
+Completion criteria:
+
+- no broker/live trading credentials in workflow;
+- no live order placement;
+- uncertain side effects enter `side_effect_uncertain` and require human review.
+
+Local progress after P5:
+
+- `scripts/workflow_v2_trading_pre_execution_smoke.mjs` provides the explicit
+  P6 paper-only pre-execution rehearsal entrypoint.
+- The smoke runs the existing focused trade-chain guardrail and v2
+  permission/console-gate regressions as one named P6 rehearsal, covering
+  Human Gate binding, Cat Tail pre-order risk decision, paper
+  `executable_trade_intent`, idempotency replay/conflict, live-execution
+  fail-closed behavior, `trading_core.receipt` transition guardrails, and
+  `side_effect_uncertain` blocking for trading actions.
+- The smoke is included in release smoke capture and reports no broker
+  credentials, no live broker adapter, no live order placement, and no live
+  trading. The separate `npm run smoke:trading-core` remains the deterministic
+  paper bridge check when a local `trading_core` checkout is available.
+
+### P7 Production Release Governance
+
+Goal: release a deployable v2 production candidate through Git and governed
+server rollout.
+
+Required outputs:
+
+- GitHub commit/tag/release notes;
+- dev-server fast-forward deploy;
+- release smoke and OpenClaw postchecks;
+- production readiness checklist;
+- rollback plan and evidence artifact.
+
+Completion criteria:
+
+- active checkout is aligned by Git, not manual copy;
+- server evidence path is recorded;
+- no Gateway restart, production migration, live Telegram delivery, or trading
+  action occurs without explicit authorization and Human Gate where required.
+
+Local release-candidate governance:
+
+- This local P0-P7 candidate is not automatically committed, pushed, tagged, or
+  deployed. GitHub commit/tag/release and dev-server fast-forward rollout remain
+  explicit operator actions.
+- Minimum local candidate quality gates:
+  - `node scripts/workflow_v2_non_trading_rehearsal_smoke.mjs`;
+  - `node scripts/workflow_v2_trading_pre_execution_smoke.mjs`;
+  - `npm run smoke:trading-core`;
+  - `npm run check`;
+  - `npm run smoke:release -- --run-id <local-v2-p0-p7-candidate>`;
+  - `git diff --check`;
+  - independent subagent review for behavior-affecting P5/P6 changes.
+- Dev-server rollout, if explicitly authorized later, must use GitHub
+  fast-forward only and then run server release smoke plus OpenClaw postchecks.
+  Manual copy, `scp` replacement, Gateway restart, production migration, live
+  Telegram delivery, and live trading remain out of scope for this local
+  candidate.
+
 ## Current Problem
 
 - `src/workflow.js` is over 28k lines. The v2 implementation alone spans roughly
@@ -295,6 +581,14 @@ Local landed shape:
   runner command is configured, and a redacted `runnerCommandConfig`
   diagnostic object with environment source, executable, argc, and config
   errors.
+- `workflow.v2.adapter_runner.wrapper_contract.preview` reports the governed
+  wrapper command contract for Hermers Docker and Claude Code worker backends,
+  including env keys, execute-guard requirements, return path, and secret/OAuth
+  injection policy without executing commands or emitting secret values.
+- Production external runner drain validates the configured command before
+  claiming work: non-guard scripts fail closed, `runnerCwd` from caller input is
+  ignored, and subprocess cwd is fixed to the plugin repo root to avoid
+  relative-path spoofing.
 - `workflow.v2.adapter_runner.drain` supports the existing `mock` mode and a new
   `external_command` mode.
 - `external_command` mode writes a bounded request JSON artifact for a wrapper

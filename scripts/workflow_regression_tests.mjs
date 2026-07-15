@@ -4307,6 +4307,138 @@ async function testWorkflowV2AdapterRunnerDrain() {
   });
   assert.equal(runnerPreview.count, 1);
   assert.equal(runnerPreview.jobs[0].workerRunId, successWorker.workerRun.workerRunId);
+  const wrapperContractCountsBefore = {
+    queuedJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"),
+    runningJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='running'"),
+    infoItems: sqliteCount(dbFile, "workflow_v2_info_items")
+  };
+  const wrapperContract = await runAction(root, {
+    action: "workflow.v2.adapter_runner.wrapper_contract.preview",
+    generatedAt: "2026-07-04T01:00:02.000Z"
+  });
+  assert.equal(wrapperContract.valid, true);
+  assert.equal(wrapperContract.readOnly, true);
+  assert.equal(wrapperContract.contracts.length, 2);
+  assert.equal(wrapperContract.wouldCreate.dockerContainers, 0);
+  assert.equal(wrapperContract.wouldCreate.modelCalls, 0);
+  assert.equal(wrapperContract.wouldCreate.workflowStateMutations, 0);
+  assert.equal(wrapperContract.rollout.requiresHumanGateBeforeRealExecute, true);
+  assert.equal(wrapperContract.rollout.requiresEnvGateBeforeRealExecute, true);
+  assert.equal(wrapperContract.rollout.requiresExecutorImplementationBeforeRealExecute, true);
+  for (const contract of wrapperContract.contracts) {
+    assert.equal(contract.command.callerCommandAllowed, false);
+    assert.equal(contract.command.directDatabaseWritesAllowed, false);
+    assert.equal(contract.runnerCommandEnv.valueFormat, "json_array");
+    assert.equal(contract.executeGuard.script, "scripts/workflow_v2_external_runner_execute_guard.mjs");
+    assert.equal(contract.executeGuard.realExecutionImplemented, false);
+    assert.equal(contract.executeGuard.executeFlagRequired, true);
+    assert.equal(contract.executeGuard.envGateRequired, true);
+    assert.equal(contract.executeGuard.humanGateAuthorizationJsonRequired, true);
+    assert.equal(contract.returnContract.successPath, "workflow.v2.worker_result.submit");
+    assert.equal(contract.returnContract.failPath, "workflow.v2.worker_result.fail");
+    assert.equal(contract.returnContract.directDatabaseWritesAllowed, false);
+    assert.equal(contract.secretInjectionPlan.valuesIncluded, false);
+    assert.equal(contract.secretInjectionPlan.oauth.refreshOwner, "mac-codex");
+    assert.equal(contract.secretInjectionPlan.oauth.serverRefreshAllowed, false);
+    assert.equal(contract.safetyInvariants.callerSelectedHostCommandAllowed, false);
+    assert.equal(contract.safetyInvariants.workflowSemanticAdaptationAllowed, false);
+  }
+  const wrapperContractAlias = await runAction(root, {
+    action: "workflow.v2.wrapper-contract.preview",
+    runtimeBackend: "claude_code_docker_worker",
+    generatedAt: "2026-07-04T01:00:02.000Z"
+  });
+  assert.equal(wrapperContractAlias.action, "workflow.v2.adapter_runner.wrapper_contract.preview");
+  assert.deepEqual(wrapperContractAlias.requestedBackends, ["claude_code_docker_worker"]);
+  assert.equal(wrapperContractAlias.contracts[0].runnerKind, "claude_code");
+  assert.deepEqual({
+    queuedJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"),
+    runningJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='running'"),
+    infoItems: sqliteCount(dbFile, "workflow_v2_info_items")
+  }, wrapperContractCountsBefore);
+  const servicePlanCountsBefore = {
+    queuedJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"),
+    runningJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='running'"),
+    infoItems: sqliteCount(dbFile, "workflow_v2_info_items")
+  };
+  const servicePlan = await runAction(root, {
+    action: "workflow.v2.adapter_runner.service_plan.preview",
+    runtimeBackend: "hermers_docker_worker",
+    mode: "mock",
+    limit: 1,
+    generatedAt: "2026-07-04T01:00:02.000Z"
+  });
+  assert.equal(servicePlan.valid, false);
+  assert.equal(servicePlan.readOnly, true);
+  assert.equal(servicePlan.service.disabledByDefault, true);
+  assert.equal(servicePlan.service.executeGateEnv, "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_SERVICE_EXECUTE");
+  assert.equal(servicePlan.service.drainAction, "workflow.v2.adapter_runner.drain");
+  assert.equal(servicePlan.controls.actionLedger.secretValuesIncluded, false);
+  assert.equal(servicePlan.wouldCreate.systemdUnits, 0);
+  assert.equal(servicePlan.wouldCreate.adapterJobClaims, 0);
+  assert.equal(Boolean(servicePlan.violations.some((item) => item.key === "service_mode_external_command")), true);
+  const servicePlanAlias = await runAction(root, {
+    action: "workflow.v2.drain-service.preview",
+    runtimeBackend: "hermers_docker_worker",
+    mode: "mock",
+    limit: 1,
+    generatedAt: "2026-07-04T01:00:02.000Z"
+  });
+  assert.equal(servicePlanAlias.action, "workflow.v2.adapter_runner.service_plan.preview");
+  assert.equal(servicePlanAlias.valid, false);
+  assert.deepEqual({
+    queuedJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"),
+    runningJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='running'"),
+    infoItems: sqliteCount(dbFile, "workflow_v2_info_items")
+  }, servicePlanCountsBefore);
+  const drainReadinessCountsBefore = {
+    queuedJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"),
+    runningJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='running'"),
+    infoItems: sqliteCount(dbFile, "workflow_v2_info_items")
+  };
+  const drainReadinessPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain_readiness.preview",
+    runtimeBackend: "hermers_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:00:02.000Z"
+  });
+  assert.equal(drainReadinessPreview.valid, true);
+  assert.equal(drainReadinessPreview.readOnly, true);
+  assert.equal(drainReadinessPreview.readiness.readyToDrain, true);
+  assert.equal(drainReadinessPreview.wouldCreate.adapterJobClaims, 0);
+  assert.equal(drainReadinessPreview.runnerPreview.count, 1);
+  const drainReadinessAliasPreview = await runAction(root, {
+    action: "workflow.v2.drain-readiness.preview",
+    runtimeBackend: "hermers_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:00:02.000Z"
+  });
+  assert.equal(drainReadinessAliasPreview.action, "workflow.v2.adapter_runner.drain_readiness.preview");
+  assert.equal(drainReadinessAliasPreview.valid, true);
+  for (const alias of ["workflow.v2.adapter-runner.drain-readiness.preview", "workflow.v2.drain_readiness.preview"]) {
+    const aliasPreview = await runAction(root, {
+      action: alias,
+      runtimeBackend: "hermers_docker_worker",
+      limit: 1,
+      generatedAt: "2026-07-04T01:00:02.000Z"
+    });
+    assert.equal(aliasPreview.action, "workflow.v2.adapter_runner.drain_readiness.preview");
+    assert.equal(aliasPreview.valid, true);
+    assert.equal(aliasPreview.readOnly, true);
+    assert.equal(aliasPreview.wouldCreate.adapterJobClaims, 0);
+  }
+  const unscopedDrainReadinessPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain_readiness.preview",
+    limit: 1,
+    generatedAt: "2026-07-04T01:00:02.000Z"
+  });
+  assert.equal(unscopedDrainReadinessPreview.valid, false);
+  assert.equal(Boolean(unscopedDrainReadinessPreview.violations.some((item) => item.key === "runtime_backend_scoped")), true);
+  assert.deepEqual({
+    queuedJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"),
+    runningJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='running'"),
+    infoItems: sqliteCount(dbFile, "workflow_v2_info_items")
+  }, drainReadinessCountsBefore);
   const successDrain = await runAction(root, {
     action: "workflow.v2.adapter_runner.drain",
     runtimeBackend: "hermers_docker_worker",
@@ -4373,10 +4505,14 @@ await fs.writeFile(outputFile, JSON.stringify({
   });
   const externalRunnerEnvKey = "TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_RUNNER_CMD";
   const genericRunnerEnvKey = "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD";
+  const fixtureRunnerGateEnvKey = "TRADING_AGENTS_WORKFLOW_V2_ALLOW_INTERNAL_FIXTURE_RUNNER";
   const previousExternalRunnerCommand = process.env[externalRunnerEnvKey];
   const previousGenericRunnerCommand = process.env[genericRunnerEnvKey];
+  const previousFixtureRunnerGate = process.env[fixtureRunnerGateEnvKey];
+  const fixtureExternalRunnerScript = path.join(process.cwd(), "scripts", "workflow_v2_external_runner_dummy.mjs");
   delete process.env[externalRunnerEnvKey];
   delete process.env[genericRunnerEnvKey];
+  delete process.env[fixtureRunnerGateEnvKey];
   const inputCommandPreview = await runAction(root, {
     action: "workflow.v2.adapter_runner.preview",
     mode: "external_command",
@@ -4441,13 +4577,60 @@ await fs.writeFile(outputFile, JSON.stringify({
   assert.equal(externalPreview.runnerCommandConfig.source, externalRunnerEnvKey);
   assert.equal(externalPreview.runnerCommandConfig.executable, process.execPath);
   assert.equal(externalPreview.runnerCommandConfig.argc, 2);
-  assert.equal(externalPreview.runnerCommandConfig.errors.length, 0);
+  assert.equal(externalPreview.runnerCommandConfig.contract.executeGuard, false);
+  assert.equal(externalPreview.runnerCommandConfig.errors[0].code, "external_runner_execute_guard_required");
   assert.equal(externalPreview.count, 1);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.adapter_runner.drain",
+      mode: "external_command",
+      runtimeBackend: "claude_code_docker_worker",
+      runnerId: "external-runner-temp-script-rejected",
+      limit: 1,
+      leaseMs: 30_000,
+      generatedAt: "2026-07-04T01:05:02.500Z"
+    }),
+    /must use scripts\/workflow_v2_external_runner_execute_guard\.mjs/
+  );
+  process.env[externalRunnerEnvKey] = JSON.stringify(["/tmp/node", path.join(process.cwd(), "scripts", "workflow_v2_external_runner_execute_guard.mjs")]);
+  const spoofedNodePreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:05:02.600Z"
+  });
+  assert.equal(spoofedNodePreview.runnerCommandConfigured, true);
+  assert.equal(spoofedNodePreview.runnerCommandConfig.errors[0].code, "external_runner_executable_not_allowed");
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.adapter_runner.drain",
+      mode: "external_command",
+      runtimeBackend: "claude_code_docker_worker",
+      runnerId: "external-runner-spoofed-node-rejected",
+      limit: 1,
+      leaseMs: 30_000,
+      generatedAt: "2026-07-04T01:05:02.650Z"
+    }),
+    /process\.execPath/
+  );
+  process.env[fixtureRunnerGateEnvKey] = "1";
+  process.env[externalRunnerEnvKey] = JSON.stringify([process.execPath, fixtureExternalRunnerScript]);
+  const fixtureExternalPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    mode: "external_command",
+    runtimeBackend: "claude_code_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:05:02.750Z"
+  });
+  assert.equal(fixtureExternalPreview.runnerCommandConfig.errors.length, 0);
+  assert.equal(fixtureExternalPreview.runnerCommandConfig.contract.internalFixtureAllowed, true);
   const externalDrain = await runAction(root, {
     action: "workflow.v2.adapter_runner.drain",
     mode: "external_command",
     runtimeBackend: "claude_code_docker_worker",
     runnerId: "external-runner-success",
+    runnerCwd: root,
     limit: 1,
     leaseMs: 30_000,
     generatedAt: "2026-07-04T01:05:03.000Z"
@@ -4462,7 +4645,7 @@ await fs.writeFile(outputFile, JSON.stringify({
   assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${externalWorker.workerRun.workerRunId}' AND status='submitted_for_review' AND lease_owner='' AND lease_until=''`), 1);
   assert.equal(sqliteCount(dbFile, "workflow_session_runs", `run_id='${externalWorker.workerRun.sessionRunId}' AND status='completed'`), 1);
   delete process.env[externalRunnerEnvKey];
-  process.env[genericRunnerEnvKey] = JSON.stringify([process.execPath, externalRunnerScript]);
+  process.env[genericRunnerEnvKey] = JSON.stringify([process.execPath, fixtureExternalRunnerScript]);
   const genericExternalWorker = await runAction(root, {
     action: "workflow.v2.worker_spawn.create",
     workflowId,
@@ -4505,6 +4688,7 @@ await fs.writeFile(outputFile, JSON.stringify({
   });
   assert.equal(genericExternalPreview.runnerCommandConfigured, true);
   assert.equal(genericExternalPreview.runnerCommandConfig.source, genericRunnerEnvKey);
+  assert.equal(genericExternalPreview.runnerCommandConfig.contract.internalFixtureAllowed, true);
   const genericExternalDrain = await runAction(root, {
     action: "workflow.v2.adapter_runner.drain",
     mode: "external_command",
@@ -4595,65 +4779,10 @@ await fs.writeFile(outputFile, JSON.stringify({
   } else {
     process.env[genericRunnerEnvKey] = previousGenericRunnerCommand;
   }
-
-  const badExternalRunnerScript = path.join(root, "external-runner-bad-output.mjs");
-  await fs.writeFile(badExternalRunnerScript, `
-process.stdout.write("not-json");
-`, "utf8");
-  const badExternalWorker = await runAction(root, {
-    action: "workflow.v2.worker_spawn.create",
-    workflowId,
-    planId: "plan-v2-runner",
-    nodeId: "node-v2-runner",
-    managerAgent: "cat_body",
-    sessionId: "session-v2-runner-worker",
-    workerRunId: "worker-v2-runner-external-bad-output",
-    taskInputInfoId: "info-v2-runner-task-input",
-    runtimeBackend: "claude_code_docker_worker",
-    ...v2WorkerDelegation(),
-    maxAttempts: 2,
-    providerModel: "openai-codex/gpt-5.5",
-    receipt: { provider: "openai-codex", model: "gpt-5.5", fallbackAttempts: 0, errorCode: "" },
-    oauth: { expiryOk: true, refreshOk: true },
-    network: { hostOnlyTailscale: true, wslTailscaledActive: false, directContainerPortExposed: false }
-  });
-  await runAction(root, {
-    action: "workflow.v2.control_loop.tick",
-    workflowId,
-    claimOwner: "test-v2-runner-external-bad-worker",
-    workerLimit: 1,
-    workerLeaseMs: 60_000,
-    generatedAt: "2026-07-04T01:06:00.000Z"
-  });
-  const badExternalLease = sqliteJson(dbFile, `SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM workflow_v2_worker_runs WHERE worker_run_id='${badExternalWorker.workerRun.workerRunId}';`)[0];
-  await runAction(root, {
-    action: "workflow.v2.worker_adapter_job.record",
-    workerRunId: badExternalWorker.workerRun.workerRunId,
-    leaseOwner: badExternalLease.leaseOwner,
-    leaseUntil: badExternalLease.leaseUntil,
-    generatedAt: "2026-07-04T01:06:01.000Z"
-  });
-  const previousBadExternalRunnerCommand = process.env[externalRunnerEnvKey];
-  process.env[externalRunnerEnvKey] = JSON.stringify([process.execPath, badExternalRunnerScript]);
-  const badExternalDrain = await runAction(root, {
-    action: "workflow.v2.adapter_runner.drain",
-    mode: "external_command",
-    runtimeBackend: "claude_code_docker_worker",
-    runnerId: "external-runner-bad-output",
-    limit: 1,
-    leaseMs: 30_000,
-    generatedAt: "2026-07-04T01:06:03.000Z"
-  });
-  assert.equal(badExternalDrain.submittedCount, 0);
-  assert.equal(badExternalDrain.failedCount, 1);
-  assert.equal(badExternalDrain.results[0].status, "error");
-  assert.match(badExternalDrain.results[0].error, /JSON|output/i);
-  assert.equal(badExternalDrain.results[0].failure.job.status, "failed");
-  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_runs", `worker_run_id='${badExternalWorker.workerRun.workerRunId}' AND status='failed' AND lease_owner='' AND lease_until=''`), 1);
-  if (previousBadExternalRunnerCommand === undefined) {
-    delete process.env[externalRunnerEnvKey];
+  if (previousFixtureRunnerGate === undefined) {
+    delete process.env[fixtureRunnerGateEnvKey];
   } else {
-    process.env[externalRunnerEnvKey] = previousBadExternalRunnerCommand;
+    process.env[fixtureRunnerGateEnvKey] = previousFixtureRunnerGate;
   }
 
   const failWorker = await runAction(root, {
@@ -7066,6 +7195,38 @@ async function testWorkflowTemplateSelfEvolution() {
   const dbFile = path.join(root, "tracking.db");
   const templateId = "template.workflow.v2.regression.engineering";
 
+  const dailyCatalogPreview = await runAction(root, {
+    action: "workflow.template.daily-trading-catalog.preview"
+  });
+  assert.equal(dailyCatalogPreview.valid, true);
+  assert.equal(dailyCatalogPreview.readOnly, true);
+  assert.equal(dailyCatalogPreview.count, 3);
+  assert.equal(dailyCatalogPreview.catalogPolicy.status, "draft_candidate_only");
+  assert.equal(dailyCatalogPreview.catalogPolicy.automaticLiveSelection, false);
+  assert.equal(dailyCatalogPreview.wouldCreate.templateSpecs, 0);
+  assert.equal(dailyCatalogPreview.wouldCreate.tradingSideEffects, 0);
+  assert.equal(await pathExists(dbFile), false);
+  for (const alias of ["workflow.template.trading-daily-catalog.preview", "workflow.template.daily_trading.preview"]) {
+    const aliasPreview = await runAction(root, { action: alias });
+    assert.equal(aliasPreview.operation, "workflow.template.daily_trading_catalog.preview");
+    assert.equal(aliasPreview.valid, true);
+    assert.equal(aliasPreview.readOnly, true);
+    assert.equal(aliasPreview.wouldCreate.templateSpecs, 0);
+  }
+  for (const template of dailyCatalogPreview.templates) {
+    assert.equal(template.valid, true);
+    assert.equal(template.errors.length, 0);
+    assert.equal(template.status, "candidate");
+    assert.equal(template.highRisk, true);
+    assert.equal(template.defaultHumanGateRequired, true);
+    assert.equal(template.autoPromote, false);
+    assert.equal(template.defaultTemplateSelectionEnabled, false);
+    assert.equal(template.evalFixtureFamilies.length >= 3, true);
+    assert.equal(template.scoringCriteria.length >= 4, true);
+    assert.equal(template.templateSpec.riskPolicy.liveTradingAllowed, false);
+    assert.equal(template.templateSpec.riskPolicy.sideEffectsAllowed, false);
+  }
+
   const malformedPreview = await runAction(root, {
     action: "workflow.template.preview",
     templateSpec: {
@@ -8160,7 +8321,9 @@ async function testWorkflowV2ReviewChainFocused() {
     workerRunId: worker.workerRun.workerRunId,
     reviewerAgent: "cat_body",
     decision: "accepted",
-    summary: "Worker output accepted by manager."
+    summary: "Worker output accepted by manager.",
+    artifactRefs: ["artifact://workflow-v2/manager-review.json"],
+    receiptRefs: ["receipt://workflow-v2/manager-review"]
   });
   assert.equal(review.review.decision, "accepted");
   await assertRejectsMessage(
@@ -8214,6 +8377,63 @@ async function testWorkflowV2ReviewChainFocused() {
     evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
   });
   assert.equal(taskGroupPackage.taskGroupPackage.status, "ready");
+  const semanticCheckCountsBefore = {
+    catBrainAudits: sqliteCount(dbFile, "workflow_v2_cat_brain_audits"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGate: sqliteCount(dbFile, "human_gate_batches")
+  };
+  const validSemanticCheckPreview = await runAction(root, {
+    action: "workflow.v2.cat_brain_semantic_check.preview",
+    workflowId,
+    planId: "plan-v2-kernel",
+    taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
+    rollbackRefs: ["checkpoint://workflow-v2/pre-cat-brain-audit"],
+    evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
+  });
+  assert.equal(validSemanticCheckPreview.valid, true);
+  assert.equal(validSemanticCheckPreview.readOnly, true);
+  assert.equal(validSemanticCheckPreview.wouldCreate.catBrainAudits, 0);
+  assert.equal(validSemanticCheckPreview.semanticCheck.nextAllowedAction, "workflow.v2.cat_brain_audit.record");
+  assert.equal(validSemanticCheckPreview.checks.find((row) => row.key === "manager_artifacts_present")?.status, "pass");
+  const aliasSemanticCheckPreview = await runAction(root, {
+    action: "workflow.v2.semantic-check.preview",
+    workflowId,
+    planId: "plan-v2-kernel",
+    taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
+    rollbackRefs: ["checkpoint://workflow-v2/pre-cat-brain-audit"]
+  });
+  assert.equal(aliasSemanticCheckPreview.action, "workflow.v2.cat_brain_semantic_check.preview");
+  assert.equal(aliasSemanticCheckPreview.valid, true);
+  const ambiguousSemanticCheckPreview = await runAction(root, {
+    action: "workflow.v2.cat_brain_semantic_check.preview",
+    workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(ambiguousSemanticCheckPreview.valid, false);
+  assert.equal(Boolean(ambiguousSemanticCheckPreview.violations.some((item) => item.key === "exact_selector_present")), true);
+  const mixedSelectorSemanticCheckPreview = await runAction(root, {
+    action: "workflow.v2.cat-brain-semantic-check.preview",
+    workflowId,
+    planId: "plan-v2-kernel",
+    taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
+    ownerReviewId: ownerReview.ownerReview.reviewId,
+    rollbackRefs: ["checkpoint://workflow-v2/pre-cat-brain-audit"]
+  });
+  assert.equal(mixedSelectorSemanticCheckPreview.valid, false);
+  assert.equal(Boolean(mixedSelectorSemanticCheckPreview.violations.some((item) => item.key === "exact_selector_present")), true);
+  const noRollbackSemanticCheckPreview = await runAction(root, {
+    action: "workflow.v2.cat_brain_semantic_check.preview",
+    workflowId,
+    planId: "plan-v2-kernel",
+    taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId
+  });
+  assert.equal(noRollbackSemanticCheckPreview.valid, false);
+  assert.equal(Boolean(noRollbackSemanticCheckPreview.violations.some((item) => item.key === "rollback_anchors_present")), true);
+  assert.deepEqual({
+    catBrainAudits: sqliteCount(dbFile, "workflow_v2_cat_brain_audits"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGate: sqliteCount(dbFile, "human_gate_batches")
+  }, semanticCheckCountsBefore);
   await assertRejectsMessage(
     () => runAction(root, {
       action: "workflow.v2.cat_brain_audit.record",
@@ -8296,6 +8516,102 @@ async function testWorkflowV2GovernanceHumanGateBridgeFocused() {
   assert.equal(humanGatePackage.valid, true);
   assert.equal(humanGatePackage.humanGatePackage.status, "cat_claw_audited");
   assert.equal(humanGatePackage.humanGatePackage.options.length, 2);
+  const packageAuditCountsBefore = {
+    packages: sqliteCount(dbFile, "workflow_v2_human_gate_packages"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGate: sqliteCount(dbFile, "human_gate_batches")
+  };
+  const auditedOptions = workflowV2KernelHumanGateOptions().map((option, index) => ({
+    ...option,
+    evidenceRefs: [`artifact://workflow-v2/package-audit-option-${index + 1}.json`]
+  }));
+  const packageAuditPreview = await runAction(root, {
+    action: "workflow.v2.cat_claw_package_audit.preview",
+    humanGatePackage: {
+      packageId: "package-audit-inline-valid",
+      workflowId,
+      planId: "plan-v2-kernel",
+      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      status: "cat_claw_audited",
+      options: auditedOptions,
+      requiredControls: ["pause", "terminate"],
+      evidenceRefs: ["artifact://workflow-v2/owner-package.json"],
+      payload: {
+        submissionKind: "final_artifact",
+        interactionType: "artifact_acceptance"
+      }
+    }
+  });
+  assert.equal(packageAuditPreview.valid, true);
+  assert.equal(packageAuditPreview.readOnly, true);
+  assert.equal(packageAuditPreview.wouldCreate.runtimeDispatches, 0);
+  assert.equal(packageAuditPreview.checks.find((row) => row.key === "option_evidence_present")?.status, "pass");
+  const aliasPackageAuditPreview = await runAction(root, {
+    action: "workflow.v2.package-audit.preview",
+    humanGatePackage: {
+      packageId: "package-audit-inline-alias",
+      workflowId,
+      planId: "plan-v2-kernel",
+      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      status: "cat_claw_audited",
+      options: auditedOptions,
+      requiredControls: ["pause", "terminate"],
+      evidenceRefs: ["artifact://workflow-v2/owner-package.json"]
+    }
+  });
+  assert.equal(aliasPackageAuditPreview.action, "workflow.v2.cat_claw_package_audit.preview");
+  assert.equal(aliasPackageAuditPreview.valid, true);
+  const ambiguousPackageAuditPreview = await runAction(root, {
+    action: "workflow.v2.cat_claw_package_audit.preview",
+    workflowId,
+    planId: "plan-v2-kernel",
+    sourceCatClawAuditId: catClawAudit.catClawAudit.auditId
+  });
+  assert.equal(ambiguousPackageAuditPreview.valid, false);
+  assert.equal(Boolean(ambiguousPackageAuditPreview.violations.some((item) => item.code === "exact_selector_or_inline_package")), true);
+  const mixedSelectorPackageAuditPreview = await runAction(root, {
+    action: "workflow.v2.cat_claw_package_audit.preview",
+    packageId: humanGatePackage.humanGatePackage.packageId,
+    humanGatePackage: {
+      packageId: "package-audit-inline-mixed",
+      workflowId,
+      planId: "plan-v2-kernel",
+      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      status: "cat_claw_audited",
+      options: auditedOptions,
+      requiredControls: ["pause", "terminate"],
+      evidenceRefs: ["artifact://workflow-v2/owner-package.json"]
+    }
+  });
+  assert.equal(mixedSelectorPackageAuditPreview.valid, false);
+  assert.equal(Boolean(mixedSelectorPackageAuditPreview.violations.some((item) => item.code === "exact_selector_or_inline_package")), true);
+  const poisonedPackageAuditPreview = await runAction(root, {
+    action: "workflow.v2.cat_claw_package_audit.preview",
+    humanGatePackage: {
+      packageId: "package-audit-inline-poisoned",
+      workflowId,
+      planId: "plan-v2-kernel",
+      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      status: "cat_claw_audited",
+      options: auditedOptions,
+      requiredControls: ["pause", "terminate"],
+      evidenceRefs: ["artifact://workflow-v2/owner-package.json"],
+      payload: {
+        delivery: { telegram: true },
+        callbackToken: "tawhg:secret-token-123"
+      }
+    }
+  });
+  assert.equal(poisonedPackageAuditPreview.valid, false);
+  assert.equal(Boolean(poisonedPackageAuditPreview.violations.some((item) => item.code === "delivery_boundary_clean")), true);
+  assert.equal(Boolean(poisonedPackageAuditPreview.violations.some((item) => item.code === "token_redaction_clean")), true);
+  assert.equal(poisonedPackageAuditPreview.humanGatePackage.payload.callbackToken, "[redacted]");
+  assert.equal(JSON.stringify(poisonedPackageAuditPreview).includes("secret-token-123"), false);
+  assert.deepEqual({
+    packages: sqliteCount(dbFile, "workflow_v2_human_gate_packages"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    humanGate: sqliteCount(dbFile, "human_gate_batches")
+  }, packageAuditCountsBefore);
   const interactionInput = {
     packageId: humanGatePackage.humanGatePackage.packageId,
     callerAgent: "cat_claw",
@@ -18769,6 +19085,7 @@ async function testWorkflowV2PermissionAndConsoleGate() {
     assert.equal(WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS.has(action), true, `core generic gate should cover console generic write action ${action}`);
   }
   assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.v2.worker_spawn.preview"), true);
+  assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.v2.adapter_runner.service_plan.preview"), true);
   assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.template.rollback.preview"), true);
   assert.equal(WORKFLOW_POLICY_HARD_GATE_ACTIONS.has("trade.intent"), true);
   assert.equal(WORKFLOW_POLICY_HARD_GATE_ACTIONS.has("workflow.template.promote.record"), true);

@@ -64,7 +64,9 @@ export const WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS = new Set([
   "workflow.v2.owner_review.preview",
   "workflow.v2.task_group_package.preview",
   "workflow.v2.cat_brain_audit.preview",
+  "workflow.v2.cat_brain_semantic_check.preview",
   "workflow.v2.cat_claw_audit.preview",
+  "workflow.v2.cat_claw_package_audit.preview",
   "workflow.v2.human_gate_package.preview",
   "workflow.v2.human_gate_request.preview",
   "workflow.v2.control_loop.preview",
@@ -75,9 +77,13 @@ export const WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS = new Set([
   "workflow.v2.worker_adapter_job.preview",
   "workflow.v2.worker_adapter_job.list",
   "workflow.v2.adapter_runner.preview",
+  "workflow.v2.adapter_runner.wrapper_contract.preview",
+  "workflow.v2.adapter_runner.service_plan.preview",
+  "workflow.v2.adapter_runner.drain_readiness.preview",
   "workflow.v2.worker_result.submit.preview",
   "workflow.v2.worker_result.fail.preview",
-  "workflow.v2.validate"
+  "workflow.v2.validate",
+  "workflow.template.daily_trading_catalog.preview"
 ]);
 
 export const WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS = new Set([
@@ -136,6 +142,7 @@ export const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.session_pack.get",
   "workflow.session_pack.list",
   "workflow.template.preview",
+  "workflow.template.daily_trading_catalog.preview",
   "workflow.template.search",
   "workflow.template.get",
   "workflow.template.instantiate.preview",
@@ -194,7 +201,7 @@ export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.v2.worker_adapter_job.heartbeat": { capability: "workflow.worker.adapter_job", risk: "medium", mutating: true },
   "workflow.v2.worker_adapter_job.release": { capability: "workflow.worker.adapter_job", risk: "medium", mutating: true },
   "workflow.v2.worker_adapter_job.fail": { capability: "workflow.worker.adapter_job", risk: "medium", mutating: true },
-  "workflow.v2.adapter_runner.drain": { capability: "workflow.worker.adapter_runner", risk: "medium", mutating: true },
+  "workflow.v2.adapter_runner.drain": { capability: "workflow.worker.adapter_runner", risk: "high", mutating: true },
   "workflow.v2.worker_result.submit": { capability: "workflow.worker.result", risk: "medium", mutating: true },
   "workflow.v2.worker_result.fail": { capability: "workflow.worker.result", risk: "medium", mutating: true },
   "workflow.v2.manager_review.record": { capability: "workflow.verify", risk: "medium", mutating: true },

@@ -190,6 +190,247 @@ async function workflowTemplatePreview(rootDir, input = {}) {
   };
 }
 
+function workflowTemplateDailyTradingCatalogSpecs() {
+  const sharedPromotionPolicy = {
+    autoPromote: false,
+    defaultPromotionRequires: ["humanGateId", "catBrainAuditId", "catClawAuditId", "evalEvidenceRefs", "rollbackPolicy"],
+    humanGateRequiredForTargets: ["default"],
+    defaultTemplateSelectionEnabled: false
+  };
+  const sharedRollbackPolicy = {
+    restorePreviousDefault: true,
+    disableTemplateVersion: true,
+    preserveArtifacts: true,
+    rollbackRequires: ["humanGateId", "rollbackReason", "previousDefaultVersion"]
+  };
+  return [
+    {
+      schemaVersion: WORKFLOW_TEMPLATE_SCHEMA_VERSION,
+      templateId: "daily-trading.morning-readiness.v1",
+      version: 1,
+      status: "candidate",
+      title: "每日交易盘前 readiness 固定模板",
+      description: "盘前聚合数据新鲜度、运行面 readiness、风险约束和候选关注清单；不产生交易指令。",
+      ownerAgent: "main",
+      tags: ["daily-trading", "morning", "readiness", "paper-only", "candidate"],
+      triggers: {
+        shouldUse: ["trading_day_preopen", "manual_rehearsal"],
+        shouldNotUse: ["live_order_submission", "broker_side_effect"],
+        requiredSignals: ["market_calendar", "data_freshness", "runtime_readiness"],
+        forbiddenSignals: ["unreviewed_trade_intent", "live_broker_credential"]
+      },
+      variables: [
+        { name: "tradeDate", type: "string", required: true, description: "YYYY-MM-DD trading date" },
+        { name: "marketScope", type: "string", required: true, default: "cn-a-share" },
+        { name: "dataFreshnessRef", type: "string", required: true },
+        { name: "riskRunbookRef", type: "string", required: true }
+      ],
+      riskPolicy: { riskTier: "high", tradingMode: "paper_only", liveTradingAllowed: false, sideEffectsAllowed: false },
+      permissionPolicy: { allowedCapabilities: ["workflow.preview", "workflow.verify"], disallowedCapabilities: ["trade.live", "broker.write"] },
+      planSpecSkeleton: {
+        workflowId: "daily-trading-morning-{{tradeDate}}",
+        planId: "daily-trading-morning-readiness-{{tradeDate}}",
+        objective: "完成 {{tradeDate}} {{marketScope}} 盘前 readiness 审计，输出候选关注清单、数据/运行面风险和 Human Gate 所需证据；不得生成可执行交易指令。",
+        taskOwnerAgent: "main",
+        participantManagers: ["cat_heart", "cat_body", "cat_nose"],
+        orchestrationPattern: "parallel_manager_sections",
+        riskTier: "high",
+        executionMode: "paper_only",
+        variables: { tradeDate: "{{tradeDate}}", marketScope: "{{marketScope}}" },
+        acceptanceCriteria: [
+          "数据新鲜度证据引用存在",
+          "运行面 readiness 证据引用存在",
+          "风险约束和禁用 live trading 声明存在",
+          "所有输出停留在候选研究/准备层"
+        ],
+        payload: {
+          templateFamily: "daily-trading",
+          stage: "morning_readiness",
+          dataFreshnessRef: "{{dataFreshnessRef}}",
+          riskRunbookRef: "{{riskRunbookRef}}"
+        }
+      },
+      evalPolicy: {
+        fixtureFamilies: ["freshness_gap", "runtime_degraded", "normal_preopen"],
+        scoringCriteria: ["evidenceCompleteness", "timestampCompliance", "failClosedLiveTrading", "humanGateReadiness"],
+        minimumRewardScore: 0.85
+      },
+      promotionPolicy: sharedPromotionPolicy,
+      rollbackPolicy: sharedRollbackPolicy,
+      audit: { createdBy: "main", catalogStatus: "draft_candidate", generatedBy: "workflow.template.daily_trading_catalog.preview" }
+    },
+    {
+      schemaVersion: WORKFLOW_TEMPLATE_SCHEMA_VERSION,
+      templateId: "daily-trading.intraday-signal-review.v1",
+      version: 1,
+      status: "candidate",
+      title: "每日交易盘中信号复核固定模板",
+      description: "盘中复核研究信号、异常数据和候选交易意图；只能产出需 Human Gate 的结构化候选，不触发交易。",
+      ownerAgent: "main",
+      tags: ["daily-trading", "intraday", "signal-review", "paper-only", "candidate"],
+      triggers: {
+        shouldUse: ["intraday_signal_batch", "manual_signal_review"],
+        shouldNotUse: ["raw_chat_trade_command", "live_order_submission"],
+        requiredSignals: ["signal_batch_ref", "risk_context_ref"],
+        forbiddenSignals: ["free_text_order", "broker_secret"]
+      },
+      variables: [
+        { name: "tradeDate", type: "string", required: true },
+        { name: "signalBatchRef", type: "string", required: true },
+        { name: "riskContextRef", type: "string", required: true },
+        { name: "maxCandidates", type: "integer", required: false, default: 5 }
+      ],
+      riskPolicy: { riskTier: "high", tradingMode: "paper_only", liveTradingAllowed: false, sideEffectsAllowed: false, requiresHumanGateForTradeIntent: true },
+      permissionPolicy: { allowedCapabilities: ["workflow.preview", "workflow.verify"], disallowedCapabilities: ["trade.live", "broker.write"] },
+      planSpecSkeleton: {
+        workflowId: "daily-trading-intraday-{{tradeDate}}",
+        planId: "daily-trading-intraday-signal-review-{{tradeDate}}",
+        objective: "复核 {{tradeDate}} 盘中信号批次 {{signalBatchRef}}，最多形成 {{maxCandidates}} 个结构化候选意图；所有候选必须绑定风险上下文 {{riskContextRef}} 且等待 Human Gate。",
+        taskOwnerAgent: "main",
+        participantManagers: ["cat_heart", "cat_body", "cat_eyes", "cat_nose"],
+        orchestrationPattern: "parallel_manager_sections",
+        riskTier: "high",
+        executionMode: "paper_only",
+        acceptanceCriteria: [
+          "信号批次引用存在",
+          "每个候选都有风险上下文和过期时间",
+          "没有 live broker 或下单副作用",
+          "需要交易执行时只输出 Human Gate 候选表单"
+        ],
+        payload: {
+          templateFamily: "daily-trading",
+          stage: "intraday_signal_review",
+          signalBatchRef: "{{signalBatchRef}}",
+          riskContextRef: "{{riskContextRef}}",
+          maxCandidates: "{{maxCandidates}}"
+        }
+      },
+      evalPolicy: {
+        fixtureFamilies: ["conflicting_signals", "stale_signal", "normal_signal_batch"],
+        scoringCriteria: ["riskBindingCompleteness", "candidateExpiry", "failClosedLiveTrading", "evidenceTraceability"],
+        minimumRewardScore: 0.88
+      },
+      promotionPolicy: sharedPromotionPolicy,
+      rollbackPolicy: sharedRollbackPolicy,
+      audit: { createdBy: "main", catalogStatus: "draft_candidate", generatedBy: "workflow.template.daily_trading_catalog.preview" }
+    },
+    {
+      schemaVersion: WORKFLOW_TEMPLATE_SCHEMA_VERSION,
+      templateId: "daily-trading.eod-closeout.v1",
+      version: 1,
+      status: "candidate",
+      title: "每日交易盘后收口固定模板",
+      description: "盘后汇总 paper 结果、receipt、数据缺口和次日待办；不修改持仓或订单状态。",
+      ownerAgent: "main",
+      tags: ["daily-trading", "eod", "closeout", "paper-only", "candidate"],
+      triggers: {
+        shouldUse: ["trading_day_close", "manual_closeout"],
+        shouldNotUse: ["order_reconciliation_write", "broker_state_mutation"],
+        requiredSignals: ["paper_receipt_refs", "data_quality_summary"],
+        forbiddenSignals: ["live_position_write", "credential_payload"]
+      },
+      variables: [
+        { name: "tradeDate", type: "string", required: true },
+        { name: "paperReceiptRefs", type: "array", required: true },
+        { name: "dataQualityRef", type: "string", required: true }
+      ],
+      riskPolicy: { riskTier: "high", tradingMode: "paper_only", liveTradingAllowed: false, sideEffectsAllowed: false },
+      permissionPolicy: { allowedCapabilities: ["workflow.preview", "workflow.verify"], disallowedCapabilities: ["trade.live", "broker.write", "position.write"] },
+      planSpecSkeleton: {
+        workflowId: "daily-trading-eod-{{tradeDate}}",
+        planId: "daily-trading-eod-closeout-{{tradeDate}}",
+        objective: "完成 {{tradeDate}} 盘后收口：汇总 paper receipt、数据质量、未决风险和次日待办；不得修改持仓、订单或 broker 状态。",
+        taskOwnerAgent: "main",
+        participantManagers: ["cat_heart", "cat_body", "cat_penclaw"],
+        orchestrationPattern: "manager_worker",
+        riskTier: "high",
+        executionMode: "paper_only",
+        acceptanceCriteria: [
+          "paper receipt 引用完整",
+          "数据质量引用存在",
+          "未决风险和次日待办分离",
+          "没有持仓、订单或 broker 写副作用"
+        ],
+        payload: {
+          templateFamily: "daily-trading",
+          stage: "eod_closeout",
+          paperReceiptRefs: "{{paperReceiptRefs}}",
+          dataQualityRef: "{{dataQualityRef}}"
+        }
+      },
+      evalPolicy: {
+        fixtureFamilies: ["missing_receipts", "data_gap", "normal_closeout"],
+        scoringCriteria: ["receiptCompleteness", "dataQualityTraceability", "sideEffectAbsence", "nextDayActionClarity"],
+        minimumRewardScore: 0.85
+      },
+      promotionPolicy: sharedPromotionPolicy,
+      rollbackPolicy: sharedRollbackPolicy,
+      audit: { createdBy: "main", catalogStatus: "draft_candidate", generatedBy: "workflow.template.daily_trading_catalog.preview" }
+    }
+  ].map((templateSpec) => workflowTemplateNormalizeSpec({ templateSpec }, { defaultStatus: "candidate" }));
+}
+
+async function workflowTemplateDailyTradingCatalogPreview(rootDir, input = {}) {
+  const paths = workflowPaths(rootDir, input);
+  const specs = workflowTemplateDailyTradingCatalogSpecs();
+  const templates = specs.map((spec) => {
+    const validation = workflowTemplateValidation(spec);
+    const highRisk = workflowTemplateHighRisk(spec);
+    const defaultHumanGateRequired = workflowV2JsonArray(spec.promotionPolicy?.humanGateRequiredForTargets, []).includes("default")
+      || workflowV2JsonArray(spec.promotionPolicy?.human_gate_required_for_targets, []).includes("default")
+      || workflowV2JsonArray(spec.promotionPolicy?.defaultPromotionRequires, []).includes("humanGateId");
+    return {
+      templateId: spec.templateId,
+      version: spec.version,
+      status: spec.status,
+      title: spec.title,
+      ownerAgent: spec.ownerAgent,
+      tags: spec.tags,
+      riskTier: spec.riskPolicy?.riskTier || "",
+      highRisk,
+      defaultHumanGateRequired,
+      autoPromote: boolOption(spec.promotionPolicy?.autoPromote ?? spec.promotionPolicy?.auto_promote, false),
+      defaultTemplateSelectionEnabled: boolOption(spec.promotionPolicy?.defaultTemplateSelectionEnabled ?? spec.promotionPolicy?.default_template_selection_enabled, false),
+      evalFixtureFamilies: workflowV2JsonArray(spec.evalPolicy?.fixtureFamilies ?? spec.evalPolicy?.fixture_families, []),
+      scoringCriteria: workflowV2JsonArray(spec.evalPolicy?.scoringCriteria ?? spec.evalPolicy?.scoring_criteria, []),
+      rollbackPolicy: workflowTemplateRedact(spec.rollbackPolicy),
+      valid: validation.valid,
+      errors: validation.errors,
+      advisoryChecks: validation.advisoryChecks,
+      templateSpec: workflowTemplateRedact(spec)
+    };
+  });
+  const errors = templates.flatMap((item) => item.errors.map((error) => ({ ...error, templateId: item.templateId })));
+  return {
+    operation: "workflow.template.daily_trading_catalog.preview",
+    schemaVersion: "workflow_template_daily_trading_catalog_preview.v1",
+    dryRun: true,
+    previewOnly: true,
+    readOnly: true,
+    valid: errors.length === 0,
+    errors,
+    templates,
+    count: templates.length,
+    catalogPolicy: {
+      status: "draft_candidate_only",
+      recordCandidates: false,
+      promoteCandidates: false,
+      automaticLiveSelection: false,
+      liveTradingAllowed: false
+    },
+    wouldCreate: {
+      templateSpecs: 0,
+      templateVersions: 0,
+      templateEvents: 0,
+      defaultTemplateSelections: 0,
+      workflowPlans: 0,
+      tradingSideEffects: 0
+    },
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
 async function workflowTemplateRecordCandidate(rootDir, input = {}) {
   const preview = await workflowTemplatePreview(rootDir, input);
   if (!preview.valid) throw new Error(`workflow template candidate is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
@@ -835,6 +1076,7 @@ async function workflowTemplateExtractRecord(rootDir, input = {}) {
 
   return {
     workflowTemplatePreview,
+    workflowTemplateDailyTradingCatalogPreview,
     workflowTemplateRecordCandidate,
     workflowTemplateSearch,
     workflowTemplateGet,

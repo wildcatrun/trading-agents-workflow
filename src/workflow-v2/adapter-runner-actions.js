@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   boolOption,
   firstText,
@@ -46,6 +47,15 @@ import {
   workflowV2AdapterManifestContractErrorMessage,
   workflowV2AdapterManifestContractIssues
 } from "./adapter-manifest-contract.js";
+
+const WORKFLOW_V2_ADAPTER_RUNNER_MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const WORKFLOW_V2_ADAPTER_RUNNER_REPO_ROOT = path.resolve(WORKFLOW_V2_ADAPTER_RUNNER_MODULE_DIR, "../..");
+const WORKFLOW_V2_ADAPTER_RUNNER_SCRIPTS_DIR = path.join(WORKFLOW_V2_ADAPTER_RUNNER_REPO_ROOT, "scripts");
+const WORKFLOW_V2_EXTERNAL_RUNNER_EXECUTE_GUARD_FILE = path.join(WORKFLOW_V2_ADAPTER_RUNNER_SCRIPTS_DIR, "workflow_v2_external_runner_execute_guard.mjs");
+const WORKFLOW_V2_EXTERNAL_RUNNER_FIXTURE_FILES = new Set([
+  path.join(WORKFLOW_V2_ADAPTER_RUNNER_SCRIPTS_DIR, "workflow_v2_external_runner_dummy.mjs"),
+  path.join(WORKFLOW_V2_ADAPTER_RUNNER_SCRIPTS_DIR, "workflow_v2_external_runner_dry_run.mjs")
+]);
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -338,6 +348,48 @@ function workflowV2CommandArray(value) {
   return [text];
 }
 
+function workflowV2ResolveRunnerScript(command = []) {
+  const scriptArg = firstText(command[1]);
+  if (!scriptArg) return "";
+  const resolved = path.isAbsolute(scriptArg)
+    ? path.resolve(scriptArg)
+    : path.resolve(WORKFLOW_V2_ADAPTER_RUNNER_REPO_ROOT, scriptArg);
+  return resolved;
+}
+
+function workflowV2ExternalRunnerCommandContract(command = []) {
+  const executable = firstText(command[0]);
+  const runnerScript = workflowV2ResolveRunnerScript(command);
+  const executableAllowed = executable === process.execPath;
+  const executeGuard = runnerScript === WORKFLOW_V2_EXTERNAL_RUNNER_EXECUTE_GUARD_FILE;
+  const internalFixture = WORKFLOW_V2_EXTERNAL_RUNNER_FIXTURE_FILES.has(runnerScript);
+  const fixtureGate = process.env.TRADING_AGENTS_WORKFLOW_V2_ALLOW_INTERNAL_FIXTURE_RUNNER === "1";
+  const internalFixtureAllowed = internalFixture && fixtureGate;
+  const contractCompliant = executableAllowed && executeGuard;
+  const allowed = contractCompliant || (executableAllowed && internalFixtureAllowed);
+  const errors = [];
+  if (!executableAllowed) {
+    errors.push(workflowV2ValidationError("external_runner_executable_not_allowed", "workflow v2 external runner command must use process.execPath"));
+  }
+  if (!runnerScript) {
+    errors.push(workflowV2ValidationError("external_runner_script_missing", "workflow v2 external runner command must include a governed runner script"));
+  } else if (!executeGuard && !internalFixtureAllowed) {
+    errors.push(workflowV2ValidationError("external_runner_execute_guard_required", "workflow v2 external runner command must use scripts/workflow_v2_external_runner_execute_guard.mjs"));
+  }
+  return {
+    allowed,
+    contractCompliant,
+    executeGuard,
+    internalFixture,
+    internalFixtureAllowed,
+    executableAllowed,
+    runnerScript,
+    requiredRunnerScript: WORKFLOW_V2_EXTERNAL_RUNNER_EXECUTE_GUARD_FILE,
+    fixtureGateEnvKey: "TRADING_AGENTS_WORKFLOW_V2_ALLOW_INTERNAL_FIXTURE_RUNNER",
+    errors
+  };
+}
+
 function workflowV2InputRunnerCommandProvided(input = {}) {
   return input.runnerCommand !== undefined
     || input.runner_command !== undefined
@@ -372,13 +424,16 @@ function workflowV2ExternalRunnerCommandConfig(input = {}, runtimeBackend = "") 
     try {
       const command = workflowV2CommandArray(candidate.value);
       if (command.length) {
+        const contract = workflowV2ExternalRunnerCommandContract(command);
         return {
           ...config,
           configured: true,
           source: candidate.source,
           executable: command[0],
           argc: command.length,
-          command
+          command,
+          contract,
+          errors: contract.errors
         };
       }
     } catch (error) {
@@ -489,7 +544,7 @@ async function workflowV2AdapterRunnerExternalCommand(paths, job = {}, manifest 
     WORKFLOW_V2_RUNTIME_BACKEND: runtimeBackend,
     WORKFLOW_V2_RUNNER_ID: runnerId
   };
-  const cwd = firstText(input.runnerCwd, input.runner_cwd, paths.root);
+  const cwd = WORKFLOW_V2_ADAPTER_RUNNER_REPO_ROOT;
   const timeout = workflowV2ExternalRunnerTimeoutMs(input);
   const maxBuffer = Math.max(64 * 1024, Math.min(16 * 1024 * 1024, Number(input.runnerMaxBuffer ?? input.runner_max_buffer ?? 1024 * 1024) || 1024 * 1024));
   const result = await execFileAsync(commandConfig.command[0], args, { cwd, env, timeout, maxBuffer });
@@ -513,6 +568,10 @@ async function workflowV2AdapterRunnerExternalCommand(paths, job = {}, manifest 
     command: {
       source: commandConfig.source,
       executable: commandConfig.command[0],
+      runnerScript: commandConfig.contract?.runnerScript || "",
+      contractCompliant: Boolean(commandConfig.contract?.contractCompliant),
+      executeGuard: Boolean(commandConfig.contract?.executeGuard),
+      internalFixtureAllowed: Boolean(commandConfig.contract?.internalFixtureAllowed),
       argsAppended: appendRequestOutputArgs,
       timeoutMs: timeout
     },
@@ -1349,6 +1408,16 @@ LIMIT ${capacity.effectiveLimit};`, { json: true });
       inputCommandRejected: runnerCommandConfig.inputCommandRejected,
       backendEnvKey: runnerCommandConfig.backendEnvKey || "",
       genericEnvKey: runnerCommandConfig.genericEnvKey || "",
+      contract: runnerCommandConfig.contract ? {
+        allowed: runnerCommandConfig.contract.allowed,
+        contractCompliant: runnerCommandConfig.contract.contractCompliant,
+        executeGuard: runnerCommandConfig.contract.executeGuard,
+        internalFixture: runnerCommandConfig.contract.internalFixture,
+        internalFixtureAllowed: runnerCommandConfig.contract.internalFixtureAllowed,
+        runnerScript: runnerCommandConfig.contract.runnerScript,
+        requiredRunnerScript: runnerCommandConfig.contract.requiredRunnerScript,
+        fixtureGateEnvKey: runnerCommandConfig.contract.fixtureGateEnvKey
+      } : null,
       errors: runnerCommandConfig.errors
     },
     count: rows.length,
@@ -1356,6 +1425,391 @@ LIMIT ${capacity.effectiveLimit};`, { json: true });
     capacity,
     jobs: rows.map(workflowV2AdapterJobSummary),
     dbFile: paths.dbFile
+  };
+}
+
+function workflowV2DrainReadinessCheck(key, status, message, details = {}) {
+  return { key, status, message, ...details };
+}
+
+function workflowV2DrainReadinessPass(key, message, details = {}) {
+  return workflowV2DrainReadinessCheck(key, "pass", message, details);
+}
+
+function workflowV2DrainReadinessFail(key, message, details = {}) {
+  return workflowV2DrainReadinessCheck(key, "fail", message, details);
+}
+
+function workflowV2AdapterRunnerWrapperCommand(runtimeBackend = "") {
+  const backend = workflowV2NormalizeBackend(runtimeBackend, "");
+  const envKey = `TRADING_AGENTS_WORKFLOW_V2_${String(backend || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_RUNNER_CMD`;
+  return {
+    runtimeBackend: backend,
+    runnerKind: backend === "claude_code_docker_worker" ? "claude_code" : "hermers",
+    envKey,
+    commandJsonArray: [
+      process.execPath,
+      WORKFLOW_V2_EXTERNAL_RUNNER_EXECUTE_GUARD_FILE
+    ],
+    appendRunnerIoArgs: true,
+    directDatabaseWritesAllowed: false,
+    callerCommandAllowed: false
+  };
+}
+
+function workflowV2AdapterRunnerSecretPlan(runtimeBackend = "") {
+  const backend = workflowV2NormalizeBackend(runtimeBackend, "");
+  const oauthEnvKey = backend === "claude_code_docker_worker"
+    ? "TRADING_AGENTS_WORKFLOW_V2_CLAUDE_CODE_DOCKER_WORKER_OAUTH_PROFILE"
+    : "TRADING_AGENTS_WORKFLOW_V2_HERMERS_DOCKER_WORKER_OAUTH_PROFILE";
+  return {
+    schemaVersion: "workflow_v2_adapter_runner_secret_injection_plan.v1",
+    runtimeBackend: backend,
+    valuesIncluded: false,
+    redactionRequired: true,
+    allowedSources: [
+      "host_environment_reference",
+      "mac_codex_oauth_mirror_status",
+      "runtime_profile_reference",
+      "human_gate_authorization_reference"
+    ],
+    disallowedSources: [
+      "action_input_secret_value",
+      "workflow_database_secret_value",
+      "artifact_plaintext_secret",
+      "chat_transcript_secret"
+    ],
+    oauth: {
+      refreshOwner: "mac-codex",
+      serverRefreshAllowed: false,
+      profileReferenceEnvKey: oauthEnvKey,
+      mirrorStatusRequiredBeforeExecute: true
+    },
+    environment: {
+      injectByReferenceOnly: true,
+      requiredExecuteGateEnv: "TRADING_AGENTS_WORKFLOW_V2_ALLOW_REAL_RUNNER_EXECUTE",
+      requiredAuthorizationEnv: "TRADING_AGENTS_WORKFLOW_V2_REAL_RUNNER_EXECUTE_AUTH_JSON",
+      forbiddenInArtifacts: ["access_token", "refresh_token", "api_key", "secret", "private_key"]
+    }
+  };
+}
+
+async function workflowV2AdapterRunnerWrapperContractPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const runtimeBackends = workflowV2JsonArray(input.runtimeBackends ?? input.runtime_backends, [])
+    .map((item) => workflowV2NormalizeBackend(item, ""))
+    .filter(Boolean);
+  const runtimeBackend = input.runtimeBackend || input.runtime_backend
+    ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
+    : "";
+  const requestedBackends = runtimeBackends.length
+    ? [...new Set(runtimeBackends)]
+    : runtimeBackend
+      ? [runtimeBackend]
+      : ["hermers_docker_worker", "claude_code_docker_worker"];
+  const contracts = requestedBackends.map((backend) => {
+    const command = workflowV2AdapterRunnerWrapperCommand(backend);
+    return {
+      schemaVersion: "workflow_v2_adapter_runner_wrapper_contract.v1",
+      runtimeBackend: backend,
+      runnerKind: command.runnerKind,
+      command,
+      runnerCommandEnv: {
+        backendEnvKey: command.envKey,
+        genericEnvKey: "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_CMD",
+        valueFormat: "json_array",
+        callerInputCommandAllowed: false,
+        exampleValueRedacted: JSON.stringify(command.commandJsonArray)
+      },
+      executeGuard: {
+        script: "scripts/workflow_v2_external_runner_execute_guard.mjs",
+        dryRunDefault: true,
+        realExecutionImplemented: false,
+        executeFlagRequired: true,
+        envGateRequired: true,
+        humanGateAuthorizationJsonRequired: true,
+        requiredFlag: "--execute",
+        requiredEnvGate: "TRADING_AGENTS_WORKFLOW_V2_ALLOW_REAL_RUNNER_EXECUTE=1",
+        requiredAuthorizationEnv: "TRADING_AGENTS_WORKFLOW_V2_REAL_RUNNER_EXECUTE_AUTH_JSON",
+        authorizationDecision: "approve_single_synthetic_execute_smoke",
+        refusesAfterAuthorizationUntilExecutorImplemented: true
+      },
+      returnContract: {
+        runnerRequestSchemaVersion: "workflow_v2_external_adapter_runner_request.v1",
+        outputStatusValues: ["success", "fail", "release"],
+        successPath: "workflow.v2.worker_result.submit",
+        failPath: "workflow.v2.worker_result.fail",
+        releasePath: "workflow.v2.worker_adapter_job.release",
+        directDatabaseWritesAllowed: false,
+        receiptRequired: true
+      },
+      secretInjectionPlan: workflowV2AdapterRunnerSecretPlan(backend),
+      safetyInvariants: {
+        callerSelectedHostCommandAllowed: false,
+        dockerStartFromPreviewAllowed: false,
+        dockerRunFromPreviewAllowed: false,
+        modelCallFromPreviewAllowed: false,
+        tradingSideEffectsAllowed: false,
+        networkDefault: "none_until_authorized_contract_changes",
+        workflowSemanticAdaptationAllowed: false
+      }
+    };
+  });
+  return {
+    schemaVersion: "workflow_v2_adapter_runner_wrapper_contract_preview.v1",
+    action: "workflow.v2.adapter_runner.wrapper_contract.preview",
+    operation: "workflow.v2.adapter_runner.wrapper_contract.preview",
+    dryRun: true,
+    previewOnly: true,
+    readOnly: true,
+    valid: contracts.length > 0,
+    generatedAt,
+    requestedBackends,
+    contracts,
+    rollout: {
+      nextAllowedAction: "set_backend_runner_cmd_env_then_run_drain_readiness_preview",
+      requiresHumanGateBeforeRealExecute: true,
+      requiresEnvGateBeforeRealExecute: true,
+      requiresExecutorImplementationBeforeRealExecute: true,
+      productionDrainAction: "workflow.v2.adapter_runner.drain"
+    },
+    wouldCreate: {
+      adapterJobClaims: 0,
+      adapterJobLeases: 0,
+      workerResultSubmissions: 0,
+      workerResultFailures: 0,
+      artifactWrites: 0,
+      workflowStateMutations: 0,
+      runtimeDispatches: 0,
+      dockerContainers: 0,
+      modelCalls: 0,
+      tradingSideEffects: 0
+    },
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+async function workflowV2AdapterRunnerServicePlanPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const runtimeBackend = input.runtimeBackend || input.runtime_backend
+    ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
+    : "";
+  const mode = workflowV2AdapterRunnerMode(input);
+  const serviceId = firstText(input.serviceId, input.service_id, runtimeBackend ? `workflow-v2-adapter-runner:${runtimeBackend}` : "workflow-v2-adapter-runner");
+  const readiness = await workflowV2AdapterRunnerDrainReadinessPreview(paths.root, {
+    ...input,
+    generatedAt,
+    runtimeBackend,
+    mode
+  });
+  const checks = [];
+  checks.push(runtimeBackend
+    ? workflowV2DrainReadinessPass("runtime_backend_scoped", "service plan is scoped to one runtime backend", { runtimeBackend })
+    : workflowV2DrainReadinessFail("runtime_backend_scoped", "runtime drain service requires explicit runtimeBackend scope"));
+  checks.push(readiness.valid
+    ? workflowV2DrainReadinessPass("drain_readiness_valid", "drain readiness is valid for this service plan")
+    : workflowV2DrainReadinessFail("drain_readiness_valid", "service plan requires valid drain readiness before execution", { violations: readiness.violations }));
+  checks.push(mode === "external_command"
+    ? workflowV2DrainReadinessPass("service_mode_external_command", "runtime drain service execution is pinned to external_command mode")
+    : workflowV2DrainReadinessFail("service_mode_external_command", "runtime drain service must not execute mock drain mode", { mode }));
+  const violations = checks.filter((check) => check.status !== "pass");
+  return {
+    schemaVersion: "workflow_v2_adapter_runner_service_plan_preview.v1",
+    action: "workflow.v2.adapter_runner.service_plan.preview",
+    operation: "workflow.v2.adapter_runner.service_plan.preview",
+    dryRun: true,
+    previewOnly: true,
+    readOnly: true,
+    valid: violations.length === 0,
+    generatedAt,
+    serviceId,
+    runtimeBackend,
+    mode,
+    checks,
+    violations,
+    service: {
+      command: [
+        process.execPath,
+        "scripts/workflow_v2_adapter_runner_service.mjs",
+        "--root",
+        paths.root,
+        "--runtime-backend",
+        runtimeBackend || "<required>",
+        "--mode",
+        "external_command"
+      ],
+      disabledByDefault: true,
+      executeGateEnv: "TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_SERVICE_EXECUTE",
+      executeFlag: "--execute",
+      actionPolicyGateEnv: "TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION",
+      drainAction: "workflow.v2.adapter_runner.drain",
+      readinessAction: "workflow.v2.adapter_runner.drain_readiness.preview",
+      stopCondition: "one-shot unless an external supervised timer invokes it",
+      deploymentStatus: "not_deployed_by_preview"
+    },
+    controls: {
+      leaseMs: workflowV2AdapterJobLeaseMs(input),
+      limit: readiness.capacity.requestedLimit,
+      effectiveLimit: readiness.capacity.effectiveLimit,
+      backoffMs: workflowV2AdapterJobRetryDelayMs(input),
+      idempotency: "adapter_job_id + runner_attempt + lease_owner",
+      disableProcedure: "unset execute env gate or stop external supervisor; queued jobs remain queued and running leases expire by lease_until",
+      rollbackProcedure: "disable service, inspect runner artifacts and adapter job receipts, then use governed release/fail actions based on lease state",
+      policyGate: "workflow.v2.adapter_runner.drain still requires the existing generic orchestration/action-policy authorization gate",
+      actionLedger: {
+        plannedArtifact: "workflow_v2_adapter_runner_service_cycle.v1",
+        includes: ["serviceId", "runtimeBackend", "mode", "readiness", "drainResult", "errors", "generatedAt"],
+        secretValuesIncluded: false
+      }
+    },
+    readiness,
+    wouldCreate: {
+      serviceFiles: 0,
+      systemdUnits: 0,
+      adapterJobClaims: 0,
+      adapterJobLeases: 0,
+      workerResultSubmissions: 0,
+      workerResultFailures: 0,
+      runtimeDispatches: 0,
+      dockerContainers: 0,
+      modelCalls: 0,
+      tradingSideEffects: 0
+    },
+    dbFile: paths.dbFile,
+    writes: []
+  };
+}
+
+async function workflowV2AdapterRunnerDrainReadinessPreview(rootDir, input = {}) {
+  const paths = await ensureWorkflowLayout(rootDir, input);
+  const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+  const runtimeBackend = input.runtimeBackend || input.runtime_backend
+    ? workflowV2NormalizeBackend(input.runtimeBackend || input.runtime_backend, "")
+    : "";
+  const mode = workflowV2AdapterRunnerMode(input);
+  const runnerCommandConfig = mode === "external_command"
+    ? workflowV2ExternalRunnerCommandConfig(input, runtimeBackend)
+    : { required: false, configured: false, source: "", executable: "", argc: 0, inputCommandRejected: false, errors: [] };
+  const capacity = await workflowV2AdapterRunnerCapacity(paths, input, generatedAt, runtimeBackend);
+  const runnerPreview = await workflowV2AdapterRunnerPreview(paths.root, {
+    ...input,
+    generatedAt,
+    runtimeBackend,
+    mode
+  });
+  const checks = [];
+  checks.push(runtimeBackend
+    ? workflowV2DrainReadinessPass("runtime_backend_scoped", "drain readiness is scoped to one runtime backend", { runtimeBackend })
+    : workflowV2DrainReadinessFail("runtime_backend_scoped", "production drain readiness requires explicit runtimeBackend scope"));
+  checks.push(runnerCommandConfig.inputCommandRejected
+    ? workflowV2DrainReadinessFail("caller_command_rejected", "runner command must come from governed environment configuration, not action input")
+    : workflowV2DrainReadinessPass("caller_command_rejected", "no caller-selected runner command was accepted"));
+  checks.push(mode !== "external_command" || (runnerCommandConfig.configured && runnerCommandConfig.errors.length === 0)
+    ? workflowV2DrainReadinessPass("runner_command_configured", "runner command configuration is ready for selected mode", { mode })
+    : workflowV2DrainReadinessFail("runner_command_configured", "external command mode requires configured runner command", {
+      backendEnvKey: runnerCommandConfig.backendEnvKey || "",
+      genericEnvKey: runnerCommandConfig.genericEnvKey || "",
+      errors: runnerCommandConfig.errors
+    }));
+  checks.push(mode !== "external_command" || runnerCommandConfig.contract?.contractCompliant
+    ? workflowV2DrainReadinessPass("runner_command_execute_guard", "external runner command is pinned to the execute guard", {
+      mode,
+      runnerScript: runnerCommandConfig.contract?.runnerScript || ""
+    })
+    : workflowV2DrainReadinessFail("runner_command_execute_guard", "production drain readiness requires the external runner command to use the execute guard", {
+      runnerScript: runnerCommandConfig.contract?.runnerScript || "",
+      requiredRunnerScript: runnerCommandConfig.contract?.requiredRunnerScript || WORKFLOW_V2_EXTERNAL_RUNNER_EXECUTE_GUARD_FILE,
+      errors: runnerCommandConfig.errors
+    }));
+  checks.push(capacity.backendMaxActiveJobs > 0 && capacity.providerMaxConcurrentCalls > 0
+    ? workflowV2DrainReadinessPass("capacity_available", "backend and provider capacity are nonzero", {
+      backendMaxActiveJobs: capacity.backendMaxActiveJobs,
+      providerMaxConcurrentCalls: capacity.providerMaxConcurrentCalls,
+      availableSlots: capacity.availableSlots
+    })
+    : workflowV2DrainReadinessFail("capacity_available", "backend and provider capacity must be nonzero", {
+      backendMaxActiveJobs: capacity.backendMaxActiveJobs,
+      providerMaxConcurrentCalls: capacity.providerMaxConcurrentCalls,
+      availableSlots: capacity.availableSlots
+    }));
+  checks.push(capacity.dueCount === runnerPreview.dueCount
+    ? workflowV2DrainReadinessPass("due_count_consistent", "capacity due count matches runner preview")
+    : workflowV2DrainReadinessFail("due_count_consistent", "capacity due count must match runner preview", {
+      capacityDueCount: capacity.dueCount,
+      previewDueCount: runnerPreview.dueCount
+    }));
+  checks.push(runnerPreview.count <= capacity.effectiveLimit
+    ? workflowV2DrainReadinessPass("preview_limit_respected", "runner preview respects effective limit", {
+      previewCount: runnerPreview.count,
+      effectiveLimit: capacity.effectiveLimit
+    })
+    : workflowV2DrainReadinessFail("preview_limit_respected", "runner preview must not exceed effective limit", {
+      previewCount: runnerPreview.count,
+      effectiveLimit: capacity.effectiveLimit
+    }));
+  const violations = checks.filter((check) => check.status !== "pass");
+  return {
+    schemaVersion: "workflow_v2_adapter_runner_drain_readiness_preview.v1",
+    action: "workflow.v2.adapter_runner.drain_readiness.preview",
+    operation: "workflow.v2.adapter_runner.drain_readiness.preview",
+    dryRun: true,
+    previewOnly: true,
+    readOnly: true,
+    valid: violations.length === 0,
+    generatedAt,
+    runtimeBackend,
+    mode,
+    checks,
+    violations,
+    readiness: {
+      dueCount: capacity.dueCount,
+      previewCount: runnerPreview.count,
+      effectiveLimit: capacity.effectiveLimit,
+      readyToDrain: violations.length === 0 && runnerPreview.count > 0,
+      emptyButReady: violations.length === 0 && runnerPreview.count === 0,
+      nextAllowedAction: violations.length === 0 ? "workflow.v2.adapter_runner.drain" : "repair_drain_readiness_before_runtime_service"
+    },
+    runnerCommandConfig: {
+      required: runnerCommandConfig.required,
+      configured: runnerCommandConfig.configured,
+      source: runnerCommandConfig.source,
+      executable: runnerCommandConfig.executable,
+      argc: runnerCommandConfig.argc,
+      inputCommandRejected: runnerCommandConfig.inputCommandRejected,
+      backendEnvKey: runnerCommandConfig.backendEnvKey || "",
+      genericEnvKey: runnerCommandConfig.genericEnvKey || "",
+      contract: runnerCommandConfig.contract ? {
+        allowed: runnerCommandConfig.contract.allowed,
+        contractCompliant: runnerCommandConfig.contract.contractCompliant,
+        executeGuard: runnerCommandConfig.contract.executeGuard,
+        internalFixture: runnerCommandConfig.contract.internalFixture,
+        internalFixtureAllowed: runnerCommandConfig.contract.internalFixtureAllowed,
+        runnerScript: runnerCommandConfig.contract.runnerScript,
+        requiredRunnerScript: runnerCommandConfig.contract.requiredRunnerScript,
+        fixtureGateEnvKey: runnerCommandConfig.contract.fixtureGateEnvKey
+      } : null,
+      errors: runnerCommandConfig.errors
+    },
+    capacity,
+    runnerPreview: {
+      count: runnerPreview.count,
+      dueCount: runnerPreview.dueCount,
+      jobs: runnerPreview.jobs
+    },
+    wouldCreate: {
+      adapterJobClaims: 0,
+      adapterJobLeases: 0,
+      workerResultSubmissions: 0,
+      workerResultFailures: 0,
+      artifactWrites: 0,
+      workflowStateMutations: 0,
+      runtimeDispatches: 0
+    },
+    dbFile: paths.dbFile,
+    writes: []
   };
 }
 
@@ -1557,6 +2011,9 @@ LIMIT 1;`, { json: true });
     workflowV2WorkerAdapterJobRelease,
     workflowV2WorkerAdapterJobFail,
     workflowV2AdapterRunnerPreview,
+    workflowV2AdapterRunnerWrapperContractPreview,
+    workflowV2AdapterRunnerServicePlanPreview,
+    workflowV2AdapterRunnerDrainReadinessPreview,
     workflowV2AdapterRunnerDrain
   };
 }

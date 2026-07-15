@@ -156,14 +156,20 @@ Read-only / preview:
 - `workflow.v2.worker_adapter_job.preview`
 - `workflow.v2.worker_adapter_job.list`
 - `workflow.v2.adapter_runner.preview`
+- `workflow.v2.adapter_runner.wrapper_contract.preview`
+- `workflow.v2.adapter_runner.service_plan.preview`
+- `workflow.v2.adapter_runner.drain_readiness.preview`
 - `workflow.v2.worker_result.submit.preview`
 - `workflow.v2.worker_result.fail.preview`
 - `workflow.v2.owner_review.preview`
 - `workflow.v2.task_group_package.preview`
 - `workflow.v2.cat_brain_audit.preview`
+- `workflow.v2.cat_brain_semantic_check.preview`
 - `workflow.v2.cat_claw_audit.preview`
+- `workflow.v2.cat_claw_package_audit.preview`
 - `workflow.v2.validate`
 - `workflow.template.preview`
+- `workflow.template.daily_trading_catalog.preview`
 - `workflow.template.search`
 - `workflow.template.get`
 - `workflow.template.instantiate.preview`
@@ -550,6 +556,12 @@ Human Gate:
 - Replaying the same v2 Human Gate request reuses the existing pending Human
   Gate and Telegram outbox and does not rewrite the v2 package payload when the
   package already links to that `humanGateId`.
+- `workflow.v2.cat_claw_package_audit.preview` is a read-only package audit
+  automation preview. It checks package structure, option-level evidence refs,
+  package evidence refs, pause/terminate controls, delivery/runtime-dispatch
+  boundary cleanliness, and token/secret redaction without creating Human Gate
+  rows, Telegram outbox rows, runtime dispatches, package writes, or workflow
+  status changes.
 - Plan-level Human Gate is not required for ordinary prepare-task admission.
   Cat Brain admission audit can approve the plan for execution, require plan
   revision, or escalate to Human Gate when Flashcat must decide material risk,
@@ -599,8 +611,6 @@ Validator:
 
 The following remain future slices and require separate authorization:
 
-- Cat Brain semantic check automation over manager artifacts;
-- Cat Claw package audit automation beyond current Human Gate package preview;
 - actual `wsl-agents` Hermers Docker wrapper command wired to the
   `external_command` runner contract;
 - actual `wsl-agents` Claude Code Docker wrapper command wired to the
@@ -1395,3 +1405,176 @@ The full regression suite was not rerun in this slice.
 - This is a regression/documentation slice only. It does not change production
   delivery behavior, start worker runtimes, WSL, Docker, Hermers, Claude Code,
   Gateway, Telegram delivery, or production workflow queues.
+
+2026-07-15 V2 Cat Claw package audit preview:
+
+- Added `workflow.v2.cat_claw_package_audit.preview` as a read-only Cat Claw
+  package audit automation surface.
+- The preview requires exactly one source: an exact persisted package selector
+  or inline draft package input, then reports pass/fail checks for workflow/plan
+  scope, Cat Claw source
+  audit binding, option count, option details, option evidence refs, package
+  evidence refs, pause/terminate controls, delivery/runtime-dispatch boundary
+  cleanliness, and token/secret redaction.
+- The preview always reports a zero-write `wouldCreate` summary and returns a
+  redacted package view. It does not create or mutate Human Gate packages, Human
+  Gate requests, Telegram outbox rows, runtime dispatches, workflow events, or
+  workflow state.
+- Focused verification passed locally:
+  - `node --check src/workflow-v2/human-gate-actions.js`
+  - `node --check src/workflow-v2/index.js`
+  - `node --check src/workflow/action-policy.js`
+  - `node --check src/workflow.js`
+  - `node --check scripts/workflow_regression_tests.mjs`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review chain"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 governance human gate bridge"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 permission and console gate"`
+
+2026-07-15 V2 Cat Brain semantic check preview:
+
+- Added `workflow.v2.cat_brain_semantic_check.preview` as a read-only Cat Brain
+  evidence-chain check before `workflow.v2.cat_brain_audit.record`.
+- The preview checks exactly-one selector use, plan presence, ready task-group package
+  or accepted owner review, accepted manager reviews, manager artifact/receipt
+  refs, accepted worker output/receipt refs, evidence refs, rollback anchors,
+  unresolved blockers, and unresolved evidence gaps.
+- The preview reports `wouldCreate` counts as zero. It does not create Cat Brain
+  audits, mutate workflow state, create Human Gate batches, create Telegram
+  outbox rows, or dispatch runtime work.
+- Aliases: `workflow.v2.cat-brain-semantic-check.preview`,
+  `workflow.v2.semantic-check.preview`, and
+  `workflow.v2.semantic_check.preview`.
+- Focused verification passed locally:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 review chain"`
+
+2026-07-15 V2 adapter runner drain readiness preview:
+
+- Added `workflow.v2.adapter_runner.drain_readiness.preview` as a read-only
+  production/runtime drain readiness inspection for v2 adapter jobs.
+- The preview reuses existing runner capacity and runner preview calculations
+  to report backend scope, runner command configuration, caller-command
+  rejection, capacity, due-count consistency, preview limit compliance, and
+  whether a drain would have work.
+- Production readiness requires explicit `runtimeBackend` scope. Missing scope
+  fails closed even though the existing generic runner preview can inspect all
+  backends for local diagnostics.
+- The preview reports `wouldCreate` counts as zero. It does not claim adapter
+  jobs, mutate leases, submit/fail worker results, write artifacts, mutate
+  workflow state, or dispatch runtime work.
+- Aliases: `workflow.v2.adapter-runner.drain-readiness.preview`,
+  `workflow.v2.drain-readiness.preview`, and
+  `workflow.v2.drain_readiness.preview`.
+- Focused verification passed locally:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter job manifest"`
+
+2026-07-15 V2 adapter runner wrapper contract preview:
+
+- Added `workflow.v2.adapter_runner.wrapper_contract.preview` as a read-only P3
+  contract surface for Hermers Docker and Claude Code worker wrapper wiring.
+- The preview reports backend-specific runner command env keys, JSON-array
+  command shape, execute guard requirements, return path through
+  `workflow.v2.worker_result.*`, and a secret/OAuth/environment injection plan.
+- The injection plan is reference-only: no secret values are emitted, mac-codex
+  remains the OAuth refresh owner, and server-side refresh is disallowed.
+- Real execution remains disabled. The contract pins wrappers to
+  `scripts/workflow_v2_external_runner_execute_guard.mjs`, requires
+  `--execute`, `TRADING_AGENTS_WORKFLOW_V2_ALLOW_REAL_RUNNER_EXECUTE=1`, and
+  `TRADING_AGENTS_WORKFLOW_V2_REAL_RUNNER_EXECUTE_AUTH_JSON`, and still marks
+  executor implementation as unavailable.
+- `workflow.v2.adapter_runner.drain` now validates the configured external
+  command before claiming jobs. Production drain requires the execute guard;
+  non-guard scripts fail closed. Internal dummy/dry-run runner scripts are
+  accepted only under the explicit
+  `TRADING_AGENTS_WORKFLOW_V2_ALLOW_INTERNAL_FIXTURE_RUNNER=1` local smoke gate.
+- The drain subprocess cwd is fixed to the plugin repo root. Caller-provided
+  `runnerCwd` no longer affects runner script resolution.
+- External runner commands must use the current `process.execPath`; a different
+  executable named `node` is rejected to avoid host executable spoofing.
+- Aliases: `workflow.v2.adapter-runner.wrapper-contract.preview`,
+  `workflow.v2.wrapper-contract.preview`, and
+  `workflow.v2.runner-wrapper.preview`.
+- Focused verification passed locally:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter job manifest"`
+
+2026-07-15 V2 adapter runner service plan preview:
+
+- Added `workflow.v2.adapter_runner.service_plan.preview` as a read-only P4
+  runtime drain service contract.
+- Added `scripts/workflow_v2_adapter_runner_service.mjs` as a one-shot service
+  runner. Default mode is preview-only; drain execution requires both
+  `--execute` and `TRADING_AGENTS_WORKFLOW_V2_ADAPTER_RUNNER_SERVICE_EXECUTE=1`,
+  plus `mode=external_command`, a valid execute-guard runner command, and the
+  existing generic orchestration/action-policy gate.
+- The preview reuses drain readiness, records disable and rollback procedures,
+  lease/backoff/idempotency controls, and an action-ledger schema without
+  writing service files, creating systemd units, claiming jobs, dispatching
+  runtimes, starting Docker/model calls, or creating trading side effects.
+- Aliases: `workflow.v2.adapter-runner.service-plan.preview`,
+  `workflow.v2.runtime-drain-service.preview`, and
+  `workflow.v2.drain-service.preview`.
+- Focused verification passed locally:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 adapter job manifest"`
+
+2026-07-15 V2 non-trading rehearsal smoke:
+
+- Added `scripts/workflow_v2_non_trading_rehearsal_smoke.mjs` and
+  `npm run smoke:v2-non-trading-rehearsal` as the explicit P5 rehearsal entry.
+- The smoke runs the focused fixed-template plan gate, review-chain, and
+  governance/Human Gate bridge regressions as one non-trading rehearsal. It
+  covers approved template instantiation, worker result submission,
+  manager/owner review, task group package, Cat Brain audit, Cat Claw audit,
+  Human Gate package/request, replay idempotency, protocol object/button rows,
+  and queued Telegram outbox.
+- The smoke reports no real Telegram delivery, Docker containers, model calls,
+  or trading side effects. It is included in release smoke capture.
+- Focused verification passed locally:
+  - `node scripts/workflow_v2_non_trading_rehearsal_smoke.mjs`
+
+2026-07-15 V2 trading pre-execution smoke:
+
+- Added `scripts/workflow_v2_trading_pre_execution_smoke.mjs` and
+  `npm run smoke:v2-trading-pre-execution` as the explicit P6 paper-only
+  pre-execution rehearsal entry.
+- The smoke runs the focused trade-chain guardrail and v2 permission/console
+  gate regressions as one named rehearsal. It covers approved Human Gate
+  binding, Cat Tail pre-order risk decision, paper `executable_trade_intent`,
+  idempotency replay/conflict, live-execution fail-closed behavior,
+  `trading_core.receipt` transition guardrails, and `side_effect_uncertain`
+  blocking for trading actions.
+- The smoke reports no broker credentials, no live broker adapter, no live
+  order placement, and no live trading. It is included in release smoke
+  capture. The separate `npm run smoke:trading-core` remains the deterministic
+  paper bridge check when a local `trading_core` checkout is available.
+
+2026-07-15 V2 P0-P7 local release-candidate governance:
+
+- P7 is treated as a local release-candidate governance boundary unless
+  Flashcat separately authorizes GitHub commit/tag/push and dev-server
+  fast-forward deployment.
+- Required local gates for the P0-P7 candidate are the P5 non-trading rehearsal
+  smoke, P6 trading pre-execution smoke, deterministic paper
+  `trading_core` bridge smoke, `npm run check`, release smoke capture,
+  `git diff --check`, and independent subagent review for behavior-affecting
+  P5/P6 changes.
+- GitHub commit/tag/release notes and dev-server deployment are not performed
+  by local candidate validation. They remain governed rollout actions and must
+  use GitHub fast-forward deployment, server release smoke, OpenClaw postchecks,
+  and recorded server evidence path when explicitly authorized.
+
+2026-07-15 V2 daily trading template catalog preview:
+
+- Added `workflow.template.daily_trading_catalog.preview` as a read-only P2
+  catalog for draft daily trading workflow template families.
+- The preview returns three candidate-only template specs:
+  `daily-trading.morning-readiness.v1`,
+  `daily-trading.intraday-signal-review.v1`, and
+  `daily-trading.eod-closeout.v1`.
+- Each draft template includes evaluation fixture families, scoring criteria,
+  high-risk paper-only risk policy, promotion policy requiring Human Gate for
+  default promotion, and rollback policy. None enables automatic live template
+  selection or live trading.
+- The preview reports `wouldCreate` counts as zero. It does not record template
+  candidates, promote versions, instantiate plans, write workflow state, or
+  create trading side effects.
+- Focused verification passed locally:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow template self-evolution"`
