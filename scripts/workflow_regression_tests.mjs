@@ -17,8 +17,10 @@ import {
   WORKFLOW_CONSOLE_READ_ONLY_ACTIONS,
   WORKFLOW_GENERIC_ORCHESTRATION_PLAN_ENTRY_ACTIONS,
   WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS,
+  WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
   WORKFLOW_PERMISSION_READ_ACTIONS,
   WORKFLOW_POLICY_HARD_GATE_ACTIONS,
+  workflowActionMigrationInfo,
   workflowConsoleAllowedActions
 } from "../src/workflow/action-policy.js";
 import {
@@ -2850,6 +2852,7 @@ LIMIT 1;`)[0];
 SELECT event_type AS eventType, previous_state AS previousState, next_state AS nextState
 FROM workflow_events
 WHERE workflow_id='${workflowId}'
+  AND event_type IN ('workflow.created', 'workflow.updated')
 ORDER BY created_at ASC;`);
   assert.equal(events.length, 2);
   assert.equal(events[0].eventType, "workflow.created");
@@ -2858,6 +2861,14 @@ ORDER BY created_at ASC;`);
   assert.equal(events[1].eventType, "workflow.updated");
   assert.equal(events[1].previousState, "active");
   assert.equal(events[1].nextState, "blocked");
+  const migrationTelemetry = sqliteJson(dbFile, `
+SELECT status, next_state AS nextState, payload_json AS payloadJson
+FROM workflow_events
+WHERE workflow_id='${workflowId}'
+  AND event_type='workflow.action_migration_telemetry';`);
+  assert.equal(migrationTelemetry.length, 1);
+  assert.equal(migrationTelemetry[0].nextState, "compat_shell_only");
+  assert.equal(JSON.parse(migrationTelemetry[0].payloadJson).requestedAction, "workflow.initiative.upsert");
 }
 
 async function testWorkflowAdvanceExtractedActionContracts() {
@@ -12029,9 +12040,11 @@ async function testWorkflowConvergenceDefaultGates() {
   const legacyEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS;
   const genericEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
   const rawScheduleEnv = process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
+  const mcpShowLegacyEnv = process.env.TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS;
   delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS;
   delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
   delete process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
+  delete process.env.TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS;
   try {
     const root = await tempRoot("workflow-convergence-default-gates");
     const legacy = await runAction(root, {
@@ -12045,6 +12058,34 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(legacy.status, "blocked");
     assert.equal(legacy.allowed, false);
     assert.equal(legacy.reason, "legacy_action_disabled");
+    const legacyRequestOverride = await runAction(root, {
+      action: "workflow.task.create",
+      workflowId: "wf-convergence-gate",
+      taskId: "task-convergence-request-override",
+      ownerAgent: "main",
+      runtime: "openclaw",
+      summary: "request-level legacy override should not bypass",
+      allowLegacyAction: true,
+      legacyMode: true
+    });
+    assert.equal(legacyRequestOverride.status, "blocked");
+    assert.equal(legacyRequestOverride.reason, "legacy_action_disabled");
+    const forgedInternalSource = await runAction(root, {
+      action: "workflow.task.create",
+      workflowId: "wf-convergence-gate",
+      taskId: "task-convergence-forged-internal-source",
+      ownerAgent: "main",
+      runtime: "openclaw",
+      summary: "forged internal legacy provenance should not bypass",
+      legacyCompatibilitySource: "meeting.action_item",
+      callerAgent: "system",
+      callerRuntime: "workflow",
+      sourceSystem: "meeting_action_item_mirror"
+    });
+    assert.equal(forgedInternalSource.status, "blocked");
+    assert.equal(forgedInternalSource.reason, "legacy_action_disabled");
+    assert.equal(workflowActionMigrationInfo("workflow.task.create").policy, "frozen_short_term_compatibility");
+    assert.equal(workflowActionMigrationInfo("workflow.task.create").dependencyEvidence.includes("do not call the external workflow.task.create"), true);
     const legacyUpdate = await runAction(root, {
       action: "workflow.task.update",
       workflowId: "wf-convergence-gate",
@@ -12054,6 +12095,127 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(legacyUpdate.status, "blocked");
     assert.equal(legacyUpdate.allowed, false);
     assert.equal(legacyUpdate.reason, "legacy_action_disabled");
+    assert.equal(workflowActionMigrationInfo("workflow.task.update").dependencyEvidence.includes("does not call the external workflow.task.update"), true);
+    assert.equal(workflowActionMigrationInfo("workflow.run.upsert").decisionClass, "compat_shell_only");
+    assert.equal(workflowActionMigrationInfo("workflow.run.upsert").policy, "frozen_short_term_compatibility");
+    assert.equal(workflowActionMigrationInfo("workflow.run.upsert").replacement, "workflow.v2.plan.create");
+    assert.equal(workflowActionMigrationInfo("workflow.run.upsert").dependencyEvidence.includes("does not call workflowRunUpsert"), true);
+    const legacyRun = await runAction(root, {
+      action: "workflow.run.upsert",
+      workflowId: "wf-convergence-legacy-run",
+      objective: "legacy run upsert should be blocked by default"
+    });
+    assert.equal(legacyRun.status, "blocked");
+    assert.equal(legacyRun.allowed, false);
+    assert.equal(legacyRun.reason, "legacy_action_disabled");
+    const legacyRunAlias = await runAction(root, {
+      action: "workflow.initiative.upsert",
+      workflowId: "wf-convergence-legacy-run-alias",
+      objective: "legacy initiative alias should be blocked by default"
+    });
+    assert.equal(legacyRunAlias.status, "blocked");
+    assert.equal(legacyRunAlias.action, "workflow.run.upsert");
+    assert.equal(legacyRunAlias.requestedAction, "workflow.initiative.upsert");
+    assert.equal(legacyRunAlias.reason, "legacy_action_disabled");
+    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").decisionClass, "compat_shell_only");
+    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").migrationStatus, "legacy_active");
+    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").policy, "frozen_short_term_compatibility");
+    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").frozenSinceRelease, "v0.8.2-rc.1");
+    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").defaultHiddenSinceRelease, "v0.8.2-rc.1");
+    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").removalTargetRelease, "v1.0.0");
+    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").escapeHatchEnv, "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS");
+    assert.equal(WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT.removalTargetRelease, "v1.0.0");
+    assert.equal(workflowActionMigrationInfo("workflow.pause").decisionClass, "must_migrate");
+    assert.equal(workflowActionMigrationInfo("workflow.swarm.plan").migrationStatus, "deprecated");
+    assert.equal(workflowActionMigrationInfo("workflow.swarm.plan").policy, "frozen_short_term_compatibility");
+    assert.equal(workflowActionMigrationInfo("workflow.swarm.plan").replacement, "workflow.v2.worker_spawn.create");
+    assert.equal(workflowActionMigrationInfo("route_shell.ingest").decisionClass, "archive_no_migration");
+    const legacySwarmAlias = await runAction(root, {
+      action: "workflow.swarm",
+      workflowId: "wf-convergence-swarm",
+      objective: "legacy swarm alias should be blocked by default",
+      shards: ["a", "b"]
+    });
+    assert.equal(legacySwarmAlias.status, "blocked");
+    assert.equal(legacySwarmAlias.action, "workflow.swarm.plan");
+    assert.equal(legacySwarmAlias.requestedAction, "workflow.swarm");
+    assert.equal(legacySwarmAlias.reason, "legacy_action_disabled");
+    const legacyAlias = await runAction(root, {
+      action: "workflow.task.launch.draft",
+      workflowId: "wf-convergence-gate"
+    });
+    assert.equal(legacyAlias.status, "blocked");
+    assert.equal(legacyAlias.reason, "legacy_action_disabled");
+    const legacyRead = await runAction(root, {
+      action: "workflow.task.launch.list",
+      workflowId: "wf-convergence-gate"
+    });
+    assert.equal(legacyRead.count, 0);
+    await runAction(root, {
+      action: "meeting.create",
+      meetingId: "meeting-convergence-action-item",
+      title: "Convergence action item mirror",
+      chairAgent: "main",
+      secretaryAgent: "cat_claw"
+    });
+    const mirroredMeetingItem = await runAction(root, {
+      action: "meeting.action_item",
+      meetingId: "meeting-convergence-action-item",
+      title: "shared meeting action item mirror should survive P7 freeze",
+      ownerAgent: "main",
+      workflowId: "wf-convergence-meeting-action-item",
+      taskId: "task-convergence-meeting-action-item"
+    });
+    assert.equal(mirroredMeetingItem.workflow_tasks.length, 1);
+    assert.equal(mirroredMeetingItem.workflow_tasks[0].operation, "create");
+    assert.equal(sqliteCount(path.join(root, "tracking.db"), "workflow_tasks", "task_id='task-convergence-meeting-action-item'"), 1);
+    const updatedMirroredMeetingItem = await runAction(root, {
+      action: "meeting.action_item",
+      meetingId: "meeting-convergence-action-item",
+      title: "shared meeting action item mirror update should survive P7 freeze",
+      ownerAgent: "main",
+      workflowId: "wf-convergence-meeting-action-item",
+      taskId: "task-convergence-meeting-action-item"
+    });
+    assert.equal(updatedMirroredMeetingItem.workflow_tasks.length, 1);
+    assert.equal(updatedMirroredMeetingItem.workflow_tasks[0].operation, "update");
+    assert.equal(sqliteCount(path.join(root, "tracking.db"), "workflow_tasks", "task_id='task-convergence-meeting-action-item'"), 1);
+    const deprecatedRouteShell = await runAction(root, {
+      action: "route_shell.ingest",
+      workflowId: "wf-convergence-gate",
+      routeAgentId: "cat_body",
+      text: "deprecated route shell telemetry should be observable"
+    });
+    assert.equal(deprecatedRouteShell.ok, false);
+    assert.equal(deprecatedRouteShell.status, "route_failed");
+    const telemetryRows = sqliteJson(path.join(root, "tracking.db"), `
+SELECT status, next_state, payload_json
+FROM workflow_events
+WHERE event_type='workflow.action_migration_telemetry'
+ORDER BY created_at;`);
+    assert.equal(telemetryRows.length, 12);
+    const telemetryPayloads = telemetryRows.map((row) => JSON.parse(row.payload_json));
+    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["route_shell.ingest", "workflow.run.upsert", "workflow.run.upsert", "workflow.swarm.plan", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.launch.prepare", "workflow.task.update", "workflow.task.update"]);
+    assert.equal(telemetryPayloads.some((row) => row.action === "workflow.task.launch.list"), false);
+    const meetingMirrorTelemetry = telemetryPayloads.filter((row) => row.legacyCompatibilitySource === "meeting.action_item");
+    assert.deepEqual(meetingMirrorTelemetry.map((row) => row.action).sort(), ["workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.update"]);
+    assert.equal(meetingMirrorTelemetry.every((row) => row.permissionAllowed === true), true);
+    const runAliasTelemetry = telemetryPayloads.find((row) => row.requestedAction === "workflow.initiative.upsert");
+    assert.equal(runAliasTelemetry.action, "workflow.run.upsert");
+    assert.equal(runAliasTelemetry.replacement, "workflow.v2.plan.create");
+    const aliasTelemetry = telemetryPayloads.find((row) => row.action === "workflow.task.launch.prepare");
+    assert.equal(aliasTelemetry.requestedAction, "workflow.task.launch.draft");
+    const deprecatedTelemetry = telemetryPayloads.find((row) => row.action === "route_shell.ingest");
+    assert.equal(deprecatedTelemetry.migrationStatus, "deprecated");
+    assert.equal(deprecatedTelemetry.decisionClass, "archive_no_migration");
+    const swarmTelemetry = telemetryPayloads.find((row) => row.action === "workflow.swarm.plan");
+    assert.equal(swarmTelemetry.requestedAction, "workflow.swarm");
+    assert.equal(swarmTelemetry.replacement, "workflow.v2.worker_spawn.create");
+    assert.equal(telemetryRows.filter((row) => row.status === "legacy_active").length, 10);
+    assert.equal(telemetryRows.filter((row) => row.status === "deprecated").length, 2);
+    assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 10);
+    assert.equal(telemetryRows.filter((row) => row.next_state === "archive_no_migration").length, 2);
+    assert.equal(telemetryPayloads.every((row) => row.telemetryOnly === true), true);
 
     const generic = await runAction(root, {
       action: "workflow.v2.worker_spawn.create",
@@ -12085,6 +12247,40 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(genericAdapterClaim.status, "blocked");
     assert.equal(genericAdapterClaim.allowed, false);
     assert.equal(genericAdapterClaim.reason, "generic_orchestration_context_required");
+
+    const mcpTools = (extraEnv = {}) => {
+      const request = {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+        params: {}
+      };
+      const output = execFileSync("python3", [path.resolve("scripts/trading_agents_workflow_mcp.py")], {
+        cwd: process.cwd(),
+        input: `${JSON.stringify(request)}\n`,
+        encoding: "utf8",
+        env: { ...process.env, TRADING_AGENTS_WORKFLOW_ROOT: root, ...extraEnv }
+      }).trim();
+      const response = JSON.parse(output.split("\n").at(-1));
+      return response.result.tools.sort((left, right) => left.name.localeCompare(right.name));
+    };
+    const defaultTools = mcpTools().map((tool) => tool.name);
+    assert.equal(defaultTools.includes("workflow_task_launch_prepare"), false);
+    assert.equal(defaultTools.includes("workflow_task_launch_review"), false);
+    assert.equal(defaultTools.includes("workflow_task_launch_approve"), false);
+    assert.equal(defaultTools.includes("workflow_task_launch_list"), true);
+    const legacyVisibleTools = mcpTools({ TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS: "1" });
+    const legacyVisibleToolNames = legacyVisibleTools.map((tool) => tool.name);
+    assert.equal(legacyVisibleToolNames.includes("workflow_task_launch_prepare"), true);
+    assert.equal(legacyVisibleToolNames.includes("workflow_task_launch_review"), true);
+    assert.equal(legacyVisibleToolNames.includes("workflow_task_launch_approve"), true);
+    for (const toolName of ["workflow_task_launch_prepare", "workflow_task_launch_review", "workflow_task_launch_approve"]) {
+      const tool = legacyVisibleTools.find((candidate) => candidate.name === toolName);
+      assert.equal(tool.description.includes("Frozen legacy compatibility surface since v0.8.2-rc.1"), true);
+      assert.equal(tool.description.includes("hidden from default discovery"), true);
+      assert.equal(tool.description.includes("TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS=1"), true);
+      assert.equal(tool.description.includes("target removal release is v1.0.0"), true);
+    }
 
     const blockedLegacyMcpMutation = (name, args) => {
       const request = {
@@ -12207,6 +12403,7 @@ async function testWorkflowConvergenceDefaultGates() {
     restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS", legacyEnv);
     restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION", genericEnv);
     restoreEnv("TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH", rawScheduleEnv);
+    restoreEnv("TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS", mcpShowLegacyEnv);
   }
 }
 

@@ -2,6 +2,12 @@
 
 Created: 2026-05-27
 
+Status: historical v1 reference. As of `v0.8.2-rc.1`,
+`workflow.task.launch.*` mutating entry points are frozen, hidden/blocked by
+default, retained only as explicitly gated short-term compatibility escape
+hatches, and targeted for removal at `v1.0.0`. Current policy lives in
+`docs/workflow-v1-v2-migration-worthiness-audit.md`.
+
 This document records the first design reference for adding a higher-level task
 drafting layer to `trading-agents-workflow`. It is based on the current
 Claude Code workflow and multi-agent orchestration materials available on

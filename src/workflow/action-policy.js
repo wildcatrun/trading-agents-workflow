@@ -3,6 +3,7 @@ import {
 } from "./json.js";
 
 export const WORKFLOW_LEGACY_MUTATING_ACTIONS = new Set([
+  "workflow.run.upsert",
   "workflow.task.create",
   "workflow.task.update",
   "workflow.task.launch.prepare",
@@ -12,6 +13,211 @@ export const WORKFLOW_LEGACY_MUTATING_ACTIONS = new Set([
   "workflow.advance",
   "workflow.supervise"
 ]);
+
+export const WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT = Object.freeze({
+  policy: "frozen_short_term_compatibility",
+  frozenSinceRelease: "v0.8.2-rc.1",
+  defaultHiddenSinceRelease: "v0.8.2-rc.1",
+  removalTargetRelease: "v1.0.0",
+  escapeHatchEnv: "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS",
+  recommendation: "do not extend; keep only as a gated compatibility escape hatch until removal"
+});
+
+const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
+  ["workflow.checkpoint", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    recommendation: "define v2 checkpoint/readiness parity before retiring legacy checkpoint"
+  }],
+  ["workflow.run.upsert", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.plan.create",
+    ...WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
+    dependencyEvidence: "workflow.v2.plan.create owns plan admission and does not call workflowRunUpsert; legacy helper remains only for v1 compatibility internals",
+    recommendation: "stop creating new production runs from the legacy path; keep read/history compatibility and delete external compatibility shell by the target removal release"
+  }],
+  ["workflow.task.draft", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.plan.preview",
+    recommendation: "use v2 plan preview/create or template instantiate for new authoring"
+  }],
+  ["workflow.task.create", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.plan.create",
+    ...WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
+    dependencyEvidence: "workflow.v2 plan nodes own new task structure and do not call the external workflow.task.create action; helper remains only inside explicit v1 compatibility paths",
+    recommendation: "block new mutating task usage except explicit legacy diagnostics; delete compatibility shell by the target removal release"
+  }],
+  ["workflow.task.update", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.worker_result.submit",
+    ...WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
+    dependencyEvidence: "workflow.v2 worker result/review state owns new task progress and does not call the external workflow.task.update action",
+    recommendation: "use v2 worker/result/review state for new task progress; delete compatibility shell by the target removal release"
+  }],
+  ["workflow.task.list", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_active",
+    recommendation: "keep for legacy history/read compatibility"
+  }],
+  ["workflow.tasks", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.task.list",
+    recommendation: "canonicalize legacy task list reads before retirement"
+  }],
+  ["workflow.advance", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.validate",
+    recommendation: "extract valid progression checks into v2/shared validators"
+  }],
+  ["workflow.advance.preview", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.validate",
+    recommendation: "keep as diagnostic preview while v2 readiness views mature"
+  }],
+  ["workflow.supervise", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.validate",
+    recommendation: "extract valid supervisor checks into v2/shared readiness"
+  }],
+  ["workflow.supervise.preview", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.validate",
+    recommendation: "keep as diagnostic preview while v2 readiness views mature"
+  }],
+  ["workflow.evaluate", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.validate",
+    recommendation: "extract active evaluator checks into v2/shared validators"
+  }],
+  ["workflow.pause", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "v2 plan/node/worker pause state transition",
+    recommendation: "map pause semantics onto v2 plans, nodes, workers, adapter jobs, Human Gate waits, and side-effect uncertainty"
+  }],
+  ["workflow.resume", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "v2 plan/node/worker resume state transition",
+    recommendation: "map resume semantics onto v2 plans, nodes, workers, adapter jobs, Human Gate waits, and side-effect uncertainty"
+  }],
+  ["workflow.stop", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "v2 plan/node/worker stop state transition",
+    recommendation: "map stop semantics onto v2 plans, nodes, workers, adapter jobs, Human Gate waits, and side-effect uncertainty"
+  }],
+  ["workflow.swarm.plan", {
+    decisionClass: "archive_no_migration",
+    migrationStatus: "deprecated",
+    replacement: "workflow.v2.worker_spawn.create",
+    ...WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
+    dependencyEvidence: "workflow.v2 manager/worker actions do not call workflowSwarmPlan; legacy swarm helper remains only for explicit compatibility tests",
+    recommendation: "do not migrate; keep direct swarm planning frozen by default and delete compatibility shell by the target removal release"
+  }],
+  ["route_shell.ingest", {
+    decisionClass: "archive_no_migration",
+    migrationStatus: "deprecated",
+    replacement: "message_flow.send",
+    recommendation: "do not use route-shell as an active execution path"
+  }],
+  ["route_shell.route", {
+    decisionClass: "archive_no_migration",
+    migrationStatus: "deprecated",
+    replacement: "message_flow.send",
+    recommendation: "do not use route-shell as an active execution path"
+  }],
+  ["meeting.resume", {
+    decisionClass: "optional_or_template_later",
+    migrationStatus: "legacy_active",
+    recommendation: "keep until meeting template/runtime-adapter requirements are explicit"
+  }],
+  ["meeting.disperse", {
+    decisionClass: "optional_or_template_later",
+    migrationStatus: "legacy_active",
+    recommendation: "keep until meeting template/runtime-adapter requirements are explicit"
+  }],
+  ["meeting.runtime_participant", {
+    decisionClass: "optional_or_template_later",
+    migrationStatus: "legacy_active",
+    recommendation: "keep until meeting template/runtime-adapter requirements are explicit"
+  }]
+]);
+
+const WORKFLOW_ACTION_MIGRATION_PREFIXES = [
+  ["workflow.task.launch.", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.plan.create + workflow.v2.human_gate_request",
+    ...WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
+    recommendation: "freeze legacy launch implementation; hide mutating entry points from default MCP/console paths; delete compatibility shell by the target removal release"
+  }],
+  ["workflow.schedule.", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "approved template or Human-Gate-approved v2 plan schedule",
+    recommendation: "bind production schedules to approved templates or approved v2 plans"
+  }],
+  ["workflow.control_loop.", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.adapter_runner service and shared maintenance",
+    recommendation: "separate shared maintenance from legacy orchestration usage"
+  }],
+  ["runtime.bridge.", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "workflow.v2.adapter_runner.drain",
+    recommendation: "replace active worker execution only after live wrapper evidence"
+  }],
+  ["workflow.verification.", {
+    decisionClass: "optional_or_template_later",
+    migrationStatus: "legacy_active",
+    recommendation: "keep as shared/domain evidence until concrete v2 review templates absorb it"
+  }],
+  ["research.", {
+    decisionClass: "optional_or_template_later",
+    migrationStatus: "legacy_active",
+    recommendation: "migrate only under a concrete research workflow template plan"
+  }],
+  ["instrument.", {
+    decisionClass: "optional_or_template_later",
+    migrationStatus: "legacy_active",
+    recommendation: "migrate only under a concrete research workflow template plan"
+  }],
+  ["radar.", {
+    decisionClass: "optional_or_template_later",
+    migrationStatus: "legacy_active",
+    recommendation: "migrate only under a concrete research workflow template plan"
+  }],
+  ["thesis.", {
+    decisionClass: "optional_or_template_later",
+    migrationStatus: "legacy_active",
+    recommendation: "migrate only under a concrete research workflow template plan"
+  }]
+];
+
+export function workflowActionMigrationInfo(action) {
+  const canonical = String(action || "").trim();
+  if (!canonical) return null;
+  const exact = WORKFLOW_ACTION_MIGRATION_EXACT.get(canonical);
+  if (exact) return { action: canonical, ...exact };
+  for (const [prefix, metadata] of WORKFLOW_ACTION_MIGRATION_PREFIXES) {
+    if (canonical.startsWith(prefix)) return { action: canonical, ...metadata };
+  }
+  return null;
+}
 
 export const WORKFLOW_GENERIC_ORCHESTRATION_PLAN_ENTRY_ACTIONS = new Set([
   "workflow.v2.worker_spawn.create",
@@ -290,6 +496,17 @@ export function workflowActionEnvEnabled(name) {
 export function workflowActionOverrideEnabled(input, envName, ...fieldNames) {
   if (workflowActionEnvEnabled(envName)) return true;
   return fieldNames.some((name) => workflowActionFlagEnabled(input?.[name]));
+}
+
+export const WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN = Symbol("workflow.internalLegacyCompatibility");
+
+export function workflowLegacyActionOverrideEnabled(input = {}, action = "") {
+  if (workflowActionEnvEnabled("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS")) return true;
+  const marker = input?.[WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN];
+  if (!marker || typeof marker !== "object") return false;
+  const source = String(marker.source || "").trim();
+  const allowedActions = Array.isArray(marker.actions) ? marker.actions.map((item) => String(item).trim()) : [];
+  return source === "meeting.action_item" && allowedActions.includes(action);
 }
 
 export function workflowActionBlockedResult(action, requestedAction, reason, message, enableEnv) {

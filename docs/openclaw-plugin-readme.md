@@ -365,9 +365,14 @@ Workflow and tracking:
 
 ## Workflow Task Pool
 
-Use `workflow.run.upsert` for durable goals that outlive one meeting. A run should declare the objective, acceptance criteria, stop condition, and current phase so cat-brain `main` can keep pushing the workflow instead of only reporting that a discussion happened.
+Use `workflow.v2.plan.create` or approved templates for new durable goals that
+outlive one meeting. `workflow.run.upsert` is a frozen legacy compatibility
+entry point: it is blocked by default and retained only for read/history and
+explicit short-term compatibility.
 
-Use `workflow.swarm.plan` when a goal benefits from Kimi-style swarm execution: split one objective into bounded shards, assign each shard across a worker pool, and create a reducer task that depends on all shard tasks. This gives cat-brain `main` a governed fan-out/fan-in primitive while preserving cat-system role boundaries.
+Use v2 manager/worker/task-group surfaces when a goal needs fan-out/fan-in
+execution. `workflow.swarm.plan` is a frozen legacy compatibility entry point
+and should not be used for new orchestration.
 
 Important boundaries:
 
@@ -376,25 +381,34 @@ Important boundaries:
 - The reducer task synthesizes evidence, gaps, disagreement, and next action; it does not bypass Cat Heart, Cat Claw, or Human Gate.
 - Fan-out is capped by `fanoutLimit` and defaults to the explicit shard count, not unbounded spawning.
 
-CLI example:
+V2 action payload example:
 
-```bash
-node bin/cat-meeting-governance.mjs workflow-swarm \
-  --workflow stock-tracking-upgrade \
-  --objective "完善股票长期追踪制度和散户活跃度分析" \
-  --target "基本面制度" \
-  --target "消息面制度" \
-  --target "情绪与散户活跃度" \
-  --worker hermers:cat_eyes \
-  --worker hermers:cat_ears \
-  --worker hermers:cat_nose \
-  --reducer openclaw:main \
-  --root "$ROOT"
+```json
+{
+  "action": "workflow.v2.plan.create",
+  "workflowId": "stock-tracking-upgrade",
+  "planId": "plan-stock-tracking-upgrade",
+  "objective": "完善股票长期追踪制度和散户活跃度分析",
+  "taskOwnerAgent": "cat_heart",
+  "participantManagers": ["cat_eyes", "cat_ears", "cat_nose"]
+}
 ```
 
-Use `workflow.task.create` to turn the next phase into concrete tasks. Each task should name the owner agent, registered platform or target agent, priority, dependencies, expected artifact, receipt requirement, and whether a Human Gate is required before the task can be treated as complete.
+Use v2 plan nodes and worker/result/review state to represent concrete work in
+new flows. `workflow.task.create` and `workflow.task.update` are frozen legacy
+compatibility entry points: they are blocked by default and retained only for
+explicit short-term compatibility.
 
-`meeting.action_item` also mirrors new or updated action items into `workflow_tasks` by default. This keeps the meeting secretary surface and the durable workflow task board aligned. The only valid Cat Claw id is `cat_claw`; the retired id `catclaw` is rejected instead of silently normalized. Comma-separated owners are split into separate workflow tasks; their platform is resolved from the registry when dispatch is created. Set `promoteToWorkflowTask=false` only for purely clerical notes that should stay out of workflow execution.
+`meeting.action_item` also mirrors new or updated action items into
+`workflow_tasks` by default through an internal, non-JSON-forgeable
+compatibility token. This keeps the meeting secretary surface aligned while
+external `workflow.task.*` mutating entry points stay frozen by default. The
+only valid Cat Claw id is `cat_claw`; the retired id `catclaw` is rejected
+instead of silently normalized. Comma-separated owners are split into separate
+workflow tasks; their platform is resolved from the registry when dispatch is
+created. Set
+`promoteToWorkflowTask=false` only for purely clerical notes that should stay out
+of workflow execution.
 
 Use `workflow.advance` after a discussion, dispatch batch, receipt collection cycle, or artifact review. It returns a structured decision:
 

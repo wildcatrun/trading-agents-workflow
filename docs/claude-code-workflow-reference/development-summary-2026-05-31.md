@@ -3,6 +3,12 @@
 This document records the first implementation batch for adapting Claude Code
 Dynamic workflow design signals into `trading-agents-workflow`.
 
+Status: historical v1/v2 bridge implementation record. As of `v0.8.2-rc.1`,
+Task Launch Package v1 mutating entry points are frozen, hidden/blocked by
+default, retained only as explicitly gated short-term compatibility escape
+hatches, and targeted for removal at `v1.0.0`. Current policy lives in
+`../workflow-v1-v2-migration-worthiness-audit.md`.
+
 The work stayed inside the existing plugin and existing workflow console. It
 did not create a second control surface, a second scheduler, or a server-side
 export writer.

@@ -2,7 +2,7 @@
 
 Status: active cleanup/convergence pass
 Created: 2026-07-09
-Related design context: `docs/workflow-v2-unified-next-plan.md`, `docs/workflow-v1-v2-function-matrix.md`
+Related design context: `docs/workflow-v2-unified-next-plan.md`, `docs/workflow-v1-v2-function-matrix.md`, `docs/workflow-v1-v2-refactor-migration-plan.md`, `docs/workflow-v1-v2-migration-worthiness-audit.md`
 Scope: organize existing legacy/v2/shared orchestration surfaces into safer production defaults without deleting generic authoring capability, pretending legacy diagnostics have no value, or freezing future v2 feature development
 
 ## Operating Principle
@@ -12,7 +12,12 @@ Scope: organize existing legacy/v2/shared orchestration surfaces into safer prod
 This convergence pass is a boundary and default-safety pass. It is not an
 internal merge of v1 and v2 implementations, and it is not a deletion plan for
 generic orchestration. The current code-level inventory is maintained in
-`docs/workflow-v1-v2-function-matrix.md`.
+`docs/workflow-v1-v2-function-matrix.md`. The migration program for reducing v1
+to compatibility shims and making v2 the default kernel is maintained in
+`docs/workflow-v1-v2-refactor-migration-plan.md`; the value gate for deciding
+whether a legacy block should be migrated, wrapped, left for templates, kept as
+shared substrate, or archived is
+`docs/workflow-v1-v2-migration-worthiness-audit.md`.
 
 The production-oriented convergence target is:
 
@@ -28,7 +33,8 @@ Generic orchestration remains valuable, but it is retained as an authoring, eval
 ## Keep
 
 - Workflow v2 plan/node, info stack, review, Human Gate, worker result, adapter job, template, eval, promote, rollback, and extract modules.
-- Legacy task draft/launch surfaces as compatibility and migration affordances.
+- Legacy task draft/history surfaces as compatibility affordances; legacy
+  mutating launch surfaces are frozen and time-boxed for retirement.
 - Generic patterns such as manager-worker, parallel manager sections, evaluator-optimizer, autonomous loop, worker adapter, and local deterministic runner.
 - Console and MCP read/preview surfaces needed for diagnosis, review, readiness, and audit.
 - Existing tests that prove historical behavior, under explicit compatibility flags.
@@ -41,7 +47,9 @@ Generic orchestration remains valuable, but it is retained as an authoring, eval
   direct calls with no approved template plan, approved Human Gate plan, or
   explicit diagnostics override.
 - Template authoring and preview actions remain available; production execution must flow from promoted templates or Human-Gate-authorized plans.
-- MCP, CLI, and console should prefer template/status/readiness/receipt/Human Gate surfaces and treat legacy launch surfaces as compatibility diagnostics.
+- MCP, CLI, and console should prefer template/status/readiness/receipt/Human
+  Gate surfaces; legacy mutating launch surfaces must stay hidden by default,
+  explicitly gated when exposed, and deleted after the compatibility window.
 - Schema version expectations must be single-sourced or kept in lockstep across MCP wrappers and core layout.
 
 ## Do Not Remove
@@ -59,7 +67,8 @@ by code and regression tests:
 1. Unified convergence gate in `runWorkflowAction`.
 2. Production schedule gate in `workflowScheduleUpsert`.
 3. MCP/core schema version expectations kept in lockstep.
-4. Legacy MCP task-launch descriptions treated as compatibility surfaces.
+4. Legacy MCP task-launch descriptions treated as frozen, time-boxed
+   compatibility surfaces with a target removal release.
 5. Regression tests for default-deny legacy/generic/raw-schedule paths and schema version lockstep.
 6. Existing broad regression behavior kept behind explicit compatibility environment flags.
 

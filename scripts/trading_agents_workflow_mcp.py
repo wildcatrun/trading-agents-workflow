@@ -31,6 +31,21 @@ ALLOW_LEGACY_ROOT_ENV = "TRADING_AGENTS_WORKFLOW_ALLOW_LEGACY_ROOT"
 MESSAGE_FLOW_DELIVERY_RETURN_POLICIES = ("reply_to_source_chat", "report_to_flashcat")
 WORKFLOW_CONTROL_PLANE_DB = "workflow_control_plane.db"
 LEGACY_TRACKING_DB = "tracking.db"
+SHOW_LEGACY_MUTATING_TOOLS_ENV = "TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS"
+LEGACY_MUTATING_TOOLS_FROZEN_SINCE = "v0.8.2-rc.1"
+LEGACY_MUTATING_TOOLS_REMOVAL_TARGET = "v1.0.0"
+LEGACY_MUTATING_TOOL_NAMES = frozenset(
+    {
+        "workflow_task_launch_prepare",
+        "workflow_task_launch_review",
+        "workflow_task_launch_approve",
+    }
+)
+LEGACY_MUTATING_TOOL_POLICY_TEXT = (
+    f"Frozen legacy compatibility surface since {LEGACY_MUTATING_TOOLS_FROZEN_SINCE}; "
+    f"hidden from default discovery; temporary exposure requires {SHOW_LEGACY_MUTATING_TOOLS_ENV}=1; "
+    f"target removal release is {LEGACY_MUTATING_TOOLS_REMOVAL_TARGET}."
+)
 
 
 def now_iso() -> str:
@@ -70,6 +85,16 @@ def truthy_env(name: str) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def listed_tools() -> dict[str, dict[str, Any]]:
+    if truthy_env(SHOW_LEGACY_MUTATING_TOOLS_ENV):
+        return TOOLS
+    return {name: spec for name, spec in TOOLS.items() if name not in LEGACY_MUTATING_TOOL_NAMES}
+
+
+def legacy_mutating_tool_description(description: str) -> str:
+    return f"{description} {LEGACY_MUTATING_TOOL_POLICY_TEXT}"
 
 
 def normalized_root(value: str | Path) -> str:
@@ -1488,7 +1513,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_launch_prepare": {
-        "description": "Legacy compatibility surface for persisting a Cat-Claw-drafted Task Launch Package as canonical JSON/Markdown for Cat Brain review. Mutates workflow state but does not launch tasks; the core legacy action gate blocks it by default unless legacy compatibility is explicitly enabled. Production workflow execution should prefer approved templates.",
+        "description": legacy_mutating_tool_description("Legacy compatibility surface for persisting a Cat-Claw-drafted Task Launch Package as canonical JSON/Markdown for Cat Brain review. Mutates workflow state but does not launch tasks; the core legacy action gate blocks it by default unless legacy compatibility is explicitly enabled. Production workflow execution should prefer approved templates."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1564,7 +1589,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_launch_approve": {
-        "description": "Legacy compatibility approval that materializes workflow_tasks from a Task Launch Package. Does not auto-dispatch; the core legacy action gate blocks it by default unless legacy compatibility is explicitly enabled. Production execution should prefer approved templates.",
+        "description": legacy_mutating_tool_description("Legacy compatibility approval that materializes workflow_tasks from a Task Launch Package. Does not auto-dispatch; the core legacy action gate blocks it by default unless legacy compatibility is explicitly enabled. Production execution should prefer approved templates."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1584,7 +1609,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "workflow_task_launch_review": {
-        "description": "Record Cat Brain review of a legacy Task Launch Package before Flashcat launch approval. Legacy mutation is blocked by default unless compatibility is explicitly enabled.",
+        "description": legacy_mutating_tool_description("Record Cat Brain review of a legacy Task Launch Package before Flashcat launch approval. Legacy mutation is blocked by default unless compatibility is explicitly enabled."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1668,7 +1693,7 @@ def handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
     if method == "notifications/initialized":
         return None
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": [{"name": n, **s} for n, s in TOOLS.items()]}}
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": [{"name": n, **s} for n, s in listed_tools().items()]}}
     if method == "tools/call":
         name = params.get("name")
         arguments = params.get("arguments") or {}

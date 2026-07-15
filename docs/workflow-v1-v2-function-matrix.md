@@ -2,7 +2,7 @@
 
 Status: active architecture inventory
 Created: 2026-07-10
-Related: `docs/workflow-kernel-convergence-plan.md`, `docs/workflow-v2-orchestration-kernel.md`, `docs/workflow-v2-implementation-status.md`
+Related: `docs/workflow-kernel-convergence-plan.md`, `docs/workflow-v2-orchestration-kernel.md`, `docs/workflow-v2-implementation-status.md`, `docs/workflow-v1-v2-refactor-migration-plan.md`, `docs/workflow-v1-v2-migration-worthiness-audit.md`
 
 ## Purpose
 

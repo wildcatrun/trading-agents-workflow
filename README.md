@@ -8,7 +8,11 @@ Runtime SQLite databases and backup databases are intentionally excluded from Gi
 
 ## Workflow Progression
 
-`trading-agents-workflow` is evolving from meeting capture into the durable task board for cat-system work. A long-running goal should be represented as a `workflow_run` with objective, acceptance criteria, stop condition, current phase, and current decision. Concrete work belongs in `workflow_tasks`, where each task has an owner agent, registered platform, status, priority, dependency list, expected artifact, receipt requirement, and optional Human Gate requirement.
+`trading-agents-workflow` is evolving from meeting capture into the governed v2
+plan kernel for cat-system work. New orchestration starts should use
+`workflow.v2.plan.create` or approved templates. Legacy `workflow_runs` and
+`workflow_tasks` remain read/history and explicit compatibility surfaces while
+the P7 freeze pool retires direct v1 mutating entry points.
 
 Agent routing is registry-driven. `runtime_agents` records `platform`, `execution_adapter`, `im_ingress_owner`, `im_ingress_adapter`, and `workflow_ingress_adapter`; `agent_id` is identity only, not an execution location. Hermers is a platform and ACP is an adapter/mechanism, so a migrated instance is registered as `platform=hermers` plus `workflow_ingress_adapter=acp`.
 
@@ -31,6 +35,15 @@ Platform-local lists such as Hermers profiles, OpenClaw agent config, Codex sess
 `workflow-v2-worker-runtime-backends` records the worker runtime direction before implementation: OpenClaw is not a worker backend; Hermers and Claude Code are the preferred worker platforms; `wsl-agents` may provide Docker sandbox testbeds; `wsl-models` provides model/GPU APIs; specialized tool containers and GPU worker containers are out of scope for the current round.
 
 `workflow-v2-implementation-status` records what has landed in code, what remains only a design or future runtime slice, and which regression tests cover the current v2 kernel.
+
+`workflow-v1-v2-refactor-migration-plan` records the code topology, shared
+substrate, v1 compatibility surfaces, v2 kernel target, and the migration plan
+for ending the v1/v2 coexistence period at `v1.0.0`.
+
+`workflow-v1-v2-migration-worthiness-audit` is the migration value gate. It
+classifies each legacy/shared code block as must-migrate, compatibility shell,
+optional/template-later, shared substrate, or archive/no-migration before any
+implementation slice is selected.
 
 `message_flow` is the governed delivery layer for agent-to-agent, route-shell, Telegram-return, and local Codex inbox traffic. `local_codex` / `codex` is now an allowed inbox target through the workflow plugin, but it records delivery evidence only; formal reports, Human Gate requests, and trading-related confirmations still require the governed IM/Human Gate path. Closure details are in `docs/message-flow-closure.md`.
 
@@ -161,6 +174,8 @@ Hermers ACP dispatch.
 - `docs/workflow-v2-worker-lifecycle-renewal.md` - Anthropic-informed design draft for worker context budgets, compaction signals, retirement, handoff packages, same-class successor spawning, lineage, and review hierarchy.
 - `docs/workflow-v2-implementation-status.md` - current implementation status for v2 actions, tables, safety boundaries, and regression coverage.
 - `docs/workflow-v2-unified-next-plan.md` - current v2.1+ development plan: split the long v2 regression first, then mechanically modularize `workflow.js`, add a v2 action registry, and only then resume real Hermers/Claude Code worker adapter work.
+- `docs/workflow-v1-v2-refactor-migration-plan.md` - topology-driven refactor and migration plan for making v2 the default kernel by `v1.0.0`, reducing v1 to compatibility shims, and protecting shared substrate.
+- `docs/workflow-v1-v2-migration-worthiness-audit.md` - migration value audit that separates must-migrate blocks from compatibility shells, optional/template-later work, shared substrate, and archive/no-migration surfaces.
 - `docs/workflow-v2-p1-readiness-plan.md` - historical first-slice authorization gate, dry-run API contract, test matrix, worker testbed preflight, and execution-readiness checklist.
 - `docs/workflow-v2-orchestration-schema.sql` - schema design reference for v2 orchestration objects; the initial runtime implementation now creates an aligned minimal `workflow_v2_*` subset.
 - `docs/workflow-v2-worker-runtime-backends.md` - requirements draft for Hermers/Claude Code worker backends, `wsl-agents` Docker sandbox testbeds, `wsl-models` API usage, and authorization gates.

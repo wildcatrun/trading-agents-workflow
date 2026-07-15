@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { runWorkflowAction, workflowStatus } from "./workflow.js";
+import { WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN } from "./workflow/action-policy.js";
 
 export const PLUGIN_ID = "trading-agents-workflow";
 export const SCHEMA_VERSION = 8;
@@ -217,11 +218,23 @@ async function mirrorActionItemToWorkflowTasks(rootDir, meetingId, item, input =
       summary: item.title || input.summary || input.text || "",
       prompt: input.prompt || item.title || input.text || "",
       createdBy: normalizeAgentAlias(input.createdBy || input.created_by || input.updatedBy || input.from || item.created_by || "cat_claw"),
+      callerAgent: "system",
+      callerRuntime: "workflow",
+      sourceSystem: "meeting_action_item_mirror",
       dueAt: input.dueAt || input.due_at || item.due_at || "",
       payload
     };
+    const internalLegacyCompatibility = {
+      source: "meeting.action_item",
+      actions: ["workflow.task.create", "workflow.task.update"]
+    };
     try {
-      const created = await runWorkflowAction(rootDir, { action: "workflow.task.create", ...taskInput });
+      const created = await runWorkflowAction(rootDir, {
+        action: "workflow.task.create",
+        ...taskInput,
+        legacyCompatibilitySource: "meeting.action_item",
+        [WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN]: internalLegacyCompatibility
+      });
       mirrored.push({ taskId, ownerAgent: owner, runtime, status: created.status, operation: "create" });
     } catch (error) {
       if (!String(error?.message || error).includes("UNIQUE constraint failed")) throw error;
@@ -234,7 +247,12 @@ async function mirrorActionItemToWorkflowTasks(rootDir, meetingId, item, input =
         prompt: taskInput.prompt,
         expectedArtifact: taskInput.expectedArtifact,
         actualArtifactRef: taskInput.actualArtifactRef,
-        payload
+        payload,
+        callerAgent: "system",
+        callerRuntime: "workflow",
+        sourceSystem: "meeting_action_item_mirror",
+        legacyCompatibilitySource: "meeting.action_item",
+        [WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN]: internalLegacyCompatibility
       });
       mirrored.push({ taskId, ownerAgent: owner, runtime, status: updated.status, operation: "update" });
     }

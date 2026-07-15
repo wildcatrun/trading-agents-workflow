@@ -12,7 +12,10 @@ inside the same package, not separate package releases.
 
 ## Module Status
 
-- Workflow v1: compatibility mode; existing default paths remain available.
+- Workflow v1: frozen compatibility mode; legacy mutating entry points are
+  hidden/blocked by default and kept only as explicitly gated short-term escape
+  hatches with target removal at `v1.0.0`; the active batch ledger is
+  `docs/workflow-freeze-pool-p7.md`.
 - Workflow v2: enabled for governed preview, rehearsal, audit, Human Gate
   packaging, and paper-only pre-execution guardrails.
 - Real worker wrappers: gated/off by default.

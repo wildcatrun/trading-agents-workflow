@@ -3,6 +3,12 @@
 This document records the workflow engineering changes made on 2026-05-27.
 It is a compact handoff for future development, review, and operations.
 
+Status: historical v1 implementation record. As of `v0.8.2-rc.1`, Task Launch
+Package v1 mutating entry points are frozen, hidden/blocked by default, retained
+only as explicitly gated short-term compatibility escape hatches, and targeted
+for removal at `v1.0.0`. Current policy lives in
+`docs/workflow-v1-v2-migration-worthiness-audit.md`.
+
 ## Scope
 
 The work covered three connected areas:
