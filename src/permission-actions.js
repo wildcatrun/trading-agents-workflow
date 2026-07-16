@@ -11,6 +11,7 @@ import {
 } from "./workflow/sqlite.js";
 import {
   WORKFLOW_ACTION_PERMISSION_RULES,
+  WORKFLOW_PERMISSION_KNOWN_ACTIONS,
   WORKFLOW_PERMISSION_READ_ACTIONS,
   WORKFLOW_POLICY_HARD_GATE_ACTIONS,
   WORKFLOW_REGISTRY_WRITE_ACTIONS
@@ -71,6 +72,9 @@ export function createPermissionCore(context = {}) {
 
   function workflowActionPermissionRule(action, input = {}) {
     const canonical = canonicalWorkflowAction(action);
+    if (!WORKFLOW_PERMISSION_KNOWN_ACTIONS.has(canonical)) {
+      return { action: canonical, capability: "none", risk: "unknown", mutating: false, readOnly: false, unknown: true };
+    }
     if (WORKFLOW_PERMISSION_READ_ACTIONS.has(canonical)) {
       return { action: canonical, capability: "read", risk: "low", mutating: false, readOnly: true };
     }
@@ -323,6 +327,13 @@ LIMIT 1;`, { json: true });
       actionable: true,
       row: null
     };
+    if (rule.unknown) {
+      decision.allowed = false;
+      decision.reason = "unknown_workflow_action";
+      decision.policyOutcome = "deny";
+      decision.actionable = false;
+      return decision;
+    }
     if (rule.readOnly) {
       decision.reason = "read_action";
       return decision;

@@ -441,6 +441,11 @@ export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "cat_claw.audit": { capability: "cat_claw.audit", risk: "low", mutating: true }
 };
 
+export const WORKFLOW_PERMISSION_KNOWN_ACTIONS = new Set([
+  ...WORKFLOW_PERMISSION_READ_ACTIONS,
+  ...Object.keys(WORKFLOW_ACTION_PERMISSION_RULES)
+]);
+
 export const WORKFLOW_REGISTRY_WRITE_ACTIONS = new Set([
   "runtime.agent.upsert"
 ]);

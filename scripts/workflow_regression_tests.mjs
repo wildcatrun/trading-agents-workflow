@@ -18,6 +18,7 @@ import {
   WORKFLOW_GENERIC_ORCHESTRATION_PLAN_ENTRY_ACTIONS,
   WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS,
   WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
+  WORKFLOW_PERMISSION_KNOWN_ACTIONS,
   WORKFLOW_PERMISSION_READ_ACTIONS,
   WORKFLOW_POLICY_HARD_GATE_ACTIONS,
   workflowActionMigrationInfo,
@@ -11975,14 +11976,14 @@ async function testWorkflowConvergenceDefaultGates() {
         objective: "removed swarm alias should be unknown",
         shards: ["a", "b"]
       }),
-      /unknown workflow action: workflow\.swarm/
+      /workflow permission denied: action=workflow\.swarm .*reason=unknown_workflow_action/
     );
     await assertRejectsMessage(
       () => runAction(root, {
         action: "workflow.task.launch.draft",
         workflowId: "wf-convergence-gate"
       }),
-      /unknown workflow action: workflow\.task\.launch\.draft/
+      /workflow permission denied: action=workflow\.task\.launch\.draft .*reason=unknown_workflow_action/
     );
     const legacyRead = await runAction(root, {
       action: "workflow.task.launch.list",
@@ -15051,6 +15052,29 @@ async function testPermissionExtractedActionContracts() {
   assert.equal(explain.requiredCapability, "read");
   assert.equal(explain.caller.agentId, "cat_body");
   assert.equal(explain.dbFile, check.dbFile);
+
+  for (const removedAction of [
+    "workflow.task.launch.prepare",
+    "workflow.task.launch.review",
+    "workflow.task.launch.approve",
+    "workflow.swarm",
+    "workflow.swarm.plan",
+    "workflow.unknown.removed"
+  ]) {
+    const removedPolicy = await runAction(root, {
+      action: "workflow.permission.check",
+      targetAction: removedAction,
+      callerAgent: "local_codex",
+      callerRuntime: "local_codex",
+      sourceSystem: "local_codex"
+    });
+    assert.equal(removedPolicy.allowed, false, `${removedAction} should fail closed at permission preflight`);
+    assert.equal(removedPolicy.action, removedAction);
+    assert.equal(removedPolicy.reason, "unknown_workflow_action");
+    assert.equal(removedPolicy.policyOutcome, "deny");
+    assert.equal(removedPolicy.actionable, false);
+    assert.equal(removedPolicy.requiredCapability, "none");
+  }
 }
 
 async function testScheduleExtractedActionContracts() {
@@ -18960,6 +18984,7 @@ async function testWorkflowActionPolicyRegistryCoverage() {
       if (!WORKFLOW_PERMISSION_READ_ACTIONS.has(canonical) && !WORKFLOW_ACTION_PERMISSION_RULES[canonical]) {
         missing.push(`${canonical} (${action} @ ${registryName})`);
       }
+      assert.equal(WORKFLOW_PERMISSION_KNOWN_ACTIONS.has(canonical), true, `known permission action set should include registered action ${action} -> ${canonical}`);
     }
   }
   for (const action of Object.keys(WORKFLOW_V2_ACTION_HANDLER_NAMES)) {
@@ -18967,6 +18992,7 @@ async function testWorkflowActionPolicyRegistryCoverage() {
     if (!WORKFLOW_PERMISSION_READ_ACTIONS.has(canonical) && !WORKFLOW_ACTION_PERMISSION_RULES[canonical]) {
       missing.push(`${canonical} (${action} @ workflow_v2)`);
     }
+    assert.equal(WORKFLOW_PERMISSION_KNOWN_ACTIONS.has(canonical), true, `known permission action set should include workflow v2 action ${action} -> ${canonical}`);
   }
   assert.deepEqual(missing.sort(), [], "every registered workflow action should have read or permission-rule metadata");
   assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.init"]?.mutating, true);
