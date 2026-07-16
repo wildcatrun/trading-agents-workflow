@@ -3,7 +3,6 @@ import {
 } from "./json.js";
 
 export const WORKFLOW_LEGACY_MUTATING_ACTIONS = new Set([
-  "workflow.run.upsert",
   "workflow.task.create",
   "workflow.task.update",
   "workflow.advance",
@@ -24,14 +23,6 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
     decisionClass: "must_migrate",
     migrationStatus: "legacy_active",
     recommendation: "define v2 checkpoint/readiness parity before retiring legacy checkpoint"
-  }],
-  ["workflow.run.upsert", {
-    decisionClass: "compat_shell_only",
-    migrationStatus: "legacy_active",
-    replacement: "workflow.v2.plan.create",
-    ...WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
-    dependencyEvidence: "workflow.v2.plan.create owns plan admission and does not call workflowRunUpsert; legacy helper remains only for v1 compatibility internals",
-    recommendation: "stop creating new production runs from the legacy path; keep read/history compatibility and delete external compatibility shell by the target removal release"
   }],
   ["workflow.task.draft", {
     decisionClass: "compat_shell_only",
@@ -347,7 +338,6 @@ export const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
 
 export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.init": { capability: "workflow.init", risk: "medium", mutating: true },
-  "workflow.run.upsert": { capability: "workflow.write", risk: "medium", mutating: true },
   "workflow.task.create": { capability: "workflow.task.write", risk: "medium", mutating: true },
   "workflow.task.update": { capability: "workflow.task.write", risk: "medium", mutating: true },
   "workflow.advance": { capability: "workflow.operate", risk: "high", mutating: true, requiresCatClawAudit: true },

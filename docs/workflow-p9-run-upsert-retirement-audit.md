@@ -1,14 +1,14 @@
 # Workflow P9 Run Upsert Retirement Audit
 
-Status: audit, no code removal  
-Created: 2026-07-16  
+Status: implemented external-surface removal
+Created: 2026-07-16
 Scope: `workflow.run.upsert` / `workflow.initiative.upsert`
 
 ## Purpose
 
-This document is the P9 pre-removal audit for the legacy workflow run creation
-surface. It records current topology, active callers, replacement coverage, and
-the safe removal sequence before any P9 implementation patch deletes code.
+This document is the P9 audit and implementation record for the legacy workflow
+run creation surface. It records topology, active callers, replacement
+coverage, and the removal boundary used by the P9 implementation patch.
 
 The goal is to avoid migrating or preserving a v1 entry point that has no
 production value, while also avoiding accidental deletion of helper code still
@@ -18,14 +18,14 @@ used by remaining v1 compatibility paths.
 
 | Layer | Current surface | File | Status | P9 judgment |
 | --- | --- | --- | --- | --- |
-| OpenClaw plugin action schema | `workflow.run.upsert`, `workflow.initiative.upsert` | `index.js` | Still listed as external actions. | Remove in P9 when external registry is deleted. |
-| Commander plugin command | `workflow-run` | `index.js` | Still maps to `workflow.run.upsert`; execution is blocked by convergence gate. | Remove or convert to explicit unknown/retired command in P9. |
-| Local CLI shell | `workflow-run` | `bin/cat-meeting-governance.mjs` | Already retired by default; compatibility shell only runs if `TRADING_AGENTS_WORKFLOW_CLI_ALLOW_LEGACY_MUTATING_SHELLS=1`. | Delete command case in P9. |
-| Action alias | `workflow.initiative.upsert` -> `workflow.run.upsert` | `src/workflow/action-aliases.js` | Alias exists only for legacy run creation. | Remove with public action deletion. |
-| Action policy | legacy mutating action, permission rule, migration metadata | `src/workflow/action-policy.js` | Frozen compatibility metadata; now unnecessary once action is deleted. | Remove from runtime policy after deleted-action tests are in place. |
-| Public action registry | `WORKFLOW_RUN_ACTION_REGISTRY` | `src/workflow-run-actions.js`, `src/workflow.js` | Still handles external run upsert. | Remove public registry dispatch in P9. |
-| Private helper | `workflowRunUpsert` | `src/workflow-run-actions.js`, `src/workflow.js` | Still used by `workflow.task.create` and tests. | Keep private helper until `workflow.task.create` is removed or replaced. |
-| Stale dependency injection | `workflowRunUpsert` passed to task-launch handlers | `src/workflow.js` | `workflow-task-launch-actions.js` is now read-only and does not consume it. | Clean up during P9 or task-action cleanup; do not cite it as a helper retention reason. |
+| OpenClaw plugin action schema | `workflow.run.upsert`, `workflow.initiative.upsert` | `index.js` | Removed in P9. | No external schema entry remains. |
+| Commander plugin command | `workflow-run` | `index.js` | Removed in P9. | No plugin command remains. |
+| Local CLI shell | `workflow-run` | `bin/cat-meeting-governance.mjs` | Removed in P9. | Now returns unknown command. |
+| Action alias | `workflow.initiative.upsert` -> `workflow.run.upsert` | `src/workflow/action-aliases.js` | Removed in P9. | Alias now fails closed as unknown action. |
+| Action policy | legacy mutating action, permission rule, migration metadata | `src/workflow/action-policy.js` | Removed in P9. | Runtime policy no longer carries metadata for deleted action. |
+| Public action registry | `WORKFLOW_RUN_ACTION_REGISTRY` | `src/workflow-run-actions.js`, `src/workflow.js` | Removed in P9. | Only helper factory remains. |
+| Private helper | `workflowRunUpsert` | `src/workflow-run-actions.js`, `src/workflow.js` | Still used internally by `workflow.task.create`. | Keep private helper until `workflow.task.create` is removed or replaced. |
+| Stale dependency injection | `workflowRunUpsert` passed to task-launch handlers | `src/workflow.js` | Removed in P9. | Task-launch read-only list no longer receives the helper. |
 | Local MCP dedicated tool | none found | `scripts/trading_agents_workflow_mcp.py` | No dedicated local MCP tool exposes run upsert. | No dedicated local MCP deletion needed for P9 run-upsert. |
 | Hermers raw action MCP | `trading_agents_workflow` raw action | `scripts/trading_agents_workflow_hermes_mcp.py` | Disabled by default, but can call documented public actions when `TRADING_AGENTS_WORKFLOW_ALLOW_RAW_ACTION=1`. | P9 must verify raw-action calls fail closed once run-upsert is removed. |
 | Historical read model | `workflow_runs` table and status/readiness views | shared DB/read model | Historical rows still useful. | Do not drop table or read support. |
@@ -82,6 +82,21 @@ runtime does not.
 | `workflow_runs` table/read model | keep | Historical/readiness/status evidence still depends on persisted run rows. |
 | `workflow.run.upsert` migration metadata | remove with action | Runtime policy should not carry metadata for deleted action; historical docs keep rationale. |
 
+## P9 Implementation Result
+
+P9 removed the external run-upsert surface and kept the private helper boundary:
+
+- removed external action schema entries and the `workflow-run` plugin command;
+- removed the local `workflow-run` CLI case, including the legacy env escape
+  hatch path;
+- removed the `workflow.initiative.upsert` alias;
+- removed `workflow.run.upsert` from legacy mutating actions, permission rules,
+  and runtime migration metadata;
+- removed `WORKFLOW_RUN_ACTION_REGISTRY` and run-upsert dispatch from
+  `runWorkflowAction`;
+- kept `workflowRunUpsert` as a non-exported internal helper for `workflow.task.create`;
+- kept `workflow_runs` table/read-model support unchanged.
+
 ## Safe P9 Implementation Shape
 
 1. Remove external action schema entries for `workflow.run.upsert` and
@@ -92,8 +107,8 @@ runtime does not.
 4. Replace `WORKFLOW_RUN_ACTION_REGISTRY` with no public registry, or change
    `src/workflow-run-actions.js` to export only a helper factory that does not
    register external action names.
-5. Keep `workflowRunUpsert` exported from `src/workflow.js` only as an internal
-   helper for `workflow.task.create` until the task mutation retirement patch.
+5. Keep `workflowRunUpsert` as a non-exported local helper in `src/workflow.js`
+   for `workflow.task.create` until the task mutation retirement patch.
 6. Remove the `workflow-run` CLI case from `bin/cat-meeting-governance.mjs` and
    the commander plugin command from `index.js`.
 7. Update active operator docs, especially `docs/openclaw-plugin-readme.md`, so

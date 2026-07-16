@@ -232,8 +232,6 @@ const toolParameters = {
         "workflow.runtime.registry",
         "workflow.permission.check",
         "workflow.permission.explain",
-        "workflow.run.upsert",
-        "workflow.initiative.upsert",
         "workflow.task.draft",
         "workflow.task.preview",
         "workflow.task.create.preview",
@@ -1082,39 +1080,6 @@ function registerCli(api) {
         console.log(JSON.stringify(await runAction(commandRoot(options, api), {
           action: "workflow.topology",
           workflowRootDir: options.workflowRoot
-        }), null, 2));
-      });
-
-    command.command("workflow-run")
-      .requiredOption("--workflow <workflowId>", "Workflow or initiative id")
-      .option("--type <workflowType>", "Workflow type", "initiative")
-      .option("--status <status>", "active, waiting_human, blocked, completed, stopped", "active")
-      .option("--owner <agent>", "Owner agent", "main")
-      .option("--summary <summary>", "Summary")
-      .option("--objective <objective>", "Objective")
-      .option("--acceptance <criteria>", "Acceptance criteria")
-      .option("--acceptance-criteria <criteria>", "Acceptance criteria")
-      .option("--stop-condition <condition>", "Stop condition")
-      .option("--phase <phase>", "Current phase", "planning")
-      .option("--flash-lane <trueOrFalse>", "Reserve flash-lane scheduling priority for future trading execution workflows", "false")
-      .option("--trading-execution <trueOrFalse>", "Mark this workflow as trading-execution class", "false")
-      .option("--workflow-root <dir>", "Trading agents workflow root directory")
-      .option("--root <dir>", "Meeting protocol root directory")
-      .action(async (options) => {
-        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
-          action: "workflow.run.upsert",
-          workflowRootDir: options.workflowRoot,
-          workflowId: options.workflow,
-          workflowType: options.type,
-          status: options.status,
-          ownerAgent: options.owner,
-          summary: options.summary,
-          objective: options.objective,
-          acceptanceCriteria: options.acceptanceCriteria || options.acceptance,
-          stopCondition: options.stopCondition,
-          phase: options.phase,
-          flashLane: options.flashLane === "true",
-          tradingExecution: options.tradingExecution === "true"
         }), null, 2));
       });
 

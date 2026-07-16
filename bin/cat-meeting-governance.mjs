@@ -174,25 +174,6 @@ function toAction({ command, positional, options }) {
           payload: options.payload ? parseCliJson(options.payload, {}) : undefined
         }
       };
-    case "workflow-run":
-      retiredLegacyCliCommand("workflow-run", "workflow-v2-plan-create or an approved template");
-      return {
-        root,
-        input: {
-          action: "workflow.run.upsert",
-          workflowId: options.workflow,
-          workflowType: options.type,
-          status: options.status,
-          ownerAgent: options.owner,
-          summary: options.summary,
-          objective: options.objective,
-          acceptanceCriteria: options["acceptance-criteria"] || options.acceptance,
-          stopCondition: options["stop-condition"],
-          phase: options.phase,
-          flashLane: options["flash-lane"] === "true",
-          tradingExecution: options["trading-execution"] === "true"
-        }
-      };
     case "workflow-task-draft":
       return {
         root,

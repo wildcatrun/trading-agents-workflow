@@ -40,7 +40,7 @@ block was removed by mistake.
 
 | Candidate | Current file | Replacement | Removal reason | Preconditions |
 | --- | --- | --- | --- | --- |
-| `workflow-run` command | `bin/cat-meeting-governance.mjs` | `workflow.v2.plan.create` or approved template entry | Direct run creation is frozen and v2 plan creation owns new orchestration starts. | Add or document a v2 CLI/action path for plan creation; confirm no operator runbook still invokes `workflow-run`. |
+| `workflow-run` command | `bin/cat-meeting-governance.mjs` | `workflow.v2.plan.create` or approved template entry | Removed in P9; direct run creation is not a supported CLI surface. | None; unknown-command regression covers the retired entry. |
 | `workflow-swarm` command | `bin/cat-meeting-governance.mjs` | `workflow.v2.worker_spawn.create` through v2 plan/manager-worker surfaces | Legacy generic fanout is superseded by v2 manager/worker/task-group mechanics. | Confirm no current smoke, OpenClaw plugin docs, or operator workflow needs this command. |
 | `workflow-task` mutating create mode | `bin/cat-meeting-governance.mjs` | `workflow.v2.plan.create`, v2 plan nodes, `meeting.action_item` shared mirror, or approved templates | Direct task creation is frozen; non-mutating `workflow.task.draft` can remain separately. | Split or remove the non-dry-run branch while preserving preview/draft behavior. |
 | `workflow-task-update` command | `bin/cat-meeting-governance.mjs` | `workflow.v2.worker_result.submit`, v2 manager/owner review state | Direct task update is frozen and v2 result/review owns new progress updates. | Confirm legacy task history updates are not part of active operator runbooks. |
@@ -77,7 +77,7 @@ Expected implementation shape:
 
 | Candidate | Current file | Replacement | Removal reason | Preconditions |
 | --- | --- | --- | --- | --- |
-| `workflow.initiative.upsert` alias | `src/workflow/action-aliases.js` | `workflow.v2.plan.create` | Alias exists only to reach frozen `workflow.run.upsert`. | Confirm telemetry shows no active callers after the compatibility window. |
+| `workflow.initiative.upsert` alias | `src/workflow/action-aliases.js` | `workflow.v2.plan.create` | Removed in P9; alias existed only to reach frozen `workflow.run.upsert`. | None; unknown-action regression covers the retired alias. |
 | `workflow.swarm` alias | `src/workflow/action-aliases.js` | `workflow.v2.worker_spawn.create` via v2 plan | Alias exists only to reach frozen `workflow.swarm.plan`. | Confirm no docs/tests still present it as active. |
 | `workflow.task.launch.draft/submit/brain_review` aliases | `src/workflow/action-aliases.js` | v2 plan/Human Gate surfaces | Aliases only support legacy task launch compatibility. | Keep only if historical fixtures require them; otherwise remove with task-launch actions. |
 | Permission rules for removed mutating actions | `src/workflow/action-policy.js` | v2 action permission rules | Rules for deleted actions should not remain as zombie policy. | Remove in the same batch as action registry deletion. |
@@ -101,7 +101,7 @@ actions and CLI/MCP entry points were removed.
 | --- | --- | --- | --- | --- |
 | `workflow-swarm-actions.js` | `src/workflow-swarm-actions.js` | `workflow.v2.worker_spawn.create`, v2 manager/worker/task-group surfaces | Classified as `archive_no_migration`; no production value remains after P7 freeze. | Remove CLI/action alias/registry/tests first or in the same batch. |
 | `workflow-task-launch-actions.js` mutating prepare/review/approve | `src/workflow-task-launch-actions.js` | `workflow.v2.plan.create`, v2 Human Gate package/request | P6 frozen compatibility path; target removal `v1.0.0`. | Decide whether `workflow.task.launch.list` remains as read-only historical view or moves to an archive helper. |
-| `workflow-run-actions.js` external upsert registry | `src/workflow-run-actions.js` | `workflow.v2.plan.create`; internal helper may remain private temporarily | Direct external run creation is frozen. | Separate public action registry deletion from private helper needs used by still-active v1 compatibility internals. |
+| `workflow-run-actions.js` external upsert registry | `src/workflow-run-actions.js` | `workflow.v2.plan.create`; internal helper remains private temporarily | Public registry dispatch removed in P9. | Keep `workflowRunUpsert` private until remaining v1 task mutation compatibility is removed or replaced. |
 | `workflow-task-actions.js` external create/update registry | `src/workflow-task-actions.js` | v2 plan nodes and `workflow.v2.worker_result.submit`; `meeting.action_item` mirror | Direct external task mutation is frozen. | Preserve or replace internal helper path used by `meeting.action_item` until a v2/shared action-item writer exists. |
 
 Expected implementation shape:
@@ -110,11 +110,9 @@ Expected implementation shape:
   functions that are still needed by shared compatibility paths.
 - For `workflow.task.create/update`, do not break `meeting.action_item` mirroring
   until a dedicated shared writer replaces it.
-- For `workflow.run.upsert`, check task-launch, swarm, tests, and historical
-  fixture setup before removing private helper functions. P9 scoped this as
-  `docs/workflow-p9-run-upsert-retirement-audit.md`: remove the external action
-  surface first, but keep the private `workflowRunUpsert` helper while
-  `workflow.task.create` still depends on it.
+- For `workflow.run.upsert`, P9 removed the external surface and kept the
+  private `workflowRunUpsert` helper while `workflow.task.create` still depends
+  on parent run rows.
 - Do not remove `workflow_task_launch_package` protocol object/read-model support
   until historical package listing and archive evidence have a replacement.
 

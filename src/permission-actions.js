@@ -385,12 +385,6 @@ LIMIT 1;`, { json: true });
       Object.assign(decision, await workflowPermissionPolicyAssessment(paths, rule, input, false));
       return decision;
     }
-    if (row && rule.action === "workflow.run.upsert" && Number(row.can_start_workflow ?? 1) === 0) {
-      decision.allowed = false;
-      decision.reason = "runtime_agent_cannot_start_workflow";
-      Object.assign(decision, await workflowPermissionPolicyAssessment(paths, rule, input, false));
-      return decision;
-    }
     if (!workflowPermissionHasCapability(policy, rule.action, rule.capability) && rule.action !== "message_flow.send") {
       decision.allowed = false;
       decision.reason = `missing_capability:${rule.capability}`;

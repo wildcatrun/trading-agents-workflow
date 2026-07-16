@@ -208,6 +208,31 @@ def main() -> int:
     )
     if not denied.get("isError") or "tool not available" not in str(denied.get("content")):
         raise AssertionError(f"raw action should be denied without opt-in, got {denied}")
+    with tempfile.TemporaryDirectory(prefix="hermes-mcp-removed-action-") as tmp:
+        init_code = (
+            f"import {{ runAction }} from {json.dumps((ROOT / 'src' / 'core.js').resolve().as_uri())};"
+            f"await runAction({json.dumps(tmp)}, {{ action: 'status' }});"
+        )
+        subprocess.run(
+            ["node", "--input-type=module", "-e", init_code],
+            cwd=str(ROOT),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        removed_action = call_tool(
+            {
+                "HERMES_PROFILE": "catheart",
+                "TRADING_AGENTS_WORKFLOW_ROOT": tmp,
+                "TRADING_AGENTS_WORKFLOW_ALLOW_NONDEFAULT_ROOT": "1",
+                "TRADING_AGENTS_WORKFLOW_ALLOW_RAW_ACTION": "1",
+            },
+            "trading_agents_workflow",
+            {"action": "workflow.run.upsert", "workflowId": "wf-removed-run-upsert"},
+        )
+        removed_text = str(removed_action.get("content"))
+        if not removed_action.get("isError") or "unknown_workflow_action" not in removed_text:
+            raise AssertionError(f"removed run-upsert raw action should fail closed, got {removed_action}")
     with tempfile.TemporaryDirectory(prefix="hermes-mcp-nondefault-root-") as tmp:
         nondefault_root = call_tool(
             {

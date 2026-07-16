@@ -9,7 +9,6 @@ export const WORKFLOW_ACTION_ALIASES = {
   "trading_workflow.topology": "workflow.topology",
   "workflow.runtime-agents": "workflow.runtime_agents",
   "workflow.runtime.registry": "workflow.runtime_agents",
-  "workflow.initiative.upsert": "workflow.run.upsert",
   "workflow.task.preview": "workflow.task.draft",
   "workflow.task.create.preview": "workflow.task.draft",
   "workflow.meeting_task.draft": "workflow.task.draft",

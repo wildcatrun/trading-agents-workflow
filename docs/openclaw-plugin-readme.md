@@ -318,8 +318,6 @@ Workflow and tracking:
 
 - `workflow.init`
 - `workflow.status`
-- `workflow.run.upsert`
-- `workflow.initiative.upsert`
 - `workflow.task.create`
 - `workflow.task.update`
 - `workflow.task.list`
@@ -365,9 +363,9 @@ Workflow and tracking:
 ## Workflow Task Pool
 
 Use `workflow.v2.plan.create` or approved templates for new durable goals that
-outlive one meeting. `workflow.run.upsert` is a frozen legacy compatibility
-entry point: it is blocked by default and retained only for read/history and
-explicit short-term compatibility.
+outlive one meeting. The legacy `workflow.run.upsert`,
+`workflow.initiative.upsert`, and `workflow-run` external entry points were
+removed in P9; historical `workflow_runs` rows remain read-model evidence only.
 
 Use v2 manager/worker/task-group surfaces when a goal needs fan-out/fan-in
 execution. The legacy `workflow.swarm.plan` action and `workflow-swarm` CLI

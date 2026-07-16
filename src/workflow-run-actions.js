@@ -8,11 +8,6 @@ import {
   sqlite
 } from "./workflow/sqlite.js";
 
-export const WORKFLOW_RUN_ACTION_HANDLER_NAMES = {
-  "workflow.run.upsert": "workflowRunUpsert",
-  "workflow.initiative.upsert": "workflowRunUpsert"
-};
-
 function requireContextFunction(context, name) {
   const value = context?.[name];
   if (typeof value !== "function") throw new Error(`workflow run action dependency missing: ${name}`);
@@ -22,21 +17,6 @@ function requireContextFunction(context, name) {
 function requireContextValue(context, name) {
   if (!(name in (context || {}))) throw new Error(`workflow run action dependency missing: ${name}`);
   return context[name];
-}
-
-export function createWorkflowRunActionRegistry(handlers = {}) {
-  const entries = Object.entries(WORKFLOW_RUN_ACTION_HANDLER_NAMES).map(([action, handlerName]) => {
-    const handler = handlers[handlerName];
-    if (typeof handler !== "function") throw new Error(`Missing workflow run action handler: ${handlerName}`);
-    return [action, handler];
-  });
-  return new Map(entries);
-}
-
-export async function runWorkflowRunAction(registry, action, rootDir, input = {}, permissionDecision = null) {
-  const handler = registry.get(action);
-  if (!handler) return { handled: false, value: null };
-  return { handled: true, value: await handler(rootDir, input, permissionDecision) };
 }
 
 export function createWorkflowRunActionHandlers(context = {}) {

@@ -45,9 +45,7 @@ import { createWorkflowV2PlanActionHandlers } from "./workflow-v2/plan-actions.j
 import { createWorkflowTemplateActionHandlers } from "./workflow-v2/template-actions.js";
 import { createWorkflowV2ValidateActionHandlers } from "./workflow-v2/validate-actions.js";
 import {
-  createWorkflowRunActionHandlers,
-  createWorkflowRunActionRegistry,
-  runWorkflowRunAction
+  createWorkflowRunActionHandlers
 } from "./workflow-run-actions.js";
 import {
   createWorkflowAdvanceActionHandlers,
@@ -4197,16 +4195,14 @@ export const {
   workflowControlLoopJobRequeue
 } = CONTROL_LOOP_JOB_ACTION_HANDLERS;
 
-export const WORKFLOW_RUN_ACTION_HANDLERS = createWorkflowRunActionHandlers({
+const WORKFLOW_RUN_ACTION_HANDLERS = createWorkflowRunActionHandlers({
   appendWorkflowEvent,
   ensureWorkflowLayout,
   nowIso,
   WORKFLOW_RUN_STATUSES
 });
 
-export const WORKFLOW_RUN_ACTION_REGISTRY = createWorkflowRunActionRegistry(WORKFLOW_RUN_ACTION_HANDLERS);
-
-export const {
+const {
   workflowRunUpsert
 } = WORKFLOW_RUN_ACTION_HANDLERS;
 
@@ -4290,7 +4286,6 @@ export const WORKFLOW_TASK_LAUNCH_ACTION_HANDLERS = createWorkflowTaskLaunchActi
   readProtocolObject,
   workflowPermissionCaller,
   workflowPhaseRecordId,
-  workflowRunUpsert,
   workflowTaskCreate,
   workflowTaskDraft,
   writeJsonArtifact,
@@ -8919,8 +8914,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (controlLoopJobResult.handled) return controlLoopJobResult.value;
   const verificationResult = await runVerificationAction(VERIFICATION_ACTION_REGISTRY, action, rootDir, input, permissionDecision);
   if (verificationResult.handled) return verificationResult.value;
-  const workflowRunResult = await runWorkflowRunAction(WORKFLOW_RUN_ACTION_REGISTRY, action, rootDir, input, permissionDecision);
-  if (workflowRunResult.handled) return workflowRunResult.value;
   const workflowTaskResult = await runWorkflowTaskAction(WORKFLOW_TASK_ACTION_REGISTRY, action, rootDir, input);
   if (workflowTaskResult.handled) return workflowTaskResult.value;
   const workflowTaskDraftResult = await runWorkflowTaskDraftAction(WORKFLOW_TASK_DRAFT_ACTION_REGISTRY, action, rootDir, input);
