@@ -102,14 +102,16 @@ actions and CLI/MCP entry points were removed.
 | `workflow-swarm-actions.js` | `src/workflow-swarm-actions.js` | `workflow.v2.worker_spawn.create`, v2 manager/worker/task-group surfaces | Classified as `archive_no_migration`; no production value remains after P7 freeze. | Remove CLI/action alias/registry/tests first or in the same batch. |
 | `workflow-task-launch-actions.js` mutating prepare/review/approve | `src/workflow-task-launch-actions.js` | `workflow.v2.plan.create`, v2 Human Gate package/request | P6 frozen compatibility path; target removal `v1.0.0`. | Decide whether `workflow.task.launch.list` remains as read-only historical view or moves to an archive helper. |
 | `workflow-run-actions.js` external upsert registry | `src/workflow-run-actions.js` | `workflow.v2.plan.create`; internal helper remains private temporarily | Public registry dispatch removed in P9. | Keep `workflowRunUpsert` private until remaining v1 task mutation compatibility is removed or replaced. |
-| `workflow-task-actions.js` external create/update registry | `src/workflow-task-actions.js` | v2 plan nodes and `workflow.v2.worker_result.submit`; `meeting.action_item` mirror | Direct external task mutation is frozen. | Preserve or replace internal helper path used by `meeting.action_item` until a v2/shared action-item writer exists. |
+| `workflow-task-actions.js` external create/update registry | `src/workflow-task-actions.js` | v2 plan nodes and `workflow.v2.worker_result.submit`; `meeting.action_item` mirror | Direct external task mutation is frozen; P10 audit is `docs/workflow-p10-task-mutation-retirement-audit.md`. | Preserve or replace internal helper path used by `meeting.action_item` and `workflow.advance` until v2/shared replacements exist. |
 
 Expected implementation shape:
 
 - Prefer deleting public action registry exposure before deleting private helper
   functions that are still needed by shared compatibility paths.
 - For `workflow.task.create/update`, do not break `meeting.action_item` mirroring
-  until a dedicated shared writer replaces it.
+  or `workflow.advance` internal task update compatibility until dedicated
+  replacements exist. P10 audit is
+  `docs/workflow-p10-task-mutation-retirement-audit.md`.
 - For `workflow.run.upsert`, P9 removed the external surface and kept the
   private `workflowRunUpsert` helper while `workflow.task.create` still depends
   on parent run rows.
