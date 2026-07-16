@@ -53,6 +53,11 @@ Expected implementation shape:
 
 ### Batch B: MCP Legacy Mutating Discovery and Tool Handlers
 
+Status: completed in P8. The hidden MCP task-launch prepare/review/approve
+tools and `TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS` discovery
+escape hatch were removed. `workflow_task_launch_list` remains as a historical
+read-only surface.
+
 | Candidate | Current file | Replacement | Removal reason | Preconditions |
 | --- | --- | --- | --- | --- |
 | `workflow_task_launch_prepare` MCP tool | `scripts/trading_agents_workflow_mcp.py` | v2 plan/tooling and approved templates | Hidden by default since P7 and only retained as a compatibility escape hatch. | Confirm local Codex and Hermes MCP configs expose v2 plan/Human Gate surfaces needed for the same workflow. |
@@ -84,6 +89,12 @@ Expected implementation shape:
 - Adjust tests from “blocked by default” to “unknown/removed action” only when code is actually deleted.
 
 ### Batch D: Legacy Action Modules
+
+Status: completed in P8. `workflow-swarm-actions.js`,
+`workflow.swarm`, `workflow.swarm.plan`, and `workflow-swarm` were removed.
+`workflow-task-launch-actions.js` was reduced to the read-only
+`workflow.task.launch.list` historical archive surface; prepare/review/approve
+actions and CLI/MCP entry points were removed.
 
 | Candidate | Current file | Replacement | Removal reason | Preconditions |
 | --- | --- | --- | --- | --- |

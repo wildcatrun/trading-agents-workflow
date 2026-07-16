@@ -63,6 +63,7 @@ import {
   workflowV2HumanGatePackageRow
 } from "../src/workflow-v2/human-gate-state.js";
 import { runAction as runActionRaw } from "../src/core.js";
+import { sqlValue } from "../src/workflow/sqlite.js";
 import {
   CAT_CLAW_ACTION_REGISTRY,
   CHECKPOINT_ACTION_REGISTRY,
@@ -101,7 +102,6 @@ import {
   WORKFLOW_TASK_ACTION_REGISTRY,
   WORKFLOW_TASK_DRAFT_ACTION_REGISTRY,
   WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY,
-  WORKFLOW_SWARM_ACTION_REGISTRY,
   canonicalWorkflowAction,
   cat_clawAudit,
   humanGateButtonCallback,
@@ -173,13 +173,9 @@ import {
   workflowSessionRunComplete,
   workflowSessionRunStart,
   workflowStatus,
-  workflowSwarmPlan,
   workflowTaskCreate,
   workflowTaskDraft,
-  workflowTaskLaunchApprove,
   workflowTaskLaunchList,
-  workflowTaskLaunchPrepare,
-  workflowTaskLaunchReview,
   workflowTaskList,
   workflowTaskUpdate,
   workflowTopology,
@@ -337,12 +333,9 @@ import {
 } from "../src/workflow-task-draft-actions.js";
 import {
   WORKFLOW_TASK_LAUNCH_ACTION_HANDLER_NAMES,
-  createWorkflowTaskLaunchActionRegistry
+  createWorkflowTaskLaunchActionRegistry,
+  runWorkflowTaskLaunchAction
 } from "../src/workflow-task-launch-actions.js";
-import {
-  WORKFLOW_SWARM_ACTION_HANDLER_NAMES,
-  createWorkflowSwarmActionRegistry
-} from "../src/workflow-swarm-actions.js";
 
 const createdRoots = [];
 const LOCAL_CODEX_REGISTRY_WRITE_ENV = "TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE";
@@ -377,6 +370,90 @@ function sqliteExec(dbFile, sql) {
 
 function sqliteCount(dbFile, table, where = "1=1") {
   return Number(sqliteJson(dbFile, `SELECT COUNT(*) AS count FROM ${table} WHERE ${where};`)[0]?.count || 0);
+}
+
+async function seedWorkflowRun(root, input = {}) {
+  await workflowStatus(root, {});
+  const dbFile = path.join(root, "tracking.db");
+  const workflowId = String(input.workflowId || input.workflow_id || input.initiativeId || input.initiative_id || "").trim();
+  if (!workflowId) throw new Error("seedWorkflowRun requires workflowId");
+  const createdAt = input.createdAt || input.created_at || "2026-05-31T00:00:00.000Z";
+  const updatedAt = input.updatedAt || input.updated_at || createdAt;
+  const workflowType = input.workflowType || input.workflow_type || input.type || "initiative";
+  const status = input.status || "active";
+  const payload = input.payload || {};
+  sqliteExec(dbFile, `
+INSERT INTO workflow_runs(workflow_id, workflow_type, status, instrument_id, owner_agent, summary, objective, acceptance_criteria, stop_condition, current_phase, current_decision, payload_json, created_at, updated_at)
+VALUES (${sqlValue(workflowId)}, ${sqlValue(workflowType)}, ${sqlValue(status)}, ${sqlValue(input.instrumentId || input.instrument_id || null)}, ${sqlValue(input.ownerAgent || input.owner_agent || "main")}, ${sqlValue(input.summary || input.text || "")}, ${sqlValue(input.objective || input.goal || "")}, ${sqlValue(input.acceptanceCriteria || input.acceptance_criteria || "")}, ${sqlValue(input.stopCondition || input.stop_condition || "")}, ${sqlValue(input.phase || input.currentPhase || input.current_phase || "")}, ${sqlValue(input.currentDecision || input.current_decision || "")}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(createdAt)}, ${sqlValue(updatedAt)})
+ON CONFLICT(workflow_id) DO UPDATE SET
+  workflow_type=excluded.workflow_type,
+  status=excluded.status,
+  instrument_id=COALESCE(excluded.instrument_id, workflow_runs.instrument_id),
+  owner_agent=excluded.owner_agent,
+  summary=CASE WHEN excluded.summary != '' THEN excluded.summary ELSE workflow_runs.summary END,
+  objective=CASE WHEN excluded.objective != '' THEN excluded.objective ELSE workflow_runs.objective END,
+  acceptance_criteria=CASE WHEN excluded.acceptance_criteria != '' THEN excluded.acceptance_criteria ELSE workflow_runs.acceptance_criteria END,
+  stop_condition=CASE WHEN excluded.stop_condition != '' THEN excluded.stop_condition ELSE workflow_runs.stop_condition END,
+  current_phase=CASE WHEN excluded.current_phase != '' THEN excluded.current_phase ELSE workflow_runs.current_phase END,
+  current_decision=CASE WHEN excluded.current_decision != '' THEN excluded.current_decision ELSE workflow_runs.current_decision END,
+  payload_json=excluded.payload_json,
+  updated_at=excluded.updated_at;`);
+  return { workflowId, status, workflowType, dbFile };
+}
+
+async function seedWorkflowTask(root, input = {}) {
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  if (!workflowId) throw new Error("seedWorkflowTask requires workflowId");
+  await seedWorkflowRun(root, {
+    workflowId,
+    workflowType: input.workflowType || input.workflow_type || "initiative",
+    status: input.workflowStatus || input.workflow_status || "active",
+    summary: input.workflowSummary || input.workflow_summary || "",
+    objective: input.workflowObjective || input.workflow_objective || "",
+    createdAt: input.createdAt || input.created_at || "2026-05-31T00:00:00.000Z"
+  });
+  const dbFile = path.join(root, "tracking.db");
+  const taskId = String(input.taskId || input.task_id || "").trim();
+  if (!taskId) throw new Error("seedWorkflowTask requires taskId");
+  const status = input.status || "pending";
+  const createdAt = input.createdAt || input.created_at || "2026-05-31T00:00:00.000Z";
+  const updatedAt = input.updatedAt || input.updated_at || createdAt;
+  const dependsOn = Array.isArray(input.dependsOn || input.depends_on || input.after)
+    ? input.dependsOn || input.depends_on || input.after
+    : String(input.dependsOn || input.depends_on || input.after || "").split(",").map((item) => item.trim()).filter(Boolean);
+  sqliteExec(dbFile, `
+INSERT INTO workflow_tasks(task_id, workflow_id, parent_task_id, phase, owner_agent, runtime, agent_id, task_type, status, priority, depends_on_json, expected_artifact, actual_artifact_ref, receipt_required, human_gate_required, summary, prompt, payload_json, blocked_reason, created_by, created_at, due_at, started_at, completed_at, updated_at)
+VALUES (${sqlValue(taskId)}, ${sqlValue(workflowId)}, ${sqlValue(input.parentTaskId || input.parent_task_id || "")}, ${sqlValue(input.phase || "")}, ${sqlValue(input.ownerAgent || input.owner_agent || input.agentId || input.agent_id || "main")}, ${sqlValue(input.runtime || input.platform || "")}, ${sqlValue(input.agentId || input.agent_id || input.ownerAgent || input.owner_agent || "main")}, ${sqlValue(input.taskType || input.task_type || input.type || "task")}, ${sqlValue(status)}, ${sqlValue(input.priority || "normal")}, ${sqlValue(JSON.stringify(dependsOn))}, ${sqlValue(input.expectedArtifact || input.expected_artifact || "")}, ${sqlValue(input.actualArtifactRef || input.actual_artifact_ref || input.artifactRef || input.artifact_ref || "")}, ${sqlValue(input.receiptRequired ?? input.receipt_required ?? true)}, ${sqlValue(input.humanGateRequired ?? input.human_gate_required ?? false)}, ${sqlValue(input.summary || input.text || "")}, ${sqlValue(input.prompt || input.text || "")}, ${sqlValue(JSON.stringify(input.payload || {}))}, ${sqlValue(input.blockedReason || input.blocked_reason || "")}, ${sqlValue(input.createdBy || input.created_by || input.from || "main")}, ${sqlValue(createdAt)}, ${sqlValue(input.dueAt || input.due_at || "")}, ${sqlValue(input.startedAt || input.started_at || (status === "in_progress" ? createdAt : ""))}, ${sqlValue(input.completedAt || input.completed_at || (["done", "failed", "cancelled"].includes(status) ? createdAt : ""))}, ${sqlValue(updatedAt)})
+ON CONFLICT(task_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  parent_task_id=excluded.parent_task_id,
+  phase=excluded.phase,
+  owner_agent=excluded.owner_agent,
+  runtime=excluded.runtime,
+  agent_id=excluded.agent_id,
+  task_type=excluded.task_type,
+  status=excluded.status,
+  priority=excluded.priority,
+  depends_on_json=excluded.depends_on_json,
+  expected_artifact=excluded.expected_artifact,
+  actual_artifact_ref=excluded.actual_artifact_ref,
+  receipt_required=excluded.receipt_required,
+  human_gate_required=excluded.human_gate_required,
+  summary=excluded.summary,
+  prompt=excluded.prompt,
+  payload_json=excluded.payload_json,
+  blocked_reason=excluded.blocked_reason,
+  due_at=excluded.due_at,
+  started_at=excluded.started_at,
+  completed_at=excluded.completed_at,
+  updated_at=excluded.updated_at;`);
+  sqliteExec(dbFile, `DELETE FROM workflow_task_dependencies WHERE task_id=${sqlValue(taskId)};`);
+  for (const dependency of dependsOn) {
+    sqliteExec(dbFile, `
+INSERT OR IGNORE INTO workflow_task_dependencies(task_id, depends_on_task_id, created_at)
+VALUES (${sqlValue(taskId)}, ${sqlValue(dependency)}, ${sqlValue(createdAt)});`);
+  }
+  return { taskId, workflowId, status, dbFile };
 }
 
 function workflowV2TestManifestHash(value) {
@@ -1163,14 +1240,12 @@ async function testWorkflowOperationsConsoleAudit() {
   const dbFile = path.join(root, "tracking.db");
   const bridgeDir = path.join(root, "bridge");
   const workflowId = "wf-console-operations";
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId,
     status: "active",
     summary: "Console operation audit regression"
   });
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId: "wf-console-operations-other",
     status: "active",
     summary: "Other workflow operation audit regression"
@@ -2911,14 +2986,14 @@ async function testWorkflowAdvanceExtractedActionContracts() {
     canReceiveDispatch: true,
     routingPolicy: { primary: true, routingRank: 1 }
   });
-  await workflowRunUpsert(root, {
+  await seedWorkflowRun(root, {
     workflowId,
     workflowType: "initiative",
     status: "active",
     summary: "Workflow advance extracted contract.",
     objective: "Keep workflow advance extracted behavior stable."
   });
-  await workflowTaskCreate(root, {
+  await seedWorkflowTask(root, {
     workflowId,
     taskId: "task-advance-done",
     ownerAgent: "cat_body",
@@ -2928,7 +3003,7 @@ async function testWorkflowAdvanceExtractedActionContracts() {
     summary: "Completed dependency.",
     createdBy: "main"
   });
-  await workflowTaskCreate(root, {
+  await seedWorkflowTask(root, {
     workflowId,
     taskId: "task-advance-ready",
     ownerAgent: "cat_body",
@@ -2990,13 +3065,13 @@ LIMIT 1;`)[0];
 
   const syncRoot = await tempRoot("workflow-advance-extracted-sync");
   const syncWorkflowId = "wf-advance-sync-contract";
-  await workflowRunUpsert(syncRoot, {
+  await seedWorkflowRun(syncRoot, {
     workflowId: syncWorkflowId,
     workflowType: "initiative",
     status: "active",
     summary: "Workflow advance sync contract."
   });
-  await workflowTaskCreate(syncRoot, {
+  await seedWorkflowTask(syncRoot, {
     workflowId: syncWorkflowId,
     taskId: "task-advance-sync-failed",
     ownerAgent: "cat_body",
@@ -3075,14 +3150,14 @@ async function testWorkflowSupervisorExtractedActionContracts() {
     canReceiveDispatch: true,
     routingPolicy: { primary: true, routingRank: 1 }
   });
-  await workflowRunUpsert(root, {
+  await seedWorkflowRun(root, {
     workflowId,
     workflowType: "initiative",
     status: "active",
     summary: "Workflow supervisor extracted contract.",
     objective: "Keep workflow supervisor extracted behavior stable."
   });
-  await workflowTaskCreate(root, {
+  await seedWorkflowTask(root, {
     workflowId,
     taskId: "task-supervisor-ready",
     ownerAgent: "cat_body",
@@ -3167,14 +3242,14 @@ async function testWorkflowSupervisorExtractedActionContracts() {
 
   const reportRoot = await tempRoot("workflow-supervisor-report-preview");
   const reportWorkflowId = "wf-supervisor-report-preview";
-  await workflowRunUpsert(reportRoot, {
+  await seedWorkflowRun(reportRoot, {
     workflowId: reportWorkflowId,
     workflowType: "initiative",
     status: "active",
     summary: "Workflow supervisor report preview contract.",
     objective: "Confirm report preview remains read-only."
   });
-  await workflowTaskCreate(reportRoot, {
+  await seedWorkflowTask(reportRoot, {
     workflowId: reportWorkflowId,
     taskId: "task-supervisor-done",
     ownerAgent: "main",
@@ -3363,269 +3438,44 @@ async function testWorkflowTaskDraftExtractedActionContracts() {
 
 async function testWorkflowTaskLaunchExtractedActionContracts() {
   const expected = {
-    "workflow.task.launch.prepare": "workflowTaskLaunchPrepare",
-    "workflow.task.launch.draft": "workflowTaskLaunchPrepare",
-    "workflow.task.launch.submit": "workflowTaskLaunchPrepare",
-    "workflow.task.launch.list": "workflowTaskLaunchList",
-    "workflow.task.launch.review": "workflowTaskLaunchReview",
-    "workflow.task.launch.brain_review": "workflowTaskLaunchReview",
-    "workflow.task.launch.approve": "workflowTaskLaunchApprove"
+    "workflow.task.launch.list": "workflowTaskLaunchList"
   };
   for (const [action, handlerName] of Object.entries(expected)) {
     assert.equal(WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted workflow task launch registry`);
     assert.equal(WORKFLOW_TASK_LAUNCH_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
   }
-  assert.equal(typeof workflowTaskLaunchPrepare, "function");
   assert.equal(typeof workflowTaskLaunchList, "function");
-  assert.equal(typeof workflowTaskLaunchReview, "function");
-  assert.equal(typeof workflowTaskLaunchApprove, "function");
   const directRegistry = createWorkflowTaskLaunchActionRegistry({
-    workflowTaskLaunchPrepare,
-    workflowTaskLaunchList,
-    workflowTaskLaunchReview,
-    workflowTaskLaunchApprove
+    workflowTaskLaunchList
   });
-  assert.equal(directRegistry.get("workflow.task.launch.prepare"), workflowTaskLaunchPrepare);
-  assert.equal(directRegistry.get("workflow.task.launch.draft"), workflowTaskLaunchPrepare);
-  assert.equal(directRegistry.get("workflow.task.launch.submit"), workflowTaskLaunchPrepare);
   assert.equal(directRegistry.get("workflow.task.launch.list"), workflowTaskLaunchList);
-  assert.equal(directRegistry.get("workflow.task.launch.review"), workflowTaskLaunchReview);
-  assert.equal(directRegistry.get("workflow.task.launch.brain_review"), workflowTaskLaunchReview);
-  assert.equal(directRegistry.get("workflow.task.launch.approve"), workflowTaskLaunchApprove);
+  assert.equal(directRegistry.has("workflow.task.launch.prepare"), false);
+  assert.equal(directRegistry.has("workflow.task.launch.review"), false);
+  assert.equal(directRegistry.has("workflow.task.launch.approve"), false);
 
   const root = await tempRoot("workflow-task-launch-extracted-contracts");
   const draftId = "tlp-task-launch-contract";
   const workflowId = "wf-task-launch-contract";
-  const prepared = await workflowTaskLaunchPrepare(root, {
-    draftId,
+  await workflowStatus(root, {});
+  const dbFile = path.join(root, "tracking.db");
+  sqliteExec(dbFile, `
+INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES (${sqlValue(draftId)}, 'workflow_task_launch_package', 'launched', NULL, 'legacy_task_launch_archive', 'cat_claw', ${sqlValue(workflowId)}, 'artifacts/task-launch/wf-task-launch-contract/tlp-task-launch-contract.json', ${sqlValue(JSON.stringify({
     workflowId,
-    objective: "Exercise extracted workflow task launch contracts.",
-    participants: ["cat_body"],
-    requiresHumanGate: false
-  });
-  assert.equal(prepared.operation, "workflow.task.launch.prepare");
-  assert.equal(prepared.status, "pending_cat_brain_review");
-  assert.equal(prepared.draftId, draftId);
-  assert.equal(prepared.workflowId, workflowId);
-  assert.equal(Boolean(prepared.artifacts.canonicalJson), true);
-  assert.equal(Boolean(prepared.artifacts.markdown), true);
+    subject: "Archived Task Launch Package",
+    objective: "Verify task-launch list remains as a historical read surface.",
+    roles: { drafterAgent: "cat_claw", reviewerAgent: "main" },
+    artifactRefs: { canonicalJson: "artifacts/task-launch/wf-task-launch-contract/tlp-task-launch-contract.json" },
+    callbackToken: "must-not-persist"
+  }))}, 'hash-task-launch-contract', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:01.000Z');`);
 
   const listed = await workflowTaskLaunchList(root, { workflowId });
   assert.equal(listed.count, 1);
   assert.equal(listed.taskLaunches[0].draftId, draftId);
-
-  const reviewed = await workflowTaskLaunchReview(root, {
-    draftId,
-    reviewerAgent: "main",
-    status: "approved",
-    reviewOpinion: "Extracted task launch review approved."
-  });
-  assert.equal(reviewed.status, "pending_flashcat_launch");
-  assert.equal(reviewed.reviewStatus, "approved");
-
-  await assert.rejects(
-    () => workflowTaskLaunchApprove(root, { draftId }),
-    /Flashcat original words/
-  );
-  await assert.rejects(
-    () => workflowTaskLaunchApprove(root, {
-      draftId,
-      approvedBy: "flashcat",
-      callerAgent: "cat_body",
-      sourceSystem: "workflow_gui",
-      feedbackText: "spoofed approval should not pass"
-    }),
-    /must come from Flashcat/
-  );
-  const approved = await workflowTaskLaunchApprove(root, {
-    draftId,
-    approvedBy: "flashcat",
-    sourceSystem: "workflow_gui",
-    feedbackText: "批准启动 extracted launch contract。"
-  });
-  assert.equal(approved.status, "launched");
-  assert.equal(approved.workflowId, workflowId);
-  assert.equal(approved.materializedTasks.length > 0, true);
-  assert.equal(approved.materializedPhases.length > 0, true);
-  const dbFile = approved.dbFile;
-  assert.equal(sqliteCount(dbFile, "protocol_objects", `object_id='${draftId}' AND status='launched'`), 1);
-  assert.equal(sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}' AND status='active'`), 1);
-  const workflowRow = sqliteJson(dbFile, `
-SELECT workflow_type AS workflowType, owner_agent AS ownerAgent, current_phase AS currentPhase, payload_json AS payloadJson
-FROM workflow_runs
-WHERE workflow_id='${workflowId}'
-LIMIT 1;`)[0];
-  assert.equal(workflowRow.workflowType, "meeting_task");
-  assert.equal(workflowRow.ownerAgent, "main");
-  assert.equal(workflowRow.currentPhase, "launched");
-  assert.equal(JSON.parse(workflowRow.payloadJson).taskLaunchPackageId, draftId);
-  assert.equal(sqliteCount(dbFile, "workflow_tasks", `workflow_id='${workflowId}'`), approved.materializedTasks.length);
-  assert.equal(sqliteCount(dbFile, "workflow_phases", `workflow_id='${workflowId}'`), approved.materializedPhases.length);
-
-  const trustedRoot = await tempRoot("workflow-task-launch-trusted-runtime");
-  const trustedDraftId = "tlp-task-launch-trusted-runtime";
-  const trustedWorkflowId = "wf-task-launch-trusted-runtime";
-  await workflowTaskLaunchPrepare(trustedRoot, {
-    draftId: trustedDraftId,
-    workflowId: trustedWorkflowId,
-    objective: "Exercise trusted local runtime task launch approval.",
-    participants: ["cat_body"],
-    requiresHumanGate: false
-  });
-  await workflowTaskLaunchReview(trustedRoot, {
-    draftId: trustedDraftId,
-    reviewerAgent: "main",
-    status: "approved",
-    reviewOpinion: "Trusted runtime approval package approved."
-  });
-  const trustedApproved = await workflowTaskLaunchApprove(trustedRoot, {
-    draftId: trustedDraftId,
-    approvedBy: "flashcat",
-    callerAgent: "cat_body",
-    callerRuntime: "local_codex",
-    sourceSystem: "spoofed_source_should_not_matter",
-    feedbackText: "批准 trusted local runtime approval。"
-  });
-  assert.equal(trustedApproved.status, "launched");
-
-  const failureRoot = await tempRoot("workflow-task-launch-failure-restore");
-  const failureDraftId = "tlp-task-launch-failure-restore";
-  const failureWorkflowId = "wf-task-launch-failure-restore";
-  await workflowTaskLaunchPrepare(failureRoot, {
-    draftId: failureDraftId,
-    workflowId: failureWorkflowId,
-    objective: "Exercise launch workflow row restore after materialization failure.",
-    participants: ["cat_body", "cat_eyes"],
-    requiresHumanGate: false
-  });
-  await workflowTaskLaunchReview(failureRoot, {
-    draftId: failureDraftId,
-    reviewerAgent: "main",
-    status: "approved",
-    reviewOpinion: "Failure restore package approved."
-  });
-  const failureDbFile = path.join(failureRoot, "tracking.db");
-  const failurePayloadRow = sqliteJson(failureDbFile, `SELECT payload_json AS payloadJson FROM protocol_objects WHERE object_id='${failureDraftId}' LIMIT 1;`)[0];
-  const failurePayload = JSON.parse(failurePayloadRow.payloadJson);
-  assert.equal(failurePayload.launchMaterialization.tasks.length > 1, true);
-  failurePayload.launchMaterialization.tasks[1].workflowId = "";
-  sqliteExec(failureDbFile, `UPDATE protocol_objects SET payload_json='${JSON.stringify(failurePayload).replaceAll("'", "''")}' WHERE object_id='${failureDraftId}';`);
-  await assert.rejects(
-    () => workflowTaskLaunchApprove(failureRoot, {
-      draftId: failureDraftId,
-      approvedBy: "flashcat",
-      feedbackText: "批准但测试 materialization failure restore。"
-    }),
-    /workflowId is required/
-  );
-  const restoredWorkflowRow = sqliteJson(failureDbFile, `
-SELECT owner_agent AS ownerAgent, current_phase AS currentPhase, payload_json AS payloadJson
-FROM workflow_runs
-WHERE workflow_id='${failureWorkflowId}'
-LIMIT 1;`)[0];
-  assert.equal(restoredWorkflowRow.ownerAgent, "main");
-  assert.equal(restoredWorkflowRow.currentPhase, "launched");
-  assert.equal(JSON.parse(restoredWorkflowRow.payloadJson).taskLaunchPackageId, failureDraftId);
-}
-
-async function testWorkflowSwarmExtractedActionContracts() {
-  const expected = {
-    "workflow.swarm.plan": "workflowSwarmPlan",
-    "workflow.swarm": "workflowSwarmPlan"
-  };
-  for (const [action, handlerName] of Object.entries(expected)) {
-    assert.equal(WORKFLOW_SWARM_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted workflow swarm registry`);
-    assert.equal(WORKFLOW_SWARM_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
-  }
-  assert.equal(typeof workflowSwarmPlan, "function");
-  const directRegistry = createWorkflowSwarmActionRegistry({ workflowSwarmPlan });
-  assert.equal(directRegistry.get("workflow.swarm.plan"), workflowSwarmPlan);
-  assert.equal(directRegistry.get("workflow.swarm"), workflowSwarmPlan);
-
-  const root = await tempRoot("workflow-swarm-extracted-contracts");
-  const direct = await workflowSwarmPlan(root, {
-    workflowId: "wf-swarm-contract",
-    objective: "Keep workflow swarm extracted behavior stable.",
-    phase: "analysis",
-    shards: [
-      { id: "alpha", text: "Alpha shard", payloadField: 1 },
-      "Beta shard"
-    ],
-    workers: ["hermers:cat_body", "openclaw:main"],
-    reducer: "openclaw:main",
-    taskPrefix: "wf-swarm-contract-shard",
-    reducerTaskId: "wf-swarm-contract-reduce",
-    fanoutLimit: 2,
-    priority: "normal",
-    flashLane: true,
-    reducerHumanGate: true,
-    createdBy: "main"
-  });
-  assert.equal(direct.workflowId, "wf-swarm-contract");
-  assert.equal(direct.workflowRun.workflowId, "wf-swarm-contract");
-  assert.equal(direct.objective, "Keep workflow swarm extracted behavior stable.");
-  assert.equal(direct.phase, "analysis");
-  assert.equal(direct.shardCount, 2);
-  assert.equal(direct.plannedShardCount, 2);
-  assert.deepEqual(direct.workerPool, [
-    { runtime: "hermers", agentId: "cat_body" },
-    { runtime: "openclaw", agentId: "main" }
-  ]);
-  assert.deepEqual(direct.reducer, { runtime: "openclaw", agentId: "main" });
-  assert.equal(direct.createdTasks.length, 2);
-  assert.equal(direct.reducerTask.taskId, "wf-swarm-contract-reduce");
-  assert.equal(direct.skippedTasks.length, 0);
-
-  const dbFile = direct.dbFile;
-  assert.equal(sqliteCount(dbFile, "workflow_runs", "workflow_id='wf-swarm-contract' AND status='active'"), 1);
-  assert.equal(sqliteCount(dbFile, "workflow_tasks", "workflow_id='wf-swarm-contract' AND task_type='swarm_shard' AND priority='normal'"), 2);
-  assert.equal(sqliteCount(dbFile, "workflow_tasks", "workflow_id='wf-swarm-contract' AND task_id='wf-swarm-contract-reduce' AND task_type='swarm_reduce' AND priority='flash' AND human_gate_required=1"), 1);
-  const reducerRow = sqliteJson(dbFile, `
-SELECT depends_on_json AS dependsOnJson, prompt, payload_json AS payloadJson
-FROM workflow_tasks
-WHERE task_id='wf-swarm-contract-reduce'
-LIMIT 1;`)[0];
-  assert.deepEqual(JSON.parse(reducerRow.dependsOnJson), [
-    "wf-swarm-contract-shard-alpha",
-    "wf-swarm-contract-shard-Beta-shard"
-  ]);
-  assert.equal(reducerRow.prompt.includes("Worker task ids:"), true);
-  assert.equal(JSON.parse(reducerRow.payloadJson).shardCount, 2);
-  const workerPromptRow = sqliteJson(dbFile, `
-SELECT prompt
-FROM workflow_tasks
-WHERE task_id='wf-swarm-contract-shard-alpha'
-LIMIT 1;`)[0];
-  assert.equal(workerPromptRow.prompt.includes("Do not execute trades."), true);
-
-  const repeat = await runAction(root, {
-    action: "workflow.swarm",
-    workflowId: "wf-swarm-contract",
-    objective: "Keep workflow swarm extracted behavior stable.",
-    phase: "analysis",
-    shards: [
-      { id: "alpha", text: "Alpha shard", payloadField: 1 },
-      "Beta shard"
-    ],
-    workers: ["hermers:cat_body", "openclaw:main"],
-    reducer: "openclaw:main",
-    taskPrefix: "wf-swarm-contract-shard",
-    reducerTaskId: "wf-swarm-contract-reduce",
-    fanoutLimit: 2
-  });
-  assert.equal(repeat.workflowRun, null);
-  assert.equal(repeat.createdTasks.length, 0);
-  assert.equal(repeat.reducerTask, null);
-  assert.equal(repeat.skippedTasks.length, 3);
-  assert.equal(sqliteCount(dbFile, "workflow_tasks", "workflow_id='wf-swarm-contract'"), 3);
-
-  await assert.rejects(
-    () => workflowSwarmPlan(root, {
-      workflowId: "wf-swarm-missing-objective",
-      shards: ["no objective"]
-    }),
-    /objective is required/
-  );
+  assert.equal(listed.taskLaunches[0].status, "launched");
+  assert.equal(listed.taskLaunches[0].workflowId, workflowId);
+  assert.equal(listed.taskLaunches[0].payload.callbackToken, "[redacted]");
+  assert.equal((await runWorkflowTaskLaunchAction(directRegistry, "workflow.task.launch.prepare", root, {})).handled, false);
 }
 
 async function testWorkflowInterventionPreviews() {
@@ -3633,8 +3483,7 @@ async function testWorkflowInterventionPreviews() {
   const dbFile = path.join(root, "tracking.db");
   const bridgeDir = path.join(root, "bridge");
   const workflowId = "wf-intervention-preview";
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId,
     status: "active",
     phase: "research",
@@ -3758,8 +3607,7 @@ async function testInterventionExtractedActionContracts() {
 
   const root = await tempRoot("intervention-extracted-contracts");
   const workflowId = "wf-intervention-contract";
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId,
     status: "active",
     phase: "contract",
@@ -6278,8 +6126,7 @@ async function testWorkflowAgentRunStateHelpers() {
     { phaseKey: "fallback phase", phaseId: "phase.wf-agent-state.fallback-phase" }
   );
 
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId: "wf-agent-state",
     status: "active",
     phase: "phase.alpha",
@@ -11132,8 +10979,7 @@ async function testWorkflowInterventionExecution() {
   const root = await tempRoot("workflow-intervention-execution");
   const bridgeDir = path.join(root, "bridge");
   const workflowId = "workflow-intervention-execute";
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId,
     status: "active",
     ownerAgent: "main",
@@ -11254,8 +11100,7 @@ LIMIT 1;`)[0];
   assert.equal(readOnlyStop.errorCode, "console_readonly");
 
   const terminateWorkflowId = "workflow-intervention-terminate-alias";
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId: terminateWorkflowId,
     status: "active",
     ownerAgent: "main",
@@ -11280,8 +11125,7 @@ LIMIT 1;`)[0];
 async function testWorkflowVerificationResults() {
   const root = await tempRoot("workflow-verification");
   const workflowId = "workflow-verification-regression";
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId,
     status: "active",
     phase: "verify",
@@ -11451,8 +11295,7 @@ async function testVerificationExtractedActionContracts() {
 
   const root = await tempRoot("verification-extracted-contracts");
   const workflowId = "wf-verification-contract";
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId,
     status: "active",
     phase: "verify",
@@ -11533,8 +11376,7 @@ LIMIT 1;`)[0];
 
 async function testControlLoopJobRequeue() {
   const root = await tempRoot("control-loop-job-requeue");
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId: "wf-job-requeue",
     status: "active",
     summary: "Control loop job requeue regression"
@@ -11692,16 +11534,14 @@ ORDER BY created_at;`);
 async function testWorkflowEvaluatorEvidence() {
   const root = await tempRoot("workflow-evaluator");
   const workflowId = "workflow-evaluator-regression";
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId,
     status: "active",
     acceptanceCriteria: "All tasks are done, evidence exists, and verifier passes.",
     summary: "Workflow evaluator regression",
     payload: { planSpecV2: { objective: { acceptanceCriteria: ["done", "verified"] } } }
   });
-  await runAction(root, {
-    action: "workflow.task.create",
+  await seedWorkflowTask(root, {
     workflowId,
     taskId: "task-evaluator-done",
     phase: "verify",
@@ -11710,8 +11550,7 @@ async function testWorkflowEvaluatorEvidence() {
     createdBy: "local_codex",
     summary: "Evaluator task done"
   });
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId,
     status: "active",
     acceptanceCriteria: "All tasks are done, evidence exists, and verifier passes.",
@@ -12049,11 +11888,9 @@ async function testWorkflowConvergenceDefaultGates() {
   const legacyEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS;
   const genericEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
   const rawScheduleEnv = process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
-  const mcpShowLegacyEnv = process.env.TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS;
   delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS;
   delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION;
   delete process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
-  delete process.env.TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS;
   try {
     const root = await tempRoot("workflow-convergence-default-gates");
     const legacy = await runAction(root, {
@@ -12126,35 +11963,27 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(legacyRunAlias.action, "workflow.run.upsert");
     assert.equal(legacyRunAlias.requestedAction, "workflow.initiative.upsert");
     assert.equal(legacyRunAlias.reason, "legacy_action_disabled");
-    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").decisionClass, "compat_shell_only");
-    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").migrationStatus, "legacy_active");
-    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").policy, "frozen_short_term_compatibility");
-    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").frozenSinceRelease, "v0.8.2-rc.1");
-    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").defaultHiddenSinceRelease, "v0.8.2-rc.1");
-    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").removalTargetRelease, "v1.0.0");
-    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare").escapeHatchEnv, "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS");
+    assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare"), null);
     assert.equal(WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT.removalTargetRelease, "v1.0.0");
     assert.equal(workflowActionMigrationInfo("workflow.pause").decisionClass, "must_migrate");
-    assert.equal(workflowActionMigrationInfo("workflow.swarm.plan").migrationStatus, "deprecated");
-    assert.equal(workflowActionMigrationInfo("workflow.swarm.plan").policy, "frozen_short_term_compatibility");
-    assert.equal(workflowActionMigrationInfo("workflow.swarm.plan").replacement, "workflow.v2.worker_spawn.create");
+    assert.equal(workflowActionMigrationInfo("workflow.swarm.plan"), null);
     assert.equal(workflowActionMigrationInfo("route_shell.ingest").decisionClass, "archive_no_migration");
-    const legacySwarmAlias = await runAction(root, {
-      action: "workflow.swarm",
-      workflowId: "wf-convergence-swarm",
-      objective: "legacy swarm alias should be blocked by default",
-      shards: ["a", "b"]
-    });
-    assert.equal(legacySwarmAlias.status, "blocked");
-    assert.equal(legacySwarmAlias.action, "workflow.swarm.plan");
-    assert.equal(legacySwarmAlias.requestedAction, "workflow.swarm");
-    assert.equal(legacySwarmAlias.reason, "legacy_action_disabled");
-    const legacyAlias = await runAction(root, {
-      action: "workflow.task.launch.draft",
-      workflowId: "wf-convergence-gate"
-    });
-    assert.equal(legacyAlias.status, "blocked");
-    assert.equal(legacyAlias.reason, "legacy_action_disabled");
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.swarm",
+        workflowId: "wf-convergence-swarm",
+        objective: "removed swarm alias should be unknown",
+        shards: ["a", "b"]
+      }),
+      /unknown workflow action: workflow\.swarm/
+    );
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.task.launch.draft",
+        workflowId: "wf-convergence-gate"
+      }),
+      /unknown workflow action: workflow\.task\.launch\.draft/
+    );
     const legacyRead = await runAction(root, {
       action: "workflow.task.launch.list",
       workflowId: "wf-convergence-gate"
@@ -12202,9 +12031,9 @@ SELECT status, next_state, payload_json
 FROM workflow_events
 WHERE event_type='workflow.action_migration_telemetry'
 ORDER BY created_at;`);
-    assert.equal(telemetryRows.length, 12);
+    assert.equal(telemetryRows.length, 10);
     const telemetryPayloads = telemetryRows.map((row) => JSON.parse(row.payload_json));
-    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["route_shell.ingest", "workflow.run.upsert", "workflow.run.upsert", "workflow.swarm.plan", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.launch.prepare", "workflow.task.update", "workflow.task.update"]);
+    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["route_shell.ingest", "workflow.run.upsert", "workflow.run.upsert", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.update", "workflow.task.update"]);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.task.launch.list"), false);
     const meetingMirrorTelemetry = telemetryPayloads.filter((row) => row.legacyCompatibilitySource === "meeting.action_item");
     assert.deepEqual(meetingMirrorTelemetry.map((row) => row.action).sort(), ["workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.update"]);
@@ -12212,18 +12041,13 @@ ORDER BY created_at;`);
     const runAliasTelemetry = telemetryPayloads.find((row) => row.requestedAction === "workflow.initiative.upsert");
     assert.equal(runAliasTelemetry.action, "workflow.run.upsert");
     assert.equal(runAliasTelemetry.replacement, "workflow.v2.plan.create");
-    const aliasTelemetry = telemetryPayloads.find((row) => row.action === "workflow.task.launch.prepare");
-    assert.equal(aliasTelemetry.requestedAction, "workflow.task.launch.draft");
     const deprecatedTelemetry = telemetryPayloads.find((row) => row.action === "route_shell.ingest");
     assert.equal(deprecatedTelemetry.migrationStatus, "deprecated");
     assert.equal(deprecatedTelemetry.decisionClass, "archive_no_migration");
-    const swarmTelemetry = telemetryPayloads.find((row) => row.action === "workflow.swarm.plan");
-    assert.equal(swarmTelemetry.requestedAction, "workflow.swarm");
-    assert.equal(swarmTelemetry.replacement, "workflow.v2.worker_spawn.create");
-    assert.equal(telemetryRows.filter((row) => row.status === "legacy_active").length, 10);
-    assert.equal(telemetryRows.filter((row) => row.status === "deprecated").length, 2);
-    assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 10);
-    assert.equal(telemetryRows.filter((row) => row.next_state === "archive_no_migration").length, 2);
+    assert.equal(telemetryRows.filter((row) => row.status === "legacy_active").length, 9);
+    assert.equal(telemetryRows.filter((row) => row.status === "deprecated").length, 1);
+    assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 9);
+    assert.equal(telemetryRows.filter((row) => row.next_state === "archive_no_migration").length, 1);
     assert.equal(telemetryPayloads.every((row) => row.telemetryOnly === true), true);
 
     const generic = await runAction(root, {
@@ -12278,20 +12102,12 @@ ORDER BY created_at;`);
     assert.equal(defaultTools.includes("workflow_task_launch_review"), false);
     assert.equal(defaultTools.includes("workflow_task_launch_approve"), false);
     assert.equal(defaultTools.includes("workflow_task_launch_list"), true);
-    const legacyVisibleTools = mcpTools({ TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS: "1" });
-    const legacyVisibleToolNames = legacyVisibleTools.map((tool) => tool.name);
-    assert.equal(legacyVisibleToolNames.includes("workflow_task_launch_prepare"), true);
-    assert.equal(legacyVisibleToolNames.includes("workflow_task_launch_review"), true);
-    assert.equal(legacyVisibleToolNames.includes("workflow_task_launch_approve"), true);
-    for (const toolName of ["workflow_task_launch_prepare", "workflow_task_launch_review", "workflow_task_launch_approve"]) {
-      const tool = legacyVisibleTools.find((candidate) => candidate.name === toolName);
-      assert.equal(tool.description.includes("Frozen legacy compatibility surface since v0.8.2-rc.1"), true);
-      assert.equal(tool.description.includes("hidden from default discovery"), true);
-      assert.equal(tool.description.includes("TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS=1"), true);
-      assert.equal(tool.description.includes("target removal release is v1.0.0"), true);
-    }
+    const legacyVisibleToolNames = mcpTools({ TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS: "1" }).map((tool) => tool.name);
+    assert.equal(legacyVisibleToolNames.includes("workflow_task_launch_prepare"), false);
+    assert.equal(legacyVisibleToolNames.includes("workflow_task_launch_review"), false);
+    assert.equal(legacyVisibleToolNames.includes("workflow_task_launch_approve"), false);
 
-    const blockedLegacyMcpMutation = (name, args) => {
+    const legacyMcpMutationError = (name, args) => {
       const request = {
         jsonrpc: "2.0",
         id: 1,
@@ -12305,7 +12121,7 @@ ORDER BY created_at;`);
         env: { ...process.env, TRADING_AGENTS_WORKFLOW_ROOT: root }
       }).trim();
       const response = JSON.parse(output.split("\n").at(-1));
-      return response.result.structuredContent;
+      return response.error;
     };
     for (const [toolName, toolArgs] of [
       ["workflow_task_launch_prepare", {
@@ -12322,13 +12138,9 @@ ORDER BY created_at;`);
         feedback_text: "legacy MCP approve should surface core gate blocking"
       }]
     ]) {
-      const mcpBlocked = blockedLegacyMcpMutation(toolName, toolArgs);
-      assert.equal(mcpBlocked.runner.ok, true, `${toolName} runner should succeed because core returns structured block JSON`);
-      assert.equal(mcpBlocked.ok, false, `${toolName} top-level ok should reflect blocked workflow action`);
-      assert.equal(mcpBlocked.actionBlocked, true, `${toolName} should expose actionBlocked`);
-      assert.equal(mcpBlocked.blockedReason, "legacy_action_disabled", `${toolName} should expose legacy block reason`);
-      assert.equal(mcpBlocked.result.status, "blocked", `${toolName} core result should be blocked`);
-      assert.equal(mcpBlocked.result.allowed, false, `${toolName} core result should be denied`);
+      const error = legacyMcpMutationError(toolName, toolArgs);
+      assert.equal(error.code, -32000, `${toolName} should be removed from MCP call surface`);
+      assert.equal(error.message, `unknown tool: ${toolName}`);
     }
 
     await assertRejectsMessage(
@@ -12412,7 +12224,6 @@ ORDER BY created_at;`);
     restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS", legacyEnv);
     restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION", genericEnv);
     restoreEnv("TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH", rawScheduleEnv);
-    restoreEnv("TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS", mcpShowLegacyEnv);
   }
 }
 
@@ -12950,8 +12761,7 @@ async function testControlLoopJobExtractedActionContracts() {
   assert.equal(directRegistry.get("workflow.control_loop.job.requeue"), workflowControlLoopJobRequeue);
 
   const root = await tempRoot("control-loop-job-extracted-contracts");
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId: "wf-control-loop-job-contract",
     status: "active",
     summary: "Control loop job extracted contract"
@@ -15707,16 +15517,14 @@ async function testCheckpointExtractedActionContracts() {
 
   const root = await tempRoot("checkpoint-extracted-contracts");
   const workflowId = "workflow-checkpoint-extracted";
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId,
     status: "active",
     summary: "Checkpoint extracted action contract.",
     objective: "Exercise extracted checkpoint action registry.",
     acceptanceCriteria: "Checkpoint contains active tasks, blocked tasks, artifacts, and resume payload."
   });
-  await runAction(root, {
-    action: "workflow.task.create",
+  await seedWorkflowTask(root, {
     workflowId,
     taskId: "task-checkpoint-active",
     phase: "execute",
@@ -15727,8 +15535,7 @@ async function testCheckpointExtractedActionContracts() {
     actualArtifactRef: "artifact://task-checkpoint-active",
     summary: "Active checkpoint task"
   });
-  await runAction(root, {
-    action: "workflow.task.create",
+  await seedWorkflowTask(root, {
     workflowId,
     taskId: "task-checkpoint-blocked",
     phase: "execute",
@@ -17083,14 +16890,12 @@ async function testControlLoopWorkflowSuperviseEnqueuesTargetedDrain() {
     canReceiveDispatch: true,
     workflowIngressAdapter: "local_codex_inbox"
   });
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId: "workflow-supervise-targeted-drain",
     status: "active",
     summary: "supervisor should enqueue a targeted drain for newly dispatched tasks"
   });
-  await runAction(root, {
-    action: "workflow.task.create",
+  await seedWorkflowTask(root, {
     workflowId: "workflow-supervise-targeted-drain",
     taskId: "task-supervise-targeted-drain",
     runtime: "local_codex",
@@ -17133,14 +16938,12 @@ async function testControlLoopWorkflowSuperviseEnqueuesTargetedDrain() {
     canReceiveDispatch: true,
     executionAdapter: "openclaw"
   });
-  await runAction(openclawRoot, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(openclawRoot, {
     workflowId: "workflow-supervise-openclaw-message-flow-targeted-drain",
     status: "active",
     summary: "supervisor should keep OpenClaw message_flow targeted drains at semantic timeout"
   });
-  await runAction(openclawRoot, {
-    action: "workflow.task.create",
+  await seedWorkflowTask(openclawRoot, {
     workflowId: "workflow-supervise-openclaw-message-flow-targeted-drain",
     taskId: "task-supervise-openclaw-message-flow-targeted-drain",
     runtime: "openclaw",
@@ -17194,8 +16997,7 @@ WHERE outbox_id='${request.telegramOutbox.outboxId}';`);
 async function testControlLoopBacksOffBlockedWorkflowSupervise() {
   const root = await tempRoot("control-loop-supervise-cooldown");
   const workflowId = "workflow-blocked-cooldown";
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId,
     status: "blocked",
     summary: "blocked workflow should not be supervised every tick"
@@ -18184,16 +17986,23 @@ async function testWorkflowP8CliLegacyMutatingShellsRetired() {
 
   const retiredCommands = [
     ["workflow-run", "--root", root, "--workflow", "wf-p8-legacy", "--objective", "legacy run"],
-    ["workflow-swarm", "--root", root, "--workflow", "wf-p8-legacy", "--objective", "legacy swarm", "--target", "one"],
     ["workflow-task", "--root", root, "--workflow", "wf-p8-legacy", "--task", "task-p8-legacy", "--owner", "main"],
-    ["workflow-task-update", "--root", root, "--task", "task-p8-legacy", "--status", "done"],
-    ["workflow-task-launch-prepare", "--root", root, "--workflow", "wf-p8-legacy", "--objective", "legacy launch"],
-    ["workflow-task-launch-review", "--root", root, "--draft", "draft-p8-legacy", "--status", "approved"],
-    ["workflow-task-launch-approve", "--root", root, "--draft", "draft-p8-legacy", "--feedback", "approved"]
+    ["workflow-task-update", "--root", root, "--task", "task-p8-legacy", "--status", "done"]
   ];
   for (const args of retiredCommands) {
     const stderr = workflowCliError(args);
     assert.match(stderr, /retired as a legacy mutating workflow CLI shell/);
+  }
+  assert.match(
+    workflowCliError(["workflow-swarm", "--root", root, "--workflow", "wf-p8-legacy", "--objective", "legacy swarm", "--target", "one"]),
+    /unknown command: workflow-swarm/
+  );
+  for (const args of [
+    ["workflow-task-launch-prepare", "--root", root, "--workflow", "wf-p8-legacy", "--objective", "legacy launch"],
+    ["workflow-task-launch-review", "--root", root, "--draft", "draft-p8-legacy", "--status", "approved"],
+    ["workflow-task-launch-approve", "--root", root, "--draft", "draft-p8-legacy", "--feedback", "approved"]
+  ]) {
+    assert.match(workflowCliError(args), new RegExp(`unknown command: ${args[0]}`));
   }
   const compatibilityBlocked = workflowCliJson([
     "workflow-run",
@@ -18255,131 +18064,17 @@ async function testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility() {
   assert.equal(single.spec.phases.some((phase) => phase.ownerAgent === "cat_claw"), false);
 }
 
-async function testWorkflowTaskLaunchPrepareAndApprove() {
-  const root = await tempRoot("task-launch");
-  const dbFile = path.join(root, "tracking.db");
-  const prepared = await runAction(root, {
-    action: "workflow.task.launch.prepare",
-    workflowId: "wf-task-launch",
-    subject: "股票长期追踪制度职责边界澄清",
-    objective: "猫爪通过多轮会话确认闪电猫意图后起草任务，猫之脑复核，闪电猫批准后启动。",
-    participants: ["cat_eyes", "cat_ears", "cat_nose", "cat_heart"],
-    template: "stock_longterm_tracking",
-    intentSummary: "闪电猫要求 task 起草先形成 canonical JSON，而不是口头 message_flow prompt。",
-    flashcatIntent: "猫爪负责意图澄清和起草，猫之脑复核，闪电猫决定是否 launch。",
-    draftId: "tlp-test-launch"
-  });
-  assert.equal(prepared.mutated, true);
-  assert.equal(prepared.status, "pending_cat_brain_review");
-  assert.equal(prepared.package.roles.drafterAgent, "cat_claw");
-  assert.equal(prepared.package.roles.reviewerAgent, "main");
-  assert.equal(prepared.package.roles.finalApprover, "flashcat");
-  assert.equal(prepared.package.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
-  assert.equal(prepared.package.planSpecV2.meta.workflowId, "wf-task-launch");
-  assert.equal(prepared.package.planSpecV2.nodes.some((node) => node.phaseId === "human_gate_package" && node.humanGateRequired), true);
-  assert.equal(await pathExists(path.join(root, prepared.artifacts.canonicalJson)), true);
-  assert.equal(await pathExists(path.join(root, prepared.artifacts.markdown)), true);
-  const canonical = JSON.parse(await fs.readFile(path.join(root, prepared.artifacts.canonicalJson), "utf8"));
-  assert.equal(canonical.planSpecV2.schemaVersion, "workflow_plan_spec.v2");
-  assert.equal(sqliteCount(dbFile, "protocol_objects", "object_type='workflow_task_launch_package'"), 1);
-  assert.equal(sqliteCount(dbFile, "review_gates", "gate_type='task_launch_cat_brain_review' AND status='pending'"), 1);
-  assert.equal(sqliteCount(dbFile, "artifact_index", "kind LIKE 'workflow_task_launch_package%'"), 2);
-  assert.equal(sqliteCount(dbFile, "workflow_phases"), 0);
-  assert.equal(sqliteCount(dbFile, "workflow_tasks"), 0);
-  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
-  const preparedStored = sqliteJson(dbFile, "SELECT payload_json FROM protocol_objects WHERE object_id='tlp-test-launch';")[0];
-  assert.equal(preparedStored.payload_json.includes("\"schemaVersion\":\"workflow_plan_spec.v2\""), true);
-
-  const listed = await runAction(root, {
-    action: "workflow.task.launch.list",
-    workflowId: "wf-task-launch"
-  });
-  assert.equal(listed.count, 1);
-  assert.equal(listed.taskLaunches[0].draftId, "tlp-test-launch");
-
-  await assertRejectsMessage(
-    () => runAction(root, { action: "workflow.task.launch.approve", draftId: "tlp-test-launch" }),
-    /original words|feedbackText/
-  );
-  await assertRejectsMessage(
-    () => runAction(root, {
-      action: "workflow.task.launch.approve",
-      draftId: "tlp-test-launch",
-      feedbackText: "闪电猫原话：先试图绕过猫之脑复核。"
-    }),
-    /Cat Brain review/
-  );
-
-  const reviewed = await runAction(root, {
-    action: "workflow.task.launch.review",
-    draftId: "tlp-test-launch",
-    status: "approved",
-    reviewerAgent: "main",
-    reviewOpinion: "猫之脑复核通过：任务包具备职责、阶段、审计和 Human Gate 启动边界。"
-  });
-  assert.equal(reviewed.status, "pending_flashcat_launch");
-  assert.equal(sqliteCount(dbFile, "review_gates", "gate_type='task_launch_cat_brain_review' AND status='approved'"), 1);
-  await assertRejectsMessage(
-    () => runAction(root, {
-      action: "workflow.task.launch.prepare",
-      workflowId: "wf-task-launch",
-      draftId: "tlp-test-launch",
-      objective: "不得覆盖已通过猫之脑复核的 package。",
-      participants: ["cat_eyes", "cat_ears"]
-    }),
-    /cannot be overwritten/
-  );
-
-  const approved = await runAction(root, {
-    action: "workflow.task.launch.approve",
-    draftId: "tlp-test-launch",
-    feedbackText: "闪电猫原话：批准启动，但先保持任务边界清楚，不要绕过猫爪记录。",
-    approvedBy: "flashcat"
-  });
-  assert.equal(approved.status, "launched");
-  assert.ok(approved.materializedTasks.length >= 5);
-  assert.equal(approved.materializedPhases.length, prepared.package.planSpecV2.phaseGraph.length);
-  assert.equal(sqliteCount(dbFile, "workflow_phases", "workflow_id='wf-task-launch'"), prepared.package.planSpecV2.phaseGraph.length);
-  assert.equal(sqliteCount(dbFile, "workflow_tasks", "workflow_id='wf-task-launch'"), approved.materializedTasks.length);
-  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
-  const phaseRows = sqliteJson(dbFile, "SELECT phase_id, phase_key, ordinal, status, owner_agents_json, plan_node_refs_json FROM workflow_phases WHERE workflow_id='wf-task-launch' ORDER BY ordinal;");
-  assert.equal(phaseRows[0].phase_key, "scope");
-  assert.equal(phaseRows.some((row) => row.phase_key === "human_gate_package"), true);
-  assert.equal(JSON.parse(phaseRows[0].owner_agents_json).includes("main"), true);
-  assert.ok(JSON.parse(phaseRows[0].plan_node_refs_json).length >= 1);
-  sqliteExec(dbFile, `
-INSERT INTO workflow_agent_runs(agent_run_id, workflow_id, phase_id, phase_key, task_id, dispatch_id, runtime_run_id, runtime, agent_id, status, attempt, input_hash, output_hash, receipt_ref, error, payload_json, started_at, completed_at, created_at, updated_at)
-VALUES ('runtime.scope-phase-id-only', 'wf-task-launch', '${phaseRows[0].phase_id}', '', '', 'dispatch-scope-phase-id-only', 'runtime-scope-phase-id-only', 'openclaw', 'main', 'acked', 1, 'input-hash', 'output-hash', 'message://scope-phase-id-only', '', '{"source":"regression"}', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:02.000Z', '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:02.000Z');`);
-  const phaseView = await new WorkflowReadModel({ dbFile }).phases("wf-task-launch");
-  assert.equal(phaseView.inferred, false);
-  assert.equal(phaseView.source, "workflow_phases+workflow_tasks");
-  assert.equal(phaseView.phaseCount, prepared.package.planSpecV2.phaseGraph.length);
-  assert.equal(phaseView.phases[0].phaseKey, "scope");
-  assert.equal(phaseView.phases[0].source, "workflow_phases");
-  assert.equal(phaseView.phases[0].counts.agentRuns, 1);
-  assert.equal(phaseView.phases[0].agentRuns[0].receiptRef, "message://scope-phase-id-only");
-  const agentRunPhaseView = await new WorkflowReadModel({ dbFile }).agentRuns("wf-task-launch");
-  assert.equal(agentRunPhaseView.phaseSummary[0].phaseKey, "scope");
-  assert.equal(agentRunPhaseView.agentRuns[0].phase_key, "scope");
-  const stored = sqliteJson(dbFile, "SELECT status, payload_json FROM protocol_objects WHERE object_id='tlp-test-launch';")[0];
-  assert.equal(stored.status, "launched");
-  assert.equal(stored.payload_json.includes("闪电猫原话：批准启动"), true);
-  assert.equal(stored.payload_json.includes("\"materializedPhases\""), true);
-}
-
 async function testWorkflowPhaseReadModelFallbackWithEmptyPhaseTable() {
   const root = await tempRoot("phase-readmodel-fallback");
   const dbFile = path.join(root, "tracking.db");
-  await runAction(root, {
-    action: "workflow.run.upsert",
+  await seedWorkflowRun(root, {
     workflowId: "wf-legacy-phase",
     workflowType: "initiative",
     status: "active",
     ownerAgent: "main",
     objective: "legacy phase fallback"
   });
-  await runAction(root, {
-    action: "workflow.task.create",
+  await seedWorkflowTask(root, {
     workflowId: "wf-legacy-phase",
     taskId: "legacy-task",
     ownerAgent: "main",
@@ -18406,30 +18101,6 @@ VALUES ('runtime.legacy-phase-proof', 'wf-legacy-phase', 'legacy_phase', 'legacy
   assert.equal(phaseView.phases[0].counts.agentCompleted, 1);
   assert.equal(phaseView.phases[0].agentRuns[0].dispatchId, "dispatch-legacy-phase-proof");
   assert.equal(phaseView.phases[0].agentRuns[0].receiptRef, "message://legacy-phase-proof");
-}
-
-async function testWorkflowTaskLaunchReviewPermissions() {
-  const root = await tempRoot("task-launch-permissions");
-  const prepared = await runAction(root, {
-    action: "workflow.task.launch.prepare",
-    workflowId: "wf-task-launch-perms",
-    draftId: "tlp-test-launch-perms",
-    objective: "验证猫爪不能伪装猫之脑完成 task launch review。",
-    participants: ["cat_eyes", "cat_ears"]
-  });
-  assert.equal(prepared.status, "pending_cat_brain_review");
-  await assertRejectsMessage(
-    () => runAction(root, {
-      action: "workflow.task.launch.review",
-      draftId: "tlp-test-launch-perms",
-      status: "approved",
-      reviewerAgent: "main",
-      callerAgent: "cat_claw",
-      actor: "cat_claw",
-      reviewOpinion: "伪装猫之脑复核。"
-    }),
-    /caller_not_registered|missing_capability|cannot impersonate/
-  );
 }
 
 async function testWorkflowEventStore() {
@@ -19278,7 +18949,6 @@ async function testWorkflowActionPolicyRegistryCoverage() {
     ["workflow_advance", WORKFLOW_ADVANCE_ACTION_REGISTRY],
     ["workflow_run", WORKFLOW_RUN_ACTION_REGISTRY],
     ["workflow_supervisor", WORKFLOW_SUPERVISOR_ACTION_REGISTRY],
-    ["workflow_swarm", WORKFLOW_SWARM_ACTION_REGISTRY],
     ["workflow_task", WORKFLOW_TASK_ACTION_REGISTRY],
     ["workflow_task_draft", WORKFLOW_TASK_DRAFT_ACTION_REGISTRY],
     ["workflow_task_launch", WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY]
@@ -22601,7 +22271,6 @@ try {
     ["workflow task extracted action contracts", testWorkflowTaskExtractedActionContracts],
     ["workflow task draft extracted action contracts", testWorkflowTaskDraftExtractedActionContracts],
     ["workflow task launch extracted action contracts", testWorkflowTaskLaunchExtractedActionContracts],
-    ["workflow swarm extracted action contracts", testWorkflowSwarmExtractedActionContracts],
     ["workflow intervention previews", testWorkflowInterventionPreviews],
     ["intervention extracted action contracts", testInterventionExtractedActionContracts],
     ["workflow v2 adapter job manifest", testWorkflowV2AdapterJobManifest],
@@ -22696,9 +22365,7 @@ try {
     ["workflow task draft cli pure preview", testWorkflowTaskDraftCliPurePreview],
     ["workflow P8 CLI legacy mutating shells retired", testWorkflowP8CliLegacyMutatingShellsRetired],
     ["workflow task draft no human gate and single task compatibility", testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility],
-    ["workflow task launch prepare and approve", testWorkflowTaskLaunchPrepareAndApprove],
     ["workflow phase read-model fallback with empty phase table", testWorkflowPhaseReadModelFallbackWithEmptyPhaseTable],
-    ["workflow task launch review permissions", testWorkflowTaskLaunchReviewPermissions],
     ["workflow session store cli", testWorkflowSessionStoreCli],
     ["expired human_gate blocked", testExpiredHumanGateBlocked],
     ["human_gate wrong telegram user blocked", testHumanGateRejectsWrongTelegramUser],

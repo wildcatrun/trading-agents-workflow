@@ -6,10 +6,6 @@ export const WORKFLOW_LEGACY_MUTATING_ACTIONS = new Set([
   "workflow.run.upsert",
   "workflow.task.create",
   "workflow.task.update",
-  "workflow.task.launch.prepare",
-  "workflow.task.launch.review",
-  "workflow.task.launch.approve",
-  "workflow.swarm.plan",
   "workflow.advance",
   "workflow.supervise"
 ]);
@@ -118,14 +114,6 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
     replacement: "v2 plan/node/worker stop state transition",
     recommendation: "map stop semantics onto v2 plans, nodes, workers, adapter jobs, Human Gate waits, and side-effect uncertainty"
   }],
-  ["workflow.swarm.plan", {
-    decisionClass: "archive_no_migration",
-    migrationStatus: "deprecated",
-    replacement: "workflow.v2.worker_spawn.create",
-    ...WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
-    dependencyEvidence: "workflow.v2 manager/worker actions do not call workflowSwarmPlan; legacy swarm helper remains only for explicit compatibility tests",
-    recommendation: "do not migrate; keep direct swarm planning frozen by default and delete compatibility shell by the target removal release"
-  }],
   ["route_shell.ingest", {
     decisionClass: "archive_no_migration",
     migrationStatus: "deprecated",
@@ -156,13 +144,6 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
 ]);
 
 const WORKFLOW_ACTION_MIGRATION_PREFIXES = [
-  ["workflow.task.launch.", {
-    decisionClass: "compat_shell_only",
-    migrationStatus: "legacy_active",
-    replacement: "workflow.v2.plan.create + workflow.v2.human_gate_request",
-    ...WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
-    recommendation: "freeze legacy launch implementation; hide mutating entry points from default MCP/console paths; delete compatibility shell by the target removal release"
-  }],
   ["workflow.schedule.", {
     decisionClass: "must_migrate",
     migrationStatus: "legacy_active",
@@ -367,10 +348,6 @@ export const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
 export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.init": { capability: "workflow.init", risk: "medium", mutating: true },
   "workflow.run.upsert": { capability: "workflow.write", risk: "medium", mutating: true },
-  "workflow.swarm.plan": { capability: "workflow.plan", risk: "medium", mutating: true },
-  "workflow.task.launch.prepare": { capability: "workflow.task.launch.prepare", risk: "medium", mutating: true },
-  "workflow.task.launch.review": { capability: "workflow.task.launch.review", risk: "high", mutating: true, requiresCatClawAudit: true },
-  "workflow.task.launch.approve": { capability: "workflow.task.launch.approve", risk: "high", mutating: true, requiresCatClawAudit: true },
   "workflow.task.create": { capability: "workflow.task.write", risk: "medium", mutating: true },
   "workflow.task.update": { capability: "workflow.task.write", risk: "medium", mutating: true },
   "workflow.advance": { capability: "workflow.operate", risk: "high", mutating: true, requiresCatClawAudit: true },

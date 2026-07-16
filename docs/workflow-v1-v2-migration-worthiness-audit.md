@@ -68,9 +68,9 @@ The current action-surface scan found:
 | `workflow.run.*` | Legacy workflow run row and historical read-model anchor. | `workflow.v2.plan.create` records canonical plan and nodes. V2 plan creation does not call `workflowRunUpsert`. | `compat_shell_only` | P7 freezes direct mutating run creation by default. Keep read/history compatibility and internal v1 helper use only behind explicit legacy mode until removal at `v1.0.0`. |
 | `workflow.task.draft` / preview aliases | Legacy authoring helper that can emit `planSpecV2`. | `workflow.v2.plan.preview/create` and template instantiate are the preferred authoring path. | `compat_shell_only` | Freeze; preserve only as draft/import helper until MCP/UI point at v2 plan preview. |
 | `workflow.task.create`, `workflow.task.update`, `workflow.task.list` | Legacy task row creation/update/list. | V2 plan nodes, worker runs, owner/manager reviews. | `compat_shell_only` | Keep list/history; block new mutating usage except explicit legacy mode. Do not migrate old task rows into the new plan format automatically. |
-| `workflow.task.launch.*` | Legacy launch package, Cat Brain review, Flashcat approval, and v1 run/task/phase materialization. | V2 plan admission, audits, task-group package, Human Gate package/request. | `compat_shell_only` | Do not invest in new migration logic. Freeze, hide from default MCP/UI, add compatibility warning, allow only explicit short-term escape hatch usage, and delete by the target removal release. |
+| `workflow.task.launch.prepare/review/approve` | Legacy launch package, Cat Brain review, Flashcat approval, and v1 run/task/phase materialization. | V2 plan admission, audits, task-group package, Human Gate package/request. | `removed` | Removed in P8; `workflow.task.launch.list` remains as historical read access only. |
 | `workflow.advance`, `workflow.supervise` | Legacy mechanical progression and supervisor diagnostics. | V2 validate/review/audit/readiness plus shared incident/readiness evidence. | `must_migrate` for valid checks; `compat_shell_only` for old entry points | Extract still-valid readiness checks into v2/shared validators; keep preview diagnostics only. |
-| `workflow.swarm.*` | Older generic fanout planning. | V2 manager/worker/task-group/adapter model. | `archive_no_migration` | Do not migrate. Keep fixtures briefly, then remove active entry points. |
+| `workflow.swarm.*` | Older generic fanout planning. | V2 manager/worker/task-group/adapter model. | `removed` | Removed in P8; no compatibility entry point remains. |
 | `workflow.schedule.*` | Schedule persistence and raw schedule dispatch control. | Future approved template / approved v2 plan scheduler. | `must_migrate` for production scheduling; `compat_shell_only` for raw diagnostics | Build template/plan-bound scheduler before any production v2 cutover. Keep raw schedule behind diagnostics gate. |
 | `workflow.control_loop.tick`, `workflow.control_loop.job.*` | Legacy/shared mechanical maintenance, retry, dead-letter, runtime drain assistance. | V2 control-loop and adapter runner exist but service ownership is not fully cut over. | `must_migrate` for orchestration usage; `shared_substrate` for maintenance | Separate shared maintenance from v1 orchestration. Do not delete until v2 service/runner evidence exists. |
 | `workflow.dispatch.reconcile`, `dispatch.reconcile`, `stale_dispatch.reconcile` | Shared stale dispatch reconciliation and receipt repair. | V2 adapter/job receipts should feed the same reconciliation evidence. | `shared_substrate` with v2 evidence adapters | Preserve reconciliation semantics; add v2 sources instead of creating a second reconciler. |
@@ -157,21 +157,13 @@ removal or deeper migration work:
 
 ## Default Entry Freeze And Retirement
 
-P6 freezes legacy mutating launch tools, removes them from default discovery,
-and treats compatibility as a short-term escape hatch rather than a permanent
-release surface:
+P8 removes the legacy mutating launch tools from external action, CLI, and MCP
+surfaces; only historical list/read access remains:
 
-- Local MCP `tools/list` hides `workflow_task_launch_prepare`,
-  `workflow_task_launch_review`, and `workflow_task_launch_approve` by default.
+- Local MCP `tools/list` does not expose `workflow_task_launch_prepare`,
+  `workflow_task_launch_review`, or `workflow_task_launch_approve`.
 - `workflow_task_launch_list` remains listed as a read/history surface.
-- The hidden mutating tools are frozen since `v0.8.2-rc.1`; no new behavior,
-  UX improvements, or migration logic should be added to them.
-- Operators can temporarily expose the hidden mutating tool names by setting
-  `TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS=1`; this only
-  restores discovery, not permission.
-- Direct calls to the hidden tools still reach the existing core convergence
-  gate and return structured `legacy_action_disabled` blocks unless legacy mode
-  is explicitly enabled.
+- The removed mutating tools do not have a discovery or execution escape hatch.
 - Mutating execution still requires the separate legacy action escape hatch
   `TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1` and records migration
   telemetry through `workflow.action_migration_telemetry`.

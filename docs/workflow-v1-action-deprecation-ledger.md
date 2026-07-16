@@ -38,9 +38,9 @@ This ledger classifies legacy and shared workflow actions before the v2 default-
 | `workflow.run.*` | `compat_shell_only` | `workflow.v2.plan.create` | P7 freezes direct mutating run creation by default; v2 plan create owns new orchestration starts and does not depend on `workflowRunUpsert`; keep read/history and internal v1 helper compatibility only behind explicit legacy mode until `v1.0.0`. |
 | `workflow.task.create`, `workflow.task.update` | `compat_shell_only` | v2 plan/node/template and worker result/review state | P7 keeps direct mutating task entry points frozen by default; retain only explicit legacy compatibility until `v1.0.0`. |
 | `workflow.task.list`, `workflow.tasks` | `legacy_active` | read/history compatibility | Keep read/history surface until v2-first read models fully replace legacy task views. |
-| `workflow.task.launch.*` | `compat_shell_only` | v2 plan admission + Human Gate package | Freeze; hide mutating MCP entries by default; allow only explicit short-term escape hatch usage; target removal at `v1.0.0`. |
+| `workflow.task.launch.prepare/review/approve` | `removed` | v2 plan admission + Human Gate package | Removed in P8; `workflow.task.launch.list` remains read/history only. |
 | `workflow.advance`, `workflow.supervise` | `legacy_active` | v2 validate/review/audit/readiness | Do not add new semantics here; migrate effective checks into v2. |
-| `workflow.swarm.*` | `deprecated` | v2 manager/worker/task-group patterns | Keep fixtures/compatibility only. |
+| `workflow.swarm.*` | `removed` | v2 manager/worker/task-group patterns | Removed in P8; no compatibility entry point remains. |
 | `workflow.schedule.*` | `legacy_active` | approved v2 plan/template scheduler or shared maintenance | Must not become a parallel v2 scheduler. |
 | `workflow.control_loop.tick` | `legacy_active` | shared maintenance + v2 adapter drain service | Treat as legacy mechanical maintenance until v2 service replaces orchestration usage. |
 | `workflow.control_loop.job.*` | `legacy_active` | shared maintenance/dead-letter tooling | Keep for compatibility and recovery until v2 service ledger exists. |

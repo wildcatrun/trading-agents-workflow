@@ -320,7 +320,6 @@ Workflow and tracking:
 - `workflow.status`
 - `workflow.run.upsert`
 - `workflow.initiative.upsert`
-- `workflow.swarm.plan`
 - `workflow.task.create`
 - `workflow.task.update`
 - `workflow.task.list`
@@ -371,8 +370,9 @@ entry point: it is blocked by default and retained only for read/history and
 explicit short-term compatibility.
 
 Use v2 manager/worker/task-group surfaces when a goal needs fan-out/fan-in
-execution. `workflow.swarm.plan` is a frozen legacy compatibility entry point
-and should not be used for new orchestration.
+execution. The legacy `workflow.swarm.plan` action and `workflow-swarm` CLI
+shell have been removed; new orchestration must enter through v2 plan and
+worker surfaces.
 
 Important boundaries:
 

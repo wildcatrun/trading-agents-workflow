@@ -176,8 +176,7 @@ export function createPermissionCore(context = {}) {
         "incident.write",
         "workflow.event.write",
         "workflow.verify",
-        "workflow.checkpoint",
-        "workflow.task.launch.prepare"
+        "workflow.checkpoint"
       ]) {
         policy.permissions.add(permission);
       }

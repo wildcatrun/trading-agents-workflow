@@ -12,7 +12,7 @@ Current release: `v0.8.2-rc.1`
 | Workflow v1 compatibility | frozen compatibility | gated | Legacy mutating entry points are not extension targets; keep only short-term escape hatches and read/history surfaces while v2 replacements take over. |
 | P7 legacy freeze pool | active retirement batch | gated | Batch ledger is `docs/workflow-freeze-pool-p7.md`; includes P6 task-launch plus run/task/swarm frozen candidates and excludes unproven shared/must-migrate surfaces. |
 | Legacy/deprecated usage telemetry | active migration evidence | on | Audited mutating legacy/deprecated action usage records `workflow.action_migration_telemetry` events without enabling legacy behavior or mutating read/preview paths. |
-| Legacy mutating MCP discovery | frozen and hidden by default | off by default | Local MCP hides legacy task-launch mutating tools from `tools/list`; temporary discovery requires `TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS=1`, execution still requires the core legacy gate, and target removal is `v1.0.0`. |
+| Legacy mutating MCP discovery | removed in P8 | off | Local MCP no longer exposes legacy task-launch mutating tools or their temporary discovery escape hatch; `workflow_task_launch_list` remains as a read/history surface. |
 | Workflow v2 preview/read-only actions | release candidate | on | Preview, validate, catalog, audit preview, and readiness surfaces are available. |
 | Workflow v2 plan/template record actions | governed candidate | gated | Writes require normal workflow policy and approved context. |
 | Workflow v2 non-trading rehearsal | release candidate | on for smoke | Smoke only; no real Telegram/Docker/model/trading side effects. |

@@ -193,31 +193,6 @@ function toAction({ command, positional, options }) {
           tradingExecution: options["trading-execution"] === "true"
         }
       };
-    case "workflow-swarm":
-      retiredLegacyCliCommand("workflow-swarm", "workflow-v2-plan-create plus workflow.v2.worker_spawn.create");
-      return {
-        root,
-        input: {
-          action: "workflow.swarm.plan",
-          workflowId: options.workflow,
-          objective: options.objective || options.goal || options.summary,
-          acceptanceCriteria: options["acceptance-criteria"] || options.acceptance,
-          stopCondition: options["stop-condition"],
-          phase: options.phase,
-          shards: listOption(options.target || options.shard || options.item || options.symbol),
-          shardCount: options["shard-count"],
-          fanoutLimit: options["fanout-limit"],
-          workers: listOption(options.worker),
-          reducer: options.reducer,
-          taskPrefix: options["task-prefix"],
-          instructions: options.instructions,
-          prompt: options.prompt,
-          expectedArtifact: options["expected-artifact"],
-          reducerArtifact: options["reducer-artifact"],
-          reducerHumanGate: options["reducer-human-gate"] === "true",
-          createdBy: options.from
-        }
-      };
     case "workflow-task-draft":
       return {
         root,
@@ -246,42 +221,6 @@ function toAction({ command, positional, options }) {
           stockLongTermTracking: options["stock-longterm-tracking"] === "true"
         }
       };
-    case "workflow-task-launch-prepare":
-      retiredLegacyCliCommand("workflow-task-launch-prepare", "workflow-v2-plan-create plus workflow.v2.human_gate_package.record");
-      return {
-        root,
-        input: {
-          action: "workflow.task.launch.prepare",
-          draftId: options.draft,
-          workflowId: options.workflow,
-          meetingId: options.meeting,
-          traceId: options["trace-id"],
-          idempotencyKey: options["idempotency-key"],
-          taskType: options.type,
-          subject: options.subject || options.summary || options.title,
-          objective: options.objective || options.goal || options.prompt || options.body || options.text,
-          intentSummary: options["intent-summary"],
-          flashcatIntent: options["flashcat-intent"],
-          clarificationStatus: options["clarification-status"],
-          openQuestions: listOption(options["open-question"]),
-          participants: [
-            ...listOption(options.participant),
-            ...listOption(options.agent),
-            ...listOption(options.worker),
-            ...listOption(options.to)
-          ],
-          chairAgent: options.chair,
-          secretaryAgent: options.secretary,
-          drafterAgent: options.drafter,
-          consumerAgent: options.consumer,
-          template: options.template,
-          priority: options.priority,
-          requiresHumanGate: options["human-gate"] !== "false",
-          noDefaultGovernance: options["no-default-governance"] === "true",
-          stockLongTermTracking: options["stock-longterm-tracking"] === "true",
-          sourceSystem: options.source || "cat_claw_intent_drafting"
-        }
-      };
     case "workflow-task-launch-list":
       return {
         root,
@@ -290,29 +229,6 @@ function toAction({ command, positional, options }) {
           workflowId: options.workflow,
           status: options.status,
           limit: options.limit
-        }
-      };
-    case "workflow-task-launch-review":
-      retiredLegacyCliCommand("workflow-task-launch-review", "workflow.v2.manager_review.record or workflow.v2.owner_review.record");
-      return {
-        root,
-        input: {
-          action: "workflow.task.launch.review",
-          draftId: options.draft,
-          status: options.status || options.decision || "approved",
-          reviewerAgent: options.reviewer || options.by || "main",
-          reviewOpinion: options.opinion || options.text || options.summary
-        }
-      };
-    case "workflow-task-launch-approve":
-      retiredLegacyCliCommand("workflow-task-launch-approve", "workflow.v2.human_gate_request");
-      return {
-        root,
-        input: {
-          action: "workflow.task.launch.approve",
-          draftId: options.draft,
-          approvedBy: options.by || options.approver || "flashcat",
-          feedbackText: options.feedback || options.text || options["flashcat-original-words"] || options["original-words"]
         }
       };
     case "workflow-task":

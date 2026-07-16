@@ -75,11 +75,6 @@ import {
   runWorkflowTaskLaunchAction
 } from "./workflow-task-launch-actions.js";
 import {
-  createWorkflowSwarmActionHandlers,
-  createWorkflowSwarmActionRegistry,
-  runWorkflowSwarmAction
-} from "./workflow-swarm-actions.js";
-import {
   createControlLoopJobActionHandlers,
   createControlLoopJobActionRegistry,
   runControlLoopJobAction
@@ -4305,29 +4300,8 @@ export const WORKFLOW_TASK_LAUNCH_ACTION_HANDLERS = createWorkflowTaskLaunchActi
 export const WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY = createWorkflowTaskLaunchActionRegistry(WORKFLOW_TASK_LAUNCH_ACTION_HANDLERS);
 
 export const {
-  workflowTaskLaunchPrepare,
-  workflowTaskLaunchList,
-  workflowTaskLaunchReview,
-  workflowTaskLaunchApprove
+  workflowTaskLaunchList
 } = WORKFLOW_TASK_LAUNCH_ACTION_HANDLERS;
-
-export const WORKFLOW_SWARM_ACTION_HANDLERS = createWorkflowSwarmActionHandlers({
-  boolOption,
-  cleanFileSegment,
-  ensureWorkflowLayout,
-  normalizeAgentId,
-  normalizeRuntime,
-  safeId,
-  toList,
-  workflowRunUpsert,
-  workflowTaskCreate
-});
-
-export const WORKFLOW_SWARM_ACTION_REGISTRY = createWorkflowSwarmActionRegistry(WORKFLOW_SWARM_ACTION_HANDLERS);
-
-export const {
-  workflowSwarmPlan
-} = WORKFLOW_SWARM_ACTION_HANDLERS;
 
 export const VERIFICATION_ACTION_HANDLERS = createVerificationActionHandlers({
   ensureWorkflowLayout,
@@ -8953,8 +8927,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (workflowTaskDraftResult.handled) return workflowTaskDraftResult.value;
   const workflowTaskLaunchResult = await runWorkflowTaskLaunchAction(WORKFLOW_TASK_LAUNCH_ACTION_REGISTRY, action, rootDir, input);
   if (workflowTaskLaunchResult.handled) return workflowTaskLaunchResult.value;
-  const workflowSwarmResult = await runWorkflowSwarmAction(WORKFLOW_SWARM_ACTION_REGISTRY, action, rootDir, input);
-  if (workflowSwarmResult.handled) return workflowSwarmResult.value;
   const workflowAdvanceResult = await runWorkflowAdvanceAction(WORKFLOW_ADVANCE_ACTION_REGISTRY, action, rootDir, input);
   if (workflowAdvanceResult.handled) return workflowAdvanceResult.value;
   const workflowSupervisorResult = await runWorkflowSupervisorAction(WORKFLOW_SUPERVISOR_ACTION_REGISTRY, action, rootDir, input);

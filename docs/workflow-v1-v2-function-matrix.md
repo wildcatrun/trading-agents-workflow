@@ -47,9 +47,10 @@ future template authoring.
 1. If a change concerns approved templates, instantiated plans, plan nodes,
    worker lifecycle, worker adapter jobs, reviews, audits, or v2 Human Gate
    packages, it belongs to workflow v2.
-2. If a change concerns older workflow runs, phases, tasks, task dependencies,
-   task launch, or swarm planning, treat it as legacy compatibility unless it is
-   explicitly part of a migration bridge.
+2. If a change concerns older workflow runs, phases, tasks, or task
+   dependencies, treat it as legacy compatibility unless it is explicitly part
+   of a migration bridge. Legacy task-launch mutation and swarm planning entry
+   points were removed in P8 and must not receive new compatibility work.
 3. If a change concerns session packs/runs, artifact index, runtime agents,
    message flow, dispatch/receipt, Human Gate decision records, side-effect
    ledger, schedules, or trading-core receipt records, it belongs to the shared
