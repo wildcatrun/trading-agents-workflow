@@ -8,6 +8,7 @@ Related:
 - `docs/workflow-module-status-matrix.md`
 - `docs/workflow-v2-feature-flags.md`
 - `docs/workflow-freeze-pool-p7.md`
+- `docs/workflow-p9-run-upsert-retirement-audit.md`
 
 ## Purpose
 
@@ -44,9 +45,9 @@ The current action-surface scan found:
   `WORKFLOW_LEGACY_MUTATING_ACTIONS`.
 - Generic v2 orchestration writes are fail-closed unless attached to approved
   plan/template/Human Gate context or an explicit diagnostics override.
-- MCP still keeps selected legacy task-launch wrappers as compatibility call
-  paths, but mutating wrappers are hidden from default local MCP discovery.
-  Removal must be preceded by MCP/console compatibility handling.
+- P8 removed the legacy task-launch mutating MCP wrappers and their discovery
+  escape hatch; only `workflow_task_launch_list` remains as historical
+  read-only access.
 
 ## Migration Value Matrix
 
@@ -90,30 +91,24 @@ The current action-surface scan found:
 
 `workflow.task.launch.*` is not a good migration-development sample.
 
-Evidence:
+Historical evidence:
 
-- It is already classified as legacy mutating and disabled by default unless
-  the operator environment explicitly sets
-  `TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1`. Request-level legacy
-  override fields are not accepted as an external bypass.
-- It still writes old `workflow_runs`, `workflow_tasks`, and `workflow_phases`
-  after Flashcat approval.
+- It was classified as legacy mutating and disabled by default before P8
+  removal. Request-level legacy override fields were not accepted as an external
+  bypass.
+- Before removal, it wrote old `workflow_runs`, `workflow_tasks`, and
+  `workflow_phases` after Flashcat approval.
 - V2 already has equivalent authoring/governance pieces:
   `workflow.v2.plan.preview/create`, owner/manager reviews,
   `workflow.v2.task_group_package.*`, Cat Brain/Cat Claw audits,
   `workflow.v2.human_gate_package.*`, and `workflow.v2.human_gate_request`.
 
-Therefore the right treatment is:
+Therefore the completed treatment is:
 
-1. Freeze the implementation.
+1. Remove `prepare/review/approve` from external action, CLI, and MCP paths.
 2. Keep `list` and historical reads.
-3. Hide `prepare/review/approve` from default MCP/console paths.
-4. Add warnings/telemetry if the environment escape hatch or an audited internal
-   compatibility source uses it.
-5. Optionally translate old inputs to v2 plan/Human Gate actions only after a
-   tested compatibility shell exists.
-6. Archive old v1 materialization after evidence proves no live callers depend
-   on it.
+3. Preserve the historical rationale as archive evidence, not as current
+   operator guidance.
 
 ## Actual Must-Migrate Work
 
@@ -164,9 +159,6 @@ surfaces; only historical list/read access remains:
   `workflow_task_launch_review`, or `workflow_task_launch_approve`.
 - `workflow_task_launch_list` remains listed as a read/history surface.
 - The removed mutating tools do not have a discovery or execution escape hatch.
-- Mutating execution still requires the separate legacy action escape hatch
-  `TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1` and records migration
-  telemetry through `workflow.action_migration_telemetry`.
 - Target removal release is `v1.0.0`; the compatibility shell should be deleted
   instead of carried indefinitely into later release trains.
 

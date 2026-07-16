@@ -8,6 +8,7 @@ Related:
 - `docs/workflow-v1-v2-migration-worthiness-audit.md`
 - `docs/workflow-v1-action-deprecation-ledger.md`
 - `docs/workflow-v1-v2-refactor-migration-plan.md`
+- `docs/workflow-p9-run-upsert-retirement-audit.md`
 
 ## Purpose
 
@@ -110,7 +111,10 @@ Expected implementation shape:
 - For `workflow.task.create/update`, do not break `meeting.action_item` mirroring
   until a dedicated shared writer replaces it.
 - For `workflow.run.upsert`, check task-launch, swarm, tests, and historical
-  fixture setup before removing private helper functions.
+  fixture setup before removing private helper functions. P9 scoped this as
+  `docs/workflow-p9-run-upsert-retirement-audit.md`: remove the external action
+  surface first, but keep the private `workflowRunUpsert` helper while
+  `workflow.task.create` still depends on it.
 - Do not remove `workflow_task_launch_package` protocol object/read-model support
   until historical package listing and archive evidence have a replacement.
 
