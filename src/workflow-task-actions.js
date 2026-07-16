@@ -8,8 +8,6 @@ import {
 } from "./workflow/sqlite.js";
 
 export const WORKFLOW_TASK_ACTION_HANDLER_NAMES = {
-  "workflow.task.create": "workflowTaskCreate",
-  "workflow.task.update": "workflowTaskUpdate",
   "workflow.task.list": "workflowTaskList",
   "workflow.tasks": "workflowTaskList"
 };

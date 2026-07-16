@@ -3,8 +3,6 @@ import {
 } from "./json.js";
 
 export const WORKFLOW_LEGACY_MUTATING_ACTIONS = new Set([
-  "workflow.task.create",
-  "workflow.task.update",
   "workflow.advance",
   "workflow.supervise"
 ]);
@@ -29,22 +27,6 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
     migrationStatus: "legacy_active",
     replacement: "workflow.v2.plan.preview",
     recommendation: "use v2 plan preview/create or template instantiate for new authoring"
-  }],
-  ["workflow.task.create", {
-    decisionClass: "compat_shell_only",
-    migrationStatus: "legacy_active",
-    replacement: "workflow.v2.plan.create",
-    ...WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
-    dependencyEvidence: "workflow.v2 plan nodes own new task structure and do not call the external workflow.task.create action; helper remains only inside explicit v1 compatibility paths",
-    recommendation: "block new mutating task usage except explicit legacy diagnostics; delete compatibility shell by the target removal release"
-  }],
-  ["workflow.task.update", {
-    decisionClass: "compat_shell_only",
-    migrationStatus: "legacy_active",
-    replacement: "workflow.v2.worker_result.submit",
-    ...WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
-    dependencyEvidence: "workflow.v2 worker result/review state owns new task progress and does not call the external workflow.task.update action",
-    recommendation: "use v2 worker/result/review state for new task progress; delete compatibility shell by the target removal release"
   }],
   ["workflow.task.list", {
     decisionClass: "compat_shell_only",
@@ -338,8 +320,6 @@ export const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
 
 export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.init": { capability: "workflow.init", risk: "medium", mutating: true },
-  "workflow.task.create": { capability: "workflow.task.write", risk: "medium", mutating: true },
-  "workflow.task.update": { capability: "workflow.task.write", risk: "medium", mutating: true },
   "workflow.advance": { capability: "workflow.operate", risk: "high", mutating: true, requiresCatClawAudit: true },
   "workflow.pause": { capability: "workflow.operate", risk: "high", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },
   "workflow.resume": { capability: "workflow.operate", risk: "high", mutating: true, requiresHumanGateEvidence: true, requiresCatClawAudit: true },

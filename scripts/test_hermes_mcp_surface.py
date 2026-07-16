@@ -220,19 +220,24 @@ def main() -> int:
             capture_output=True,
             check=True,
         )
-        removed_action = call_tool(
-            {
-                "HERMES_PROFILE": "catheart",
-                "TRADING_AGENTS_WORKFLOW_ROOT": tmp,
-                "TRADING_AGENTS_WORKFLOW_ALLOW_NONDEFAULT_ROOT": "1",
-                "TRADING_AGENTS_WORKFLOW_ALLOW_RAW_ACTION": "1",
-            },
-            "trading_agents_workflow",
-            {"action": "workflow.run.upsert", "workflowId": "wf-removed-run-upsert"},
-        )
-        removed_text = str(removed_action.get("content"))
-        if not removed_action.get("isError") or "unknown_workflow_action" not in removed_text:
-            raise AssertionError(f"removed run-upsert raw action should fail closed, got {removed_action}")
+        for action, payload in {
+            "workflow.run.upsert": {"workflowId": "wf-removed-run-upsert"},
+            "workflow.task.create": {"workflowId": "wf-removed-task-create", "taskId": "task-removed-create"},
+            "workflow.task.update": {"taskId": "task-removed-update", "status": "done"},
+        }.items():
+            removed_action = call_tool(
+                {
+                    "HERMES_PROFILE": "catheart",
+                    "TRADING_AGENTS_WORKFLOW_ROOT": tmp,
+                    "TRADING_AGENTS_WORKFLOW_ALLOW_NONDEFAULT_ROOT": "1",
+                    "TRADING_AGENTS_WORKFLOW_ALLOW_RAW_ACTION": "1",
+                },
+                "trading_agents_workflow",
+                {"action": action, **payload},
+            )
+            removed_text = str(removed_action.get("content"))
+            if not removed_action.get("isError") or "unknown_workflow_action" not in removed_text:
+                raise AssertionError(f"removed raw action {action} should fail closed, got {removed_action}")
     with tempfile.TemporaryDirectory(prefix="hermes-mcp-nondefault-root-") as tmp:
         nondefault_root = call_tool(
             {

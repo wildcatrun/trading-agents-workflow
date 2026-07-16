@@ -42,8 +42,8 @@ block was removed by mistake.
 | --- | --- | --- | --- | --- |
 | `workflow-run` command | `bin/cat-meeting-governance.mjs` | `workflow.v2.plan.create` or approved template entry | Removed in P9; direct run creation is not a supported CLI surface. | None; unknown-command regression covers the retired entry. |
 | `workflow-swarm` command | `bin/cat-meeting-governance.mjs` | `workflow.v2.worker_spawn.create` through v2 plan/manager-worker surfaces | Legacy generic fanout is superseded by v2 manager/worker/task-group mechanics. | Confirm no current smoke, OpenClaw plugin docs, or operator workflow needs this command. |
-| `workflow-task` mutating create mode | `bin/cat-meeting-governance.mjs` | `workflow.v2.plan.create`, v2 plan nodes, `meeting.action_item` shared mirror, or approved templates | Direct task creation is frozen; non-mutating `workflow.task.draft` can remain separately. | Split or remove the non-dry-run branch while preserving preview/draft behavior. |
-| `workflow-task-update` command | `bin/cat-meeting-governance.mjs` | `workflow.v2.worker_result.submit`, v2 manager/owner review state | Direct task update is frozen and v2 result/review owns new progress updates. | Confirm legacy task history updates are not part of active operator runbooks. |
+| `workflow-task` mutating create mode | `bin/cat-meeting-governance.mjs` | `workflow.v2.plan.create`, v2 plan nodes, `meeting.action_item` shared mirror, or approved templates | Removed in P10; non-mutating `workflow-task --dry-run true` remains as draft only. | Done. |
+| `workflow-task-update` command | `bin/cat-meeting-governance.mjs` | `workflow.v2.worker_result.submit`, v2 manager/owner review state | Removed in P10; direct task update is not a supported CLI surface. | Done. |
 | `workflow-task-launch-prepare/review/approve` commands | `bin/cat-meeting-governance.mjs` | `workflow.v2.plan.create` plus v2 Human Gate package/request surfaces | P6 froze task launch as short-term compatibility. | Keep `workflow-task-launch-list` only if historical read access is still needed. |
 
 Expected implementation shape:
@@ -102,7 +102,7 @@ actions and CLI/MCP entry points were removed.
 | `workflow-swarm-actions.js` | `src/workflow-swarm-actions.js` | `workflow.v2.worker_spawn.create`, v2 manager/worker/task-group surfaces | Classified as `archive_no_migration`; no production value remains after P7 freeze. | Remove CLI/action alias/registry/tests first or in the same batch. |
 | `workflow-task-launch-actions.js` mutating prepare/review/approve | `src/workflow-task-launch-actions.js` | `workflow.v2.plan.create`, v2 Human Gate package/request | P6 frozen compatibility path; target removal `v1.0.0`. | Decide whether `workflow.task.launch.list` remains as read-only historical view or moves to an archive helper. |
 | `workflow-run-actions.js` external upsert registry | `src/workflow-run-actions.js` | `workflow.v2.plan.create`; internal helper remains private temporarily | Public registry dispatch removed in P9. | Keep `workflowRunUpsert` private until remaining v1 task mutation compatibility is removed or replaced. |
-| `workflow-task-actions.js` external create/update registry | `src/workflow-task-actions.js` | v2 plan nodes and `workflow.v2.worker_result.submit`; `meeting.action_item` mirror | Direct external task mutation is frozen; P10 audit is `docs/workflow-p10-task-mutation-retirement-audit.md`. | Preserve or replace internal helper path used by `meeting.action_item` and `workflow.advance` until v2/shared replacements exist. |
+| `workflow-task-actions.js` external create/update registry | `src/workflow-task-actions.js` | v2 plan nodes and `workflow.v2.worker_result.submit`; `meeting.action_item` mirror | Removed in P10; public registry now keeps only `workflow.task.list` / `workflow.tasks`. | Preserve or replace internal helper path used by `meeting.action_item` and `workflow.advance` until v2/shared replacements exist. |
 
 Expected implementation shape:
 
@@ -113,8 +113,8 @@ Expected implementation shape:
   replacements exist. P10 audit is
   `docs/workflow-p10-task-mutation-retirement-audit.md`.
 - For `workflow.run.upsert`, P9 removed the external surface and kept the
-  private `workflowRunUpsert` helper while `workflow.task.create` still depends
-  on parent run rows.
+  private `workflowRunUpsert` helper while private task compatibility internals
+  still depend on parent run rows.
 - Do not remove `workflow_task_launch_package` protocol object/read-model support
   until historical package listing and archive evidence have a replacement.
 
@@ -123,7 +123,7 @@ Expected implementation shape:
 | Candidate | Current file | Replacement | Removal reason | Preconditions |
 | --- | --- | --- | --- | --- |
 | Direct legacy action contract tests | `scripts/workflow_regression_tests.mjs` | v2 contract tests or removed-action tests | Current tests still prove frozen legacy helpers work directly. | Convert to archive/compat tests only while compatibility exists; remove when code is deleted. |
-| Fixture setup using `workflow.run.upsert` / `workflow.task.create` | `scripts/workflow_regression_tests.mjs` | direct fixture DB setup or v2 plan fixtures | Old fixtures keep legacy helpers alive for non-legacy tests. | Split fixture creation from behavior under test to avoid accidental legacy dependency. |
+| Fixture setup using `workflow.run.upsert` / `workflow.task.create` | `scripts/workflow_regression_tests.mjs` | direct fixture DB setup or v2 plan fixtures | P9/P10 removed public helper dependence from the relevant fixtures; remaining task fixture usage is explicit internal compatibility coverage. | Continue moving unrelated fixtures to direct DB/v2 setup when touched. |
 | P7 convergence default gate tests | `scripts/workflow_regression_tests.mjs` | removed-action tests after deletion | While freeze exists, blocked-by-default is correct; after deletion, expected behavior changes. | Update only in the batch that actually deletes actions. |
 | `meeting.action_item` mirror tests | `scripts/workflow_regression_tests.mjs` | shared action-item writer tests | Must remain until replacement writer exists. | Do not remove with generic task action tests. |
 

@@ -214,12 +214,12 @@ function toAction({ command, positional, options }) {
       };
     case "workflow-task":
       if (options["dry-run"] !== "true") {
-        retiredLegacyCliCommand("workflow-task", "workflow-task-draft or workflow-v2-plan-create");
+        throw new Error("workflow-task mutating mode has been removed; use workflow-task-draft or workflow-v2-plan-create");
       }
       return {
         root,
         input: {
-          action: options["dry-run"] === "true" ? "workflow.task.draft" : "workflow.task.create",
+          action: "workflow.task.draft",
           workflowId: options.workflow,
           taskId: options.task,
           parentTaskId: options.parent,
@@ -242,19 +242,6 @@ function toAction({ command, positional, options }) {
           ],
           subject: options.summary,
           objective: options.prompt || options.summary
-        }
-      };
-    case "workflow-task-update":
-      retiredLegacyCliCommand("workflow-task-update", "workflow.v2.worker_result.submit plus v2 review state");
-      return {
-        root,
-        input: {
-          action: "workflow.task.update",
-          taskId: options.task,
-          status: options.status,
-          actualArtifactRef: options.artifact,
-          blockedReason: options["blocked-reason"],
-          summary: options.summary
         }
       };
     case "workflow-tasks":

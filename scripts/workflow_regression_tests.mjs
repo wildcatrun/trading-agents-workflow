@@ -17,6 +17,7 @@ import {
   WORKFLOW_CONSOLE_READ_ONLY_ACTIONS,
   WORKFLOW_GENERIC_ORCHESTRATION_PLAN_ENTRY_ACTIONS,
   WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS,
+  WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN,
   WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
   WORKFLOW_PERMISSION_KNOWN_ACTIONS,
   WORKFLOW_PERMISSION_READ_ACTIONS,
@@ -173,11 +174,9 @@ import {
   workflowSessionRunComplete,
   workflowSessionRunStart,
   workflowStatus,
-  workflowTaskCreate,
   workflowTaskDraft,
   workflowTaskLaunchList,
   workflowTaskList,
-  workflowTaskUpdate,
   workflowTopology,
   workflowEvaluate,
   workflowVerificationList,
@@ -567,6 +566,36 @@ async function runAction(root, input = {}) {
     }
   }
   return runActionRaw(root, input);
+}
+
+async function runInternalMeetingActionItemTaskCreate(root, input = {}) {
+  return runAction(root, {
+    action: "workflow.task.create",
+    callerAgent: "system",
+    callerRuntime: "workflow",
+    sourceSystem: "meeting_action_item_mirror",
+    legacyCompatibilitySource: "meeting.action_item",
+    [WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN]: {
+      source: "meeting.action_item",
+      actions: ["workflow.task.create", "workflow.task.update"]
+    },
+    ...input
+  });
+}
+
+async function runInternalMeetingActionItemTaskUpdate(root, input = {}) {
+  return runAction(root, {
+    action: "workflow.task.update",
+    callerAgent: "system",
+    callerRuntime: "workflow",
+    sourceSystem: "meeting_action_item_mirror",
+    legacyCompatibilitySource: "meeting.action_item",
+    [WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN]: {
+      source: "meeting.action_item",
+      actions: ["workflow.task.create", "workflow.task.update"]
+    },
+    ...input
+  });
 }
 
 async function withLocalCodexRegistryWrite(fn) {
@@ -2854,7 +2883,7 @@ VALUES ('legacy-op-1', 'workflow.supervise.preview', 'completed');`);
   const partialGlobal = await new WorkflowReadModel({ dbFile: partialDbFile }).operationsSummary();
   assert.equal(partialGlobal.workflowOperations[0].operationId, "legacy-op-1");
   assert.equal(partialGlobal.workflowOperations[0].workflowId, "");
-  await workflowTaskCreate(partialRoot, {
+  await runInternalMeetingActionItemTaskCreate(partialRoot, {
     workflowId: "wf-console-operations-partial",
     taskId: "task-console-operations-partial",
     status: "active",
@@ -2874,11 +2903,9 @@ VALUES ('legacy-op-1', 'workflow.supervise.preview', 'completed');`);
 }
 
 async function testWorkflowRunExtractedActionContracts() {
-  assert.equal(typeof workflowTaskCreate, "function");
-
   const root = await tempRoot("workflow-run-extracted-contracts");
   const workflowId = "wf-run-contract";
-  const direct = await workflowTaskCreate(root, {
+  const direct = await runInternalMeetingActionItemTaskCreate(root, {
     workflowId,
     taskId: "task-run-contract-initial",
     workflowType: "initiative",
@@ -2892,7 +2919,7 @@ async function testWorkflowRunExtractedActionContracts() {
   assert.equal(direct.workflowId, workflowId);
   assert.equal(direct.status, "pending");
 
-  const directUpdate = await workflowTaskCreate(root, {
+  const directUpdate = await runInternalMeetingActionItemTaskCreate(root, {
     workflowId,
     taskId: "task-run-contract-update",
     workflowStatus: "blocked",
@@ -3275,8 +3302,6 @@ async function testWorkflowSupervisorExtractedActionContracts() {
 
 async function testWorkflowTaskExtractedActionContracts() {
   const expected = {
-    "workflow.task.create": "workflowTaskCreate",
-    "workflow.task.update": "workflowTaskUpdate",
     "workflow.task.list": "workflowTaskList",
     "workflow.tasks": "workflowTaskList"
   };
@@ -3284,12 +3309,14 @@ async function testWorkflowTaskExtractedActionContracts() {
     assert.equal(WORKFLOW_TASK_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted workflow task registry`);
     assert.equal(WORKFLOW_TASK_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to ${handlerName}`);
   }
-  assert.equal(typeof workflowTaskCreate, "function");
-  assert.equal(typeof workflowTaskUpdate, "function");
   assert.equal(typeof workflowTaskList, "function");
-  const directRegistry = createWorkflowTaskActionRegistry({ workflowTaskCreate, workflowTaskUpdate, workflowTaskList });
-  assert.equal(directRegistry.get("workflow.task.create"), workflowTaskCreate);
-  assert.equal(directRegistry.get("workflow.task.update"), workflowTaskUpdate);
+  assert.equal(WORKFLOW_TASK_ACTION_REGISTRY.has("workflow.task.create"), false);
+  assert.equal(WORKFLOW_TASK_ACTION_REGISTRY.has("workflow.task.update"), false);
+  assert.equal(WORKFLOW_TASK_ACTION_HANDLER_NAMES["workflow.task.create"], undefined);
+  assert.equal(WORKFLOW_TASK_ACTION_HANDLER_NAMES["workflow.task.update"], undefined);
+  const directRegistry = createWorkflowTaskActionRegistry({ workflowTaskList });
+  assert.equal(directRegistry.get("workflow.task.create"), undefined);
+  assert.equal(directRegistry.get("workflow.task.update"), undefined);
   assert.equal(directRegistry.get("workflow.task.list"), workflowTaskList);
   assert.equal(directRegistry.get("workflow.tasks"), workflowTaskList);
 
@@ -3306,7 +3333,7 @@ async function testWorkflowTaskExtractedActionContracts() {
     canReceiveDispatch: true,
     routingPolicy: { primary: true, routingRank: 1 }
   });
-  const created = await workflowTaskCreate(root, {
+  const created = await runInternalMeetingActionItemTaskCreate(root, {
     workflowId: "wf-task-contract",
     taskId: "task-create-contract",
     ownerAgent: "cat_body",
@@ -3338,8 +3365,26 @@ async function testWorkflowTaskExtractedActionContracts() {
   assert.equal(sqliteCount(dbFile, "workflow_tasks", "task_id='task-create-contract' AND workflow_id='wf-task-contract' AND runtime='hermers' AND agent_id='cat_body' AND status='pending' AND priority='steer' AND receipt_required=1 AND human_gate_required=1"), 1);
   assert.equal(sqliteCount(dbFile, "workflow_task_dependencies", "task_id='task-create-contract' AND depends_on_task_id='task-prereq'"), 1);
 
-  const updated = await runAction(root, {
-    action: "workflow.task.update",
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.task.create",
+      workflowId: "wf-task-contract",
+      taskId: "task-public-create-denied",
+      ownerAgent: "cat_body",
+      summary: "public task create should be removed"
+    }),
+    /workflow permission denied: action=workflow\.task\.create .*reason=unknown_workflow_action/
+  );
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.task.update",
+      taskId: "task-create-contract",
+      status: "in_progress"
+    }),
+    /workflow permission denied: action=workflow\.task\.update .*reason=unknown_workflow_action/
+  );
+
+  const updated = await runInternalMeetingActionItemTaskUpdate(root, {
     taskId: "task-create-contract",
     status: "in_progress",
     summary: "Workflow task update contract.",
@@ -3375,11 +3420,11 @@ LIMIT 1;`)[0];
   assert.equal(listed.tasks[0].task_id, "task-create-contract");
 
   await assert.rejects(
-    () => workflowTaskCreate(root, { taskId: "missing-workflow-id" }),
+    () => runInternalMeetingActionItemTaskCreate(root, { taskId: "missing-workflow-id" }),
     /workflowId is required/
   );
   await assert.rejects(
-    () => workflowTaskUpdate(root, { taskId: "missing-task" }),
+    () => runInternalMeetingActionItemTaskUpdate(root, { taskId: "missing-task" }),
     /workflow task not found: missing-task/
   );
 }
@@ -11886,55 +11931,56 @@ async function testWorkflowConvergenceDefaultGates() {
   delete process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH;
   try {
     const root = await tempRoot("workflow-convergence-default-gates");
-    const legacy = await runAction(root, {
-      action: "workflow.task.create",
-      workflowId: "wf-convergence-gate",
-      taskId: "task-convergence-gate",
-      ownerAgent: "main",
-      runtime: "openclaw",
-      summary: "legacy write should be blocked by default"
-    });
-    assert.equal(legacy.status, "blocked");
-    assert.equal(legacy.allowed, false);
-    assert.equal(legacy.reason, "legacy_action_disabled");
-    const legacyRequestOverride = await runAction(root, {
-      action: "workflow.task.create",
-      workflowId: "wf-convergence-gate",
-      taskId: "task-convergence-request-override",
-      ownerAgent: "main",
-      runtime: "openclaw",
-      summary: "request-level legacy override should not bypass",
-      allowLegacyAction: true,
-      legacyMode: true
-    });
-    assert.equal(legacyRequestOverride.status, "blocked");
-    assert.equal(legacyRequestOverride.reason, "legacy_action_disabled");
-    const forgedInternalSource = await runAction(root, {
-      action: "workflow.task.create",
-      workflowId: "wf-convergence-gate",
-      taskId: "task-convergence-forged-internal-source",
-      ownerAgent: "main",
-      runtime: "openclaw",
-      summary: "forged internal legacy provenance should not bypass",
-      legacyCompatibilitySource: "meeting.action_item",
-      callerAgent: "system",
-      callerRuntime: "workflow",
-      sourceSystem: "meeting_action_item_mirror"
-    });
-    assert.equal(forgedInternalSource.status, "blocked");
-    assert.equal(forgedInternalSource.reason, "legacy_action_disabled");
-    assert.equal(workflowActionMigrationInfo("workflow.task.create").policy, "frozen_short_term_compatibility");
-    assert.equal(workflowActionMigrationInfo("workflow.task.create").dependencyEvidence.includes("do not call the external workflow.task.create"), true);
-    const legacyUpdate = await runAction(root, {
-      action: "workflow.task.update",
-      workflowId: "wf-convergence-gate",
-      taskId: "task-convergence-gate",
-      status: "done"
-    });
-    assert.equal(legacyUpdate.status, "blocked");
-    assert.equal(legacyUpdate.allowed, false);
-    assert.equal(legacyUpdate.reason, "legacy_action_disabled");
-    assert.equal(workflowActionMigrationInfo("workflow.task.update").dependencyEvidence.includes("does not call the external workflow.task.update"), true);
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.task.create",
+        workflowId: "wf-convergence-gate",
+        taskId: "task-convergence-gate",
+        ownerAgent: "main",
+        runtime: "openclaw",
+        summary: "legacy write should be removed"
+      }),
+      /workflow permission denied: action=workflow\.task\.create .*reason=unknown_workflow_action/
+    );
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.task.create",
+        workflowId: "wf-convergence-gate",
+        taskId: "task-convergence-request-override",
+        ownerAgent: "main",
+        runtime: "openclaw",
+        summary: "request-level legacy override should not bypass",
+        allowLegacyAction: true,
+        legacyMode: true
+      }),
+      /workflow permission denied: action=workflow\.task\.create .*reason=unknown_workflow_action/
+    );
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.task.create",
+        workflowId: "wf-convergence-gate",
+        taskId: "task-convergence-forged-internal-source",
+        ownerAgent: "main",
+        runtime: "openclaw",
+        summary: "forged internal legacy provenance should not bypass",
+        legacyCompatibilitySource: "meeting.action_item",
+        callerAgent: "system",
+        callerRuntime: "workflow",
+        sourceSystem: "meeting_action_item_mirror"
+      }),
+      /workflow permission denied: action=workflow\.task\.create .*reason=unknown_workflow_action/
+    );
+    assert.equal(workflowActionMigrationInfo("workflow.task.create"), null);
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.task.update",
+        workflowId: "wf-convergence-gate",
+        taskId: "task-convergence-gate",
+        status: "done"
+      }),
+      /workflow permission denied: action=workflow\.task\.update .*reason=unknown_workflow_action/
+    );
+    assert.equal(workflowActionMigrationInfo("workflow.task.update"), null);
     assert.equal(workflowActionMigrationInfo("workflow.run.upsert"), null);
     await assertRejectsMessage(
       () => runAction(root, {
@@ -12020,20 +12066,19 @@ SELECT status, next_state, payload_json
 FROM workflow_events
 WHERE event_type='workflow.action_migration_telemetry'
 ORDER BY created_at;`);
-    assert.equal(telemetryRows.length, 8);
+    assert.equal(telemetryRows.length, 1);
     const telemetryPayloads = telemetryRows.map((row) => JSON.parse(row.payload_json));
-    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["route_shell.ingest", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.update", "workflow.task.update"]);
+    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["route_shell.ingest"]);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.task.launch.list"), false);
     const meetingMirrorTelemetry = telemetryPayloads.filter((row) => row.legacyCompatibilitySource === "meeting.action_item");
-    assert.deepEqual(meetingMirrorTelemetry.map((row) => row.action).sort(), ["workflow.task.create", "workflow.task.create", "workflow.task.create", "workflow.task.update"]);
-    assert.equal(meetingMirrorTelemetry.every((row) => row.permissionAllowed === true), true);
+    assert.deepEqual(meetingMirrorTelemetry, []);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.run.upsert"), false);
     const deprecatedTelemetry = telemetryPayloads.find((row) => row.action === "route_shell.ingest");
     assert.equal(deprecatedTelemetry.migrationStatus, "deprecated");
     assert.equal(deprecatedTelemetry.decisionClass, "archive_no_migration");
-    assert.equal(telemetryRows.filter((row) => row.status === "legacy_active").length, 7);
+    assert.equal(telemetryRows.filter((row) => row.status === "legacy_active").length, 0);
     assert.equal(telemetryRows.filter((row) => row.status === "deprecated").length, 1);
-    assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 7);
+    assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 0);
     assert.equal(telemetryRows.filter((row) => row.next_state === "archive_no_migration").length, 1);
     assert.equal(telemetryPayloads.every((row) => row.telemetryOnly === true), true);
 
@@ -12172,16 +12217,17 @@ ORDER BY created_at;`);
     process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS = "enabled";
     process.env.TRADING_AGENTS_WORKFLOW_ENABLE_GENERIC_ORCHESTRATION = "enabled";
     process.env.TRADING_AGENTS_WORKFLOW_ALLOW_RAW_SCHEDULE_DISPATCH = "enabled";
-    const strictLegacy = await runAction(root, {
-      action: "workflow.task.create",
-      workflowId: "wf-convergence-strict-bool",
-      taskId: "task-convergence-strict-bool",
-      ownerAgent: "main",
-      runtime: "openclaw",
-      summary: "non-explicit legacy env should not bypass"
-    });
-    assert.equal(strictLegacy.status, "blocked");
-    assert.equal(strictLegacy.reason, "legacy_action_disabled");
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.task.create",
+        workflowId: "wf-convergence-strict-bool",
+        taskId: "task-convergence-strict-bool",
+        ownerAgent: "main",
+        runtime: "openclaw",
+        summary: "legacy env should not restore removed task mutation"
+      }),
+      /workflow permission denied: action=workflow\.task\.create .*reason=unknown_workflow_action/
+    );
     const strictGeneric = await runAction(root, {
       action: "workflow.v2.worker_spawn.create",
       workflowId: "wf-convergence-strict-bool",
@@ -17994,14 +18040,14 @@ async function testWorkflowP8CliLegacyMutatingShellsRetired() {
   assert.deepEqual(v2Plan.plan.participantManagers, ["cat_body", "cat_nose"]);
   assert.equal(sqliteCount(path.join(root, "tracking.db"), "workflow_v2_plans", "plan_id='plan-p8-cli-v2'"), 1);
 
-  const retiredCommands = [
-    ["workflow-task", "--root", root, "--workflow", "wf-p8-legacy", "--task", "task-p8-legacy", "--owner", "main"],
-    ["workflow-task-update", "--root", root, "--task", "task-p8-legacy", "--status", "done"]
-  ];
-  for (const args of retiredCommands) {
-    const stderr = workflowCliError(args);
-    assert.match(stderr, /retired as a legacy mutating workflow CLI shell/);
-  }
+  assert.match(
+    workflowCliError(["workflow-task", "--root", root, "--workflow", "wf-p8-legacy", "--task", "task-p8-legacy", "--owner", "main"]),
+    /workflow-task mutating mode has been removed/
+  );
+  assert.match(
+    workflowCliError(["workflow-task-update", "--root", root, "--task", "task-p8-legacy", "--status", "done"]),
+    /unknown command: workflow-task-update/
+  );
   assert.match(
     workflowCliError(["workflow-swarm", "--root", root, "--workflow", "wf-p8-legacy", "--objective", "legacy swarm", "--target", "one"]),
     /unknown command: workflow-swarm/
@@ -18262,7 +18308,7 @@ LIMIT 1;`)[0].payloadJson;
 
 async function testAutomaticWorkflowEvents() {
   const root = await tempRoot("workflow-events-auto");
-  await workflowTaskCreate(root, {
+  await runInternalMeetingActionItemTaskCreate(root, {
     workflowId: "workflow-auto-events",
     taskId: "task-workflow-auto-events",
     workflowType: "governance",

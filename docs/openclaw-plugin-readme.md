@@ -318,8 +318,6 @@ Workflow and tracking:
 
 - `workflow.init`
 - `workflow.status`
-- `workflow.task.create`
-- `workflow.task.update`
 - `workflow.task.list`
 - `workflow.tasks`
 - `workflow.advance`
@@ -393,9 +391,10 @@ V2 action payload example:
 ```
 
 Use v2 plan nodes and worker/result/review state to represent concrete work in
-new flows. `workflow.task.create` and `workflow.task.update` are frozen legacy
-compatibility entry points: they are blocked by default and retained only for
-explicit short-term compatibility.
+new flows. The external `workflow.task.create` and `workflow.task.update`
+mutation actions have been removed; use `workflow.v2.plan.create` for new work
+admission and v2 worker/result/review state for progress updates. Historical
+task reads remain available through `workflow.task.list` / `workflow.tasks`.
 
 `meeting.action_item` also mirrors new or updated action items into
 `workflow_tasks` by default through an internal, non-JSON-forgeable

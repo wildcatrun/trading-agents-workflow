@@ -268,6 +268,7 @@ import {
   WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS,
   WORKFLOW_LEGACY_MUTATING_ACTIONS,
   WORKFLOW_ACTION_PERMISSION_RULES,
+  WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN,
   workflowActionBlockedResult,
   workflowLegacyActionOverrideEnabled,
   workflowActionMigrationInfo,
@@ -4206,7 +4207,7 @@ const {
   workflowRunUpsert
 } = WORKFLOW_RUN_ACTION_HANDLERS;
 
-export const WORKFLOW_TASK_ACTION_HANDLERS = createWorkflowTaskActionHandlers({
+const WORKFLOW_TASK_ACTION_HANDLERS = createWorkflowTaskActionHandlers({
   ensureWorkflowLayout,
   normalizeAgentId,
   nowIso,
@@ -4219,11 +4220,23 @@ export const WORKFLOW_TASK_ACTION_HANDLERS = createWorkflowTaskActionHandlers({
 
 export const WORKFLOW_TASK_ACTION_REGISTRY = createWorkflowTaskActionRegistry(WORKFLOW_TASK_ACTION_HANDLERS);
 
-export const {
+const {
   workflowTaskCreate,
   workflowTaskUpdate,
-  workflowTaskList
+  workflowTaskList: workflowTaskListHandler
 } = WORKFLOW_TASK_ACTION_HANDLERS;
+
+export const workflowTaskList = workflowTaskListHandler;
+
+function workflowInternalTaskCompatibilityEnabled(input = {}, action = "") {
+  const marker = input?.[WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN];
+  if (!marker || typeof marker !== "object") return false;
+  const source = String(marker.source || "").trim();
+  const allowedActions = Array.isArray(marker.actions)
+    ? marker.actions.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+  return source === "meeting.action_item" && allowedActions.includes(action);
+}
 
 export const WORKFLOW_ADVANCE_ACTION_HANDLERS = createWorkflowAdvanceActionHandlers({
   cleanFileSegment,
@@ -4286,7 +4299,6 @@ export const WORKFLOW_TASK_LAUNCH_ACTION_HANDLERS = createWorkflowTaskLaunchActi
   readProtocolObject,
   workflowPermissionCaller,
   workflowPhaseRecordId,
-  workflowTaskCreate,
   workflowTaskDraft,
   writeJsonArtifact,
   writeTextArtifact
@@ -8852,6 +8864,10 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
 export async function runWorkflowAction(rootDir, input = {}) {
   const requestedAction = String(input.action || "workflow.status");
   const action = canonicalWorkflowAction(requestedAction);
+  if (workflowInternalTaskCompatibilityEnabled(input, action)) {
+    if (action === "workflow.task.create") return workflowTaskCreate(rootDir, input);
+    if (action === "workflow.task.update") return workflowTaskUpdate(rootDir, input);
+  }
   const permissionDecision = await authorizeWorkflowAction(rootDir, input);
   await recordWorkflowActionMigrationTelemetry(rootDir, action, requestedAction, input, permissionDecision);
   const convergenceGate = await workflowConvergenceGate(rootDir, action, requestedAction, input);

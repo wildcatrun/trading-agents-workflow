@@ -133,6 +133,11 @@ P9 removed the external run-upsert surface and kept the private helper boundary:
 - Do not modify `meeting.action_item` mirroring.
 - Do not change v2 plan create semantics to write legacy `workflow_runs` rows.
 
+Postscript: P10 later removed the external `workflow.task.create` /
+`workflow.task.update` surface. This P9 note is retained as historical context;
+current task mutation status is tracked in
+`docs/workflow-p10-task-mutation-retirement-audit.md`.
+
 ## Quality Gate For P9 Implementation
 
 Minimum checks for the future implementation patch:

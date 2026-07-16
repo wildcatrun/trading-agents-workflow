@@ -1,15 +1,15 @@
 # Workflow P10 Task Mutation Retirement Audit
 
-Status: audit, no code removal
+Status: implemented external surface removal
 Created: 2026-07-17
 Scope: `workflow.task.create` / `workflow.task.update`
 
 ## Purpose
 
-This document is the P10 pre-removal audit for the legacy workflow task
-mutation surface. It records the current topology, active callers, replacement
-coverage, internal compatibility dependencies, and the safe removal sequence
-before any implementation patch deletes task mutation code.
+This document started as the P10 pre-removal audit for the legacy workflow task
+mutation surface. It now also records the implemented removal boundary:
+external task create/update entry points are gone, while private internal
+helpers remain for the audited compatibility paths.
 
 The goal is to retire direct external task creation/update without breaking
 shared substrate paths that still use legacy task rows as historical evidence,
@@ -19,15 +19,15 @@ especially `meeting.action_item` mirroring and existing read models.
 
 | Layer | Current surface | File | Status | P10 judgment |
 | --- | --- | --- | --- | --- |
-| OpenClaw plugin action schema | `workflow.task.create`, `workflow.task.update` | `index.js` | Still listed as external actions. | Remove in implementation only after internal helper split. |
-| Commander plugin commands | `workflow-task`, `workflow-task-update` | `index.js` | Still maps to external task mutations. | Remove mutating command surfaces; keep `workflow-tasks` read surface. |
-| Local CLI shell | `workflow-task`, `workflow-task-update` | `bin/cat-meeting-governance.mjs` | Mutating mode is retired by default but still exists behind `TRADING_AGENTS_WORKFLOW_CLI_ALLOW_LEGACY_MUTATING_SHELLS=1`. | Delete mutating cases in implementation; keep `workflow-task --dry-run true` if it maps only to draft. |
-| Public documentation | action list and task-pool guidance | `docs/openclaw-plugin-readme.md` | Still advertises `workflow.task.create` / `workflow.task.update` as actions. | Update in the same implementation patch so removed actions are not documented as active. |
+| OpenClaw plugin action schema | `workflow.task.create`, `workflow.task.update` | `index.js` | Removed from external actions. | Done in P10 implementation. |
+| Commander plugin commands | `workflow-task`, `workflow-task-update` | `index.js` | Removed from plugin command surface. | Done; keep `workflow-tasks` read surface. |
+| Local CLI shell | `workflow-task`, `workflow-task-update` | `bin/cat-meeting-governance.mjs` | Mutating `workflow-task` mode hard-fails; `workflow-task-update` is removed. | Done; `workflow-task --dry-run true` maps only to draft. |
+| Public documentation | action list and task-pool guidance | `docs/openclaw-plugin-readme.md` | No longer advertises `workflow.task.create` / `workflow.task.update` as active actions. | Done in P10 implementation. |
 | Read/list aliases | `workflow.tasks` -> `workflow.task.list` | `src/workflow/action-aliases.js` | Read/history compatibility. | Keep until v2-first read models fully replace legacy task views. |
-| Action policy | legacy mutating actions, permission rules, migration metadata | `src/workflow/action-policy.js` | Frozen compatibility metadata and default block. | Remove mutating action policy only when external action registry dispatch is removed. Keep read-list policy. |
-| Public action registry | `WORKFLOW_TASK_ACTION_REGISTRY` | `src/workflow-task-actions.js`, `src/workflow.js` | Handles create/update/list. | Split mutation helpers from public read registry; registry should retain list only. |
-| Exported helpers | `workflowTaskCreate`, `workflowTaskUpdate`, `workflowTaskList` | `src/workflow.js` | Create/update are exported and used internally. | Make create/update non-exported when possible; keep list export if needed for read tests/tools. |
-| Regression fixtures/contracts | direct helper imports and registry assertions | `scripts/workflow_regression_tests.mjs` | Tests still assert public registry create/update behavior and import helpers directly. | Refactor tests in lockstep with helper privatization; prove behavior through internal callers instead of public exports. |
+| Action policy | legacy mutating actions, permission rules, migration metadata | `src/workflow/action-policy.js` | Create/update removed from policy; list/read policy remains. | Done; no zombie permission rule remains. |
+| Public action registry | `WORKFLOW_TASK_ACTION_REGISTRY` | `src/workflow-task-actions.js`, `src/workflow.js` | Registers only list/read actions. | Done; create/update are private helpers only. |
+| Exported helpers | `workflowTaskCreate`, `workflowTaskUpdate`, `workflowTaskList` | `src/workflow.js` | Only `workflowTaskList` remains exported. | Done; create/update are non-exported. |
+| Regression fixtures/contracts | direct helper imports and registry assertions | `scripts/workflow_regression_tests.mjs` | Tests assert list-only public registry and use internal Symbol fixture helper where needed. | Done. |
 | Internal meeting mirror | `meeting.action_item` -> task create/update | `src/core.js` | Active shared-substrate path using an internal Symbol token. | Keep until a dedicated shared action-item/v2 writer replaces it. |
 | Advance helper dependency | `workflow.advance` -> `workflowTaskUpdate` | `src/workflow-advance-actions.js`, `src/workflow.js` | Internal v1 compatibility dependency. | Keep internal helper until `workflow.advance` is removed/replaced. |
 | Stale task-launch injection | `workflowTaskCreate` passed to task-launch handlers | `src/workflow.js` | `workflow-task-launch-actions.js` is now read-only and does not consume it. | Clean up during implementation or prior to helper privatization; do not cite it as a retention reason. |
@@ -60,9 +60,9 @@ compatibility paths still need equivalent behavior:
 - `workflow.advance` still calls `workflowTaskUpdate` internally when it marks
   selected legacy tasks as in progress.
 
-Therefore the safe P10 boundary is to delete the public mutating action surface
-only after splitting public registry dispatch from internal helpers. The first
-implementation should keep internal helper functions private and non-forgeable.
+Therefore the implemented P10 boundary deletes the public mutating action
+surface after splitting public registry dispatch from internal helpers. Internal
+helper functions remain private and non-forgeable.
 
 ### Forge-Resistance Check
 
@@ -74,25 +74,21 @@ The internal compatibility bypass is guarded by a local Symbol:
 - JSON/request-level fields such as `legacyCompatibilitySource` alone are not
   sufficient.
 
-Existing convergence tests already exercise this by proving a forged
-`legacyCompatibilitySource: "meeting.action_item"` request remains blocked.
-P10 implementation should keep or strengthen that regression.
+Convergence tests exercise this by proving a forged
+`legacyCompatibilitySource: "meeting.action_item"` request fails closed as an
+unknown action unless the non-JSON Symbol marker is present.
 
-### Test And Documentation Debt
+### Test And Documentation Result
 
-The implementation patch must not simply delete exports and then repair failing
-tests opportunistically. Current tests intentionally exercise the public
-`WORKFLOW_TASK_ACTION_REGISTRY` and import `workflowTaskCreate` /
-`workflowTaskUpdate` directly. Those tests must be split into:
+P10 split the tests into:
 
 - read-surface tests for `workflow.task.list` / `workflow.tasks`;
 - internal compatibility tests that prove `meeting.action_item` and
   `workflow.advance` still drive the private helpers;
 - deleted-action tests that prove external create/update fail closed.
 
-Public operator documentation must be updated in the same patch. In particular,
-`docs/openclaw-plugin-readme.md` must stop listing `workflow.task.create` and
-`workflow.task.update` as active actions once they are removed.
+Public operator documentation was updated in the same patch so removed task
+mutations are not listed as active actions.
 
 ## Runtime Evidence
 
@@ -117,41 +113,40 @@ not.
 
 | Candidate | Classification | Reason |
 | --- | --- | --- |
-| `workflow.task.create` external action | remove after helper split | V2 plan create owns new task admission; current runtime has no external caller evidence. |
-| `workflow.task.update` external action | remove after helper split | V2 worker result/review/session state owns new progress; current runtime has no external caller evidence. |
-| `workflow-task-update` CLI | remove now in implementation | Already retired by default; no supported new workflow path should use it. |
-| `workflow-task` mutating CLI mode | remove now in implementation | Keep only dry-run draft mode if implemented as `workflow.task.draft`. |
-| `workflow.task.create/update` permission rules | remove with public actions | Rules for deleted external actions should not survive as zombie policy. |
-| `workflow.task.create/update` migration metadata | remove with public actions | Runtime policy should not carry metadata for unavailable external actions. |
+| `workflow.task.create` external action | removed | V2 plan create owns new task admission; current runtime has no external caller evidence. |
+| `workflow.task.update` external action | removed | V2 worker result/review/session state owns new progress; current runtime has no external caller evidence. |
+| `workflow-task-update` CLI | removed | No supported new workflow path should use it. |
+| `workflow-task` mutating CLI mode | removed | `workflow-task --dry-run true` remains draft-only. |
+| `workflow.task.create/update` permission rules | removed | Rules for deleted external actions should not survive as zombie policy. |
+| `workflow.task.create/update` migration metadata | removed | Runtime policy should not carry metadata for unavailable external actions. |
 | `workflowTaskCreate` helper | keep temporarily, private | Required by `meeting.action_item` mirror until a shared/v2 writer replaces it. |
 | `workflowTaskUpdate` helper | keep temporarily, private | Required by `meeting.action_item` update path and `workflow.advance` until legacy advance is removed/replaced. |
 | `workflow.task.list` / `workflow.tasks` | keep | Historical task read/list surface still has value. |
 | `workflow_tasks` tables/read model | keep | Historical evidence and legacy views depend on persisted task rows. |
 
-## Safe P10 Implementation Shape
+## Implemented P10 Boundary
 
 1. Split `src/workflow-task-actions.js` into:
    - public read registry containing only `workflow.task.list` / `workflow.tasks`;
    - internal helper factory for create/update, not registered as public actions.
-2. Remove `workflow.task.create` and `workflow.task.update` from the OpenClaw
+2. Removed `workflow.task.create` and `workflow.task.update` from the OpenClaw
    plugin action schema.
-3. Remove mutating `workflow-task` and `workflow-task-update` CLI paths. Preserve
-   `workflow-task --dry-run true` only if it never maps to mutation; otherwise
-   replace it with explicit `workflow-task-draft`.
-4. Remove `workflow.task.create` / `workflow.task.update` from
+3. Removed mutating `workflow-task` and `workflow-task-update` CLI paths. Preserved
+   `workflow-task --dry-run true` because it maps only to `workflow.task.draft`.
+4. Removed `workflow.task.create` / `workflow.task.update` from
    `WORKFLOW_LEGACY_MUTATING_ACTIONS`, permission rules, and exact migration
    metadata after deleted-action tests are in place.
-5. Keep `meeting.action_item` mirroring working through non-exported internal
+5. Kept `meeting.action_item` mirroring working through non-exported internal
    helper calls or an internal-only action path protected by the Symbol token.
-6. Keep `workflow.advance` internal update behavior unchanged until the
+6. Kept `workflow.advance` internal update behavior unchanged until the
    `workflow.advance` retirement slice.
-7. Keep `workflow.task.list`, `workflow.tasks`, read models, and historical
+7. Kept `workflow.task.list`, `workflow.tasks`, read models, and historical
    table support unchanged.
-8. Remove stale `workflowTaskCreate` injection into task-launch handlers if the
+8. Removed stale `workflowTaskCreate` injection into task-launch handlers because the
    read-only task-launch module still does not consume it.
-9. Update `docs/openclaw-plugin-readme.md` and migration ledgers so external
+9. Updated `docs/openclaw-plugin-readme.md` and migration ledgers so external
    task mutations are documented as removed rather than active/frozen.
-10. Add or update regressions:
+10. Added or updated regressions:
    - external `runAction({ action: "workflow.task.create" })` fails closed as
      `unknown_workflow_action`;
    - external `runAction({ action: "workflow.task.update" })` fails closed as
