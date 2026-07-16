@@ -430,9 +430,18 @@ function extractFunctionSource(source, name) {
   throw new Error(`${name} body did not close`);
 }
 
-function workflowCliJson(args) {
-  const output = execFileSync("node", [path.resolve("bin/cat-meeting-governance.mjs"), ...args], { encoding: "utf8" }).trim();
+function workflowCliJson(args, extraEnv = {}) {
+  const output = execFileSync("node", [path.resolve("bin/cat-meeting-governance.mjs"), ...args], { encoding: "utf8", env: { ...process.env, ...extraEnv } }).trim();
   return output ? JSON.parse(output) : {};
+}
+
+function workflowCliError(args, extraEnv = {}) {
+  try {
+    execFileSync("node", [path.resolve("bin/cat-meeting-governance.mjs"), ...args], { encoding: "utf8", stdio: "pipe", env: { ...process.env, ...extraEnv } });
+  } catch (error) {
+    return String(error.stderr || error.message || "");
+  }
+  throw new Error(`expected CLI command to fail: ${args.join(" ")}`);
 }
 
 function isRegistryWriteSetup(input = {}) {
@@ -18154,6 +18163,63 @@ async function testWorkflowTaskDraftCliPurePreview() {
   assert.equal(draft.spec.governance.secretaryAgent, "cat_claw");
 }
 
+async function testWorkflowP8CliLegacyMutatingShellsRetired() {
+  const root = await tempRoot("workflow-p8-cli-legacy-shells");
+  const v2Plan = workflowCliJson([
+    "workflow-v2-plan-create",
+    "--root", root,
+    "--workflow", "wf-p8-cli-v2",
+    "--plan", "plan-p8-cli-v2",
+    "--objective", "Use v2 plan create as the supported CLI entry.",
+    "--owner", "cat_heart",
+    "--manager", "cat_body",
+    "--manager", "cat_nose",
+    "--acceptance-criteria", "plan is persisted"
+  ]);
+  assert.equal(v2Plan.operation, "workflow.v2.plan.create");
+  assert.equal(v2Plan.plan.workflowId, "wf-p8-cli-v2");
+  assert.equal(v2Plan.plan.planId, "plan-p8-cli-v2");
+  assert.deepEqual(v2Plan.plan.participantManagers, ["cat_body", "cat_nose"]);
+  assert.equal(sqliteCount(path.join(root, "tracking.db"), "workflow_v2_plans", "plan_id='plan-p8-cli-v2'"), 1);
+
+  const retiredCommands = [
+    ["workflow-run", "--root", root, "--workflow", "wf-p8-legacy", "--objective", "legacy run"],
+    ["workflow-swarm", "--root", root, "--workflow", "wf-p8-legacy", "--objective", "legacy swarm", "--target", "one"],
+    ["workflow-task", "--root", root, "--workflow", "wf-p8-legacy", "--task", "task-p8-legacy", "--owner", "main"],
+    ["workflow-task-update", "--root", root, "--task", "task-p8-legacy", "--status", "done"],
+    ["workflow-task-launch-prepare", "--root", root, "--workflow", "wf-p8-legacy", "--objective", "legacy launch"],
+    ["workflow-task-launch-review", "--root", root, "--draft", "draft-p8-legacy", "--status", "approved"],
+    ["workflow-task-launch-approve", "--root", root, "--draft", "draft-p8-legacy", "--feedback", "approved"]
+  ];
+  for (const args of retiredCommands) {
+    const stderr = workflowCliError(args);
+    assert.match(stderr, /retired as a legacy mutating workflow CLI shell/);
+  }
+  const compatibilityBlocked = workflowCliJson([
+    "workflow-run",
+    "--root", root,
+    "--workflow", "wf-p8-legacy-compat",
+    "--objective", "compatibility env reaches core gate but must not mutate"
+  ], {
+    TRADING_AGENTS_WORKFLOW_CLI_ALLOW_LEGACY_MUTATING_SHELLS: "1",
+    TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS: ""
+  });
+  assert.equal(compatibilityBlocked.status, "blocked");
+  assert.equal(compatibilityBlocked.reason, "legacy_action_disabled");
+  assert.equal(compatibilityBlocked.allowed, false);
+
+  const dryRunTask = workflowCliJson([
+    "workflow-task",
+    "--dry-run", "true",
+    "--root", root,
+    "--workflow", "wf-p8-cli-draft",
+    "--owner", "cat_eyes",
+    "--summary", "dry-run task preview remains available"
+  ]);
+  assert.equal(dryRunTask.dryRun, true);
+  assert.equal(dryRunTask.mutated, false);
+}
+
 async function testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility() {
   const noGateRoot = await tempRoot("task-draft-no-hgate");
   const noGate = workflowCliJson([
@@ -22628,6 +22694,7 @@ try {
     ["workflow session runs legacy schema migration", testWorkflowSessionRunsLegacySchemaMigration],
     ["workflow task draft pure preview", testWorkflowTaskDraftPurePreview],
     ["workflow task draft cli pure preview", testWorkflowTaskDraftCliPurePreview],
+    ["workflow P8 CLI legacy mutating shells retired", testWorkflowP8CliLegacyMutatingShellsRetired],
     ["workflow task draft no human gate and single task compatibility", testWorkflowTaskDraftNoHumanGateAndSingleTaskCompatibility],
     ["workflow task launch prepare and approve", testWorkflowTaskLaunchPrepareAndApprove],
     ["workflow phase read-model fallback with empty phase table", testWorkflowPhaseReadModelFallbackWithEmptyPhaseTable],

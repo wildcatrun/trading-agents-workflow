@@ -666,8 +666,8 @@ node bin/cat-meeting-governance.mjs research-memo --asset stock --symbol 000001.
 node bin/cat-meeting-governance.mjs gate-review --asset stock --symbol 000001.SZ --gate risk_gate --status pending --summary "risk review required" --human-gate --root "$ROOT"
 node bin/cat-meeting-governance.mjs cat_claw-audit --root "$ROOT"
 
-node bin/cat-meeting-governance.mjs workflow-run --workflow demo-initiative --objective "Improve long-term stock tracking" --acceptance-criteria "next action package exists" --stop-condition "Flashcat accepts or blocks" --phase planning --root "$ROOT"
-node bin/cat-meeting-governance.mjs workflow-task --workflow demo-initiative --task demo-task-001 --owner main --runtime openclaw --agent main --summary "Create next phase plan" --expected-artifact "workflow artifact or minutes path" --root "$ROOT"
+node bin/cat-meeting-governance.mjs workflow-v2-plan-create --workflow demo-initiative --plan demo-plan-001 --objective "Improve long-term stock tracking" --owner cat_heart --manager cat_body --manager cat_nose --acceptance-criteria "next action package exists" --root "$ROOT"
+node bin/cat-meeting-governance.mjs workflow-task --dry-run true --workflow demo-initiative --owner main --summary "Preview a non-mutating legacy task draft only" --root "$ROOT"
 node bin/cat-meeting-governance.mjs workflow-advance --workflow demo-initiative --root "$ROOT"
 node bin/cat-meeting-governance.mjs workflow-checkpoint --workflow demo-initiative --summary "Context recovery checkpoint" --next-action "continue active tasks" --root "$ROOT"
 

@@ -4,6 +4,8 @@ import { strictBoolOption } from "../src/workflow/json.js";
 import path from "node:path";
 import os from "node:os";
 
+const LEGACY_CLI_SHELL_ENV = "TRADING_AGENTS_WORKFLOW_CLI_ALLOW_LEGACY_MUTATING_SHELLS";
+
 function usage() {
   console.log(`Usage:
   trading-agents-workflow status [--root DIR | --workflow-root DIR]
@@ -11,11 +13,9 @@ function usage() {
   trading-agents-workflow workflow-status [--asset TYPE --symbol SYMBOL] [--root DIR]
   trading-agents-workflow workflow-readiness [--active-checks] [--stability-profile-modes-path PATH] [--root DIR]
   trading-agents-workflow workflow-topology [--root DIR]
-  trading-agents-workflow workflow-run --workflow ID [--objective TEXT] [--acceptance-criteria TEXT] [--stop-condition TEXT] [--phase PHASE] [--flash-lane true|false] [--root DIR]
-  trading-agents-workflow workflow-swarm --workflow ID --objective TEXT [--target TEXT] [--worker runtime:agent] [--reducer runtime:agent] [--fanout-limit N] [--root DIR]
+  trading-agents-workflow workflow-v2-plan-create --workflow ID --plan ID --objective TEXT [--owner AGENT] [--manager AGENT] [--acceptance-criteria TEXT] [--root DIR]
   trading-agents-workflow workflow-task-draft --workflow ID --objective TEXT [--participant AGENT] [--chair main] [--secretary cat_claw] [--consumer cat_heart] [--template NAME] [--root DIR]
-  trading-agents-workflow workflow-task --workflow ID [--task ID] [--owner AGENT] [--runtime RUNTIME] [--agent AGENT] [--after TASK_IDS] [--expected-artifact PATH] [--root DIR]
-  trading-agents-workflow workflow-task-update --task ID [--status STATUS] [--artifact PATH] [--blocked-reason TEXT] [--root DIR]
+  trading-agents-workflow workflow-task --dry-run true --workflow ID [--owner AGENT] [--summary TEXT] [--root DIR]
   trading-agents-workflow workflow-tasks [--workflow ID] [--status STATUS] [--owner AGENT] [--limit N] [--root DIR]
   trading-agents-workflow workflow-advance --workflow ID [--meeting ID] [--auto-dispatch] [--goal-complete] [--root DIR]
   trading-agents-workflow workflow-advance-preview --workflow ID [--meeting ID] [--auto-dispatch true|false] [--goal-complete] [--root DIR]
@@ -99,6 +99,11 @@ function listOption(value) {
   return Array.isArray(value) ? value : [value];
 }
 
+function retiredLegacyCliCommand(command, replacement) {
+  if (["1", "true", "yes", "on"].includes(String(process.env[LEGACY_CLI_SHELL_ENV] || "").trim().toLowerCase())) return null;
+  throw new Error(`${command} is retired as a legacy mutating workflow CLI shell; use ${replacement}.`);
+}
+
 function parseCliJson(value, fallback = {}) {
   if (value === undefined || value === null || value === "") return fallback;
   if (typeof value === "object") return value;
@@ -148,7 +153,29 @@ function toAction({ command, positional, options }) {
       return { root, input: { action: "workflow.readiness", activeChecks: options["active-checks"] === "true", stabilityProfileModesPath: options["stability-profile-modes-path"] || options["hermers-profile-modes-path"] } };
     case "workflow-topology":
       return { root, input: { action: "workflow.topology" } };
+    case "workflow-v2-plan-create":
+      return {
+        root,
+        input: {
+          action: "workflow.v2.plan.create",
+          workflowId: options.workflow,
+          planId: options.plan || options["plan-id"],
+          objective: options.objective || options.goal || options.summary,
+          taskOwnerAgent: options.owner || options["task-owner"] || "cat_heart",
+          plannerAgent: options.planner || "main",
+          participantManagers: [
+            ...listOption(options.manager),
+            ...listOption(options["participant-manager"]),
+            ...listOption(options.participant)
+          ],
+          acceptanceCriteria: listOption(options["acceptance-criteria"] || options.acceptance),
+          constraints: listOption(options.constraint),
+          humanGatePolicy: options["human-gate-policy"] ? parseCliJson(options["human-gate-policy"], {}) : undefined,
+          payload: options.payload ? parseCliJson(options.payload, {}) : undefined
+        }
+      };
     case "workflow-run":
+      retiredLegacyCliCommand("workflow-run", "workflow-v2-plan-create or an approved template");
       return {
         root,
         input: {
@@ -167,6 +194,7 @@ function toAction({ command, positional, options }) {
         }
       };
     case "workflow-swarm":
+      retiredLegacyCliCommand("workflow-swarm", "workflow-v2-plan-create plus workflow.v2.worker_spawn.create");
       return {
         root,
         input: {
@@ -219,6 +247,7 @@ function toAction({ command, positional, options }) {
         }
       };
     case "workflow-task-launch-prepare":
+      retiredLegacyCliCommand("workflow-task-launch-prepare", "workflow-v2-plan-create plus workflow.v2.human_gate_package.record");
       return {
         root,
         input: {
@@ -264,6 +293,7 @@ function toAction({ command, positional, options }) {
         }
       };
     case "workflow-task-launch-review":
+      retiredLegacyCliCommand("workflow-task-launch-review", "workflow.v2.manager_review.record or workflow.v2.owner_review.record");
       return {
         root,
         input: {
@@ -275,6 +305,7 @@ function toAction({ command, positional, options }) {
         }
       };
     case "workflow-task-launch-approve":
+      retiredLegacyCliCommand("workflow-task-launch-approve", "workflow.v2.human_gate_request");
       return {
         root,
         input: {
@@ -285,6 +316,9 @@ function toAction({ command, positional, options }) {
         }
       };
     case "workflow-task":
+      if (options["dry-run"] !== "true") {
+        retiredLegacyCliCommand("workflow-task", "workflow-task-draft or workflow-v2-plan-create");
+      }
       return {
         root,
         input: {
@@ -314,6 +348,7 @@ function toAction({ command, positional, options }) {
         }
       };
     case "workflow-task-update":
+      retiredLegacyCliCommand("workflow-task-update", "workflow.v2.worker_result.submit plus v2 review state");
       return {
         root,
         input: {

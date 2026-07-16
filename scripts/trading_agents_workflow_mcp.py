@@ -32,6 +32,7 @@ MESSAGE_FLOW_DELIVERY_RETURN_POLICIES = ("reply_to_source_chat", "report_to_flas
 WORKFLOW_CONTROL_PLANE_DB = "workflow_control_plane.db"
 LEGACY_TRACKING_DB = "tracking.db"
 SHOW_LEGACY_MUTATING_TOOLS_ENV = "TRADING_AGENTS_WORKFLOW_MCP_SHOW_LEGACY_MUTATING_TOOLS"
+LEGACY_CLI_SHELL_ENV = "TRADING_AGENTS_WORKFLOW_CLI_ALLOW_LEGACY_MUTATING_SHELLS"
 LEGACY_MUTATING_TOOLS_FROZEN_SINCE = "v0.8.2-rc.1"
 LEGACY_MUTATING_TOOLS_REMOVAL_TARGET = "v1.0.0"
 LEGACY_MUTATING_TOOL_NAMES = frozenset(
@@ -172,10 +173,11 @@ def remote_path() -> str:
     return remote_state_root()
 
 
-def run(cmd: list[str], cwd: Path | None = None, timeout: int = 30) -> dict[str, Any]:
+def run(cmd: list[str], cwd: Path | None = None, timeout: int = 30, env: dict[str, str] | None = None) -> dict[str, Any]:
     proc = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
+        env={**os.environ, **(env or {})},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -1176,9 +1178,9 @@ def workflow_task_launch_prepare(args: dict[str, Any]) -> dict[str, Any]:
             cli_args.extend([key, str(value)])
 
     if source == "local":
-        result = run(cli_args, cwd=cwd, timeout=60)
+        result = run(cli_args, cwd=cwd, timeout=60, env={LEGACY_CLI_SHELL_ENV: "1"})
     else:
-        quoted = " ".join(shlex.quote(part) for part in cli_args)
+        quoted = f"{LEGACY_CLI_SHELL_ENV}=1 " + " ".join(shlex.quote(part) for part in cli_args)
         result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90, allow_fallback=False)
     try:
         payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
@@ -1242,9 +1244,9 @@ def workflow_task_launch_approve(args: dict[str, Any]) -> dict[str, Any]:
         "--by", str(args.get("approved_by") or args.get("approvedBy") or "flashcat"),
     ]
     if source == "local":
-        result = run(cli_args, cwd=cwd, timeout=60)
+        result = run(cli_args, cwd=cwd, timeout=60, env={LEGACY_CLI_SHELL_ENV: "1"})
     else:
-        quoted = " ".join(shlex.quote(part) for part in cli_args)
+        quoted = f"{LEGACY_CLI_SHELL_ENV}=1 " + " ".join(shlex.quote(part) for part in cli_args)
         result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90, allow_fallback=False)
     payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
     response = cli_tool_response(source, cwd, workflow_root, result, payload, cli_args)
@@ -1277,9 +1279,9 @@ def workflow_task_launch_review(args: dict[str, Any]) -> dict[str, Any]:
         "--opinion", opinion,
     ]
     if source == "local":
-        result = run(cli_args, cwd=cwd, timeout=60)
+        result = run(cli_args, cwd=cwd, timeout=60, env={LEGACY_CLI_SHELL_ENV: "1"})
     else:
-        quoted = " ".join(shlex.quote(part) for part in cli_args)
+        quoted = f"{LEGACY_CLI_SHELL_ENV}=1 " + " ".join(shlex.quote(part) for part in cli_args)
         result = run_remote(f"cd {shlex.quote(cwd)} && {quoted}", timeout=90, allow_fallback=False)
     payload = json.loads(result.get("stdout") or "{}") if result.get("ok") else {}
     response = cli_tool_response(source, cwd, workflow_root, result, payload, cli_args)
