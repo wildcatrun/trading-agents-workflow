@@ -1660,3 +1660,17 @@ The full regression suite was not rerun in this slice.
 - This slice does not remove, freeze, hide, or reroute
   `workflow.advance`, `workflow.advance.preview`, `workflow.supervise`, or
   `workflow.supervise.preview`.
+
+2026-07-17 P16 legacy preview compatibility marking:
+
+- Marked `workflow.advance.preview` and `workflow.supervise.preview` migration
+  metadata as `read_surface_migrated` / `compat_shell_only`.
+- Updated the deprecation ledger, console documentation, and OpenClaw plugin
+  README to state that legacy previews are compatibility diagnostics only for
+  legacy task/run history.
+- `workflow.supervisor.readiness.preview` and
+  `workflow.supervisor.next_actions.preview` are the semantic read surfaces for
+  v2 readiness, evidence-gap planning, and new console next-step previews.
+- This slice does not remove or freeze `workflow.advance` or
+  `workflow.supervise`; mutating executor parity remains a separate migration
+  requirement.

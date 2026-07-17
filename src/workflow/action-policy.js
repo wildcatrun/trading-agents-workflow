@@ -47,9 +47,9 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
   }],
   ["workflow.advance.preview", {
     decisionClass: "compat_shell_only",
-    migrationStatus: "legacy_active",
-    replacement: "workflow.v2.validate",
-    recommendation: "keep as diagnostic preview while v2 readiness views mature"
+    migrationStatus: "read_surface_migrated",
+    replacement: "workflow.supervisor.readiness.preview",
+    recommendation: "compatibility diagnostic only for legacy task/run history; use semantic supervisor readiness for new read surfaces"
   }],
   ["workflow.supervise", {
     decisionClass: "must_migrate",
@@ -59,9 +59,9 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
   }],
   ["workflow.supervise.preview", {
     decisionClass: "compat_shell_only",
-    migrationStatus: "legacy_active",
-    replacement: "workflow.v2.validate",
-    recommendation: "keep as diagnostic preview while v2 readiness views mature"
+    migrationStatus: "read_surface_migrated",
+    replacement: "workflow.supervisor.next_actions.preview",
+    recommendation: "compatibility diagnostic only for legacy workflow_tasks/workflow_runs cards; use semantic supervisor next-actions for evidence-gap and v2 readiness planning"
   }],
   ["workflow.evaluate", {
     decisionClass: "must_migrate",

@@ -46,9 +46,14 @@ Environment variables:
 - Rejects cross-origin browser mutations.
 - Does not accept tokens in query strings.
 - Redacts callback tokens, API keys, secrets, passwords and OAuth-ish fields in read API responses.
-- `POST /api/actions` only allows preview actions by default:
-  `workflow.advance.preview`, `workflow.supervise.preview`, and controlled
-  intervention previews for pause, resume, stop, rerun-agent, and rerun-phase.
+- `POST /api/actions` only allows preview actions by default. Semantic
+  supervisor read surfaces are preferred for new cards:
+  `workflow.supervisor.next_actions.preview` and
+  `workflow.supervisor.readiness.preview`. Legacy
+  `workflow.advance.preview` / `workflow.supervise.preview` remain available
+  only for old task/run compatibility diagnostics. Controlled intervention
+  previews for pause, resume, stop, rerun-agent, and rerun-phase also remain
+  preview-only.
   Non-preview writes require explicit write enablement and are still limited to
   the action gateway allowlist. The first enabled write slice is
   `workflow.pause` / `workflow.resume` / `workflow.stop`, which still requires
@@ -239,20 +244,30 @@ lifecycle controls.
 
 ## Preview Actions
 
-The console must call:
+The console must prefer semantic supervisor read surfaces for new cards:
 
-- `workflow.advance.preview`
-- `workflow.supervise.preview`
+- `workflow.supervisor.next_actions.preview`
+- `workflow.supervisor.readiness.preview`
 
 It must not use `workflow.advance` or `workflow.supervise` for planning buttons. Those actions intentionally mutate workflow state and are used by the supervisor/control loop path.
 
+Legacy previews remain available only as compatibility diagnostics:
+
+- `workflow.advance.preview` is for legacy task/run next-decision history.
+- `workflow.supervise.preview` is for legacy `workflow_tasks` / `workflow_runs`
+  cards that still need old supervisor-cycle diagnostics.
+
+Evidence-gap, v2 readiness, and semantic next-step planning cards must not
+default back to legacy previews.
+
 Workflow Kanban also renders a read-only Preview Action Priority matrix. It is
-the v1.0 answer for sparse real boards: P0 supervise preview; P1 rerun and
-delivery previews; P2 Telegram requeue, control-loop job requeue, pause, and
-stop previews; P3 dead-letter incident and incident Cat Claw / Human Gate
-closeout previews; P4 phase rerun and requeue execution-package previews. The
-matrix is an operator catalog only. Actual buttons still come from card-level
-`previewActions` and existing `WorkflowActionGateway` preview handlers. When a
+the v1.0 answer for sparse real boards: P0 semantic supervisor next-actions
+preview; P1 rerun and delivery previews; P2 Telegram requeue, control-loop job
+requeue, pause, and stop previews; P3 legacy supervise compatibility and
+dead-letter / incident closeout previews; P4 phase rerun and requeue
+execution-package previews. The matrix is an operator catalog only. Actual
+buttons still come from card-level `previewActions` and existing
+`WorkflowActionGateway` preview handlers. When a
 card advertises an alias action, the matrix groups it under the governed
 catalog action and shows the original observed variant.
 

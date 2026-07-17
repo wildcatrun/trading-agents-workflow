@@ -419,7 +419,7 @@ Use `workflow.advance` after a discussion, dispatch batch, receipt collection cy
 
 With `autoDispatch=true`, `workflow.advance` records `meeting.dispatch` rows for ready tasks and moves them to `in_progress`. It does not bypass Gateway, runtime registry, receipt tracking, or Human Gate review.
 
-Use `workflow.advance.preview` when a UI, console, or operator needs the same next-decision calculation without mutating state. Preview is read-only: it does not sync task rows from terminal dispatches, update `workflow_runs`, create dispatches, move tasks to `in_progress`, write checkpoints, or send outbox messages. When dispatch sync is enabled, it returns `wouldSyncTasks`; when `autoDispatch=true`, it returns `wouldDispatch`.
+Use `workflow.advance.preview` only as a legacy compatibility diagnostic when a UI, console, or operator needs the old task/run next-decision calculation without mutating state. New v2 readiness and evidence-gap read surfaces should use `workflow.supervisor.readiness.preview` or `workflow.supervisor.next_actions.preview`. Preview is read-only: it does not sync task rows from terminal dispatches, update `workflow_runs`, create dispatches, move tasks to `in_progress`, write checkpoints, or send outbox messages. When dispatch sync is enabled, it returns `wouldSyncTasks`; when `autoDispatch=true`, it returns `wouldDispatch`.
 
 Use `workflow.supervise` as the normal wanman-style control loop for durable initiatives. One supervisor cycle does the operational work that `workflow.advance` alone cannot:
 
@@ -431,7 +431,7 @@ Use `workflow.supervise` as the normal wanman-style control loop for durable ini
 
 `workflow.supervise` keeps Flashcat in the observer/approval role. Cat-brain `main` still owns decomposition and orchestration; `cat_claw` still owns formal reporting and Human Gate intake. The supervisor does not make trading decisions, bypass Gateway, bypass Human Gate, or execute trades.
 
-Use `workflow.supervise.preview` for console planning. It wraps `workflow.advance.preview` and reports whether a real supervise cycle would checkpoint, drain runtimes, or create a Cat Claw report dispatch, but it does not execute any of those writes. It is the safe action for web-console "preview advance/supervise" buttons.
+Use `workflow.supervise.preview` only as a legacy compatibility diagnostic for old `workflow_tasks` / `workflow_runs` cards. It wraps `workflow.advance.preview` and reports whether a real supervise cycle would checkpoint, drain runtimes, or create a Cat Claw report dispatch, but it does not execute any of those writes. New console evidence-gap and v2 readiness planning should use `workflow.supervisor.next_actions.preview`.
 
 CLI example:
 

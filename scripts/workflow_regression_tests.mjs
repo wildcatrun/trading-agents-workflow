@@ -12199,6 +12199,18 @@ async function testWorkflowConvergenceDefaultGates() {
     );
     assert.equal(workflowActionMigrationInfo("workflow.task.launch.prepare"), null);
     assert.equal(WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT.removalTargetRelease, "v1.0.0");
+    assert.equal(workflowActionMigrationInfo("workflow.advance.preview").decisionClass, "compat_shell_only");
+    assert.equal(workflowActionMigrationInfo("workflow.advance.preview").migrationStatus, "read_surface_migrated");
+    assert.equal(workflowActionMigrationInfo("workflow.advance.preview").replacement, "workflow.supervisor.readiness.preview");
+    assert.equal(workflowActionMigrationInfo("workflow.supervise.preview").decisionClass, "compat_shell_only");
+    assert.equal(workflowActionMigrationInfo("workflow.supervise.preview").migrationStatus, "read_surface_migrated");
+    assert.equal(workflowActionMigrationInfo("workflow.supervise.preview").replacement, "workflow.supervisor.next_actions.preview");
+    assert.equal(workflowActionMigrationInfo("workflow.advance").decisionClass, "must_migrate");
+    assert.equal(workflowActionMigrationInfo("workflow.advance").migrationStatus, "legacy_active");
+    assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.advance"].mutating, true);
+    assert.equal(workflowActionMigrationInfo("workflow.supervise").decisionClass, "must_migrate");
+    assert.equal(workflowActionMigrationInfo("workflow.supervise").migrationStatus, "legacy_active");
+    assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.supervise"].mutating, true);
     assert.equal(workflowActionMigrationInfo("workflow.pause").decisionClass, "must_migrate");
     assert.equal(workflowActionMigrationInfo("workflow.swarm.plan"), null);
     assert.equal(workflowActionMigrationInfo("route_shell.ingest").decisionClass, "archive_no_migration");
@@ -21928,11 +21940,12 @@ async function testWorkflowConsoleConfigOperatorPolicyModes() {
 }
 
 async function testWorkflowConsoleStaticContextTrailContract() {
-  const [html, app, css, previewActions] = await Promise.all([
+  const [html, app, css, previewActions, readModel] = await Promise.all([
     fs.readFile(path.join(process.cwd(), "static/console/index.html"), "utf8"),
     fs.readFile(path.join(process.cwd(), "static/console/app.js"), "utf8"),
     fs.readFile(path.join(process.cwd(), "static/console/style.css"), "utf8"),
-    fs.readFile(path.join(process.cwd(), "static/console/preview-actions.js"), "utf8")
+    fs.readFile(path.join(process.cwd(), "static/console/preview-actions.js"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "src/console/read-model.js"), "utf8")
   ]);
   assert.equal(html.includes('id="contextTrail"'), true);
   assert.equal(html.includes('aria-label="Operator context"'), true);
@@ -22120,6 +22133,12 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   assert.equal(app.includes("function renderSupervisorNextActionsPreview(response, context = {})"), true);
   assert.equal(app.includes("const workflowId = context.workflowId"), true);
   assert.equal(app.includes("renderSupervisorNextActionsPreview(result, { workflowId })"), true);
+  assert.equal(readModel.includes('previewActions: card.workflowId ? ["workflow.supervisor.next_actions.preview"] : []'), true);
+  assert.equal(readModel.includes('previewActions: ["workflow.supervise.preview", ...(row.phase ? ["workflow.rerun.phase.preview"] : [])]'), true);
+  const consoleDoc = await fs.readFile(path.join(process.cwd(), "docs/workflow-console.md"), "utf8");
+  assert.equal(consoleDoc.includes("supervisor read surfaces are preferred for new cards"), true);
+  assert.equal(consoleDoc.includes("`workflow.advance.preview` / `workflow.supervise.preview` remain available"), true);
+  assert.equal(consoleDoc.includes("only for old task/run compatibility diagnostics"), true);
 }
 
 async function testWorkflowConsoleStaticDiagnosticMatrixContract() {
