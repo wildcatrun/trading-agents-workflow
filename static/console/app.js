@@ -80,6 +80,10 @@ const AGENT_ATTENTION_FILTERS = [
   { value: "warning", label: "Warning" },
   { value: "ok", label: "OK" }
 ];
+const LEGACY_DIAGNOSTIC_PREVIEW_ACTIONS = new Set([
+  "workflow.advance.preview",
+  "workflow.supervise.preview"
+]);
 const PREVIEW_ACTION_PRIORITY = [
   {
     action: "workflow.supervisor.next_actions.preview",
@@ -87,13 +91,6 @@ const PREVIEW_ACTION_PRIORITY = [
     label: "Supervisor Next Actions",
     firstWhen: "Any workflow needs a semantic read-only next-action package.",
     boundary: "Next-action preview only; no workflow state mutation."
-  },
-  {
-    action: "workflow.supervise.preview",
-    priority: "P3",
-    label: "Legacy Supervise Preview",
-    firstWhen: "Legacy workflow_tasks or workflow_runs cards need compatibility diagnostics.",
-    boundary: "Legacy preview package only; no workflow state mutation."
   },
   {
     action: "workflow.rerun.agent.preview",
@@ -2822,7 +2819,7 @@ function previewActionPriorityModel(cards = []) {
   });
   const catalogActions = new Set(PREVIEW_ACTION_PRIORITY.map((entry) => entry.action));
   const uncatalogedRows = Array.from(observed.values())
-    .filter((item) => !catalogActions.has(item.action))
+    .filter((item) => !catalogActions.has(item.action) && !LEGACY_DIAGNOSTIC_PREVIEW_ACTIONS.has(item.action))
     .map((item) => ({
       action: item.action,
       priority: "Other",
@@ -2902,6 +2899,7 @@ function renderKanbanCard(card) {
 
 function renderKanbanPreviewActions(card = {}) {
   const actions = (card.previewActions || [])
+    .filter((action) => !LEGACY_DIAGNOSTIC_PREVIEW_ACTIONS.has(String(action || "").trim()))
     .map((action) => kanbanPreviewActionSpec(card, action))
     .filter(Boolean);
   if (!actions.length) return null;

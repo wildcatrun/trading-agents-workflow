@@ -51,9 +51,10 @@ Environment variables:
   `workflow.supervisor.next_actions.preview` and
   `workflow.supervisor.readiness.preview`. Legacy
   `workflow.advance.preview` / `workflow.supervise.preview` remain available
-  only for old task/run compatibility diagnostics. Controlled intervention
-  previews for pause, resume, stop, rerun-agent, and rerun-phase also remain
-  preview-only.
+  only for old task/run compatibility diagnostics; they must not appear in the
+  preview priority catalog or direct card action buttons. Controlled
+  intervention previews for pause, resume, stop, rerun-agent, and rerun-phase
+  also remain preview-only.
   Non-preview writes require explicit write enablement and are still limited to
   the action gateway allowlist. The first enabled write slice is
   `workflow.pause` / `workflow.resume` / `workflow.stop`, which still requires
@@ -258,7 +259,9 @@ Legacy previews remain available only as compatibility diagnostics:
   cards that still need old supervisor-cycle diagnostics.
 
 Evidence-gap, v2 readiness, and semantic next-step planning cards must not
-default back to legacy previews.
+default back to legacy previews. Legacy diagnostics may remain reachable from
+explicit inspection/audit paths, but they are not part of the preview priority
+catalog and should not be rendered as direct card action buttons.
 
 Workflow Kanban also renders a read-only Preview Action Priority matrix. It is
 the v1.0 answer for sparse real boards: P0 semantic supervisor next-actions

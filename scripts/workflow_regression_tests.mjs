@@ -21992,12 +21992,18 @@ async function testWorkflowConsoleStaticContextTrailContract() {
   assert.equal(app.includes("function renderPreviewActionPriorityPanel"), true);
   assert.equal(app.includes('section("Preview Action Priority", renderPreviewActionPriorityPanel'), true);
   assert.equal(app.includes("uncataloged observed actions stay visible as warnings"), true);
+  assert.equal(app.includes("const LEGACY_DIAGNOSTIC_PREVIEW_ACTIONS"), true);
+  const previewPriorityCatalogSource = app.match(/const PREVIEW_ACTION_PRIORITY = \[[\s\S]*?\];/)?.[0] || "";
+  assert.equal(previewPriorityCatalogSource.includes('"workflow.supervise.preview"'), false);
+  assert.equal(previewPriorityCatalogSource.includes('"workflow.advance.preview"'), false);
   const previewPriorityRendererSource = extractFunctionSource(app, "renderPreviewActionPriorityPanel");
   assert.equal(previewPriorityRendererSource.includes("fetch("), false);
   assert.equal(previewPriorityRendererSource.includes("/api/actions"), false);
   assert.equal(previewPriorityRendererSource.includes("previewIntervention"), false);
   assert.equal(previewPriorityRendererSource.includes("previewSupervise"), false);
   assert.equal(previewPriorityRendererSource.includes("previewTelegram"), false);
+  const kanbanPreviewActionsSource = extractFunctionSource(app, "renderKanbanPreviewActions");
+  assert.equal(kanbanPreviewActionsSource.includes("LEGACY_DIAGNOSTIC_PREVIEW_ACTIONS"), true);
   assert.equal(app.includes("function renderKanbanScopeControls"), true);
   assert.equal(app.includes("function setKanbanScope"), true);
   assert.equal(app.includes("Board Scope"), true);
@@ -22084,12 +22090,12 @@ return { evidenceExportProvenancePayload };`);
 ${extractFunctionSource(previewActions, "shortLabel")}
 return { kanbanPreviewActionModel };`)();
   const previewPriorityRuntime = new Function("kanbanPreviewActionSpec", `${app.match(/const PREVIEW_ACTION_PRIORITY = \[[\s\S]*?\];/)[0]}
+const LEGACY_DIAGNOSTIC_PREVIEW_ACTIONS = new Set(["workflow.advance.preview", "workflow.supervise.preview"]);
 ${extractFunctionSource(app, "previewActionPriorityModel")}
 return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   const priorityRuntime = previewPriorityRuntime((card, action) => previewActionModelRuntime.kanbanPreviewActionModel(card, action));
   const expectedPriorityActions = [
     "workflow.supervisor.next_actions.preview",
-    "workflow.supervise.preview",
     "workflow.rerun.agent.preview",
     "telegram.outbox.delivery.preview",
     "telegram.outbox.requeue.preview",
@@ -22107,8 +22113,7 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   assert.equal(emptyPriority.length, expectedPriorityActions.length);
   assert.equal(emptyPriority.find((row) => row.action === "workflow.supervisor.next_actions.preview")?.priority, "P0");
   assert.equal(emptyPriority.find((row) => row.action === "workflow.supervisor.next_actions.preview")?.status, "not_observed");
-  assert.equal(emptyPriority.find((row) => row.action === "workflow.supervise.preview")?.priority, "P3");
-  assert.equal(emptyPriority.find((row) => row.action === "workflow.supervise.preview")?.status, "not_observed");
+  assert.equal(emptyPriority.find((row) => row.action === "workflow.supervise.preview"), undefined);
   const observedPriority = priorityRuntime.previewActionPriorityModel([
     { workflowId: "wf-priority", source: "evidence_gaps", sourceId: "gap-priority", previewActions: ["workflow.supervisor.next_actions.preview"] },
     { workflowId: "wf-priority", source: "workflow_tasks", sourceId: "task-priority", previewActions: ["workflow.supervise.preview"] },
@@ -22119,7 +22124,7 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
     { workflowId: "wf-priority", source: "custom_source", sourceId: "custom-priority", previewActions: ["custom.preview.action"] }
   ]);
   assert.equal(observedPriority.find((row) => row.action === "workflow.supervisor.next_actions.preview")?.ready, 1);
-  assert.equal(observedPriority.find((row) => row.action === "workflow.supervise.preview")?.ready, 1);
+  assert.equal(observedPriority.find((row) => row.action === "workflow.supervise.preview"), undefined);
   assert.equal(observedPriority.find((row) => row.action === "telegram.outbox.delivery.preview")?.ready, 1);
   assert.equal(observedPriority.find((row) => row.action === "telegram.outbox.delivery.preview")?.blocked, 1);
   const rerunPriority = observedPriority.find((row) => row.action === "workflow.rerun.agent.preview");
@@ -22133,6 +22138,18 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   assert.equal(app.includes("function renderSupervisorNextActionsPreview(response, context = {})"), true);
   assert.equal(app.includes("const workflowId = context.workflowId"), true);
   assert.equal(app.includes("renderSupervisorNextActionsPreview(result, { workflowId })"), true);
+  const directPreviewRuntime = new Function("kanbanPreviewActionSpec", "h", `const LEGACY_DIAGNOSTIC_PREVIEW_ACTIONS = new Set(["workflow.advance.preview", "workflow.supervise.preview"]);
+${extractFunctionSource(app, "renderKanbanPreviewActions")}
+return { renderKanbanPreviewActions };`)(
+    (card, action) => ({ action, label: action, enabled: true, onClick: () => ({ card }) }),
+    (tag, attrs = {}, children = []) => ({ tag, attrs, children: Array.isArray(children) ? children : [children] })
+  );
+  const directPreviewButtons = directPreviewRuntime.renderKanbanPreviewActions({
+    workflowId: "wf-priority",
+    previewActions: ["workflow.supervise.preview", "workflow.supervisor.next_actions.preview"]
+  });
+  assert.equal(JSON.stringify(directPreviewButtons).includes("workflow.supervise.preview"), false);
+  assert.equal(JSON.stringify(directPreviewButtons).includes("workflow.supervisor.next_actions.preview"), true);
   assert.equal(readModel.includes('previewActions: card.workflowId ? ["workflow.supervisor.next_actions.preview"] : []'), true);
   assert.equal(readModel.includes('previewActions: ["workflow.supervise.preview", ...(row.phase ? ["workflow.rerun.phase.preview"] : [])]'), true);
   const consoleDoc = await fs.readFile(path.join(process.cwd(), "docs/workflow-console.md"), "utf8");
@@ -22438,6 +22455,14 @@ return { renderKanbanCardPreviewAudit };`)(
   });
   const incidentPreviewButton = incidentPreviewNode.rows[0].find((cell) => cell.label === "Preview").node;
   assert.equal(incidentPreviewButton.attrs.disabled, false);
+  const legacyDiagnosticPreviewNode = previewRuntime.renderKanbanCardPreviewAudit({
+    workflowId: "wf-a",
+    source: "workflow_tasks",
+    sourceId: "task-a",
+    previewActions: ["workflow.supervise.preview"]
+  });
+  const legacyDiagnosticPreviewButton = legacyDiagnosticPreviewNode.rows[0].find((cell) => cell.label === "Preview").node;
+  assert.equal(legacyDiagnosticPreviewButton.attrs.disabled, false);
 }
 
 async function testWorkflowConsoleStaticOperatorGradeReleaseGateContract() {

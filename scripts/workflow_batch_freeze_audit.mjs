@@ -371,6 +371,22 @@ function summarizeOccurrences(occurrences) {
   return occurrences.map((hit) => `${hit.file}:${hit.lines.join(",")}`);
 }
 
+async function auditStaticConsoleLegacyPriority() {
+  const failures = [];
+  const appFile = path.join(repoRoot, "static", "console", "app.js");
+  const app = await fs.readFile(appFile, "utf8");
+  const priorityBlock = app.match(/const PREVIEW_ACTION_PRIORITY = \[[\s\S]*?\];/)?.[0] || "";
+  for (const action of ["workflow.advance.preview", "workflow.supervise.preview"]) {
+    if (exactStringPattern(action).test(priorityBlock)) {
+      failures.push(`${action}: legacy diagnostic preview must not be in PREVIEW_ACTION_PRIORITY`);
+    }
+  }
+  if (!app.includes("const LEGACY_DIAGNOSTIC_PREVIEW_ACTIONS = new Set([")) {
+    failures.push("static console is missing LEGACY_DIAGNOSTIC_PREVIEW_ACTIONS guard");
+  }
+  return failures;
+}
+
 async function main() {
   const allFiles = await collectFiles(repoRoot);
   const coreFiles = allFiles.filter(isCoreSource);
@@ -378,7 +394,7 @@ async function main() {
   const v2PlanningFiles = coreFiles.filter(isV2PlanningSurface);
   const { registryActions, registrySources } = await collectRegistryActions(coreFiles);
   const results = [];
-  const failures = [];
+  const failures = await auditStaticConsoleLegacyPriority();
 
   for (const candidate of FREEZE_CANDIDATES) {
     const policy = auditPolicy(candidate, registryActions, registrySources);
