@@ -14925,7 +14925,7 @@ async function testRouteShellExtractedActionContracts() {
     imIdentity: "openclaw_route_shell",
     executionIdentity: "openclaw_route_shell",
     returnPolicy: "silent",
-    canReceiveDispatch: false
+    canReceiveDispatch: true
   });
 
   const direct = await routeShellIngest(root, {
@@ -15016,6 +15016,48 @@ LIMIT 1;`)[0];
   assert.equal(dispatchRedirect.routeRuntime, "openclaw_route_shell");
   assert.equal(dispatchRedirect.runtime, "hermers");
   assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", `dispatch_id='${dispatchRedirect.dispatchId}' AND runtime='hermers' AND dispatch_type='route_shell_forward'`), 1);
+
+  const legacyDispatchId = "dispatch.route-shell-legacy-queued";
+  const legacyCreatedAt = new Date().toISOString();
+  sqliteExec(dbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
+VALUES (
+  ${sqlValue(legacyDispatchId)},
+  'route-shell-contract-bridge',
+  'workflow-route-shell-contract',
+  'trace-route-shell-contract-bridge',
+  'route-shell-contract-bridge-legacy',
+  'openclaw_route_shell',
+  'cat_body',
+  'openclaw_route_shell:cat_body',
+  'route_shell_forward',
+  'queued',
+  'normal',
+  0,
+  1,
+  'Legacy queued route-shell dispatch should redirect.',
+  '{"prompt":"Legacy queued route-shell dispatch should redirect."}',
+  'legacy-route-shell-test',
+  ${sqlValue(legacyCreatedAt)},
+  ${sqlValue(legacyCreatedAt)}
+);`);
+  const bridgeFailClosed = await runtimeBridgeDrain(root, {
+    runtime: "openclaw_route_shell",
+    limit: 1,
+    timeoutSeconds: 5
+  });
+  assert.equal(bridgeFailClosed.results.length, 1);
+  assert.equal(bridgeFailClosed.results[0].dispatchId, legacyDispatchId);
+  assert.equal(bridgeFailClosed.results[0].status, "failed");
+  assert.equal(bridgeFailClosed.results[0].failureType, "runtime_registry_adapter_unavailable");
+  const legacyFailedRow = sqliteJson(dbFile, `SELECT status, runtime, failure_type AS failureType, payload_json AS payload FROM mixed_meeting_dispatches WHERE dispatch_id=${sqlValue(legacyDispatchId)} LIMIT 1;`)[0];
+  assert.equal(legacyFailedRow.status, "failed");
+  assert.equal(legacyFailedRow.runtime, "openclaw_route_shell");
+  assert.equal(legacyFailedRow.failureType, "runtime_registry_adapter_unavailable");
+  const legacyFailedPayload = JSON.parse(legacyFailedRow.payload);
+  assert.equal(legacyFailedPayload.bridge.adapter, "runtime_registry");
+  assert.equal(legacyFailedPayload.bridge.failureType, "runtime_registry_adapter_unavailable");
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "runtime='hermers' AND dispatch_type='route_shell_forward'"), 3);
 
   await runtimeAgentUpsert(root, {
     runtime: "openclaw",
