@@ -1624,3 +1624,23 @@ The full regression suite was not rerun in this slice.
   actions are advisory only and require separate authorized calls.
 - Focused verification:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow supervisor next actions preview"`
+
+2026-07-17 P14 advance/supervise freeze-readiness audit:
+
+- Added `docs/workflow-p14-advance-supervise-freeze-readiness-audit.md`.
+- P14 is read-only. It does not freeze, delete, hide, or reroute
+  `workflow.advance`, `workflow.advance.preview`, `workflow.supervise`, or
+  `workflow.supervise.preview`.
+- Refreshed live dev-server evidence showed no current `workflow_operations`,
+  `control_loop_jobs`, `workflow_tasks`, or `workflow_runs` usage for legacy
+  advance/supervise paths in the runtime DB, but live absence alone is not a
+  sufficient deletion criterion.
+- Conclusion: P12/P13 cover v2 read-only readiness and next-action planning, but
+  mutating executor parity is incomplete. Legacy terminal dispatch sync, legacy
+  task state transition, `workflow_runs` decision/status mutation, checkpoint
+  write, supervisor invocation of runtime bridge drain, and Cat Claw
+  closeout/report dispatch remain legacy-supervisor-owned behavior until
+  explicitly replaced or retired.
+- Next recommended slice is console/read-model read-surface migration from
+  legacy preview actions to semantic supervisor readiness/next-actions where
+  cards concern v2 readiness or evidence-gap planning.

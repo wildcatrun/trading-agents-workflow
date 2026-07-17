@@ -309,8 +309,10 @@ First ledger candidates, subject to the migration-worthiness audit:
   v2 already has plan admission, audit, and Human Gate package/request
   equivalents; do not invest in new legacy launch implementation and delete the
   shell by the target removal release.
-- `workflow.advance` / `workflow.supervise`: migrate effective progression
-  checks into v2 validate/review/audit/readiness flows.
+- `workflow.advance` / `workflow.supervise`: P14 confirms read-only readiness
+  has semantic supervisor replacements, but mutating dispatch sync, legacy task
+  transition, checkpoint, runtime-drain, and Cat Claw closeout executor parity
+  must be replaced or formally retired before freezing.
 - `workflow.schedule.*`: keep only if it schedules approved v2 plans or shared
   maintenance; do not let it become a second v2 scheduler.
 - `workflow.control_loop.tick`: keep as legacy maintenance/reconcile only until
