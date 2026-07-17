@@ -142,6 +142,7 @@ production queues by itself.
 Read-only / preview:
 
 - `workflow.v2.plan.preview`
+- `workflow.v2.readiness.preview`
 - `workflow.v2.info_stack.preview`
 - `workflow.v2.info_stack.read`
 - `workflow.v2.notification.preview`
@@ -1578,3 +1579,25 @@ The full regression suite was not rerun in this slice.
   create trading side effects.
 - Focused verification passed locally:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow template self-evolution"`
+
+2026-07-17 V2 readiness / next-decision preview:
+
+- Added `workflow.v2.readiness.preview` as the first v2-native replacement
+  foundation for legacy `workflow.advance.preview` / `workflow.supervise.preview`
+  status interpretation.
+- The preview is read-only and v2-table-only. It summarizes plans, plan nodes,
+  worker runs, adapter jobs, and v2 Human Gate packages; it does not create
+  runtime dispatches, mutate legacy `workflow_tasks`, advance `workflow_runs`,
+  claim adapter jobs, submit Human Gate requests, or restart any runtime.
+- Decisions are conservative next-step labels: `needs_planning`,
+  `dispatch_ready`, `receipts_collecting`, `waiting_review`,
+  `waiting_cat_claw_audit`, `human_gate_pending`, `blocked`,
+  `cat_claw_summary_required`, and `waiting_dependencies`.
+- Aliases are `workflow.v2.readiness`, `workflow.v2.next_decision.preview`, and
+  `workflow.v2.next-decision.preview`.
+- This action does not freeze or delete `workflow.advance` / `workflow.supervise`;
+  it supplies the audited v2 state summary needed before those legacy
+  supervisor semantics can be retired.
+- Focused verification:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 readiness preview"`
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 extracted action contracts"`

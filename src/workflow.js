@@ -42,6 +42,7 @@ import { createWorkflowV2WorkerResultActionHandlers } from "./workflow-v2/worker
 import { createWorkflowV2ReviewActionHandlers } from "./workflow-v2/review-actions.js";
 import { createWorkflowV2HumanGateActionHandlers } from "./workflow-v2/human-gate-actions.js";
 import { createWorkflowV2PlanActionHandlers } from "./workflow-v2/plan-actions.js";
+import { createWorkflowV2ReadinessActionHandlers } from "./workflow-v2/readiness-actions.js";
 import { createWorkflowTemplateActionHandlers } from "./workflow-v2/template-actions.js";
 import { createWorkflowV2ValidateActionHandlers } from "./workflow-v2/validate-actions.js";
 import {
@@ -387,6 +388,7 @@ const HUMAN_GATE_ZH_TEXT = new Map([
 const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
   "workflow.task.draft",
   "workflow.v2.plan.preview",
+  "workflow.v2.readiness.preview",
   "workflow.v2.info_stack.preview",
   "workflow.v2.info_stack.read",
   "workflow.v2.worker_spawn.preview",
@@ -4358,6 +4360,14 @@ export const {
   workflowV2PlanPreview,
   workflowV2PlanCreate
 } = WORKFLOW_V2_PLAN_ACTION_HANDLERS;
+
+const WORKFLOW_V2_READINESS_ACTION_HANDLERS = createWorkflowV2ReadinessActionHandlers({
+  nowIso
+});
+
+export const {
+  workflowV2ReadinessPreview
+} = WORKFLOW_V2_READINESS_ACTION_HANDLERS;
 
 const WORKFLOW_TEMPLATE_ACTION_HANDLERS = createWorkflowTemplateActionHandlers({
   cleanFileSegment,
@@ -8793,6 +8803,7 @@ export const {
 export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2PlanPreview,
   workflowV2PlanCreate,
+  workflowV2ReadinessPreview,
   workflowV2InfoStackPreview,
   workflowV2InfoStackRecord,
   workflowV2InfoStackRead,

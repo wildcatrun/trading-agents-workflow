@@ -1,6 +1,7 @@
 export const WORKFLOW_V2_ACTION_HANDLER_NAMES = {
   "workflow.v2.plan.preview": "workflowV2PlanPreview",
   "workflow.v2.plan.create": "workflowV2PlanCreate",
+  "workflow.v2.readiness.preview": "workflowV2ReadinessPreview",
   "workflow.v2.info_stack.preview": "workflowV2InfoStackPreview",
   "workflow.v2.info_stack.record": "workflowV2InfoStackRecord",
   "workflow.v2.info_stack.read": "workflowV2InfoStackRead",

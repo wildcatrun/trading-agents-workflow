@@ -5344,6 +5344,100 @@ async function setupWorkflowV2KernelExecutionFixture(name = "workflow-v2-kernel-
   return { ...fixture, info };
 }
 
+async function testWorkflowV2ReadinessPreview() {
+  const missingRoot = await tempRoot("workflow-v2-readiness-missing");
+  const missing = await runAction(missingRoot, {
+    action: "workflow.v2.next_decision.preview",
+    workflowId: "wf-v2-readiness-missing"
+  });
+  assert.equal(missing.operation, "workflow.v2.readiness.preview");
+  assert.equal(missing.dryRun, true);
+  assert.equal(missing.previewOnly, true);
+  assert.equal(missing.ok, true);
+  assert.equal(missing.decision, "needs_planning");
+  assert.equal(missing.would.spawnWorkers, false);
+
+  const fixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-readiness-plan");
+  const planned = await runAction(fixture.root, {
+    action: "workflow.v2.readiness.preview",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(planned.operation, "workflow.v2.readiness.preview");
+  assert.equal(planned.decision, "dispatch_ready");
+  assert.equal(planned.nextDecision, "dispatch_ready");
+  assert.equal(planned.counts.plans, 1);
+  assert.equal(planned.would.spawnWorkers, true);
+  assert.equal(planned.plans.length, 1);
+  assert.equal(planned.plans[0].counts.readyNodes, 1);
+  assert.equal(planned.plans[0].readyNodes.length, 1);
+  assert.equal(planned.plans[0].readyNodes[0].nodeType, "intake");
+
+  const execution = await setupWorkflowV2KernelExecutionFixture("workflow-v2-readiness-worker");
+  await runAction(execution.root, workflowV2KernelWorkerInput(execution, {
+    workerRunId: "worker-v2-readiness",
+    contextBudgetTokens: 1000,
+    payload: { outputSummary: "Readiness preview queued worker." }
+  }));
+  const active = await runAction(execution.root, {
+    action: "workflow.v2.readiness.preview",
+    workflowId: execution.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(active.decision, "receipts_collecting");
+  assert.equal(active.would.spawnWorkers, false);
+  assert.equal(active.plans[0].counts.activeWorkers, 1);
+  assert.equal(active.plans[0].activeWorkers[0].workerRunId, "worker-v2-readiness");
+
+  const hgateFixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-readiness-human-gate");
+  sqliteExec(hgateFixture.dbFile, `
+UPDATE workflow_v2_plan_nodes SET status='reviewing' WHERE workflow_id='${hgateFixture.workflowId}';
+UPDATE workflow_v2_plans SET workflow_state='human_gate_request_due' WHERE workflow_id='${hgateFixture.workflowId}';
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES ('package-v2-readiness-hgate', '${hgateFixture.workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'cat_claw_audited', '[]', '["pause","terminate"]', '["artifact://readiness-hgate"]', '{}', 'cat_claw', '2026-07-17T01:00:00.000Z', '2026-07-17T01:00:00.000Z');`);
+  const humanGate = await runAction(hgateFixture.root, {
+    action: "workflow.v2.readiness.preview",
+    workflowId: hgateFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(humanGate.decision, "human_gate_pending");
+  assert.equal(humanGate.would.requestHumanGate, true);
+  assert.equal(humanGate.plans[0].humanGatePackages[0].packageId, "package-v2-readiness-hgate");
+
+  const draftHgateFixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-readiness-draft-human-gate");
+  sqliteExec(draftHgateFixture.dbFile, `
+UPDATE workflow_v2_plan_nodes SET status='reviewing' WHERE workflow_id='${draftHgateFixture.workflowId}';
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES ('package-v2-readiness-draft', '${draftHgateFixture.workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'draft', '[]', '[]', '["artifact://readiness-draft"]', '{}', 'cat_claw', '2026-07-17T01:01:00.000Z', '2026-07-17T01:01:00.000Z');`);
+  const draftHumanGate = await runAction(draftHgateFixture.root, {
+    action: "workflow.v2.readiness.preview",
+    workflowId: draftHgateFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(draftHumanGate.decision, "waiting_cat_claw_audit");
+
+  const blockedFixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-readiness-blocked");
+  sqliteExec(blockedFixture.dbFile, `UPDATE workflow_v2_plans SET workflow_state='blocked' WHERE workflow_id='${blockedFixture.workflowId}';`);
+  const blocked = await runAction(blockedFixture.root, {
+    action: "workflow.v2.readiness.preview",
+    workflowId: blockedFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(blocked.decision, "blocked");
+
+  const closeoutFixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-readiness-closeout");
+  sqliteExec(closeoutFixture.dbFile, `
+UPDATE workflow_v2_plan_nodes SET status='completed' WHERE workflow_id='${closeoutFixture.workflowId}';
+UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHERE workflow_id='${closeoutFixture.workflowId}';`);
+  const closeout = await runAction(closeoutFixture.root, {
+    action: "workflow.v2.readiness.preview",
+    workflowId: closeoutFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(closeout.decision, "cat_claw_summary_required");
+  assert.equal(closeout.would.catClawCloseout, true);
+}
+
 function workflowV2KernelWorkerInput(fixture, overrides = {}) {
   const runtimeBackend = overrides.runtimeBackend || "local_deterministic";
   return {
@@ -5369,10 +5463,10 @@ async function testWorkflowV2ExtractedActionContracts() {
   const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-extracted-action-contracts");
   const { root, dbFile, workflowId } = fixture;
   const workflowModule = await import("../src/workflow.js");
-  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowV2Validate"]) {
+  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowV2ReadinessPreview", "workflowV2Validate"]) {
     assert.equal(typeof workflowModule[exportName], "function", `${exportName} should remain a public workflow.js export`);
   }
-  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.v2.validate"]) {
+  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.v2.readiness.preview", "workflow.v2.validate"]) {
     assert.equal(workflowModule.WORKFLOW_V2_ACTION_REGISTRY.has(action), true, `${action} should remain registered`);
   }
 
@@ -22336,6 +22430,7 @@ try {
     ["workflow v2 fixed template plan gate", testWorkflowV2FixedTemplatePlanGate],
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],
     ["workflow v2 info stack and session binding", testWorkflowV2InfoStackAndSessionBinding],
+    ["workflow v2 readiness preview", testWorkflowV2ReadinessPreview],
     ["workflow v2 extracted action contracts", testWorkflowV2ExtractedActionContracts],
     ["workflow v2 control loop scoped claim", testWorkflowV2ControlLoopScopedClaim],
     ["workflow v2 control loop unscoped mixed queue", testWorkflowV2ControlLoopUnscopedMixedQueue],

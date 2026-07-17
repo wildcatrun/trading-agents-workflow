@@ -121,6 +121,13 @@ It does **not** yet replace `advance/supervise` because it does not currently:
 Therefore `workflow.v2.validate` is a foundation for replacement, not the
 complete replacement.
 
+P12 follow-up direction: add a v2-native read-only readiness / next-decision
+preview that reads `workflow_v2_plans`, `workflow_v2_plan_nodes`,
+`workflow_v2_worker_runs`, `workflow_v2_worker_adapter_jobs`, and
+`workflow_v2_human_gate_packages` without mutating legacy tasks or dispatches.
+That preview can become the audited state interpretation layer before any
+future freeze of legacy advance/supervise entry points.
+
 ## Runtime Evidence
 
 A read-only dev-server query on 2026-07-17 inspected:

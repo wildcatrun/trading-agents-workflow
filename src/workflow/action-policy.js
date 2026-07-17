@@ -216,6 +216,7 @@ export const WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS = new Set([
   "workflow.rerun.agent.preview",
   "workflow.rerun.phase.preview",
   "workflow.v2.plan.preview",
+  "workflow.v2.readiness.preview",
   "workflow.v2.info_stack.preview",
   "workflow.v2.info_stack.read",
   "workflow.v2.notification.preview",
