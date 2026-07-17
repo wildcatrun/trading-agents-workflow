@@ -54,6 +54,7 @@
     "smoke:trading-core": "node scripts/workflow_trading_core_contract_smoke.mjs",
     "test": "npm run test:regression",
     "smoke:v2-non-trading-rehearsal": "node scripts/workflow_v2_non_trading_rehearsal_smoke.mjs",
-    "smoke:v2-trading-pre-execution": "node scripts/workflow_v2_trading_pre_execution_smoke.mjs"
+    "smoke:v2-trading-pre-execution": "node scripts/workflow_v2_trading_pre_execution_smoke.mjs",
+    "check:freeze": "node scripts/workflow_batch_freeze_audit.mjs"
   }
 }
