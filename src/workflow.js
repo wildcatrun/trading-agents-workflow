@@ -43,6 +43,7 @@ import { createWorkflowV2ReviewActionHandlers } from "./workflow-v2/review-actio
 import { createWorkflowV2HumanGateActionHandlers } from "./workflow-v2/human-gate-actions.js";
 import { createWorkflowV2PlanActionHandlers } from "./workflow-v2/plan-actions.js";
 import { createWorkflowV2ReadinessActionHandlers } from "./workflow-v2/readiness-actions.js";
+import { createWorkflowSupervisorNextActionsHandlers } from "./workflow-v2/supervisor-next-actions.js";
 import { createWorkflowTemplateActionHandlers } from "./workflow-v2/template-actions.js";
 import { createWorkflowV2ValidateActionHandlers } from "./workflow-v2/validate-actions.js";
 import {
@@ -388,7 +389,10 @@ const HUMAN_GATE_ZH_TEXT = new Map([
 const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
   "workflow.task.draft",
   "workflow.v2.plan.preview",
+  "workflow.supervisor.readiness.preview",
   "workflow.v2.readiness.preview",
+  "workflow.supervisor.next_actions.preview",
+  "workflow.v2.next_actions.preview",
   "workflow.v2.info_stack.preview",
   "workflow.v2.info_stack.read",
   "workflow.v2.worker_spawn.preview",
@@ -4368,6 +4372,23 @@ const WORKFLOW_V2_READINESS_ACTION_HANDLERS = createWorkflowV2ReadinessActionHan
 export const {
   workflowV2ReadinessPreview
 } = WORKFLOW_V2_READINESS_ACTION_HANDLERS;
+
+export async function workflowSupervisorReadinessPreview(rootDir, input = {}) {
+  const result = await workflowV2ReadinessPreview(rootDir, input);
+  return {
+    ...result,
+    operation: "workflow.supervisor.readiness.preview",
+    compatibilityOperation: result.operation
+  };
+}
+
+const WORKFLOW_SUPERVISOR_NEXT_ACTIONS_HANDLERS = createWorkflowSupervisorNextActionsHandlers({
+  workflowV2ReadinessPreview: workflowSupervisorReadinessPreview
+});
+
+export const {
+  workflowSupervisorNextActionsPreview
+} = WORKFLOW_SUPERVISOR_NEXT_ACTIONS_HANDLERS;
 
 const WORKFLOW_TEMPLATE_ACTION_HANDLERS = createWorkflowTemplateActionHandlers({
   cleanFileSegment,
@@ -8804,6 +8825,8 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2PlanPreview,
   workflowV2PlanCreate,
   workflowV2ReadinessPreview,
+  workflowSupervisorReadinessPreview,
+  workflowSupervisorNextActionsPreview,
   workflowV2InfoStackPreview,
   workflowV2InfoStackRecord,
   workflowV2InfoStackRead,

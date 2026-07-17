@@ -142,7 +142,9 @@ production queues by itself.
 Read-only / preview:
 
 - `workflow.v2.plan.preview`
+- `workflow.supervisor.readiness.preview`
 - `workflow.v2.readiness.preview`
+- `workflow.supervisor.next_actions.preview`
 - `workflow.v2.info_stack.preview`
 - `workflow.v2.info_stack.read`
 - `workflow.v2.notification.preview`
@@ -1601,3 +1603,24 @@ The full regression suite was not rerun in this slice.
 - Focused verification:
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 readiness preview"`
   - `node scripts/workflow_regression_tests.mjs --grep "workflow v2 extracted action contracts"`
+
+2026-07-17 Workflow public action naming policy and supervisor next-actions:
+
+- Added `docs/workflow-public-action-naming-policy.md`. Public workflow actions
+  should use durable semantic names; `workflow.v2.*` is migration isolation and
+  not the long-term public API shape.
+- Added `workflow.supervisor.readiness.preview` as the preferred semantic
+  readiness surface. `workflow.v2.readiness.preview` remains available as a
+  migration compatibility action.
+- Added `workflow.supervisor.next_actions.preview` as the P13 read-only
+  supervisor replacement preview. It consumes readiness output and returns
+  candidate next actions without mutating state, dispatching workers, claiming
+  adapter jobs, submitting Human Gate requests, or restarting runtimes.
+- Compatibility alias: `workflow.v2.next_actions.preview` routes to
+  `workflow.supervisor.next_actions.preview`.
+- Candidate outputs include worker-spawn preview, control-loop preview,
+  adapter-runner drain-readiness preview, Cat Claw package audit preview, Human
+  Gate request preview, blocker review, and closeout-required signals. Candidate
+  actions are advisory only and require separate authorized calls.
+- Focused verification:
+  - `node scripts/workflow_regression_tests.mjs --grep "workflow supervisor next actions preview"`

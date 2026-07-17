@@ -128,6 +128,11 @@ preview that reads `workflow_v2_plans`, `workflow_v2_plan_nodes`,
 That preview can become the audited state interpretation layer before any
 future freeze of legacy advance/supervise entry points.
 
+P13 naming and next-action direction: new public replacement surfaces should use
+durable semantic names, not permanent `workflow.v2.*` names. The preferred
+supervisor replacement namespace is `workflow.supervisor.*`; `workflow.v2.*`
+entries are compatibility aliases during v1/v2 coexistence.
+
 ## Runtime Evidence
 
 A read-only dev-server query on 2026-07-17 inspected:

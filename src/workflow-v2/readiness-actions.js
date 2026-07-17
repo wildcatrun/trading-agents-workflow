@@ -303,6 +303,7 @@ LIMIT ${limit};`, { json: true });
         details.reviewWorkers = decision.reviewWorkers.slice(0, limit).map(workflowV2WorkerRunSummary);
         details.activeAdapterJobs = decision.activeAdapterJobs.slice(0, limit).map(workflowV2AdapterJobSummary).filter(Boolean);
         details.humanGatePackages = decision.auditedHumanGatePackages.slice(0, limit).map(workflowV2HumanGatePackageSummary).filter(Boolean);
+        details.draftHumanGatePackages = decision.draftHumanGatePackages.slice(0, limit).map(workflowV2HumanGatePackageSummary).filter(Boolean);
       }
       return details;
     });

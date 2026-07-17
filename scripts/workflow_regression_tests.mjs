@@ -5438,6 +5438,111 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(closeout.would.catClawCloseout, true);
 }
 
+async function testWorkflowSupervisorNextActionsPreview() {
+  const missingRoot = await tempRoot("workflow-supervisor-next-actions-missing");
+  const missing = await runAction(missingRoot, {
+    action: "workflow.supervisor.next-actions.preview",
+    workflowId: "wf-supervisor-next-missing"
+  });
+  assert.equal(missing.operation, "workflow.supervisor.next_actions.preview");
+  assert.equal(missing.dryRun, true);
+  assert.equal(missing.previewOnly, true);
+  assert.equal(missing.decision, "needs_planning");
+  assert.equal(missing.candidateCount, 0);
+  assert.equal(missing.would.mutate, false);
+  assert.equal(missing.would.dispatch, false);
+  assert.equal(missing.would.claimAdapterJob, false);
+  assert.equal(missing.would.requestHumanGate, false);
+  assert.equal(missing.would.restartRuntime, false);
+
+  const fixture = await setupWorkflowV2KernelPlanFixture("workflow-supervisor-next-actions-plan");
+  const readiness = await runAction(fixture.root, {
+    action: "workflow.supervisor.readiness.preview",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(readiness.operation, "workflow.supervisor.readiness.preview");
+  assert.equal(readiness.compatibilityOperation, "workflow.v2.readiness.preview");
+  assert.equal(readiness.decision, "dispatch_ready");
+
+  const planned = await runAction(fixture.root, {
+    action: "workflow.supervisor.next_actions.preview",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(planned.decision, "dispatch_ready");
+  assert.equal(planned.candidates[0].candidateType, "worker_spawn_preview");
+  assert.equal(planned.candidates[0].followUpAction, "workflow.v2.worker_spawn.preview");
+  assert.equal(planned.candidates[0].mutatesNow, false);
+
+  const execution = await setupWorkflowV2KernelExecutionFixture("workflow-supervisor-next-actions-worker");
+  await runAction(execution.root, workflowV2KernelWorkerInput(execution, {
+    workerRunId: "worker-supervisor-next-actions",
+    contextBudgetTokens: 1000,
+    payload: { outputSummary: "Supervisor next-actions queued worker." }
+  }));
+  const active = await runAction(execution.root, {
+    action: "workflow.v2.next-actions.preview",
+    workflowId: execution.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(active.operation, "workflow.supervisor.next_actions.preview");
+  assert.equal(active.decision, "receipts_collecting");
+  assert.equal(active.candidates[0].followUpAction, "workflow.v2.control_loop.preview");
+
+  const hgateFixture = await setupWorkflowV2KernelPlanFixture("workflow-supervisor-next-actions-human-gate");
+  sqliteExec(hgateFixture.dbFile, `
+UPDATE workflow_v2_plan_nodes SET status='reviewing' WHERE workflow_id='${hgateFixture.workflowId}';
+UPDATE workflow_v2_plans SET workflow_state='human_gate_request_due' WHERE workflow_id='${hgateFixture.workflowId}';
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'cat_claw_audited', '[]', '["pause","terminate"]', '["artifact://supervisor-next-hgate"]', '{}', 'cat_claw', '2026-07-17T02:00:00.000Z', '2026-07-17T02:00:00.000Z');`);
+  const humanGate = await runAction(hgateFixture.root, {
+    action: "workflow.supervisor.next_actions.preview",
+    workflowId: hgateFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(humanGate.decision, "human_gate_pending");
+  assert.equal(humanGate.candidates[0].followUpAction, "workflow.v2.human_gate_request.preview");
+  assert.equal(humanGate.candidates[0].input.packageId, "package-supervisor-next-hgate");
+
+  const draftFixture = await setupWorkflowV2KernelPlanFixture("workflow-supervisor-next-actions-draft-hgate");
+  sqliteExec(draftFixture.dbFile, `
+UPDATE workflow_v2_plan_nodes SET status='reviewing' WHERE workflow_id='${draftFixture.workflowId}';
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES ('package-supervisor-next-draft', '${draftFixture.workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'draft', '[]', '[]', '["artifact://supervisor-next-draft"]', '{}', 'cat_claw', '2026-07-17T02:01:00.000Z', '2026-07-17T02:01:00.000Z');`);
+  const draft = await runAction(draftFixture.root, {
+    action: "workflow.supervisor.next_actions.preview",
+    workflowId: draftFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(draft.decision, "waiting_cat_claw_audit");
+  assert.equal(draft.candidates[0].followUpAction, "workflow.v2.cat_claw_package_audit.preview");
+  assert.equal(draft.candidates[0].input.packageId, "package-supervisor-next-draft");
+
+  const blockedFixture = await setupWorkflowV2KernelPlanFixture("workflow-supervisor-next-actions-blocked");
+  sqliteExec(blockedFixture.dbFile, `UPDATE workflow_v2_plans SET workflow_state='blocked' WHERE workflow_id='${blockedFixture.workflowId}';`);
+  const blocked = await runAction(blockedFixture.root, {
+    action: "workflow.supervisor.next_actions.preview",
+    workflowId: blockedFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(blocked.decision, "blocked");
+  assert.equal(blocked.candidates[0].candidateType, "operator_blocker_review");
+
+  const closeoutFixture = await setupWorkflowV2KernelPlanFixture("workflow-supervisor-next-actions-closeout");
+  sqliteExec(closeoutFixture.dbFile, `
+UPDATE workflow_v2_plan_nodes SET status='completed' WHERE workflow_id='${closeoutFixture.workflowId}';
+UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHERE workflow_id='${closeoutFixture.workflowId}';`);
+  const closeout = await runAction(closeoutFixture.root, {
+    action: "workflow.supervisor.next_actions.preview",
+    workflowId: closeoutFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(closeout.decision, "cat_claw_summary_required");
+  assert.equal(closeout.candidates[0].candidateType, "cat_claw_closeout_required");
+  assert.equal(closeout.candidates[0].status, "replacement_gap");
+}
+
 function workflowV2KernelWorkerInput(fixture, overrides = {}) {
   const runtimeBackend = overrides.runtimeBackend || "local_deterministic";
   return {
@@ -5463,10 +5568,10 @@ async function testWorkflowV2ExtractedActionContracts() {
   const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-extracted-action-contracts");
   const { root, dbFile, workflowId } = fixture;
   const workflowModule = await import("../src/workflow.js");
-  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowV2ReadinessPreview", "workflowV2Validate"]) {
+  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2Validate"]) {
     assert.equal(typeof workflowModule[exportName], "function", `${exportName} should remain a public workflow.js export`);
   }
-  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.v2.readiness.preview", "workflow.v2.validate"]) {
+  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.validate"]) {
     assert.equal(workflowModule.WORKFLOW_V2_ACTION_REGISTRY.has(action), true, `${action} should remain registered`);
   }
 
@@ -22431,6 +22536,7 @@ try {
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],
     ["workflow v2 info stack and session binding", testWorkflowV2InfoStackAndSessionBinding],
     ["workflow v2 readiness preview", testWorkflowV2ReadinessPreview],
+    ["workflow supervisor next actions preview", testWorkflowSupervisorNextActionsPreview],
     ["workflow v2 extracted action contracts", testWorkflowV2ExtractedActionContracts],
     ["workflow v2 control loop scoped claim", testWorkflowV2ControlLoopScopedClaim],
     ["workflow v2 control loop unscoped mixed queue", testWorkflowV2ControlLoopUnscopedMixedQueue],
