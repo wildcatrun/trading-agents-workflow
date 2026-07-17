@@ -1644,3 +1644,19 @@ The full regression suite was not rerun in this slice.
 - Next recommended slice is console/read-model read-surface migration from
   legacy preview actions to semantic supervisor readiness/next-actions where
   cards concern v2 readiness or evidence-gap planning.
+
+2026-07-17 P15 console/read-model supervisor preview migration:
+
+- Migrated synthetic evidence-gap cards from `workflow.supervise.preview` to
+  `workflow.supervisor.next_actions.preview` so evidence-gap planning uses the
+  semantic supervisor surface introduced in P13.
+- Added console support for `workflow.supervisor.next_actions.preview`,
+  including Kanban preview buttons, the preview action priority catalog, the
+  evidence desk "Preview Next Actions" button, and a dedicated next-actions
+  renderer for candidate actions/readiness details.
+- Kept legacy `workflow_tasks` cards on `workflow.supervise.preview` because
+  legacy task/run compatibility remains active and P14 explicitly did not
+  freeze mutating advance/supervise behavior.
+- This slice does not remove, freeze, hide, or reroute
+  `workflow.advance`, `workflow.advance.preview`, `workflow.supervise`, or
+  `workflow.supervise.preview`.

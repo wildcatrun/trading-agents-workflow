@@ -82,11 +82,18 @@ const AGENT_ATTENTION_FILTERS = [
 ];
 const PREVIEW_ACTION_PRIORITY = [
   {
-    action: "workflow.supervise.preview",
+    action: "workflow.supervisor.next_actions.preview",
     priority: "P0",
-    label: "Supervise Preview",
-    firstWhen: "Any workflow needs a read-only next-step package.",
-    boundary: "Preview package only; no workflow state mutation."
+    label: "Supervisor Next Actions",
+    firstWhen: "Any workflow needs a semantic read-only next-action package.",
+    boundary: "Next-action preview only; no workflow state mutation."
+  },
+  {
+    action: "workflow.supervise.preview",
+    priority: "P3",
+    label: "Legacy Supervise Preview",
+    firstWhen: "Legacy workflow_tasks or workflow_runs cards need compatibility diagnostics.",
+    boundary: "Legacy preview package only; no workflow state mutation."
   },
   {
     action: "workflow.rerun.agent.preview",
@@ -2908,6 +2915,8 @@ function renderKanbanPreviewActions(card = {}) {
 
 function kanbanPreviewActionSpec(card = {}, action = "") {
   const model = kanbanPreviewActionModel(card, action);
+  if (model.action === "workflow.supervisor.next_actions.preview") return { ...model, onClick: () => previewSupervisorNextActions(model.workflowId) };
+  if (model.action === "workflow.supervisor.readiness.preview") return { ...model, onClick: () => previewIntervention("workflow.supervisor.readiness.preview", {}, model.workflowId) };
   if (model.action === "workflow.supervise.preview") return { ...model, onClick: () => previewSupervise(model.workflowId) };
   if (["workflow.advance.preview", "workflow.pause.preview", "workflow.resume.preview", "workflow.stop.preview"].includes(model.action)) {
     return { ...model, onClick: () => previewIntervention(model.action, {}, model.workflowId) };
@@ -5207,9 +5216,9 @@ function renderEvidenceDeskPreviewActions(data = {}) {
     h("button", {
       type: "button",
       disabled: !workflowId,
-      title: workflowId ? "Preview supervise package through WorkflowActionGateway" : "workflowId is required",
-      onClick: workflowId ? () => previewSupervise(workflowId) : undefined
-    }, "Preview Supervise"),
+      title: workflowId ? "Preview semantic supervisor next-actions through WorkflowActionGateway" : "workflowId is required",
+      onClick: workflowId ? () => previewSupervisorNextActions(workflowId) : undefined
+    }, "Preview Next Actions"),
     h("button", {
       type: "button",
       disabled: !workflowId,
@@ -5626,6 +5635,113 @@ function renderSupervisePreview(response) {
     ]))
   ]);
   setDetailBody(body);
+}
+
+function renderSupervisorNextActionsPreview(response, context = {}) {
+  const preview = previewPayload(response);
+  const contextWorkflowId = context.workflowId || state.selectedWorkflowId;
+  if (response?.ok === false || !preview) {
+    const body = h("div", { className: "stack" }, [
+      section("Preview Error", renderKeyValues([
+        { label: "Status", value: response?.ok === false ? "failed" : "missing result" },
+        { label: "Action", value: response?.action || "workflow.supervisor.next_actions.preview" },
+        { label: "Operation", value: response?.operationId || "-" },
+        { label: "Error Code", value: response?.errorCode || "-" },
+        { label: "Message", value: response?.message || response?.error || response?.errorMessage || "-" },
+        { label: "Risk Tier", value: response?.riskTier || "-" },
+        { label: "Dry Run", value: yesNoUnknown(response?.dryRun) }
+      ])),
+      renderActionResultInspector(response || {}, { action: "workflow.supervisor.next_actions.preview", workflowId: contextWorkflowId }),
+      section("Raw Preview", h("details", {}, [
+        h("summary", {}, "JSON"),
+        jsonBlock(response || {})
+      ]))
+    ]);
+    setDetailBody(body);
+    return;
+  }
+  const candidates = asArray(preview.candidates);
+  const readiness = preview.readiness || {};
+  const plans = asArray(readiness.plans);
+  const limitations = asArray(preview.limitations);
+  const workflowId = context.workflowId
+    || response.workflowId
+    || response.result?.workflowId
+    || preview.workflowId
+    || plans.find((row) => row.workflowId)?.workflowId
+    || state.selectedWorkflowId;
+  const body = h("div", { className: "stack" }, [
+    renderActionResultInspector(response, { action: "workflow.supervisor.next_actions.preview", workflowId }),
+    section("Supervisor Next Actions", renderKeyValues([
+      { label: "Workflow", value: workflowId || "-" },
+      { label: "Decision", value: preview.decision || preview.nextDecision || "-" },
+      { label: "Next Decision", value: preview.nextDecision || preview.decision || "-" },
+      { label: "Candidates", value: candidates.length },
+      { label: "Dry Run", value: yesNoUnknown(response?.dryRun ?? preview.dryRun) },
+      { label: "Generated", value: preview.generatedAt || "-" }
+    ])),
+    section("Candidates", renderTable([
+      { label: "Type", render: (row) => chip(row.candidateType || row.type || "-") },
+      { label: "Status", render: (row) => chip(row.status || (row.mutatesNow ? "mutating" : "preview")) },
+      { label: "Follow-Up", render: (row) => h("code", {}, present(row.followUpAction)) },
+      { label: "Reason", render: (row) => short(row.reason, 180) },
+      { label: "Input", render: (row) => h("code", {}, short(JSON.stringify(row.input || {}), 220)) }
+    ], candidates, "No next-action candidates.")),
+    section("Readiness Summary", renderKeyValues([
+      { label: "Plans", value: readiness.counts?.plans ?? plans.length },
+      { label: "Nodes", value: readiness.counts?.nodes ?? "-" },
+      { label: "Worker Runs", value: readiness.counts?.workerRuns ?? "-" },
+      { label: "Adapter Jobs", value: readiness.counts?.adapterJobs ?? "-" },
+      { label: "Human Gate Packages", value: readiness.counts?.humanGatePackages ?? "-" },
+      { label: "Would Spawn Workers", value: yesNoUnknown(readiness.would?.spawnWorkers) },
+      { label: "Would Drain Adapter Jobs", value: yesNoUnknown(readiness.would?.drainAdapterJobs) },
+      { label: "Would Request Human Gate", value: yesNoUnknown(readiness.would?.requestHumanGate) },
+      { label: "Would Cat Claw Closeout", value: yesNoUnknown(readiness.would?.catClawCloseout) }
+    ])),
+    plans.length ? section("Plans", renderTable([
+      { label: "Plan", render: (row) => h("code", {}, present(row.planId)) },
+      { label: "State", render: (row) => `${present(row.status)} / ${present(row.workflowState)}` },
+      { label: "Decision", render: (row) => chip(row.decision || "-") },
+      { label: "Ready Nodes", render: (row) => row.counts?.readyNodes ?? 0 },
+      { label: "Objective", render: (row) => short(row.objective, 160) }
+    ], plans, "No scoped plans.")) : null,
+    limitations.length ? section("Limitations", h("ul", { className: "compact-list" }, limitations.map((item) => h("li", {}, item)))) : null,
+    section("Raw Preview", h("details", {}, [
+      h("summary", {}, "JSON"),
+      jsonBlock(response)
+    ]))
+  ]);
+  setDetailBody(body);
+}
+
+async function previewSupervisorNextActions(workflowId = state.selectedWorkflowId) {
+  if (!workflowId) return;
+  setActionStatus("Supervisor next-actions preview running...", "neutral");
+  try {
+    const result = await api("/api/actions", {
+      method: "POST",
+      body: JSON.stringify({
+        action: "workflow.supervisor.next_actions.preview",
+        actor: "workflow-console",
+        reason: "console semantic supervisor next-actions preview",
+        payload: {
+          workflowId,
+          includeReadiness: true
+        }
+      })
+    });
+    recordActionResult(result, { action: "workflow.supervisor.next_actions.preview", workflowId, label: "Supervisor Next Actions" });
+    state.lastPayload = result;
+    renderSupervisorNextActionsPreview(result, { workflowId });
+    setActionStatus(result?.ok === false ? "Preview failed" : "Preview OK", result?.ok === false ? "critical" : "ok");
+  } catch (error) {
+    const result = actionRequestFailure(error, { action: "workflow.supervisor.next_actions.preview", workflowId, label: "Supervisor Next Actions" });
+    setActionStatus("Preview failed", "critical");
+    setDetailBody(h("div", { className: "stack" }, [
+      renderActionResultInspector(result, { action: "workflow.supervisor.next_actions.preview", workflowId }),
+      section("Request Error", h("div", { className: "error" }, error.message))
+    ]));
+  }
 }
 
 async function previewSupervise(workflowId = state.selectedWorkflowId) {

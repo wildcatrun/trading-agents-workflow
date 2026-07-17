@@ -1201,7 +1201,7 @@ function evidenceGapCardsFromKanbanCards(cards = [], limit = 200) {
       missingEvidence,
       artifactRef: card.artifactRef,
       receiptRef: card.receiptRef,
-      previewActions: card.workflowId ? ["workflow.supervise.preview"] : []
+      previewActions: card.workflowId ? ["workflow.supervisor.next_actions.preview"] : []
     }));
     if (gapCards.length >= limit) break;
   }

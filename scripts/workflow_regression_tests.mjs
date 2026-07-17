@@ -20317,10 +20317,12 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   assert.equal(messageFlowEvidenceGap?.firstSeenAt, "2026-06-13T00:00:01.000Z");
   assert.equal(messageFlowEvidenceGap?.lastEventAt, "2026-06-13T00:00:10.000Z");
   assert.equal(messageFlowEvidenceGap?.missingEvidence.includes("delivery_receipt"), true);
-  assert.equal(messageFlowEvidenceGap?.previewActions.includes("workflow.supervise.preview"), true);
-  const evidenceGapSuperviseAction = kanbanPreviewActionModel(messageFlowEvidenceGap, "workflow.supervise.preview");
-  assert.equal(evidenceGapSuperviseAction.enabled, true);
-  assert.equal(evidenceGapSuperviseAction.payload.workflowId, workflowId);
+  assert.equal(messageFlowEvidenceGap?.previewActions.includes("workflow.supervisor.next_actions.preview"), true);
+  assert.equal(messageFlowEvidenceGap?.previewActions.includes("workflow.supervise.preview"), false);
+  const evidenceGapNextActions = kanbanPreviewActionModel(messageFlowEvidenceGap, "workflow.supervisor.next_actions.preview");
+  assert.equal(evidenceGapNextActions.enabled, true);
+  assert.equal(evidenceGapNextActions.payload.workflowId, workflowId);
+  assert.equal(evidenceGapNextActions.payload.includeReadiness, true);
   const requeueJobAction = kanbanPreviewActionModel(controlLoopJobCard, "workflow.control_loop.job.requeue.preview");
   assert.equal(requeueJobAction.enabled, true);
   assert.equal(requeueJobAction.payload.jobId, "job-console-failed");
@@ -22073,6 +22075,7 @@ ${extractFunctionSource(app, "previewActionPriorityModel")}
 return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   const priorityRuntime = previewPriorityRuntime((card, action) => previewActionModelRuntime.kanbanPreviewActionModel(card, action));
   const expectedPriorityActions = [
+    "workflow.supervisor.next_actions.preview",
     "workflow.supervise.preview",
     "workflow.rerun.agent.preview",
     "telegram.outbox.delivery.preview",
@@ -22089,9 +22092,12 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   assert.deepEqual(priorityRuntime.PREVIEW_ACTION_PRIORITY.map((row) => row.action), expectedPriorityActions);
   const emptyPriority = priorityRuntime.previewActionPriorityModel([]);
   assert.equal(emptyPriority.length, expectedPriorityActions.length);
-  assert.equal(emptyPriority.find((row) => row.action === "workflow.supervise.preview")?.priority, "P0");
+  assert.equal(emptyPriority.find((row) => row.action === "workflow.supervisor.next_actions.preview")?.priority, "P0");
+  assert.equal(emptyPriority.find((row) => row.action === "workflow.supervisor.next_actions.preview")?.status, "not_observed");
+  assert.equal(emptyPriority.find((row) => row.action === "workflow.supervise.preview")?.priority, "P3");
   assert.equal(emptyPriority.find((row) => row.action === "workflow.supervise.preview")?.status, "not_observed");
   const observedPriority = priorityRuntime.previewActionPriorityModel([
+    { workflowId: "wf-priority", source: "evidence_gaps", sourceId: "gap-priority", previewActions: ["workflow.supervisor.next_actions.preview"] },
     { workflowId: "wf-priority", source: "workflow_tasks", sourceId: "task-priority", previewActions: ["workflow.supervise.preview"] },
     { workflowId: "wf-priority", source: "mixed_meeting_dispatches", sourceId: "dispatch-priority", dispatchId: "dispatch-priority", previewActions: ["workflow.rerun.dispatch.preview"] },
     { workflowId: "wf-priority", source: "control_loop_jobs", sourceId: "job-priority", jobId: "job-priority", previewActions: ["workflow.control_loop.job.requeue.preview"] },
@@ -22099,6 +22105,7 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
     { workflowId: "wf-priority", source: "message_flows", sourceId: "flow-without-outbox", previewActions: ["telegram.outbox.delivery.preview"] },
     { workflowId: "wf-priority", source: "custom_source", sourceId: "custom-priority", previewActions: ["custom.preview.action"] }
   ]);
+  assert.equal(observedPriority.find((row) => row.action === "workflow.supervisor.next_actions.preview")?.ready, 1);
   assert.equal(observedPriority.find((row) => row.action === "workflow.supervise.preview")?.ready, 1);
   assert.equal(observedPriority.find((row) => row.action === "telegram.outbox.delivery.preview")?.ready, 1);
   assert.equal(observedPriority.find((row) => row.action === "telegram.outbox.delivery.preview")?.blocked, 1);
@@ -22110,6 +22117,9 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   assert.equal(uncatalogedPriority?.status, "uncataloged");
   assert.equal(uncatalogedPriority?.priority, "Other");
   assert.equal(uncatalogedPriority?.observed, 1);
+  assert.equal(app.includes("function renderSupervisorNextActionsPreview(response, context = {})"), true);
+  assert.equal(app.includes("const workflowId = context.workflowId"), true);
+  assert.equal(app.includes("renderSupervisorNextActionsPreview(result, { workflowId })"), true);
 }
 
 async function testWorkflowConsoleStaticDiagnosticMatrixContract() {

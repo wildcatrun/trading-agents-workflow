@@ -6,6 +6,26 @@ export function kanbanPreviewActionModel(card = {}, action = "") {
   const refId = String(card.sourceId || card.jobId || card.sideEffectId || "").trim();
   const deadLetterKind = String(card.deadLetterKind || "").trim();
   const phaseKey = String(card.phaseKey || card.phase || "").trim();
+  if (action === "workflow.supervisor.next_actions.preview") {
+    return {
+      action,
+      label: "Preview Next Actions",
+      enabled: Boolean(workflowId),
+      reason: workflowId ? "" : "workflowId is required",
+      workflowId,
+      payload: { workflowId, includeReadiness: true }
+    };
+  }
+  if (action === "workflow.supervisor.readiness.preview") {
+    return {
+      action,
+      label: "Preview Readiness",
+      enabled: Boolean(workflowId),
+      reason: workflowId ? "" : "workflowId is required",
+      workflowId,
+      payload: { workflowId }
+    };
+  }
   if (action === "workflow.supervise.preview") {
     return {
       action,
