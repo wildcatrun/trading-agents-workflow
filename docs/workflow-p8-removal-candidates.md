@@ -159,7 +159,7 @@ Expected implementation shape:
 | `workflow.task.list` / `workflow.tasks` | Historical read surface; keep until v2 read model parity is proven. |
 | `workflow_task_launch_package` protocol/read-model support | Historical Task Launch Package evidence may still be needed even after mutating task-launch actions are removed. |
 | `workflow.checkpoint` | Needs v2 checkpoint/recovery parity audit first. |
-| `workflow.advance` / `workflow.supervise` | Frozen/high-risk but still contain readiness/progression checks that need migration before deletion. |
+| `workflow.advance` / `workflow.supervise` | Frozen/high-risk but still contain readiness/progression checks that need migration before deletion. P11 audit: `docs/workflow-p11-advance-supervise-migration-audit.md`. |
 | `workflow.schedule.*` | Needs approved v2 plan/template scheduler cutover. |
 | `workflow.control_loop.*` / `runtime.bridge.drain` | Shared maintenance/runtime-drain role is not fully replaced by v2 service yet. |
 | `meeting.action_item` mirroring | Shared meeting secretary surface; keep until a v2/shared task writer replaces legacy task helper dependency. |

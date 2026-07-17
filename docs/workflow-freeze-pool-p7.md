@@ -27,7 +27,7 @@ Current freeze policy is defined in
 
 | Entry / code block | Reason |
 | --- | --- |
-| `workflow.advance` / `workflow.supervise` | They are high-risk mutating operations and remain default-blocked, but not retirement-frozen in P7. Valid readiness/progression checks still need migration into v2/shared validators before deletion. |
+| `workflow.advance` / `workflow.supervise` | They are high-risk mutating operations and remain default-blocked, but not retirement-frozen in P7. P11 confirms valid readiness/progression, checkpoint, runtime-drain, and Cat Claw closeout behavior still need migration into v2/shared validators before deletion. |
 | `workflow.checkpoint` | V2 checkpoint/recovery parity is not proven. |
 | `workflow.schedule.*` | Production template/approved-plan scheduler is not fully cut over. |
 | `workflow.control_loop.*`, `runtime.bridge.drain` | Shared maintenance and runtime-drain evidence still exist; v2 service ownership is not fully proven. |
