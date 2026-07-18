@@ -1044,6 +1044,16 @@ function kanbanColumnForTask(row = {}) {
   return "inbox";
 }
 
+function kanbanColumnForWorkflowV2Plan(row = {}) {
+  const state = String(row.workflow_state || row.workflowState || row.status || "").toLowerCase();
+  if (["completed", "done", "success"].includes(state)) return "done";
+  if (["failed", "cancelled"].includes(state)) return "failed";
+  if (["blocked", "human_gate_request_due"].includes(state)) return "blocked";
+  if (["running", "working", "executing", "in_progress"].includes(state)) return "working";
+  if (["planned", "ready", "queued"].includes(state)) return "queued";
+  return "inbox";
+}
+
 function kanbanColumnForDispatch(row = {}) {
   const status = String(row.status || "").toLowerCase();
   if (["acked", "completed", "runtime_completed"].includes(status)) return "done";
@@ -5064,6 +5074,41 @@ LIMIT ${limit};`) : Promise.resolve([])
     const cards = [];
     const workflowFilter = workflowId ? `workflow_id=${sqlValue(workflowId)}` : "1=1";
     const agentFilter = agentId ? `AND (owner_agent=${sqlValue(agentId)} OR agent_id=${sqlValue(agentId)})` : "";
+    if (await tableExists(this.paths.dbFile, "workflow_v2_plans")) {
+      const planColumns = await tableColumnSet(this.paths.dbFile, "workflow_v2_plans");
+      const planOrderBy = planColumns.has("updated_at") ? "updated_at DESC" : "plan_id ASC";
+      const rows = await sqlite(this.paths.dbFile, `
+SELECT
+  ${columnExpr(planColumns, "plan_id", "''")},
+  ${columnExpr(planColumns, "workflow_id", "''")},
+  ${columnExpr(planColumns, "status", "''")},
+  ${columnExpr(planColumns, "workflow_state", "''")},
+  ${columnExpr(planColumns, "task_owner_agent", "''")},
+  ${columnExpr(planColumns, "objective", "''")},
+  ${columnExpr(planColumns, "plan_spec_artifact_ref", "''")},
+  ${columnExpr(planColumns, "updated_at", "''")},
+  ${columnExpr(planColumns, "created_at", "''")}
+FROM workflow_v2_plans
+WHERE ${workflowFilter}
+ORDER BY ${planOrderBy}
+LIMIT ${limit};`);
+      for (const row of rows) {
+        if (agentId && row.task_owner_agent !== agentId) continue;
+        const state = String(row.workflow_state || row.status || "").toLowerCase();
+        cards.push(makeKanbanCard(kanbanColumnForWorkflowV2Plan(row), "workflow_v2_plans", row.plan_id, {
+          workflowId: row.workflow_id,
+          agentId: row.task_owner_agent,
+          status: row.workflow_state || row.status,
+          title: `V2 plan ${row.plan_id}`,
+          summary: row.objective || row.workflow_state || row.status,
+          firstSeenAt: row.created_at,
+          lastEventAt: row.updated_at || row.created_at,
+          artifactRef: row.plan_spec_artifact_ref,
+          missingEvidence: state === "completed" ? ["cat_claw_closeout"] : [],
+          previewActions: state === "completed" ? ["workflow.supervisor.closeout.preview"] : ["workflow.supervisor.next_actions.preview"]
+        }));
+      }
+    }
     if (await tableExists(this.paths.dbFile, "workflow_tasks")) {
       const rows = await sqlite(this.paths.dbFile, `
 SELECT task_id, workflow_id, phase, owner_agent, runtime, agent_id, task_type, status, priority, expected_artifact, actual_artifact_ref, receipt_required, human_gate_required, summary, blocked_reason, created_at, updated_at

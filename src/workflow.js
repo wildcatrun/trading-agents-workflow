@@ -387,6 +387,7 @@ const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
   "workflow.supervisor.readiness.preview",
   "workflow.v2.readiness.preview",
   "workflow.supervisor.next_actions.preview",
+  "workflow.supervisor.closeout.preview",
   "workflow.v2.next_actions.preview",
   "workflow.v2.info_stack.preview",
   "workflow.v2.info_stack.read",
@@ -4382,7 +4383,8 @@ const WORKFLOW_SUPERVISOR_NEXT_ACTIONS_HANDLERS = createWorkflowSupervisorNextAc
 });
 
 export const {
-  workflowSupervisorNextActionsPreview
+  workflowSupervisorNextActionsPreview,
+  workflowSupervisorCloseoutPreview
 } = WORKFLOW_SUPERVISOR_NEXT_ACTIONS_HANDLERS;
 
 const WORKFLOW_TEMPLATE_ACTION_HANDLERS = createWorkflowTemplateActionHandlers({
@@ -8788,6 +8790,7 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2ReadinessPreview,
   workflowSupervisorReadinessPreview,
   workflowSupervisorNextActionsPreview,
+  workflowSupervisorCloseoutPreview,
   workflowV2InfoStackPreview,
   workflowV2InfoStackRecord,
   workflowV2InfoStackRead,

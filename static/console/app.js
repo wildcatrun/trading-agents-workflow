@@ -93,6 +93,13 @@ const PREVIEW_ACTION_PRIORITY = [
     boundary: "Next-action preview only; no workflow state mutation."
   },
   {
+    action: "workflow.supervisor.closeout.preview",
+    priority: "P0",
+    label: "Supervisor Closeout Preview",
+    firstWhen: "A completed v2 plan needs Cat Claw closeout evidence review.",
+    boundary: "Closeout preview only; no checkpoint write, dispatch, Human Gate request, or workflow mutation."
+  },
+  {
     action: "workflow.rerun.agent.preview",
     priority: "P1",
     label: "Rerun Agent/Dispatch Preview",
@@ -2915,6 +2922,7 @@ function kanbanPreviewActionSpec(card = {}, action = "") {
   const model = kanbanPreviewActionModel(card, action);
   if (model.action === "workflow.supervisor.next_actions.preview") return { ...model, onClick: () => previewSupervisorNextActions(model.workflowId) };
   if (model.action === "workflow.supervisor.readiness.preview") return { ...model, onClick: () => previewIntervention("workflow.supervisor.readiness.preview", {}, model.workflowId) };
+  if (model.action === "workflow.supervisor.closeout.preview") return { ...model, onClick: () => previewIntervention("workflow.supervisor.closeout.preview", {}, model.workflowId) };
   if (model.action === "workflow.supervise.preview") return { ...model, onClick: () => previewSupervise(model.workflowId) };
   if (["workflow.advance.preview", "workflow.pause.preview", "workflow.resume.preview", "workflow.stop.preview"].includes(model.action)) {
     return { ...model, onClick: () => previewIntervention(model.action, {}, model.workflowId) };

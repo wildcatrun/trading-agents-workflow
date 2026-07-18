@@ -150,13 +150,58 @@ function candidatesForPlan(plan = {}, limit = 20) {
     result.push(candidate(
       `cat_claw_closeout:${planId}`,
       "cat_claw_closeout_required",
-      "workflow.supervisor.readiness.preview",
+      "workflow.supervisor.closeout.preview",
       "completed_v2_plan_requires_cat_claw_closeout_evidence",
       { workflowId, planId },
-      { status: "replacement_gap", note: "final v2 closeout action is not yet implemented" }
+      { status: "preview_available", executorStatus: "replacement_gap", note: "final v2 closeout executor is not yet implemented" }
     ));
   }
   return result;
+}
+
+function closeoutCandidateForPlan(plan = {}) {
+  const workflowId = plan.workflowId || "";
+  const planId = plan.planId || "";
+  return {
+    candidateId: `cat_claw_closeout:${planId || workflowId || "unknown"}`,
+    candidateType: "cat_claw_closeout_preview",
+    status: plan.decision === "cat_claw_summary_required" ? "ready_for_closeout_preview" : "not_ready",
+    executorStatus: "replacement_gap",
+    reason: plan.decision === "cat_claw_summary_required"
+      ? "completed_v2_plan_requires_cat_claw_closeout_evidence"
+      : "v2_plan_not_ready_for_closeout",
+    previewOnly: true,
+    mutatesNow: false,
+    followUpAction: "workflow.supervisor.closeout.preview",
+    workflowId,
+    planId,
+    input: {
+      workflowId,
+      planId,
+      catBrainAgent: "main",
+      catClawAgent: "cat_claw",
+      readinessDecision: plan.decision || ""
+    },
+    evidenceRefs: [
+      plan.planSpecArtifactRef || "",
+      ...(plan.readyNodes || []).map((node) => node.outputInfoId || "").filter(Boolean),
+      ...(plan.activeWorkers || []).map((worker) => worker.outputInfoId || worker.receiptRef || "").filter(Boolean),
+      ...(plan.activeAdapterJobs || []).map((job) => job.artifactRef || job.runnerReceiptRef || "").filter(Boolean),
+      ...(plan.humanGatePackages || []).flatMap((pkg) => pkg.evidenceRefs || [])
+    ].filter(Boolean),
+    checkpointPreview: {
+      wouldWriteCheckpointNow: false,
+      checkpointAction: "workflow.checkpoint",
+      checkpointParityStatus: "legacy_checkpoint_action_still_required",
+      reason: "closeout preview is read-only and does not write legacy checkpoint rows"
+    },
+    closeoutPreview: {
+      wouldDispatchCatClawNow: false,
+      wouldRequestHumanGateNow: false,
+      reportTarget: "openclaw:cat_claw",
+      requiredDecision: "cat_claw_summary_required"
+    }
+  };
 }
 
 export function createWorkflowSupervisorNextActionsHandlers(context = {}) {
@@ -201,7 +246,49 @@ export function createWorkflowSupervisorNextActionsHandlers(context = {}) {
     };
   }
 
+  async function workflowSupervisorCloseoutPreview(rootDir, input = {}) {
+    const limit = Math.max(1, Math.min(100, Number(input.limit || input.detailLimit || input.detail_limit || 20) || 20));
+    const readiness = await workflowV2ReadinessPreview(rootDir, {
+      ...input,
+      includeDetails: true,
+      limit
+    });
+    const plans = readiness.plans || [];
+    const closeoutCandidates = plans
+      .filter((plan) => plan.decision === "cat_claw_summary_required")
+      .map(closeoutCandidateForPlan)
+      .slice(0, limit);
+    return {
+      operation: "workflow.supervisor.closeout.preview",
+      dryRun: true,
+      previewOnly: true,
+      ok: true,
+      status: closeoutCandidates.length ? "ready" : "not_ready",
+      generatedAt: readiness.generatedAt || firstText(input.generatedAt, input.generated_at, input.now),
+      decision: readiness.decision,
+      nextDecision: readiness.nextDecision || readiness.decision,
+      reasons: closeoutCandidates.length ? ["cat_claw_closeout_preview_available"] : ["no_v2_plan_ready_for_closeout"],
+      closeoutCandidateCount: closeoutCandidates.length,
+      closeoutCandidates,
+      would: {
+        mutate: false,
+        dispatch: false,
+        writeCheckpoint: false,
+        requestHumanGate: false
+      },
+      readiness,
+      limitations: [
+        "preview_only_no_state_mutation",
+        "does_not_write_workflow_checkpoint",
+        "does_not_dispatch_cat_claw_report",
+        "final_v2_closeout_executor_not_implemented"
+      ],
+      dbFile: readiness.dbFile
+    };
+  }
+
   return {
-    workflowSupervisorNextActionsPreview
+    workflowSupervisorNextActionsPreview,
+    workflowSupervisorCloseoutPreview
   };
 }

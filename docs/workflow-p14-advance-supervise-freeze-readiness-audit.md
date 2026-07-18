@@ -139,3 +139,10 @@ P15 should be a read-surface migration, not a mutating retirement:
 4. After that, update docs to mark legacy previews as compatibility-only.
 
 Do not freeze `workflow.advance` or `workflow.supervise` until mutating parity is either implemented or explicitly retired with evidence.
+
+## P17 Follow-Up
+
+P17 adds `workflow.supervisor.closeout.preview` as the read-only closeout preview
+called out by this audit. This reduces the preview gap for completed v2 plans,
+but it does not implement the final Cat Claw closeout executor and therefore
+does not make mutating `workflow.supervise` freeze-ready.
