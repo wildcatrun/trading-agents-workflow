@@ -130,12 +130,12 @@ const FREEZE_CANDIDATES = [
     v2DependencyPolicy: "allowed_until_replaced"
   },
   {
-    batch: "C",
-    family: "route_shell archive",
-    actions: ["route_shell.ingest", "route_shell.route"],
-    currentStatus: "deprecated/archive_no_migration",
-    freezeAction: "do_not_use_for_active_execution; keep telemetry/fail-closed compatibility",
-    v2Replacement: "message_flow/runtime adapter evidence",
+    batch: "E",
+    family: "route_shell source-freeze required",
+    actions: ["route_shell.ingest", "route-shell.ingest", "route_shell.route"],
+    currentStatus: "live_clean/source_entrypoints_active",
+    freezeAction: "do_not_migrate_or_delete; close source entrypoints in a dedicated source-freeze batch after caller/hook/queue preflight",
+    v2Replacement: "message_flow/runtime adapter evidence; no v2 migration",
     v2DependencyPolicy: "must_not_depend"
   },
   {
