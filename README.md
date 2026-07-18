@@ -137,17 +137,19 @@ The boundary is recorded in `docs/companion-stability-plugin.md`. Local Codex sh
 
 ## OpenClaw Gateway Tool Policy
 
-For route-shell agents to dispatch migrated agents through this plugin, OpenClaw
-must both load the plugin and expose its tool. Keep `trading-agents-workflow` in
-`plugins.allow`, keep `openclaw.plugin.json` declaring
-`contracts.tools=["trading_agents_workflow"]`, and add
-`trading_agents_workflow` to `tools.alsoAllow` when using restrictive profiles
-such as `tools.profile="coding"`.
+OpenClaw must load this plugin and expose its governed tool for current workflow
+operations. Keep `trading-agents-workflow` in `plugins.allow`, keep
+`openclaw.plugin.json` declaring `contracts.tools=["trading_agents_workflow"]`,
+and add `trading_agents_workflow` to `tools.alsoAllow` when using restrictive
+profiles such as `tools.profile="coding"`.
+
+Route-shell physical forwarding is source-frozen. Do not configure
+`routeShell`, do not use `route_shell.*` actions, and do not rely on
+`runtime=openclaw_route_shell` as an execution or forwarding path. Use
+`runtime_agents`, `message_flow`, and the target runtime adapter instead.
 
 After source, load-path, or tool-policy changes, run `openclaw config validate`
-and reload or restart the actual Gateway. A route-shell smoke test should confirm
-that `trading_agents_workflow` appears in the agent tool list before relying on
-Hermers ACP dispatch.
+and reload or restart the actual Gateway only through the approved runbook.
 
 ## Layout
 

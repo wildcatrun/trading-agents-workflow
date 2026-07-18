@@ -100,54 +100,28 @@ Ingress classes:
 - B: IM ingress is OpenClaw Gateway and execution is outside OpenClaw: true platform plus `im_ingress_adapter=openclaw_route_shell`; the shell is an ingress/audit anchor, not an executor.
 - C: IM ingress and execution are outside OpenClaw Gateway: register the external platform and its workflow adapter; cross-agent communication still goes through `trading-agents-workflow`.
 
-## Route-Shell Physical Forwarding
+## Route-Shell Retirement
 
-Route-shell forwarding must be a Gateway pre-dispatch routing action, not an agent prompt convention. When `routeShell.enabled=true`, the plugin registers a `before_dispatch` hook. If any inbound Gateway message is already targeted at a configured `openclaw_route_shell` agent session, the hook:
+Route-shell physical forwarding is source-frozen. The plugin no longer exposes
+`routeShell` config, no longer registers the Gateway `before_dispatch`
+route-shell hook, and no longer exposes `route_shell.ingest`,
+`route-shell.ingest`, or `route_shell.route` through CLI/action contracts.
 
-- extracts the route-shell agent id from the OpenClaw session key, for example `agent:cat_ears:telegram:...`;
-- resolves the target through `runtime_agents` by `agent_id`, `platform`, `im_ingress_owner`, `im_ingress_adapter`, and `workflow_ingress_adapter`;
-- creates a `message_flows` record with source channel, account, chat, sender, source message id, IM identity, execution identity, and return policy;
-- records a `route_shell_ingress` message with timestamp and source metadata;
-- creates a durable `route_shell_forward` dispatch to the same agent's registered target platform and workflow ingress adapter;
-- returns `handled=true` so OpenClaw does not run the route-shell agent model;
-- by default stays silent on successful routing; if `ack=true`, replies only with minimal `ROUTE_REGISTERED`, `trace_id`, and `flow_id`.
+Current behavior:
 
-This is fail-closed by default. If the registered Gateway ingress row, dispatch-capable target row, or required return path is missing, the hook handles the message and returns `ROUTE_FAILED`; it does not fall back to the OpenClaw route-shell agent. `drainNow` defaults to `false` because Gateway dispatch should not synchronously run external platform work. The 30s control loop should drain the queued dispatch.
+- `route_shell.*` actions fail as unknown workflow actions;
+- `meeting.dispatch runtime=openclaw_route_shell` fails closed with
+  `failureType=route_shell_retired`;
+- `runtime.bridge.drain runtime=openclaw_route_shell` fails existing legacy queued
+  rows with `failureType=route_shell_retired` and does not create replacement
+  Hermers dispatches;
+- control-loop runtime auto-discovery ignores queued `openclaw_route_shell`
+  rows;
+- v2 worker backend preflight continues to reject `openclaw_route_shell`.
 
-For delivery-required non-OpenClaw replies, a route-shell acknowledgement is never a formal agent reply. The formal success condition is a completed message flow with `final_output_present=1` and `delivery_receipt_present=1`, normally with `message_flows.status=telegram_sent`. `dispatch.status=acked` means only that the runtime turn ended. For `requiresAck=true`, the first runtime turn closes only the receipt stage with `runtime_acknowledged`; workflow then queues a `message_flow_semantic` continuation on the same `flow_id`, and only that continuation can produce `runtime_completed` final output. `return_policy=silent` flows and local Codex inbox flows close on their runtime/inbox receipts and must not be treated as missing Telegram delivery.
-
-The hook also applies in-process single-flight by route-shell agent, channel, and source message id. Concurrent provider retries for the same Telegram message wait on the same routing promise instead of creating a thundering herd against SQLite. SQLite unique idempotency still remains the durable backstop across process restarts.
-
-The same rule applies to workflow and scripted dispatches. Calls to `meeting.dispatch` or workflow advancement that request `runtime=openclaw_route_shell` are rewritten at creation time into a dispatch for the agent's registered target platform and workflow ingress adapter. The route-shell dispatch is not inserted as executable work. If an older queued `openclaw_route_shell` dispatch already exists, `runtime.bridge.drain runtime=openclaw_route_shell` redirects it to the registered target and marks the original row as redirected/cancelled for audit. Route-shell is therefore an IM/Gateway identity and audit anchor, not an execution target.
-
-Configuration example:
-
-```json
-{
-  "routeShell": {
-    "enabled": true,
-    "agentIds": ["*"],
-    "channels": ["*"],
-    "priority": "normal",
-    "drainNow": false,
-    "ack": false,
-    "blockOnFailure": true
-  }
-}
-```
-
-For strict idempotency, set `requireProviderMessageId=true` after OpenClaw exposes provider message ids to `before_dispatch`. Until then the hook uses the provider id when present, otherwise a synthetic fingerprint from channel, session, conversation, sender, timestamp, and content. The synthetic fallback prevents common provider retries from duplicating dispatches, but provider message ids are the preferred long-term route key for trading-grade determinism.
-
-Manual recovery or smoke test:
-
-```bash
-node bin/cat-meeting-governance.mjs route-shell-ingest \
-  --agent cat_ears \
-  --text "check route shell" \
-  --message-id smoke-telegram-message-1 \
-  --source telegram \
-  --root "$ROOT"
-```
+Use `runtime_agents`, `message_flow`, and the target runtime adapter directly.
+For delivery-required non-OpenClaw replies, the formal success condition remains
+a completed message flow with durable runtime and delivery receipt evidence.
 
 ## Stability Governance
 
@@ -444,7 +418,7 @@ Use `workflow.control_loop.tick` as the plugin-internal 30s reconciler tick. The
 
 Workflow-native schedules are stored in `workflow_schedules`; each due tick writes a `scheduled_runs` row and queues one `scheduled_dispatch` job. The schedule layer does not execute agent work inline. It calls `meeting.dispatch` with a deterministic idempotency key, and normal `runtime_drain` later invokes the registered runtime, such as `platform=hermers` plus `workflow_ingress_adapter=acp`. This is the replacement path for OpenClaw cron driving migrated professional agents through prompt-based route-shell forwarding.
 
-The OpenClaw plugin can run this loop when `controlLoop.enabled=true` in plugin config or `TRADING_AGENTS_WORKFLOW_CONTROL_LOOP=1` is set. The recommended tick period is `30000` ms. Startup does not run an immediate tick by default; set `controlLoop.startupTick=true` only after Gateway startup load is known to be safe. The default `controlLoop.workerMode` is `process`, so the plugin launches a bounded Node worker process for each tick instead of running jobs inside the Gateway event loop. Defaults are conservative: `jobLimit=4`, `runtimeLimit=1`, `timeoutSeconds=45`, `tickBudgetMs=60000`, and `autoReport=false`; the development server uses `timeoutSeconds=30` for the ACK/control-loop operating contract. Runtime drain defaults to `openclaw_route_shell,hermers`: route-shell rows are redirected by registry, while professional work registered on Hermers drains through ACP. Add `openclaw` only as an explicit, reviewed exception because it calls back into the Gateway process. The targeted OpenClaw `message_flow_send` / `message_flow_semantic` drain is that reviewed exception: it excludes those rows from the generic OpenClaw drain, claims one exact dispatch, and uses the semantic message-flow timeout.
+The OpenClaw plugin can run this loop when `controlLoop.enabled=true` in plugin config or `TRADING_AGENTS_WORKFLOW_CONTROL_LOOP=1` is set. The recommended tick period is `30000` ms. Startup does not run an immediate tick by default; set `controlLoop.startupTick=true` only after Gateway startup load is known to be safe. The default `controlLoop.workerMode` is `process`, so the plugin launches a bounded Node worker process for each tick instead of running jobs inside the Gateway event loop. Defaults are conservative: `jobLimit=4`, `runtimeLimit=1`, `timeoutSeconds=45`, `tickBudgetMs=60000`, and `autoReport=false`; the development server uses `timeoutSeconds=30` for the ACK/control-loop operating contract. Runtime drain defaults to `hermers`; `openclaw_route_shell` is retired and ignored by runtime auto-discovery. Add `openclaw` only as an explicit, reviewed exception because it calls back into the Gateway process. The targeted OpenClaw `message_flow_send` / `message_flow_semantic` drain is that reviewed exception: it excludes those rows from the generic OpenClaw drain, claims one exact dispatch, and uses the semantic message-flow timeout.
 
 Idle workflow supervision must be rate-limited. `blocked` and `waiting_human` workflows are not allowed to create and complete a new `workflow_supervise` job on every tick when no new evidence exists. The plugin supports `controlLoop.idleWorkflowSuperviseCooldownMs` / `blockedWorkflowSuperviseCooldownMs` for those states and `workflowSuperviseCooldownMs` for a general completed-job cooldown. The default idle cooldown is 5 minutes; `flashLane` workflows bypass this idle cooldown but still obey receipt, expiry, risk, and Human Gate rules. See [gateway-memory-control-loop-incident-2026-05-28.md](gateway-memory-control-loop-incident-2026-05-28.md) for the maintenance incident that established this guardrail.
 
@@ -472,7 +446,7 @@ CLI example:
 node bin/cat-meeting-governance.mjs workflow-control-loop-tick \
   --tick-ms 30000 \
   --max-workflows 2 \
-  --runtime openclaw_route_shell,hermers \
+  --runtime hermers \
   --limit 1 \
   --root "$ROOT"
 ```

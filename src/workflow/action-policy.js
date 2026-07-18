@@ -87,18 +87,6 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
     replacement: "v2 plan/node/worker stop state transition",
     recommendation: "map stop semantics onto v2 plans, nodes, workers, adapter jobs, Human Gate waits, and side-effect uncertainty"
   }],
-  ["route_shell.ingest", {
-    decisionClass: "archive_no_migration",
-    migrationStatus: "deprecated",
-    replacement: "message_flow.send",
-    recommendation: "do not use route-shell as an active execution path"
-  }],
-  ["route_shell.route", {
-    decisionClass: "archive_no_migration",
-    migrationStatus: "deprecated",
-    replacement: "message_flow.send",
-    recommendation: "do not use route-shell as an active execution path"
-  }],
   ["meeting.resume", {
     decisionClass: "optional_or_template_later",
     migrationStatus: "legacy_active",
@@ -375,7 +363,6 @@ export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.template.promote.record": { capability: "workflow.template.promote", risk: "high", mutating: true },
   "workflow.template.rollback.record": { capability: "workflow.template.promote", risk: "high", mutating: true },
   "runtime.agent.upsert": { capability: "registry.write", risk: "high", mutating: true, requiresCatClawAudit: true },
-  "route_shell.ingest": { capability: "message_flow.send", risk: "low", mutating: true },
   "meeting.runtime_participant": { capability: "dispatch.write", risk: "medium", mutating: true },
   "telegram.live": { capability: "telegram.configure", risk: "high", mutating: true, requiresCatClawAudit: true },
   "meeting.dispatch": { capability: "dispatch.write", risk: "high", mutating: true },

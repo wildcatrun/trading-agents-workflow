@@ -130,11 +130,11 @@ const FREEZE_CANDIDATES = [
     v2DependencyPolicy: "allowed_until_replaced"
   },
   {
-    batch: "E",
-    family: "route_shell source-freeze required",
+    batch: "F",
+    family: "route_shell source-frozen",
     actions: ["route_shell.ingest", "route-shell.ingest", "route_shell.route"],
-    currentStatus: "live_clean/source_entrypoints_active",
-    freezeAction: "do_not_migrate_or_delete; close source entrypoints in a dedicated source-freeze batch after caller/hook/queue preflight",
+    currentStatus: "source_frozen",
+    freezeAction: "external_entrypoints_closed; keep implementation file only until deletion batch",
     v2Replacement: "message_flow/runtime adapter evidence; no v2 migration",
     v2DependencyPolicy: "must_not_depend"
   },
@@ -235,6 +235,7 @@ const SOURCE_EXTENSIONS = new Set([".js", ".mjs", ".py", ".json"]);
 const CORE_SOURCE_ROOTS = new Set(["src", "bin", "scripts"]);
 const PUBLIC_SURFACE_FILES = new Set([
   "index.js",
+  "openclaw.plugin.json",
   "bin/cat-meeting-governance.mjs",
   "scripts/trading_agents_workflow_mcp.py",
   "scripts/trading_agents_workflow_hermes_mcp.py"
@@ -266,8 +267,9 @@ function rel(file) {
 }
 
 function isCoreSource(file) {
-  const parts = rel(file).split(path.sep);
-  return file === path.join(repoRoot, "index.js") || CORE_SOURCE_ROOTS.has(parts[0]) || rel(file).startsWith(`static${path.sep}console${path.sep}`);
+  const relative = rel(file);
+  const parts = relative.split(path.sep);
+  return PUBLIC_SURFACE_FILES.has(relative) || CORE_SOURCE_ROOTS.has(parts[0]) || relative.startsWith(`static${path.sep}console${path.sep}`);
 }
 
 function isV2PlanningSurface(file) {
@@ -342,7 +344,7 @@ function auditPolicy(candidate, registryActions, registrySources) {
       aliasSources
     });
 
-    if (candidate.currentStatus === "removed" || candidate.currentStatus === "removed_external_surface") {
+    if (candidate.currentStatus === "removed" || candidate.currentStatus === "removed_external_surface" || candidate.currentStatus === "source_frozen") {
       if (registered) failures.push(`${action}: removed action still has an action handler registry entry`);
       if (migration) failures.push(`${action}: removed action still has migration metadata`);
       if (permission) failures.push(`${action}: removed action still has permission rule`);
@@ -406,7 +408,7 @@ async function main() {
       publicRefs[action] = await exactStringOccurrences(publicFiles, action);
       v2PlanningRefs[action] = await exactStringOccurrences(v2PlanningFiles, action);
 
-      if ((candidate.currentStatus === "removed" || candidate.currentStatus === "removed_external_surface") && publicRefs[action].length > 0) {
+      if ((candidate.currentStatus === "removed" || candidate.currentStatus === "removed_external_surface" || candidate.currentStatus === "source_frozen") && publicRefs[action].length > 0) {
         policy.failures.push(`${action}: removed action reappeared in public surface ${summarizeOccurrences(publicRefs[action]).join("; ")}`);
       }
 

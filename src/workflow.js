@@ -8491,7 +8491,6 @@ export const MEETING_DISPATCH_ACTION_HANDLERS = createMeetingDispatchActionHandl
   normalizeRuntime,
   nowIso,
   resolveRegisteredDispatchTarget,
-  routeShellIngest: (...args) => routeShellIngest(...args),
   writeJsonArtifact,
   DISPATCH_STATUSES
 });
@@ -8564,7 +8563,6 @@ export const RUNTIME_BRIDGE_ACTION_HANDLERS = createRuntimeBridgeActionHandlers(
   nowIso,
   profileModesReadinessPayload,
   recordRuntimeBridgeFailureState,
-  routeShellIngest,
   runHermesAcpDispatch,
   runHermesDispatch,
   runLocalCodexDispatch,

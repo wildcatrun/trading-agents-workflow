@@ -18,6 +18,8 @@ export const CONTROL_LOOP_TICK_ACTION_HANDLER_NAMES = {
   "workflow.reconciler.tick": "workflowControlLoopTick"
 };
 
+const CONTROL_LOOP_RETIRED_RUNTIME_DRAINS = new Set(["openclaw_route_shell"]);
+
 function requireContextFunction(context, name) {
   const value = context?.[name];
   if (typeof value !== "function") throw new Error(`control-loop tick action dependency missing: ${name}`);
@@ -281,10 +283,10 @@ GROUP BY runtime
 ORDER BY runtime;`, { json: true });
         for (const row of dueRuntimeRows) {
           const runtime = normalizeKnownRuntime(row.runtime);
-          if (runtime) configuredRuntimes.add(runtime);
+          if (runtime && !CONTROL_LOOP_RETIRED_RUNTIME_DRAINS.has(runtime)) configuredRuntimes.add(runtime);
         }
       }
-      const runtimes = [...configuredRuntimes];
+      const runtimes = [...configuredRuntimes].filter((runtime) => !CONTROL_LOOP_RETIRED_RUNTIME_DRAINS.has(runtime));
       const preciseExcludedRuntimes = runtimes.filter((runtime) => runtime !== "openclaw");
       const preciseRuntimeExclusion = preciseExcludedRuntimes.length ? `AND runtime NOT IN (${sqlStringList(preciseExcludedRuntimes)})` : "";
       for (const runtime of runtimes) {

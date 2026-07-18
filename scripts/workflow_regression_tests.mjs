@@ -125,7 +125,6 @@ import {
   radarUpdate,
   researchEvidence,
   researchMemo,
-  routeShellIngest,
   sideEffectRecord,
   telegramLiveConfigure,
   telegramOutbox,
@@ -12213,7 +12212,8 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.supervise"].mutating, true);
     assert.equal(workflowActionMigrationInfo("workflow.pause").decisionClass, "must_migrate");
     assert.equal(workflowActionMigrationInfo("workflow.swarm.plan"), null);
-    assert.equal(workflowActionMigrationInfo("route_shell.ingest").decisionClass, "archive_no_migration");
+    assert.equal(workflowActionMigrationInfo("route_shell.ingest"), null);
+    assert.equal(workflowActionMigrationInfo("route_shell.route"), null);
     await assertRejectsMessage(
       () => runAction(root, {
         action: "workflow.swarm",
@@ -12264,33 +12264,33 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(updatedMirroredMeetingItem.workflow_tasks.length, 1);
     assert.equal(updatedMirroredMeetingItem.workflow_tasks[0].operation, "update");
     assert.equal(sqliteCount(path.join(root, "tracking.db"), "workflow_tasks", "task_id='task-convergence-meeting-action-item'"), 1);
-    const deprecatedRouteShell = await runAction(root, {
-      action: "route_shell.ingest",
-      workflowId: "wf-convergence-gate",
-      routeAgentId: "cat_body",
-      text: "deprecated route shell telemetry should be observable"
-    });
-    assert.equal(deprecatedRouteShell.ok, false);
-    assert.equal(deprecatedRouteShell.status, "route_failed");
+    for (const retiredAction of ["route_shell.ingest", "route-shell.ingest", "route_shell.route"]) {
+      await assertRejectsMessage(
+        () => runAction(root, {
+          action: retiredAction,
+          workflowId: "wf-convergence-gate",
+          routeAgentId: "cat_body",
+          text: "retired route shell action should be unknown"
+        }),
+        /workflow permission denied: action=route[-_]shell\.(ingest|route) .*reason=unknown_workflow_action/
+      );
+    }
     const telemetryRows = sqliteJson(path.join(root, "tracking.db"), `
 SELECT status, next_state, payload_json
 FROM workflow_events
 WHERE event_type='workflow.action_migration_telemetry'
 ORDER BY created_at;`);
-    assert.equal(telemetryRows.length, 1);
+    assert.equal(telemetryRows.length, 0);
     const telemetryPayloads = telemetryRows.map((row) => JSON.parse(row.payload_json));
-    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["route_shell.ingest"]);
+    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), []);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.task.launch.list"), false);
     const meetingMirrorTelemetry = telemetryPayloads.filter((row) => row.legacyCompatibilitySource === "meeting.action_item");
     assert.deepEqual(meetingMirrorTelemetry, []);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.run.upsert"), false);
-    const deprecatedTelemetry = telemetryPayloads.find((row) => row.action === "route_shell.ingest");
-    assert.equal(deprecatedTelemetry.migrationStatus, "deprecated");
-    assert.equal(deprecatedTelemetry.decisionClass, "archive_no_migration");
     assert.equal(telemetryRows.filter((row) => row.status === "legacy_active").length, 0);
-    assert.equal(telemetryRows.filter((row) => row.status === "deprecated").length, 1);
+    assert.equal(telemetryRows.filter((row) => row.status === "deprecated").length, 0);
     assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 0);
-    assert.equal(telemetryRows.filter((row) => row.next_state === "archive_no_migration").length, 1);
+    assert.equal(telemetryRows.filter((row) => row.next_state === "archive_no_migration").length, 0);
     assert.equal(telemetryPayloads.every((row) => row.telemetryOnly === true), true);
 
     const generic = await runAction(root, {
@@ -14878,155 +14878,69 @@ async function testMeetingControlExtractedActionContracts() {
   assert.equal(sqliteCount(dbFile, "workflow_events", `event_type='dispatch.created' AND dispatch_id='${disperse.dispatches[0].dispatchId}'`), 1);
 }
 
-async function testRouteShellExtractedActionContracts() {
-  const expectedHandlers = {
-    "route_shell.ingest": "routeShellIngest",
-    "route-shell.ingest": "routeShellIngest",
-    "route_shell.route": "routeShellIngest"
-  };
-  for (const [action, handlerName] of Object.entries(expectedHandlers)) {
-    assert.equal(ROUTE_SHELL_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted route_shell registry`);
-    assert.equal(ROUTE_SHELL_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
-  }
-  assert.equal(typeof routeShellIngest, "function");
-  const directRegistry = createRouteShellActionRegistry({ routeShellIngest });
-  assert.equal(directRegistry.get("route_shell.ingest"), routeShellIngest);
-  assert.equal(directRegistry.get("route-shell.ingest"), routeShellIngest);
-  assert.equal(directRegistry.get("route_shell.route"), routeShellIngest);
+async function testRouteShellSourceFreezeRetirementContracts() {
+  assert.deepEqual(ROUTE_SHELL_ACTION_HANDLER_NAMES, {});
+  assert.equal(ROUTE_SHELL_ACTION_REGISTRY.size, 0);
+  const directRegistry = createRouteShellActionRegistry({});
+  assert.equal(directRegistry.size, 0);
 
-  const root = await tempRoot("route-shell-extracted-contracts");
-  await runtimeAgentUpsert(root, {
-    runtime: "hermers",
-    platform: "hermers",
+  const root = await tempRoot("route-shell-source-freeze-contracts");
+  const dbFile = path.join(root, "tracking.db");
+  for (const retiredAction of ["route_shell.ingest", "route-shell.ingest", "route_shell.route"]) {
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: retiredAction,
+        routeAgentId: "cat_body",
+        meetingId: "route-shell-retired-action",
+        workflowId: "workflow-route-shell-retired",
+        text: "retired route shell action should be unknown"
+      }),
+      /workflow permission denied: action=route[-_]shell\.(ingest|route) .*reason=unknown_workflow_action/
+    );
+  }
+  assert.equal(sqliteCount(dbFile, "message_flows", "route_runtime='openclaw_route_shell'"), 0);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "dispatch_type='route_shell_forward'"), 0);
+
+  const dispatchRejected = await runAction(root, {
+    action: "meeting.dispatch",
+    runtime: "openclaw_route_shell",
     agentId: "cat_body",
-    displayName: "Cat Body",
-    role: "developer",
-    endpointRef: "hermers-profile:catbody",
-    executionAdapter: "acp",
-    imIngressOwner: "openclaw_gateway",
-    imIngressAdapter: "openclaw_route_shell",
-    workflowIngressAdapter: "acp",
-    imIdentity: "openclaw_route_shell",
-    executionIdentity: "hermers_acp",
-    returnPolicy: "reply_to_source_chat",
-    routingPolicy: { primary: true, routingRank: 1 }
+    meetingId: "route-shell-retired-dispatch",
+    workflowId: "workflow-route-shell-retired",
+    prompt: "Meeting dispatch must not redirect through route-shell."
   });
+  assert.equal(dispatchRejected.status, "failed");
+  assert.equal(dispatchRejected.failureType, "route_shell_retired");
+  assert.match(dispatchRejected.error, /openclaw_route_shell dispatch is retired/);
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "runtime='hermers' AND dispatch_type='route_shell_forward'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_events", "event_type='dispatch.rejected' AND next_state='route_shell_retired'"), 1);
+
   await runtimeAgentUpsert(root, {
     runtime: "openclaw_route_shell",
     platform: "openclaw",
     agentId: "cat_body",
-    displayName: "Cat Body Route Shell",
-    role: "ingress",
+    displayName: "Cat Body Retired Route Shell",
+    role: "retired-ingress",
     endpointRef: "openclaw-route-shell:cat_body",
-    executionAdapter: "route_shell",
+    executionAdapter: "native",
     imIngressOwner: "openclaw_gateway",
-    imIngressAdapter: "openclaw_route_shell",
-    workflowIngressAdapter: "route_shell",
-    imIdentity: "openclaw_route_shell",
-    executionIdentity: "openclaw_route_shell",
+    imIngressAdapter: "openclaw_native",
+    workflowIngressAdapter: "openclaw_native",
+    imIdentity: "openclaw_native",
+    executionIdentity: "openclaw_native",
     returnPolicy: "silent",
     canReceiveDispatch: true
   });
-
-  const direct = await routeShellIngest(root, {
-    routeAgentId: "cat_body",
-    meetingId: "route-shell-contract",
-    workflowId: "workflow-route-shell-contract",
-    text: "Route shell extracted contract body.",
-    sourceChannel: "telegram",
-    accountId: "cat_claw",
-    chatId: "-100123456",
-    senderId: "8390724843",
-    sourceMessageId: "tg-route-shell-contract-1",
-    payload: { source: "direct_export" }
-  });
-  assert.equal(direct.ok, true);
-  assert.equal(direct.status, "queued");
-  assert.equal(direct.routeAgentId, "cat_body");
-  assert.equal(direct.runtime, "hermers");
-  assert.equal(direct.agentId, "cat_body");
-  assert.equal(direct.targetPlatform, "hermers");
-  assert.equal(direct.workflowIngressAdapter, "acp");
-  assert.equal(direct.ingressMessageId, "tg-route-shell-contract-1");
-  assert.equal(direct.ackText.startsWith("ROUTE_REGISTERED\n"), true);
-
-  const dbFile = direct.dbFile;
-  const flowRow = sqliteJson(dbFile, `
-SELECT status, dispatch_id AS dispatchId, route_runtime AS routeRuntime, target_runtime AS targetRuntime, return_policy AS returnPolicy
-FROM message_flows
-WHERE flow_id='${direct.messageFlowId}'
-LIMIT 1;`)[0];
-  assert.deepEqual(flowRow, {
-    status: "route_registered",
-    dispatchId: direct.dispatchId,
-    routeRuntime: "openclaw_route_shell",
-    targetRuntime: "hermers",
-    returnPolicy: "reply_to_source_chat"
-  });
-  assert.equal(sqliteCount(dbFile, "mixed_meeting_messages", "message_id='tg-route-shell-contract-1' AND message_type='route_shell_ingress' AND phase='route_shell'"), 1);
-  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", `dispatch_id='${direct.dispatchId}' AND runtime='hermers' AND dispatch_type='route_shell_forward' AND status='queued'`), 1);
-
-  const deduped = await runAction(root, {
-    action: "route-shell.ingest",
-    routeAgentId: "cat_body",
-    meetingId: "route-shell-contract",
-    workflowId: "workflow-route-shell-contract",
-    text: "Route shell extracted contract body.",
-    sourceChannel: "telegram",
-    accountId: "cat_claw",
-    chatId: "-100123456",
-    senderId: "8390724843",
-    sourceMessageId: "tg-route-shell-contract-1"
-  });
-  assert.equal(deduped.ok, true);
-  assert.equal(deduped.deduped, true);
-  assert.equal(deduped.dispatchId, direct.dispatchId);
-  assert.equal(deduped.messageFlowStatus, "route_registered");
-
-  const alias = await runAction(root, {
-    action: "route_shell.route",
-    routeAgentId: "cat_body",
-    meetingId: "route-shell-contract-alias",
-    workflowId: "workflow-route-shell-contract",
-    text: "Route shell alias contract body.",
-    sourceChannel: "telegram",
-    accountId: "cat_claw",
-    chatId: "-100123456",
-    senderId: "8390724843",
-    sourceMessageId: "tg-route-shell-contract-2"
-  });
-  assert.equal(alias.ok, true);
-  assert.equal(alias.routeRuntime, "openclaw_route_shell");
-  assert.equal(alias.runtime, "hermers");
-
-  const dispatchRedirect = await runAction(root, {
-    action: "meeting.dispatch",
-    runtime: "openclaw_route_shell",
-    agentId: "cat_body",
-    meetingId: "route-shell-contract-dispatch",
-    workflowId: "workflow-route-shell-contract",
-    prompt: "Meeting dispatch route shell contract body.",
-    sourceChannel: "telegram",
-    accountId: "cat_claw",
-    chatId: "-100123456",
-    senderId: "8390724843",
-    sourceMessageId: "tg-route-shell-contract-3"
-  });
-  assert.equal(dispatchRedirect.ok, true);
-  assert.equal(dispatchRedirect.routeRuntime, "openclaw_route_shell");
-  assert.equal(dispatchRedirect.runtime, "hermers");
-  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", `dispatch_id='${dispatchRedirect.dispatchId}' AND runtime='hermers' AND dispatch_type='route_shell_forward'`), 1);
-
-  const legacyDispatchId = "dispatch.route-shell-legacy-queued";
+  const legacyDispatchId = "dispatch.route-shell-retired-queued";
   const legacyCreatedAt = new Date().toISOString();
   sqliteExec(dbFile, `
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
 VALUES (
   ${sqlValue(legacyDispatchId)},
-  'route-shell-contract-bridge',
-  'workflow-route-shell-contract',
-  'trace-route-shell-contract-bridge',
-  'route-shell-contract-bridge-legacy',
+  'route-shell-retired-bridge',
+  'workflow-route-shell-retired',
+  'trace-route-shell-retired-bridge',
+  'route-shell-retired-bridge-legacy',
   'openclaw_route_shell',
   'cat_body',
   'openclaw_route_shell:cat_body',
@@ -15035,8 +14949,8 @@ VALUES (
   'normal',
   0,
   1,
-  'Legacy queued route-shell dispatch should redirect.',
-  '{"prompt":"Legacy queued route-shell dispatch should redirect."}',
+  'Legacy queued route-shell dispatch must fail closed.',
+  '{"prompt":"Legacy queued route-shell dispatch must fail closed."}',
   'legacy-route-shell-test',
   ${sqlValue(legacyCreatedAt)},
   ${sqlValue(legacyCreatedAt)}
@@ -15049,56 +14963,15 @@ VALUES (
   assert.equal(bridgeFailClosed.results.length, 1);
   assert.equal(bridgeFailClosed.results[0].dispatchId, legacyDispatchId);
   assert.equal(bridgeFailClosed.results[0].status, "failed");
-  assert.equal(bridgeFailClosed.results[0].failureType, "runtime_registry_adapter_unavailable");
+  assert.equal(bridgeFailClosed.results[0].failureType, "route_shell_retired");
   const legacyFailedRow = sqliteJson(dbFile, `SELECT status, runtime, failure_type AS failureType, payload_json AS payload FROM mixed_meeting_dispatches WHERE dispatch_id=${sqlValue(legacyDispatchId)} LIMIT 1;`)[0];
   assert.equal(legacyFailedRow.status, "failed");
   assert.equal(legacyFailedRow.runtime, "openclaw_route_shell");
-  assert.equal(legacyFailedRow.failureType, "runtime_registry_adapter_unavailable");
+  assert.equal(legacyFailedRow.failureType, "route_shell_retired");
   const legacyFailedPayload = JSON.parse(legacyFailedRow.payload);
-  assert.equal(legacyFailedPayload.bridge.adapter, "runtime_registry");
-  assert.equal(legacyFailedPayload.bridge.failureType, "runtime_registry_adapter_unavailable");
-  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "runtime='hermers' AND dispatch_type='route_shell_forward'"), 3);
-
-  await runtimeAgentUpsert(root, {
-    runtime: "openclaw",
-    platform: "openclaw",
-    agentId: "cat_body",
-    displayName: "Cat Body OpenClaw Target",
-    role: "legacy-target",
-    endpointRef: "openclaw-agent:cat_body",
-    executionAdapter: "native",
-    imIngressOwner: "openclaw_gateway",
-    imIngressAdapter: "openclaw_native",
-    workflowIngressAdapter: "openclaw_native",
-    imIdentity: "openclaw_native",
-    executionIdentity: "openclaw_native",
-    returnPolicy: "silent",
-    routingPolicy: { routingRank: 20 }
-  });
-  const successBin = await makeFakeOpenClaw(root, "fake-route-shell-openclaw-success.mjs", "success");
-  const drained = await routeShellIngest(root, {
-    routeAgentId: "cat_body",
-    targetPlatform: "openclaw",
-    meetingId: "route-shell-contract-drain",
-    workflowId: "workflow-route-shell-contract",
-    text: "Route shell drainNow contract body.",
-    sourceMessageId: "tg-route-shell-contract-4",
-    openclawBin: successBin,
-    drainNow: true
-  });
-  assert.equal(drained.ok, true);
-  assert.equal(drained.runtime, "openclaw");
-  assert.equal(drained.drainResult.results[0].status, "acked");
-  assert.equal(sqliteCount(dbFile, "message_flows", `flow_id='${drained.messageFlowId}' AND status='runtime_completed' AND dispatch_id='${drained.dispatchId}'`), 1);
-
-  const failed = await routeShellIngest(root, {
-    routeAgentId: "cat_nose",
-    text: "Route shell target missing should fail with an ack."
-  });
-  assert.equal(failed.ok, false);
-  assert.equal(failed.status, "route_failed");
-  assert.equal(failed.ackText.includes("ROUTE_FAILED"), true);
-  assert.equal(failed.ackText.includes("active registry row with imIngressOwner=openclaw_gateway"), true);
+  assert.equal(legacyFailedPayload.bridge.adapter, "route_shell_retired");
+  assert.equal(legacyFailedPayload.bridge.failureType, "route_shell_retired");
+  assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "runtime='hermers' AND dispatch_type='route_shell_forward'"), 0);
 }
 
 async function testTopologyExtractedActionContracts() {
@@ -17153,6 +17026,44 @@ async function testControlLoopAutoDiscoversQueuedDispatchRuntimes() {
   });
   assert.equal(Boolean(localTick.seededJobs?.some((job) => job.dedupeKey === "runtime_drain:local_codex")), true);
   assert.equal(localTick.jobResults?.[0]?.result?.results?.length, 2);
+
+  const retiredRuntimeRoot = await tempRoot("control-loop-retired-route-shell-runtime");
+  await runAction(retiredRuntimeRoot, { action: "workflow.status" });
+  const retiredCreatedAt = new Date().toISOString();
+  sqliteExec(path.join(retiredRuntimeRoot, "tracking.db"), `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, prompt, payload_json, created_by, created_at, updated_at)
+VALUES (
+  'dispatch-retired-route-shell-auto-runtime',
+  'meeting-retired-route-shell-auto-runtime',
+  'workflow-retired-route-shell-auto-runtime',
+  'trace-retired-route-shell-auto-runtime',
+  'idem-retired-route-shell-auto-runtime',
+  'openclaw_route_shell',
+  'cat_body',
+  'openclaw_route_shell:cat_body',
+  'route_shell_forward',
+  'queued',
+  'high',
+  0,
+  1,
+  'retired route-shell queued dispatch must not seed runtime drain',
+  '{}',
+  'regression',
+  ${sqlValue(retiredCreatedAt)},
+  ${sqlValue(retiredCreatedAt)}
+);`);
+  const retiredTick = await runAction(retiredRuntimeRoot, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    runtimeLimit: 1,
+    drainQueued: true,
+    autoDispatch: false,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false
+  });
+  assert.equal(Boolean(retiredTick.seededJobs?.some((job) => job.dedupeKey === "runtime_drain:openclaw_route_shell")), false);
+  assert.equal(sqliteCount(path.join(retiredRuntimeRoot, "tracking.db"), "control_loop_jobs", "job_type='runtime_drain'"), 0);
 
   const invalidRoot = await tempRoot("control-loop-invalid-explicit-runtime");
   await runAction(invalidRoot, {
@@ -22677,7 +22588,7 @@ try {
     ["meeting dispatch extracted action contracts", testMeetingDispatchExtractedActionContracts],
     ["meeting control extracted action contracts", testMeetingControlExtractedActionContracts],
     ["runtime bridge extracted action contracts", testRuntimeBridgeExtractedActionContracts],
-    ["route_shell extracted action contracts", testRouteShellExtractedActionContracts],
+    ["route_shell source-freeze retirement contracts", testRouteShellSourceFreezeRetirementContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],
     ["permission extracted action contracts", testPermissionExtractedActionContracts],

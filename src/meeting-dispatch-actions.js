@@ -49,7 +49,6 @@ export function createMeetingDispatchActionHandlers(context = {}) {
   const normalizeRuntime = requireContextFunction(context, "normalizeRuntime");
   const nowIso = requireContextFunction(context, "nowIso");
   const resolveRegisteredDispatchTarget = requireContextFunction(context, "resolveRegisteredDispatchTarget");
-  const routeShellIngest = requireContextFunction(context, "routeShellIngest");
   const writeJsonArtifact = requireContextFunction(context, "writeJsonArtifact");
   const DISPATCH_STATUSES = requireContextValue(context, "DISPATCH_STATUSES");
 
@@ -63,28 +62,37 @@ export function createMeetingDispatchActionHandlers(context = {}) {
     const requestedRuntime = String(input.runtime || "").trim();
     const runtime = requestedRuntime ? normalizeRuntime(requestedRuntime) : "";
     if (runtime === "openclaw_route_shell") {
-      return routeShellIngest(rootDir, {
-        ...input,
-        runtime: undefined,
+      const createdAt = nowIso();
+      const error = "openclaw_route_shell dispatch is retired; use runtime_agents plus message_flow or the target runtime adapter";
+      await appendWorkflowEvent(paths, {
+        eventType: "dispatch.rejected",
+        status: "failed",
+        workflowId,
+        traceId,
+        actor: input.createdBy || input.created_by || input.chair || "workflow",
+        sourceRuntime: "workflow",
+        sourceAgent: input.createdBy || input.created_by || input.chair || "",
+        nextState: "route_shell_retired",
+        payload: {
+          runtime,
+          agentId,
+          dispatchType: input.dispatchType || input.dispatch_type || "",
+          reason: error,
+          originalPayload: parseJsonValue(input.payload, input.payload || {})
+        },
+        createdAt
+      });
+      return {
         meetingId,
         workflowId,
         traceId,
-        idempotencyKey,
-        routeAgentId: agentId,
-        text: input.prompt || input.text || "",
-        sourceSystem: input.sourceSystem || input.source_system || input.source || "workflow_dispatch",
-        sourceRuntime: "openclaw_route_shell",
-        dispatchType: input.dispatchType || input.dispatch_type || "route_shell_forward",
-        payload: {
-          originalDispatchRequest: {
-            runtime,
-            agentId,
-            dispatchType: input.dispatchType || input.dispatch_type || "",
-            createdBy: input.createdBy || input.created_by || input.chair || "",
-            payload: parseJsonValue(input.payload, input.payload || {})
-          }
-        }
-      });
+        runtime,
+        agentId,
+        status: "failed",
+        failureType: "route_shell_retired",
+        error,
+        dbFile: paths.dbFile
+      };
     }
     const resolvedTarget = runtime
       ? await resolveRegisteredDispatchTarget(paths, { ...input, runtime, agentId })

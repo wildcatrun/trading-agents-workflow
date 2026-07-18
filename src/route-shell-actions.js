@@ -11,9 +11,6 @@ import {
 } from "./workflow/sqlite.js";
 
 export const ROUTE_SHELL_ACTION_HANDLER_NAMES = {
-  "route_shell.ingest": "routeShellIngest",
-  "route-shell.ingest": "routeShellIngest",
-  "route_shell.route": "routeShellIngest"
 };
 
 function requireContextFunction(context, name) {

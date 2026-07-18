@@ -295,8 +295,6 @@ export const WORKFLOW_ACTION_ALIASES = {
   "workflow.template.rollback": "workflow.template.rollback.record",
   "workflow.template.extract": "workflow.template.extract.record",
   "runtime.agent": "runtime.agent.upsert",
-  "route-shell.ingest": "route_shell.ingest",
-  "route_shell.route": "route_shell.ingest",
   "runtime.participant": "meeting.runtime_participant",
   "telegram.live.configure": "telegram.live",
   "dispatch.reconcile": "workflow.dispatch.reconcile",

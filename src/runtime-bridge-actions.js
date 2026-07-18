@@ -1,6 +1,5 @@
 import {
   parseJsonValue,
-  safeId,
   toList
 } from "./workflow/json.js";
 import {
@@ -51,7 +50,6 @@ export function createRuntimeBridgeActionHandlers(context = {}) {
   const nowIso = requireContextFunction(context, "nowIso");
   const profileModesReadinessPayload = requireContextFunction(context, "profileModesReadinessPayload");
   const recordRuntimeBridgeFailureState = requireContextFunction(context, "recordRuntimeBridgeFailureState");
-  const routeShellIngest = requireContextFunction(context, "routeShellIngest");
   const runHermesAcpDispatch = requireContextFunction(context, "runHermesAcpDispatch");
   const runHermesDispatch = requireContextFunction(context, "runHermesDispatch");
   const runLocalCodexDispatch = requireContextFunction(context, "runLocalCodexDispatch");
@@ -59,80 +57,6 @@ export function createRuntimeBridgeActionHandlers(context = {}) {
   const updateDispatch = requireContextFunction(context, "updateDispatch");
   const validateRuntimeBridgeRegistryRow = requireContextFunction(context, "validateRuntimeBridgeRegistryRow");
   const validateRuntimeBridgeTaskPayload = requireContextFunction(context, "validateRuntimeBridgeTaskPayload");
-
-  async function redirectQueuedRouteShellDispatch(paths, row, input = {}) {
-    const payload = parseJsonValue(row.payload_json, {});
-    const result = await routeShellIngest(paths.root, {
-      ...input,
-      runtime: undefined,
-      meetingId: row.meeting_id,
-      workflowId: row.workflow_id || payload.workflowId || row.meeting_id,
-      traceId: row.trace_id || payload.traceId || safeId("route_trace"),
-      idempotencyKey: `route-shell-forward:${row.dispatch_id}`,
-      routeAgentId: row.agent_id,
-      text: row.prompt || payload.prompt || "",
-      sourceMessageId: `dispatch-${row.dispatch_id}`,
-      sourceSystem: "runtime_bridge:openclaw_route_shell",
-      sourceRuntime: "openclaw_route_shell",
-      dispatchType: row.dispatch_type || payload.dispatchType || "route_shell_forward",
-      priority: row.priority || "normal",
-      maxAttempts: row.max_attempts || 1,
-      recordIngress: true,
-      payload: {
-        redirectedFromDispatch: {
-          dispatchId: row.dispatch_id,
-          runtime: row.runtime,
-          agentId: row.agent_id,
-          dispatchType: row.dispatch_type,
-          idempotencyKey: row.idempotency_key,
-          createdAt: row.created_at
-        },
-        originalPayload: payload
-      }
-    });
-    if (result.ok) {
-      await updateDispatch(paths, row.dispatch_id, "cancelled", {
-        adapter: "route_shell_redirect",
-        completedAt: nowIso(),
-        redirectedToDispatchId: result.dispatchId,
-        redirectedToPlatform: result.targetPlatform,
-        redirectedToAdapter: result.workflowIngressAdapter,
-        redirectedToAgentId: result.targetAgentId
-      });
-      return {
-        dispatchId: row.dispatch_id,
-        runtime: row.runtime,
-        agentId: row.agent_id,
-        status: "redirected",
-        redirectedToDispatchId: result.dispatchId,
-        redirectedToPlatform: result.targetPlatform,
-        redirectedToAdapter: result.workflowIngressAdapter,
-        redirectedToAgentId: result.targetAgentId,
-        targetStatus: result.status,
-        deduped: result.deduped
-      };
-    }
-    await updateDispatch(paths, row.dispatch_id, "failed", {
-      adapter: "route_shell_redirect",
-      failedAt: nowIso(),
-      failureType: "route_shell_target_unavailable",
-      error: result.reason || "route-shell redirect failed"
-    });
-    await recordRuntimeBridgeFailureState(paths, row, {
-      adapter: "route_shell_redirect",
-      failureType: "route_shell_target_unavailable",
-      error: result.reason || "route-shell redirect failed",
-      stage: "route_shell_redirect_failed"
-    });
-    return {
-      dispatchId: row.dispatch_id,
-      runtime: row.runtime,
-      agentId: row.agent_id,
-      status: "failed",
-      failureType: "route_shell_target_unavailable",
-      error: result.reason || "route-shell redirect failed"
-    };
-  }
 
   async function appendRuntimeBridgeResultEvent(paths, row, result = {}) {
     if (!row?.dispatch_id || !result?.status || result.status === "skipped") return;
@@ -214,7 +138,29 @@ LIMIT ${limit};`, { json: true });
       try {
         let result = null;
         if (runtime === "openclaw_route_shell") {
-          result = await redirectQueuedRouteShellDispatch(paths, claimedRow, input);
+          const failedAt = nowIso();
+          const error = "openclaw_route_shell runtime bridge repair is retired; use runtime_agents plus message_flow or the target runtime adapter";
+          await updateDispatch(paths, claimedRow.dispatch_id, "failed", {
+            adapter: "route_shell_retired",
+            failedAt,
+            failureType: "route_shell_retired",
+            error
+          });
+          await recordRuntimeBridgeFailureState(paths, claimedRow, {
+            eventTime: failedAt,
+            adapter: "route_shell_retired",
+            failureType: "route_shell_retired",
+            error,
+            stage: "route_shell_retired"
+          });
+          result = {
+            dispatchId: claimedRow.dispatch_id,
+            runtime,
+            agentId: claimedRow.agent_id,
+            status: "failed",
+            failureType: "route_shell_retired",
+            error
+          };
         } else if (runtime === "hermers") {
           const adapter = normalizeWorkflowIngressAdapter(claimedRow.workflow_ingress_adapter || claimedRow.execution_adapter || "", claimedRow.platform || "", runtime);
           if (adapter === "acp") {

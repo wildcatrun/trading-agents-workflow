@@ -34,12 +34,11 @@ function usage() {
   trading-agents-workflow workflow-session-run-start --session ID [--run ID] [--workflow ID] [--task ID] [--trace ID] [--dispatch ID] [--worker ID] [--input JSON] [--root DIR]
   trading-agents-workflow workflow-session-run-complete --run ID [--status completed|failed|cancelled] [--output JSON] [--receipt REF] [--error TEXT] [--root DIR]
   trading-agents-workflow runtime-agent --platform PLATFORM --agent AGENT [--runtime RUNTIME_KEY] [--execution-adapter ADAPTER] [--im-ingress-owner OWNER] [--im-ingress-adapter ADAPTER] [--workflow-ingress-adapter ADAPTER] [--im-identity ID] [--execution-identity ID] [--return-policy reply_to_source_chat|report_to_flashcat|silent] [--name NAME] [--role ROLE] [--endpoint REF] [--root DIR]
-  trading-agents-workflow route-shell-ingest --agent AGENT --text TEXT [--message-id ID] [--source-channel CHANNEL] [--account-id ACCOUNT] [--chat-id ID] [--sender-id ID] [--return-policy POLICY] [--target-platform PLATFORM] [--target-adapter ADAPTER] [--drain-now true|false] [--root DIR]
   trading-agents-workflow meeting-participant --meeting ID --runtime RUNTIME --agent AGENT [--role ROLE] [--chair] [--decider] [--secretary] [--live-mode MODE] [--root DIR]
   trading-agents-workflow telegram-live --meeting ID [--chat CHAT_ID] [--channel CHANNEL_ID] [--human-gate-channel CHANNEL_ID] [--mode MODE] [--root DIR]
   trading-agents-workflow meeting-dispatch --meeting ID --runtime RUNTIME --agent AGENT --prompt TEXT [--type TYPE] [--payload JSON] [--priority P] [--from AGENT] [--trace-id ID] [--idempotency-key KEY] [--max-attempts N] [--return-policy POLICY] [--source-channel CHANNEL] [--account-id ACCOUNT] [--chat-id ID] [--sender-id ID] [--source-message-id ID] [--root DIR]
   trading-agents-workflow meeting-ingest --meeting ID --runtime RUNTIME --agent AGENT --text TEXT [--type TYPE] [--phase PHASE] [--root DIR]
-  trading-agents-workflow runtime-bridge [--runtime openclaw|hermers|openclaw_route_shell] [--dispatch ID] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--stability-profile-modes-path PATH] [--cold-profile-defer-seconds N] [--hibernate-profile-defer-seconds N] [--allow-hibernated-profiles true|false] [--openclaw-bin PATH] [--dry-run] [--report-delivery false] [--root DIR]
+  trading-agents-workflow runtime-bridge [--runtime openclaw|hermers|local_codex] [--dispatch ID] [--limit N] [--timeout-seconds N] [--session-mode persistent|oneshot] [--acp-backend acpx] [--stability-profile-modes-path PATH] [--cold-profile-defer-seconds N] [--hibernate-profile-defer-seconds N] [--allow-hibernated-profiles true|false] [--openclaw-bin PATH] [--dry-run] [--report-delivery false] [--root DIR]
   trading-agents-workflow dispatch-reconcile [--limit N] [--stale-after-ms N] [--timeout-seconds N] [--root DIR]
   trading-agents-workflow human-gate-request --meeting ID --text TEXT [--workflow ID] [--trace-id ID] [--parent OBJECT_ID] [--payload JSON] [--expires-at ISO] [--gate TYPE] [--button JSON_OR_LABEL] [--from AGENT] [--target CHAT_ID] [--channel CHANNEL_ID] [--deliver true|false] [--root DIR]
   trading-agents-workflow human-gate-inbox [--workflow ID] [--batch ID] [--title TEXT] [--limit N] [--target CHAT_ID] [--root DIR]
@@ -495,28 +494,6 @@ function toAction({ command, positional, options }) {
           canStartWorkflow: options["can-start-workflow"] !== "false",
           gatewayProxyAllowed: options["gateway-proxy-allowed"] !== "false",
           endpointRef: options.endpoint
-        }
-      };
-    case "route-shell-ingest":
-      return {
-        root,
-        input: {
-          action: "route_shell.ingest",
-          routeAgentId: options.agent,
-          text: options.text,
-          sourceMessageId: options["message-id"],
-          sourceChannel: options["source-channel"],
-          accountId: options["account-id"],
-          chatId: options["chat-id"],
-          senderId: options["sender-id"],
-          sourceSystem: options.source || "cli",
-          targetPlatform: options["target-platform"],
-          targetAdapter: options["target-adapter"],
-          priority: options.priority,
-          drainNow: options["drain-now"] === "true",
-          timeoutSeconds: options["timeout-seconds"],
-          returnPolicy: options["return-policy"],
-          deliveryPolicy: options["return-policy"]
         }
       };
     case "meeting-participant":

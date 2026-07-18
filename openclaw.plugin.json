@@ -70,55 +70,6 @@
           }
         }
       },
-      "routeShell": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Optional pre-agent physical route-shell forwarding for Gateway message sources. When enabled, before_dispatch handles configured OpenClaw route-shell agents and queues work by registered platform plus workflow ingress adapter instead of running the route-shell agent model.",
-        "properties": {
-          "enabled": {
-            "type": "boolean"
-          },
-          "agentIds": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "channels": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "targetPlatform": {
-            "type": "string"
-          },
-          "targetAdapter": {
-            "type": "string"
-          },
-          "priority": {
-            "type": "string"
-          },
-          "drainNow": {
-            "type": "boolean"
-          },
-          "timeoutSeconds": {
-            "type": "number"
-          },
-          "ack": {
-            "type": "boolean"
-          },
-          "requireRouteShell": {
-            "type": "boolean"
-          },
-          "requireProviderMessageId": {
-            "type": "boolean"
-          },
-          "blockOnFailure": {
-            "type": "boolean"
-          }
-        }
-      },
       "controlLoop": {
         "type": "object",
         "additionalProperties": false,
