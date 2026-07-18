@@ -146,3 +146,11 @@ P17 adds `workflow.supervisor.closeout.preview` as the read-only closeout previe
 called out by this audit. This reduces the preview gap for completed v2 plans,
 but it does not implement the final Cat Claw closeout executor and therefore
 does not make mutating `workflow.supervise` freeze-ready.
+
+## P18 Follow-Up
+
+P18 adds `workflow.supervisor.checkpoint.preview` as the read-only checkpoint
+preview called out by this audit. This makes the checkpoint recovery-boundary
+gap visible from v2 supervisor surfaces, but it does not implement a v2/shared
+checkpoint writer and therefore does not make `workflow.checkpoint` or mutating
+`workflow.supervise` freeze-ready.

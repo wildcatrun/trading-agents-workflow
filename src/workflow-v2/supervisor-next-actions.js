@@ -2,6 +2,10 @@ import {
   boolOption,
   firstText
 } from "../workflow/json.js";
+import {
+  sqlValue,
+  sqlite
+} from "../workflow/sqlite.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -20,6 +24,12 @@ function candidate(id, type, followUpAction, reason, input = {}, details = {}) {
     mutatesNow: false,
     ...details
   };
+}
+
+const CHECKPOINT_PREVIEW_PLAN_DECISIONS = new Set(["human_gate_pending", "cat_claw_summary_required"]);
+
+function planNeedsCheckpointPreview(plan = {}) {
+  return CHECKPOINT_PREVIEW_PLAN_DECISIONS.has(String(plan.decision || ""));
 }
 
 function nodeSpawnReadiness(node = {}) {
@@ -121,6 +131,14 @@ function candidatesForPlan(plan = {}, limit = 20) {
     }
   }
   if (plan.decision === "human_gate_pending") {
+    result.push(candidate(
+      `checkpoint:${planId}`,
+      "workflow_checkpoint_preview",
+      "workflow.supervisor.checkpoint.preview",
+      "v2_plan_requires_checkpoint_boundary_before_human_gate_request",
+      { workflowId, planId },
+      { status: "preview_available", executorStatus: "v2_checkpoint_writer_gap", note: "v2 checkpoint writer is not yet implemented" }
+    ));
     for (const pkg of (plan.humanGatePackages || []).slice(0, limit)) {
       result.push(candidate(
         `human_gate_request:${pkg.packageId || result.length + 1}`,
@@ -148,6 +166,14 @@ function candidatesForPlan(plan = {}, limit = 20) {
   }
   if (plan.decision === "cat_claw_summary_required") {
     result.push(candidate(
+      `checkpoint:${planId}`,
+      "workflow_checkpoint_preview",
+      "workflow.supervisor.checkpoint.preview",
+      "completed_v2_plan_requires_checkpoint_boundary_before_closeout",
+      { workflowId, planId },
+      { status: "preview_available", executorStatus: "v2_checkpoint_writer_gap", note: "v2 checkpoint writer is not yet implemented" }
+    ));
+    result.push(candidate(
       `cat_claw_closeout:${planId}`,
       "cat_claw_closeout_required",
       "workflow.supervisor.closeout.preview",
@@ -157,6 +183,82 @@ function candidatesForPlan(plan = {}, limit = 20) {
     ));
   }
   return result;
+}
+
+async function checkpointRowsByWorkflow(dbFile, workflowIds = [], limit = 20) {
+  const ids = [...new Set(workflowIds.map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!dbFile || !ids.length) return new Map();
+  const tableRows = await sqlite(dbFile, "SELECT name FROM sqlite_master WHERE type='table' AND name='workflow_checkpoints' LIMIT 1;", { json: true });
+  if (!tableRows[0]) return new Map();
+  const rows = await sqlite(dbFile, `
+SELECT workflow_id, checkpoint_id, status, phase, decision, summary, path, created_by, created_at
+FROM workflow_checkpoints
+WHERE workflow_id IN (${ids.map(sqlValue).join(", ")})
+ORDER BY workflow_id ASC, created_at DESC
+LIMIT ${sqlValue(ids.length * limit)};`, { json: true });
+  const grouped = new Map(ids.map((id) => [id, []]));
+  for (const row of rows) {
+    const workflowId = String(row.workflow_id || "");
+    if (!grouped.has(workflowId)) grouped.set(workflowId, []);
+    if (grouped.get(workflowId).length < limit) grouped.get(workflowId).push(row);
+  }
+  return grouped;
+}
+
+function checkpointCandidateForPlan(plan = {}, checkpoints = []) {
+  const workflowId = plan.workflowId || "";
+  const planId = plan.planId || "";
+  const latestCheckpoint = checkpoints[0] || null;
+  return {
+    candidateId: `checkpoint:${planId || workflowId || "unknown"}`,
+    candidateType: "workflow_checkpoint_preview",
+    status: latestCheckpoint ? "existing_checkpoint_available" : "checkpoint_missing_preview_available",
+    executorStatus: "v2_checkpoint_writer_gap",
+    reason: latestCheckpoint
+      ? "existing_checkpoint_boundary_available_for_v2_plan"
+      : "v2_plan_needs_checkpoint_boundary_before_closeout_or_human_gate",
+    previewOnly: true,
+    mutatesNow: false,
+    followUpAction: "workflow.supervisor.checkpoint.preview",
+    writeAction: "workflow.checkpoint",
+    workflowId,
+    planId,
+    readinessDecision: plan.decision || "",
+    existingCheckpointCount: checkpoints.length,
+    latestCheckpoint: latestCheckpoint ? {
+      checkpointId: latestCheckpoint.checkpoint_id || "",
+      status: latestCheckpoint.status || "",
+      phase: latestCheckpoint.phase || "",
+      decision: latestCheckpoint.decision || "",
+      summary: latestCheckpoint.summary || "",
+      path: latestCheckpoint.path || "",
+      createdBy: latestCheckpoint.created_by || "",
+      createdAt: latestCheckpoint.created_at || ""
+    } : null,
+    v2StateSummary: {
+      nodes: Number(plan.counts?.nodes || 0),
+      readyNodes: Number(plan.counts?.readyNodes || 0),
+      activeWorkers: Number(plan.counts?.activeWorkers || 0),
+      reviewWorkers: Number(plan.counts?.reviewWorkers || 0),
+      activeAdapterJobs: Number(plan.counts?.activeAdapterJobs || 0),
+      humanGatePackages: Number(plan.counts?.humanGatePackages || 0)
+    },
+    evidenceRefs: [
+      plan.planSpecArtifactRef || "",
+      ...(plan.readyNodes || []).map((node) => node.outputInfoId || node.inputInfoId || "").filter(Boolean),
+      ...(plan.activeWorkers || []).map((worker) => worker.outputInfoId || worker.receiptRef || "").filter(Boolean),
+      ...(plan.reviewWorkers || []).map((worker) => worker.outputInfoId || worker.receiptRef || "").filter(Boolean),
+      ...(plan.activeAdapterJobs || []).map((job) => job.artifactRef || job.runnerReceiptRef || "").filter(Boolean),
+      ...(plan.humanGatePackages || []).flatMap((pkg) => pkg.evidenceRefs || [])
+    ].filter(Boolean),
+    checkpointPreview: {
+      wouldWriteCheckpointNow: false,
+      wouldWriteArtifactNow: false,
+      wouldUpdateArtifactIndexNow: false,
+      checkpointParityStatus: "preview_only_v2_checkpoint_writer_gap",
+      reason: "checkpoint preview is read-only and does not write checkpoint rows or artifacts"
+    }
+  };
 }
 
 function closeoutCandidateForPlan(plan = {}) {
@@ -287,8 +389,53 @@ export function createWorkflowSupervisorNextActionsHandlers(context = {}) {
     };
   }
 
+  async function workflowSupervisorCheckpointPreview(rootDir, input = {}) {
+    const limit = Math.max(1, Math.min(100, Number(input.limit || input.detailLimit || input.detail_limit || 20) || 20));
+    const readiness = await workflowV2ReadinessPreview(rootDir, {
+      ...input,
+      includeDetails: true,
+      limit
+    });
+    const plans = (readiness.plans || []).filter(planNeedsCheckpointPreview);
+    const checkpointsByWorkflow = await checkpointRowsByWorkflow(readiness.dbFile, plans.map((plan) => plan.workflowId), limit);
+    const checkpointCandidates = plans
+      .map((plan) => checkpointCandidateForPlan(plan, checkpointsByWorkflow.get(plan.workflowId) || []))
+      .slice(0, limit);
+    return {
+      operation: "workflow.supervisor.checkpoint.preview",
+      dryRun: true,
+      previewOnly: true,
+      ok: true,
+      status: checkpointCandidates.length ? "ready" : "not_ready",
+      generatedAt: readiness.generatedAt || firstText(input.generatedAt, input.generated_at, input.now),
+      decision: readiness.decision,
+      nextDecision: readiness.nextDecision || readiness.decision,
+      reasons: checkpointCandidates.length ? ["workflow_checkpoint_preview_available"] : ["no_v2_plan_available_for_checkpoint_preview"],
+      checkpointCandidateCount: checkpointCandidates.length,
+      checkpointCandidates: checkpointCandidates.slice(0, limit),
+      would: {
+        mutate: false,
+        writeCheckpoint: false,
+        writeArtifact: false,
+        updateArtifactIndex: false,
+        dispatch: false,
+        requestHumanGate: false
+      },
+      readiness,
+      limitations: [
+        "preview_only_no_state_mutation",
+        "does_not_write_workflow_checkpoint",
+        "does_not_write_checkpoint_artifact",
+        "does_not_update_artifact_index",
+        "v2_checkpoint_writer_not_implemented"
+      ],
+      dbFile: readiness.dbFile
+    };
+  }
+
   return {
     workflowSupervisorNextActionsPreview,
+    workflowSupervisorCheckpointPreview,
     workflowSupervisorCloseoutPreview
   };
 }

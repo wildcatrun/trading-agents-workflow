@@ -5105,7 +5105,7 @@ LIMIT ${limit};`);
           lastEventAt: row.updated_at || row.created_at,
           artifactRef: row.plan_spec_artifact_ref,
           missingEvidence: state === "completed" ? ["cat_claw_closeout"] : [],
-          previewActions: state === "completed" ? ["workflow.supervisor.closeout.preview"] : ["workflow.supervisor.next_actions.preview"]
+          previewActions: state === "completed" ? ["workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview"] : ["workflow.supervisor.next_actions.preview"]
         }));
       }
     }

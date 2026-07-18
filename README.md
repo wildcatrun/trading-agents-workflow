@@ -179,6 +179,7 @@ and reload or restart the actual Gateway only through the approved runbook.
 - `docs/workflow-v1-v2-refactor-migration-plan.md` - topology-driven refactor and migration plan for making v2 the default kernel by `v1.0.0`, reducing v1 to compatibility shims, and protecting shared substrate.
 - `docs/workflow-v1-v2-migration-worthiness-audit.md` - migration value audit that separates must-migrate blocks from compatibility shells, optional/template-later work, shared substrate, and archive/no-migration surfaces.
 - `docs/workflow-p17-supervisor-closeout-preview.md` - P17 read-only closeout preview slice for completed v2 plans and the remaining Cat Claw closeout executor gap.
+- `docs/workflow-p18-supervisor-checkpoint-preview.md` - P18 read-only checkpoint preview slice for v2 recovery-boundary parity and the remaining checkpoint writer gap.
 - `docs/workflow-v2-p1-readiness-plan.md` - historical first-slice authorization gate, dry-run API contract, test matrix, worker testbed preflight, and execution-readiness checklist.
 - `docs/workflow-v2-orchestration-schema.sql` - schema design reference for v2 orchestration objects; the initial runtime implementation now creates an aligned minimal `workflow_v2_*` subset.
 - `docs/workflow-v2-worker-runtime-backends.md` - requirements draft for Hermers/Claude Code worker backends, `wsl-agents` Docker sandbox testbeds, `wsl-models` API usage, and authorization gates.

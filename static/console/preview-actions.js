@@ -36,6 +36,16 @@ export function kanbanPreviewActionModel(card = {}, action = "") {
       payload: { workflowId }
     };
   }
+  if (action === "workflow.supervisor.checkpoint.preview") {
+    return {
+      action,
+      label: "Preview Checkpoint",
+      enabled: Boolean(workflowId),
+      reason: workflowId ? "" : "workflowId is required",
+      workflowId,
+      payload: { workflowId }
+    };
+  }
   if (action === "workflow.supervise.preview") {
     return {
       action,

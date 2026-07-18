@@ -5468,6 +5468,13 @@ async function testWorkflowSupervisorNextActionsPreview() {
   assert.equal(planned.candidates[0].candidateType, "worker_spawn_preview");
   assert.equal(planned.candidates[0].followUpAction, "workflow.v2.worker_spawn.preview");
   assert.equal(planned.candidates[0].mutatesNow, false);
+  const plannedCheckpointPreview = await runAction(fixture.root, {
+    action: "workflow.supervisor.checkpoint.preview",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(plannedCheckpointPreview.status, "not_ready");
+  assert.equal(plannedCheckpointPreview.checkpointCandidateCount, 0);
 
   const execution = await setupWorkflowV2KernelExecutionFixture("workflow-supervisor-next-actions-worker");
   await runAction(execution.root, workflowV2KernelWorkerInput(execution, {
@@ -5496,8 +5503,18 @@ VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-
     planId: "plan-v2-kernel"
   });
   assert.equal(humanGate.decision, "human_gate_pending");
-  assert.equal(humanGate.candidates[0].followUpAction, "workflow.v2.human_gate_request.preview");
-  assert.equal(humanGate.candidates[0].input.packageId, "package-supervisor-next-hgate");
+  assert.equal(humanGate.candidates[0].candidateType, "workflow_checkpoint_preview");
+  assert.equal(humanGate.candidates[0].followUpAction, "workflow.supervisor.checkpoint.preview");
+  assert.equal(humanGate.candidates[1].followUpAction, "workflow.v2.human_gate_request.preview");
+  assert.equal(humanGate.candidates[1].input.packageId, "package-supervisor-next-hgate");
+  const humanGateCheckpointPreview = await runAction(hgateFixture.root, {
+    action: "workflow.supervisor.checkpoint.preview",
+    workflowId: hgateFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(humanGateCheckpointPreview.status, "ready");
+  assert.equal(humanGateCheckpointPreview.checkpointCandidateCount, 1);
+  assert.equal(humanGateCheckpointPreview.checkpointCandidates[0].reason, "v2_plan_needs_checkpoint_boundary_before_closeout_or_human_gate");
 
   const draftFixture = await setupWorkflowV2KernelPlanFixture("workflow-supervisor-next-actions-draft-hgate");
   sqliteExec(draftFixture.dbFile, `
@@ -5533,15 +5550,21 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     planId: "plan-v2-kernel"
   });
   assert.equal(closeout.decision, "cat_claw_summary_required");
-  assert.equal(closeout.candidates[0].candidateType, "cat_claw_closeout_required");
-  assert.equal(closeout.candidates[0].followUpAction, "workflow.supervisor.closeout.preview");
+  assert.equal(closeout.candidates[0].candidateType, "workflow_checkpoint_preview");
+  assert.equal(closeout.candidates[0].followUpAction, "workflow.supervisor.checkpoint.preview");
   assert.equal(closeout.candidates[0].status, "preview_available");
-  assert.equal(closeout.candidates[0].executorStatus, "replacement_gap");
+  assert.equal(closeout.candidates[0].executorStatus, "v2_checkpoint_writer_gap");
+  assert.equal(closeout.candidates[1].candidateType, "cat_claw_closeout_required");
+  assert.equal(closeout.candidates[1].followUpAction, "workflow.supervisor.closeout.preview");
+  assert.equal(closeout.candidates[1].status, "preview_available");
+  assert.equal(closeout.candidates[1].executorStatus, "replacement_gap");
 
   const closeoutMutationCountsBefore = {
+    artifactIndex: sqliteCount(closeoutFixture.dbFile, "artifact_index"),
     checkpoints: sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"),
     dispatches: sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"),
     humanGateBatches: sqliteCount(closeoutFixture.dbFile, "human_gate_batches"),
+    humanGateRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"),
     messageFlows: sqliteCount(closeoutFixture.dbFile, "message_flows"),
     outbox: sqliteCount(closeoutFixture.dbFile, "telegram_outbox"),
     controlLoopJobs: sqliteCount(closeoutFixture.dbFile, "control_loop_jobs"),
@@ -5549,6 +5572,30 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     operations: sqliteCount(closeoutFixture.dbFile, "workflow_operations"),
     workflowTasks: sqliteCount(closeoutFixture.dbFile, "workflow_tasks")
   };
+  const checkpointPreview = await runAction(closeoutFixture.root, {
+    action: "workflow.supervisor.checkpoint",
+    workflowId: closeoutFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(checkpointPreview.operation, "workflow.supervisor.checkpoint.preview");
+  assert.equal(checkpointPreview.dryRun, true);
+  assert.equal(checkpointPreview.previewOnly, true);
+  assert.equal(checkpointPreview.status, "ready");
+  assert.equal(checkpointPreview.checkpointCandidateCount, 1);
+  assert.equal(checkpointPreview.checkpointCandidates[0].candidateType, "workflow_checkpoint_preview");
+  assert.equal(checkpointPreview.checkpointCandidates[0].previewOnly, true);
+  assert.equal(checkpointPreview.checkpointCandidates[0].mutatesNow, false);
+  assert.equal(checkpointPreview.checkpointCandidates[0].followUpAction, "workflow.supervisor.checkpoint.preview");
+  assert.equal(checkpointPreview.checkpointCandidates[0].writeAction, "workflow.checkpoint");
+  assert.equal(checkpointPreview.checkpointCandidates[0].executorStatus, "v2_checkpoint_writer_gap");
+  assert.equal(checkpointPreview.checkpointCandidates[0].checkpointPreview.wouldWriteCheckpointNow, false);
+  assert.equal(checkpointPreview.checkpointCandidates[0].checkpointPreview.wouldWriteArtifactNow, false);
+  assert.equal(checkpointPreview.checkpointCandidates[0].checkpointPreview.wouldUpdateArtifactIndexNow, false);
+  assert.equal(checkpointPreview.would.mutate, false);
+  assert.equal(checkpointPreview.would.writeCheckpoint, false);
+  assert.equal(checkpointPreview.would.writeArtifact, false);
+  assert.equal(checkpointPreview.would.updateArtifactIndex, false);
+  assert.equal(checkpointPreview.limitations.includes("v2_checkpoint_writer_not_implemented"), true);
   const closeoutPreview = await runAction(closeoutFixture.root, {
     action: "workflow.supervisor.closeout",
     workflowId: closeoutFixture.workflowId,
@@ -5571,9 +5618,11 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(closeoutPreview.would.writeCheckpoint, false);
   assert.equal(closeoutPreview.limitations.includes("final_v2_closeout_executor_not_implemented"), true);
   assert.deepEqual({
+    artifactIndex: sqliteCount(closeoutFixture.dbFile, "artifact_index"),
     checkpoints: sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"),
     dispatches: sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"),
     humanGateBatches: sqliteCount(closeoutFixture.dbFile, "human_gate_batches"),
+    humanGateRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"),
     messageFlows: sqliteCount(closeoutFixture.dbFile, "message_flows"),
     outbox: sqliteCount(closeoutFixture.dbFile, "telegram_outbox"),
     controlLoopJobs: sqliteCount(closeoutFixture.dbFile, "control_loop_jobs"),
@@ -5585,6 +5634,7 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   const closeoutBoard = await closeoutReadModel.kanban({ workflowId: closeoutFixture.workflowId, limit: 50 });
   const closeoutPlanCard = closeoutBoard.columns.flatMap((column) => column.cards).find((card) => card.source === "workflow_v2_plans" && card.sourceId === "plan-v2-kernel");
   assert.equal(closeoutPlanCard?.column, "done");
+  assert.equal(closeoutPlanCard?.previewActions.includes("workflow.supervisor.checkpoint.preview"), true);
   assert.equal(closeoutPlanCard?.previewActions.includes("workflow.supervisor.closeout.preview"), true);
   assert.equal(closeoutPlanCard?.previewActions.includes("workflow.supervise.preview"), false);
 }
@@ -5614,10 +5664,10 @@ async function testWorkflowV2ExtractedActionContracts() {
   const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-extracted-action-contracts");
   const { root, dbFile, workflowId } = fixture;
   const workflowModule = await import("../src/workflow.js");
-  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2Validate"]) {
+  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2Validate"]) {
     assert.equal(typeof workflowModule[exportName], "function", `${exportName} should remain a public workflow.js export`);
   }
-  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.validate"]) {
+  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.validate"]) {
     assert.equal(workflowModule.WORKFLOW_V2_ACTION_REGISTRY.has(action), true, `${action} should remain registered`);
   }
 
@@ -19239,7 +19289,16 @@ async function testWorkflowActionPolicyRegistryCoverage() {
   assert.equal(supervisorCloseoutAliasPolicy.allowed, true);
   assert.equal(supervisorCloseoutAliasPolicy.action, "workflow.supervisor.closeout.preview");
   assert.equal(supervisorCloseoutAliasPolicy.readOnly, true);
+  const supervisorCheckpointAliasPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.supervisor.checkpoint"
+  });
+  assert.equal(supervisorCheckpointAliasPolicy.allowed, true);
+  assert.equal(supervisorCheckpointAliasPolicy.action, "workflow.supervisor.checkpoint.preview");
+  assert.equal(supervisorCheckpointAliasPolicy.readOnly, true);
   const indexSource = await fs.readFile(path.resolve("index.js"), "utf8");
+  assert.equal((indexSource.match(/"workflow\.supervisor\.checkpoint"/g) || []).length >= 2, true);
+  assert.equal(indexSource.includes('"workflow.supervisor.checkpoint.preview"'), true);
   assert.equal((indexSource.match(/"workflow\.supervisor\.closeout"/g) || []).length >= 2, true);
   assert.equal(indexSource.includes('"workflow.supervisor.closeout.preview"'), true);
 }
@@ -22101,6 +22160,7 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   const expectedPriorityActions = [
     "workflow.supervisor.next_actions.preview",
     "workflow.supervisor.closeout.preview",
+    "workflow.supervisor.checkpoint.preview",
     "workflow.rerun.agent.preview",
     "telegram.outbox.delivery.preview",
     "telegram.outbox.requeue.preview",
@@ -22119,10 +22179,11 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   assert.equal(emptyPriority.find((row) => row.action === "workflow.supervisor.next_actions.preview")?.priority, "P0");
   assert.equal(emptyPriority.find((row) => row.action === "workflow.supervisor.next_actions.preview")?.status, "not_observed");
   assert.equal(emptyPriority.find((row) => row.action === "workflow.supervisor.closeout.preview")?.priority, "P0");
+  assert.equal(emptyPriority.find((row) => row.action === "workflow.supervisor.checkpoint.preview")?.priority, "P0");
   assert.equal(emptyPriority.find((row) => row.action === "workflow.supervise.preview"), undefined);
   const observedPriority = priorityRuntime.previewActionPriorityModel([
     { workflowId: "wf-priority", source: "evidence_gaps", sourceId: "gap-priority", previewActions: ["workflow.supervisor.next_actions.preview"] },
-    { workflowId: "wf-priority", source: "workflow_v2_plans", sourceId: "plan-closeout-priority", previewActions: ["workflow.supervisor.closeout.preview"] },
+    { workflowId: "wf-priority", source: "workflow_v2_plans", sourceId: "plan-closeout-priority", previewActions: ["workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview"] },
     { workflowId: "wf-priority", source: "workflow_tasks", sourceId: "task-priority", previewActions: ["workflow.supervise.preview"] },
     { workflowId: "wf-priority", source: "mixed_meeting_dispatches", sourceId: "dispatch-priority", dispatchId: "dispatch-priority", previewActions: ["workflow.rerun.dispatch.preview"] },
     { workflowId: "wf-priority", source: "control_loop_jobs", sourceId: "job-priority", jobId: "job-priority", previewActions: ["workflow.control_loop.job.requeue.preview"] },
@@ -22132,6 +22193,7 @@ return { PREVIEW_ACTION_PRIORITY, previewActionPriorityModel };`);
   ]);
   assert.equal(observedPriority.find((row) => row.action === "workflow.supervisor.next_actions.preview")?.ready, 1);
   assert.equal(observedPriority.find((row) => row.action === "workflow.supervisor.closeout.preview")?.ready, 1);
+  assert.equal(observedPriority.find((row) => row.action === "workflow.supervisor.checkpoint.preview")?.ready, 1);
   assert.equal(observedPriority.find((row) => row.action === "workflow.supervise.preview"), undefined);
   assert.equal(observedPriority.find((row) => row.action === "telegram.outbox.delivery.preview")?.ready, 1);
   assert.equal(observedPriority.find((row) => row.action === "telegram.outbox.delivery.preview")?.blocked, 1);
@@ -22154,10 +22216,11 @@ return { renderKanbanPreviewActions };`)(
   );
   const directPreviewButtons = directPreviewRuntime.renderKanbanPreviewActions({
     workflowId: "wf-priority",
-    previewActions: ["workflow.supervise.preview", "workflow.supervisor.next_actions.preview", "workflow.supervisor.closeout.preview"]
+    previewActions: ["workflow.supervise.preview", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview"]
   });
   assert.equal(JSON.stringify(directPreviewButtons).includes("workflow.supervise.preview"), false);
   assert.equal(JSON.stringify(directPreviewButtons).includes("workflow.supervisor.next_actions.preview"), true);
+  assert.equal(JSON.stringify(directPreviewButtons).includes("workflow.supervisor.checkpoint.preview"), true);
   assert.equal(JSON.stringify(directPreviewButtons).includes("workflow.supervisor.closeout.preview"), true);
   assert.equal(readModel.includes('previewActions: card.workflowId ? ["workflow.supervisor.next_actions.preview"] : []'), true);
   assert.equal(readModel.includes('previewActions: ["workflow.supervise.preview", ...(row.phase ? ["workflow.rerun.phase.preview"] : [])]'), true);

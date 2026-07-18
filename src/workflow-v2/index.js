@@ -4,6 +4,7 @@ export const WORKFLOW_V2_ACTION_HANDLER_NAMES = {
   "workflow.supervisor.readiness.preview": "workflowSupervisorReadinessPreview",
   "workflow.v2.readiness.preview": "workflowV2ReadinessPreview",
   "workflow.supervisor.next_actions.preview": "workflowSupervisorNextActionsPreview",
+  "workflow.supervisor.checkpoint.preview": "workflowSupervisorCheckpointPreview",
   "workflow.supervisor.closeout.preview": "workflowSupervisorCloseoutPreview",
   "workflow.v2.next_actions.preview": "workflowSupervisorNextActionsPreview",
   "workflow.v2.info_stack.preview": "workflowV2InfoStackPreview",

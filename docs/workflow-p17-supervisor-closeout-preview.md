@@ -20,6 +20,7 @@ Gate, drain runtimes, or mutate workflow state.
 ## Behavior
 
 - `workflow.supervisor.next_actions.preview` now points completed v2 plans to
+  `workflow.supervisor.checkpoint.preview` and
   `workflow.supervisor.closeout.preview` instead of reusing readiness preview as
   a placeholder.
 - `workflow.supervisor.closeout.preview` reads v2 readiness state and returns
@@ -44,3 +45,7 @@ previously bundled inside legacy `workflow.supervise.preview`:
 Before mutating `workflow.supervise` can be frozen, a later slice must either
 implement a governed v2 Cat Claw closeout executor or explicitly retire the
 legacy closeout dispatch path with evidence.
+
+P18 subsequently added `workflow.supervisor.checkpoint.preview` as read-only
+checkpoint parity. That still leaves the governed checkpoint writer as a
+separate replacement gap.

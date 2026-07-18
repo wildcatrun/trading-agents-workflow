@@ -100,6 +100,13 @@ const PREVIEW_ACTION_PRIORITY = [
     boundary: "Closeout preview only; no checkpoint write, dispatch, Human Gate request, or workflow mutation."
   },
   {
+    action: "workflow.supervisor.checkpoint.preview",
+    priority: "P0",
+    label: "Supervisor Checkpoint Preview",
+    firstWhen: "A v2 plan needs a recovery boundary before closeout or Human Gate.",
+    boundary: "Checkpoint preview only; no checkpoint row, artifact, artifact_index, dispatch, or workflow mutation."
+  },
+  {
     action: "workflow.rerun.agent.preview",
     priority: "P1",
     label: "Rerun Agent/Dispatch Preview",
@@ -2922,6 +2929,7 @@ function kanbanPreviewActionSpec(card = {}, action = "") {
   const model = kanbanPreviewActionModel(card, action);
   if (model.action === "workflow.supervisor.next_actions.preview") return { ...model, onClick: () => previewSupervisorNextActions(model.workflowId) };
   if (model.action === "workflow.supervisor.readiness.preview") return { ...model, onClick: () => previewIntervention("workflow.supervisor.readiness.preview", {}, model.workflowId) };
+  if (model.action === "workflow.supervisor.checkpoint.preview") return { ...model, onClick: () => previewIntervention("workflow.supervisor.checkpoint.preview", {}, model.workflowId) };
   if (model.action === "workflow.supervisor.closeout.preview") return { ...model, onClick: () => previewIntervention("workflow.supervisor.closeout.preview", {}, model.workflowId) };
   if (model.action === "workflow.supervise.preview") return { ...model, onClick: () => previewSupervise(model.workflowId) };
   if (["workflow.advance.preview", "workflow.pause.preview", "workflow.resume.preview", "workflow.stop.preview"].includes(model.action)) {

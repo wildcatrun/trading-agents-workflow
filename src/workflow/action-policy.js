@@ -207,6 +207,7 @@ export const WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS = new Set([
   "workflow.supervisor.readiness.preview",
   "workflow.v2.readiness.preview",
   "workflow.supervisor.next_actions.preview",
+  "workflow.supervisor.checkpoint.preview",
   "workflow.supervisor.closeout.preview",
   "workflow.v2.next_actions.preview",
   "workflow.v2.info_stack.preview",
