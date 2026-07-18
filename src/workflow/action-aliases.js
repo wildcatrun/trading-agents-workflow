@@ -141,7 +141,6 @@ export const WORKFLOW_ACTION_ALIASES = {
   "workflow.supervisor.readiness": "workflow.supervisor.readiness.preview",
   "workflow.supervisor.next_actions": "workflow.supervisor.next_actions.preview",
   "workflow.supervisor.next-actions.preview": "workflow.supervisor.next_actions.preview",
-  "workflow.supervisor.checkpoint": "workflow.supervisor.checkpoint.preview",
   "workflow.next_actions.preview": "workflow.supervisor.next_actions.preview",
   "workflow.next-actions.preview": "workflow.supervisor.next_actions.preview",
   "workflow.v2.readiness": "workflow.v2.readiness.preview",

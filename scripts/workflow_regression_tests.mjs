@@ -5553,7 +5553,8 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(closeout.candidates[0].candidateType, "workflow_checkpoint_preview");
   assert.equal(closeout.candidates[0].followUpAction, "workflow.supervisor.checkpoint.preview");
   assert.equal(closeout.candidates[0].status, "preview_available");
-  assert.equal(closeout.candidates[0].executorStatus, "v2_checkpoint_writer_gap");
+  assert.equal(closeout.candidates[0].executorStatus, "v2_checkpoint_writer_available");
+  assert.equal(closeout.candidates[0].writeAction, "workflow.supervisor.checkpoint");
   assert.equal(closeout.candidates[1].candidateType, "cat_claw_closeout_required");
   assert.equal(closeout.candidates[1].followUpAction, "workflow.supervisor.closeout.preview");
   assert.equal(closeout.candidates[1].status, "preview_available");
@@ -5574,29 +5575,31 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     workflowTasks: sqliteCount(closeoutFixture.dbFile, "workflow_tasks")
   };
   const checkpointPreview = await runAction(closeoutFixture.root, {
-    action: "workflow.supervisor.checkpoint",
+    action: "workflow.supervisor.checkpoint.preview",
     workflowId: closeoutFixture.workflowId,
-    planId: "plan-v2-kernel"
+    planId: "plan-v2-kernel",
+    checkpointId: "workflow_supervisor_checkpoint.tampered"
   });
   assert.equal(checkpointPreview.operation, "workflow.supervisor.checkpoint.preview");
   assert.equal(checkpointPreview.dryRun, true);
   assert.equal(checkpointPreview.previewOnly, true);
   assert.equal(checkpointPreview.status, "ready");
   assert.equal(checkpointPreview.checkpointCandidateCount, 1);
-  assert.equal(checkpointPreview.checkpointCandidates[0].candidateType, "workflow_checkpoint_preview");
+  assert.equal(checkpointPreview.checkpointCandidates[0].candidateType, "workflow_supervisor_checkpoint");
   assert.equal(checkpointPreview.checkpointCandidates[0].previewOnly, true);
   assert.equal(checkpointPreview.checkpointCandidates[0].mutatesNow, false);
   assert.equal(checkpointPreview.checkpointCandidates[0].followUpAction, "workflow.supervisor.checkpoint.preview");
-  assert.equal(checkpointPreview.checkpointCandidates[0].writeAction, "workflow.checkpoint");
-  assert.equal(checkpointPreview.checkpointCandidates[0].executorStatus, "v2_checkpoint_writer_gap");
-  assert.equal(checkpointPreview.checkpointCandidates[0].checkpointPreview.wouldWriteCheckpointNow, false);
-  assert.equal(checkpointPreview.checkpointCandidates[0].checkpointPreview.wouldWriteArtifactNow, false);
-  assert.equal(checkpointPreview.checkpointCandidates[0].checkpointPreview.wouldUpdateArtifactIndexNow, false);
+  assert.equal(checkpointPreview.checkpointCandidates[0].writeAction, "workflow.supervisor.checkpoint");
+  assert.equal(checkpointPreview.checkpointCandidates[0].executorStatus, "ready");
+  assert.notEqual(checkpointPreview.checkpointCandidates[0].input.checkpointId, "workflow_supervisor_checkpoint.tampered");
+  assert.equal(checkpointPreview.checkpointCandidates[0].checkpointPreview.wouldWriteCheckpointNow, true);
+  assert.equal(checkpointPreview.checkpointCandidates[0].checkpointPreview.wouldWriteArtifactNow, true);
+  assert.equal(checkpointPreview.checkpointCandidates[0].checkpointPreview.wouldUpdateArtifactIndexNow, true);
   assert.equal(checkpointPreview.would.mutate, false);
-  assert.equal(checkpointPreview.would.writeCheckpoint, false);
-  assert.equal(checkpointPreview.would.writeArtifact, false);
-  assert.equal(checkpointPreview.would.updateArtifactIndex, false);
-  assert.equal(checkpointPreview.limitations.includes("v2_checkpoint_writer_not_implemented"), true);
+  assert.equal(checkpointPreview.would.writeCheckpoint, true);
+  assert.equal(checkpointPreview.would.writeArtifact, true);
+  assert.equal(checkpointPreview.would.updateArtifactIndex, true);
+  assert.equal(checkpointPreview.limitations.includes("workflow.supervisor.checkpoint requires separate write authorization"), true);
   const closeoutPreview = await runAction(closeoutFixture.root, {
     action: "workflow.supervisor.closeout.preview",
     workflowId: closeoutFixture.workflowId,
@@ -5647,14 +5650,91 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
 
   await runAction(closeoutFixture.root, {
     action: "runtime.agent.upsert",
+    runtime: "hermers",
+    platform: "hermers",
+    agentId: "cat_body",
+    capabilities: { permissions: ["workflow.verify"] }
+  });
+  const checkpointDenied = await runAction(closeoutFixture.root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.supervisor.checkpoint",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(checkpointDenied.allowed, false);
+  assert.equal(checkpointDenied.reason, "missing_capability:workflow.checkpoint");
+  await runAction(closeoutFixture.root, {
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "main",
+    capabilities: { permissions: ["workflow.checkpoint"] }
+  });
+  const checkpointCountsBefore = {
+    artifactIndex: sqliteCount(closeoutFixture.dbFile, "artifact_index"),
+    checkpoints: sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"),
+    dispatches: sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"),
+    humanGateRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"),
+    closeoutRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"),
+    messageFlows: sqliteCount(closeoutFixture.dbFile, "message_flows"),
+    outbox: sqliteCount(closeoutFixture.dbFile, "telegram_outbox"),
+    workflowTasks: sqliteCount(closeoutFixture.dbFile, "workflow_tasks"),
+    workflowRuns: sqliteCount(closeoutFixture.dbFile, "workflow_runs"),
+    events: sqliteCount(closeoutFixture.dbFile, "workflow_events"),
+    planCompleted: sqliteCount(closeoutFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND status='completed' AND workflow_state='completed'"),
+    nodesCompleted: sqliteCount(closeoutFixture.dbFile, "workflow_v2_plan_nodes", `workflow_id='${closeoutFixture.workflowId}' AND status='completed'`)
+  };
+  const checkpointExecution = await runAction(closeoutFixture.root, {
+    action: "workflow.supervisor.checkpoint",
+    workflowId: closeoutFixture.workflowId,
+    planId: "plan-v2-kernel",
+    checkpointId: "workflow_supervisor_checkpoint.tampered",
+    callerAgent: "main",
+    createdBy: "main"
+  });
+  assert.equal(checkpointExecution.schemaVersion, "workflow_supervisor_checkpoint_result.v1");
+  assert.equal(checkpointExecution.writeBoundary, "v2_checkpoint_artifact_row_and_event_only");
+  assert.equal(checkpointExecution.didWriteCheckpoint, true);
+  assert.equal(checkpointExecution.didWriteArtifact, true);
+  assert.equal(checkpointExecution.didUpdateArtifactIndex, true);
+  assert.equal(checkpointExecution.didDispatch, false);
+  assert.equal(checkpointExecution.didRequestHumanGate, false);
+  assert.equal(checkpointExecution.didSendTelegram, false);
+  assert.equal(checkpointExecution.didDrainRuntime, false);
+  assert.equal(checkpointExecution.didUpdateV2PlanState, false);
+  assert.equal(checkpointExecution.didUpdateV2NodeState, false);
+  assert.notEqual(checkpointExecution.checkpointId, "workflow_supervisor_checkpoint.tampered");
+  assert.equal(checkpointExecution.resumePayload.planId, "plan-v2-kernel");
+  assert.equal(checkpointExecution.resumePayload.readinessDecision, "cat_claw_summary_required");
+  assert.equal(checkpointExecution.resumePayload.nextActions.includes("workflow.supervisor.closeout"), true);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints", `checkpoint_id='${checkpointExecution.checkpointId}' AND workflow_id='${closeoutFixture.workflowId}' AND decision='cat_claw_summary_required'`), 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index", `artifact_id='${checkpointExecution.checkpointId}' AND kind='workflow_checkpoint'`), 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_events", `event_type='workflow.supervisor.checkpoint.recorded' AND workflow_id='${closeoutFixture.workflowId}'`), checkpointCountsBefore.events + 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"), checkpointCountsBefore.dispatches);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"), checkpointCountsBefore.humanGateRecords);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"), checkpointCountsBefore.closeoutRecords);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "message_flows"), checkpointCountsBefore.messageFlows);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "telegram_outbox"), checkpointCountsBefore.outbox);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_tasks"), checkpointCountsBefore.workflowTasks);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_runs"), 0);
+  assert.equal(checkpointCountsBefore.workflowRuns, 0);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND status='completed' AND workflow_state='completed'"), checkpointCountsBefore.planCompleted);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_v2_plan_nodes", `workflow_id='${closeoutFixture.workflowId}' AND status='completed'`), checkpointCountsBefore.nodesCompleted);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"), checkpointCountsBefore.checkpoints + 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index"), checkpointCountsBefore.artifactIndex + 1);
+  sqliteExec(closeoutFixture.dbFile, `
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES ('checkpoint-rogue-legacy-closeout', '${closeoutFixture.workflowId}', 'completed', 'legacy', 'cat_claw_summary_required', 'Wrong legacy checkpoint must not unlock v2 closeout.', '{}', '[]', '[]', '[]', '[]', '{}', 'workflows/checkpoints/checkpoint-rogue-legacy-closeout.md', 'legacy', '2030-01-01T00:00:00.000Z');
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES ('workflow_supervisor_checkpoint.wrongplan', '${closeoutFixture.workflowId}', 'completed', 'completed', 'cat_claw_summary_required', 'Wrong plan checkpoint must not unlock this v2 closeout.', '{"schemaVersion":"workflow_supervisor_checkpoint_resume.v1","workflowId":"${closeoutFixture.workflowId}","planId":"other-plan","readinessDecision":"cat_claw_summary_required"}', '[]', '[]', '[]', '[]', '{}', 'workflows/checkpoints/workflow_supervisor_checkpoint.wrongplan.md', 'main', '2030-01-01T00:00:01.000Z');`);
+
+  await runAction(closeoutFixture.root, {
+    action: "runtime.agent.upsert",
     runtime: "openclaw",
     platform: "openclaw",
     agentId: "cat_claw",
     capabilities: { permissions: ["cat_claw.audit", "dispatch.write"] }
   });
-  sqliteExec(closeoutFixture.dbFile, `
-INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
-VALUES ('checkpoint-supervisor-closeout', '${closeoutFixture.workflowId}', 'completed', 'closeout', 'cat_claw_summary_required', 'Checkpoint before v2 closeout dispatch.', '{}', '[]', '[]', '[]', '["dispatch_cat_claw_closeout"]', '{}', 'workflows/checkpoints/checkpoint-supervisor-closeout.md', 'local_codex', '2026-07-18T00:00:00.000Z');`);
   const closeoutReadyPreview = await runAction(closeoutFixture.root, {
     action: "workflow.supervisor.closeout.preview",
     workflowId: closeoutFixture.workflowId,
@@ -5665,7 +5745,7 @@ VALUES ('checkpoint-supervisor-closeout', '${closeoutFixture.workflowId}', 'comp
   });
   assert.equal(closeoutReadyPreview.closeoutCandidates[0].status, "ready_for_closeout");
   assert.equal(closeoutReadyPreview.closeoutCandidates[0].executorStatus, "ready");
-  assert.equal(closeoutReadyPreview.closeoutCandidates[0].checkpointPreview.latestCheckpointId, "checkpoint-supervisor-closeout");
+  assert.equal(closeoutReadyPreview.closeoutCandidates[0].checkpointPreview.latestCheckpointId, checkpointExecution.checkpointId);
   assert.equal(closeoutReadyPreview.closeoutCandidates[0].closeoutPreview.wouldDispatchCatClawNow, true);
   assert.equal(closeoutReadyPreview.closeoutCandidates[0].closeoutPreview.reportTarget, "openclaw:cat_claw");
   assert.notEqual(closeoutReadyPreview.closeoutCandidates[0].input.closeoutId, "workflow_v2_closeout.tampered");
@@ -19404,8 +19484,10 @@ async function testWorkflowActionPolicyRegistryCoverage() {
     targetAction: "workflow.supervisor.checkpoint"
   });
   assert.equal(supervisorCheckpointAliasPolicy.allowed, true);
-  assert.equal(supervisorCheckpointAliasPolicy.action, "workflow.supervisor.checkpoint.preview");
-  assert.equal(supervisorCheckpointAliasPolicy.readOnly, true);
+  assert.equal(supervisorCheckpointAliasPolicy.action, "workflow.supervisor.checkpoint");
+  assert.equal(supervisorCheckpointAliasPolicy.readOnly, false);
+  assert.equal(supervisorCheckpointAliasPolicy.mutating, true);
+  assert.equal(supervisorCheckpointAliasPolicy.requiredCapability, "workflow.checkpoint");
   const indexSource = await fs.readFile(path.resolve("index.js"), "utf8");
   assert.equal((indexSource.match(/"workflow\.supervisor\.checkpoint"/g) || []).length >= 2, true);
   assert.equal(indexSource.includes('"workflow.supervisor.checkpoint.preview"'), true);

@@ -4385,12 +4385,14 @@ const WORKFLOW_SUPERVISOR_NEXT_ACTIONS_HANDLERS = createWorkflowSupervisorNextAc
   meetingDispatch: (...args) => meetingDispatch(...args),
   nowIso,
   writeJsonArtifact,
+  writeTextArtifact,
   workflowV2ReadinessPreview: workflowSupervisorReadinessPreview
 });
 
 export const {
   workflowSupervisorNextActionsPreview,
   workflowSupervisorCheckpointPreview,
+  workflowSupervisorCheckpoint,
   workflowSupervisorCloseoutPreview,
   workflowSupervisorCloseout
 } = WORKFLOW_SUPERVISOR_NEXT_ACTIONS_HANDLERS;
@@ -8799,6 +8801,7 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowSupervisorReadinessPreview,
   workflowSupervisorNextActionsPreview,
   workflowSupervisorCheckpointPreview,
+  workflowSupervisorCheckpoint,
   workflowSupervisorCloseoutPreview,
   workflowSupervisorCloseout,
   workflowV2InfoStackPreview,

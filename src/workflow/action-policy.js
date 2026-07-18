@@ -20,7 +20,8 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
   ["workflow.checkpoint", {
     decisionClass: "must_migrate",
     migrationStatus: "legacy_active",
-    recommendation: "define v2 checkpoint/readiness parity before retiring legacy checkpoint"
+    replacement: "workflow.supervisor.checkpoint",
+    recommendation: "keep only for legacy workflow_runs/workflow_tasks checkpoints until v2/shared checkpoint coverage is fully proven"
   }],
   ["workflow.task.draft", {
     decisionClass: "compat_shell_only",
@@ -262,6 +263,7 @@ export const WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS = new Set([
   "workflow.v2.cat_claw_audit.record",
   "workflow.v2.human_gate_package.record",
   "workflow.v2.human_gate_request",
+  "workflow.supervisor.checkpoint",
   "workflow.supervisor.closeout",
   "telegram.outbox.delivery",
   "human_gate.inbox",
@@ -359,6 +361,7 @@ export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.v2.cat_claw_audit.record": { capability: "cat_claw.audit", risk: "medium", mutating: true },
   "workflow.v2.human_gate_package.record": { capability: "human_gate.write", risk: "high", mutating: true },
   "workflow.v2.human_gate_request": { capability: "human_gate.write", risk: "high", mutating: true },
+  "workflow.supervisor.checkpoint": { capability: "workflow.checkpoint", risk: "medium", mutating: true },
   "workflow.supervisor.closeout": { capability: "dispatch.write", risk: "high", mutating: true },
   "workflow.template.record_candidate": { capability: "workflow.write", risk: "medium", mutating: true },
   "workflow.template.instantiate.record": { capability: "workflow.write", risk: "medium", mutating: true },
