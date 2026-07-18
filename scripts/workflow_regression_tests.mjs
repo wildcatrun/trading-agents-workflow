@@ -84,7 +84,6 @@ import {
   PERMISSION_ACTION_REGISTRY,
   PROTOCOL_ACTION_REGISTRY,
   RESEARCH_ACTION_REGISTRY,
-  ROUTE_SHELL_ACTION_REGISTRY,
   RUNTIME_AGENT_ACTION_REGISTRY,
   RUNTIME_BRIDGE_ACTION_REGISTRY,
   RUNTIME_EVENT_ACTION_REGISTRY,
@@ -254,10 +253,6 @@ import {
   RESEARCH_ACTION_HANDLER_NAMES,
   createResearchActionRegistry
 } from "../src/research-actions.js";
-import {
-  ROUTE_SHELL_ACTION_HANDLER_NAMES,
-  createRouteShellActionRegistry
-} from "../src/route-shell-actions.js";
 import {
   RUNTIME_AGENT_ACTION_HANDLER_NAMES,
   createRuntimeAgentActionRegistry
@@ -14878,12 +14873,7 @@ async function testMeetingControlExtractedActionContracts() {
   assert.equal(sqliteCount(dbFile, "workflow_events", `event_type='dispatch.created' AND dispatch_id='${disperse.dispatches[0].dispatchId}'`), 1);
 }
 
-async function testRouteShellSourceFreezeRetirementContracts() {
-  assert.deepEqual(ROUTE_SHELL_ACTION_HANDLER_NAMES, {});
-  assert.equal(ROUTE_SHELL_ACTION_REGISTRY.size, 0);
-  const directRegistry = createRouteShellActionRegistry({});
-  assert.equal(directRegistry.size, 0);
-
+async function testRouteShellSourceDeletionRetirementContracts() {
   const root = await tempRoot("route-shell-source-freeze-contracts");
   const dbFile = path.join(root, "tracking.db");
   for (const retiredAction of ["route_shell.ingest", "route-shell.ingest", "route_shell.route"]) {
@@ -19144,7 +19134,6 @@ async function testWorkflowActionPolicyRegistryCoverage() {
     ["permission", PERMISSION_ACTION_REGISTRY],
     ["protocol", PROTOCOL_ACTION_REGISTRY],
     ["research", RESEARCH_ACTION_REGISTRY],
-    ["route_shell", ROUTE_SHELL_ACTION_REGISTRY],
     ["runtime_agent", RUNTIME_AGENT_ACTION_REGISTRY],
     ["runtime_bridge", RUNTIME_BRIDGE_ACTION_REGISTRY],
     ["runtime_event", RUNTIME_EVENT_ACTION_REGISTRY],
@@ -22588,7 +22577,7 @@ try {
     ["meeting dispatch extracted action contracts", testMeetingDispatchExtractedActionContracts],
     ["meeting control extracted action contracts", testMeetingControlExtractedActionContracts],
     ["runtime bridge extracted action contracts", testRuntimeBridgeExtractedActionContracts],
-    ["route_shell source-freeze retirement contracts", testRouteShellSourceFreezeRetirementContracts],
+    ["route_shell source-deletion retirement contracts", testRouteShellSourceDeletionRetirementContracts],
     ["topology extracted action contracts", testTopologyExtractedActionContracts],
     ["status extracted action contracts", testStatusExtractedActionContracts],
     ["permission extracted action contracts", testPermissionExtractedActionContracts],

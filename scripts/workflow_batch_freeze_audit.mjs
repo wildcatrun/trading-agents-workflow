@@ -130,11 +130,11 @@ const FREEZE_CANDIDATES = [
     v2DependencyPolicy: "allowed_until_replaced"
   },
   {
-    batch: "F",
-    family: "route_shell source-frozen",
+    batch: "F/G",
+    family: "route_shell source-deleted",
     actions: ["route_shell.ingest", "route-shell.ingest", "route_shell.route"],
-    currentStatus: "source_frozen",
-    freezeAction: "external_entrypoints_closed; keep implementation file only until deletion batch",
+    currentStatus: "source_deleted",
+    freezeAction: "external_entrypoints_closed; archived implementation deleted",
     v2Replacement: "message_flow/runtime adapter evidence; no v2 migration",
     v2DependencyPolicy: "must_not_depend"
   },
@@ -408,7 +408,7 @@ async function main() {
       publicRefs[action] = await exactStringOccurrences(publicFiles, action);
       v2PlanningRefs[action] = await exactStringOccurrences(v2PlanningFiles, action);
 
-      if ((candidate.currentStatus === "removed" || candidate.currentStatus === "removed_external_surface" || candidate.currentStatus === "source_frozen") && publicRefs[action].length > 0) {
+      if ((candidate.currentStatus === "removed" || candidate.currentStatus === "removed_external_surface" || candidate.currentStatus === "source_frozen" || candidate.currentStatus === "source_deleted") && publicRefs[action].length > 0) {
         policy.failures.push(`${action}: removed action reappeared in public surface ${summarizeOccurrences(publicRefs[action]).join("; ")}`);
       }
 
@@ -434,6 +434,13 @@ async function main() {
       v2PlanningRefs,
       failures: policy.failures
     });
+  }
+
+  try {
+    await fs.stat(path.join(repoRoot, "src", "route-shell-actions.js"));
+    failures.push("src/route-shell-actions.js exists after Batch G source deletion");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   }
 
   const payload = {

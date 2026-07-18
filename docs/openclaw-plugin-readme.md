@@ -102,10 +102,11 @@ Ingress classes:
 
 ## Route-Shell Retirement
 
-Route-shell physical forwarding is source-frozen. The plugin no longer exposes
+Route-shell physical forwarding is source-deleted. The plugin no longer exposes
 `routeShell` config, no longer registers the Gateway `before_dispatch`
-route-shell hook, and no longer exposes `route_shell.ingest`,
-`route-shell.ingest`, or `route_shell.route` through CLI/action contracts.
+route-shell hook, no longer carries a route-shell action implementation, and no
+longer exposes `route_shell.ingest`, `route-shell.ingest`, or
+`route_shell.route` through CLI/action contracts.
 
 Current behavior:
 

@@ -143,7 +143,7 @@ operations. Keep `trading-agents-workflow` in `plugins.allow`, keep
 and add `trading_agents_workflow` to `tools.alsoAllow` when using restrictive
 profiles such as `tools.profile="coding"`.
 
-Route-shell physical forwarding is source-frozen. Do not configure
+Route-shell physical forwarding is source-deleted. Do not configure
 `routeShell`, do not use `route_shell.*` actions, and do not rely on
 `runtime=openclaw_route_shell` as an execution or forwarding path. Use
 `runtime_agents`, `message_flow`, and the target runtime adapter instead.

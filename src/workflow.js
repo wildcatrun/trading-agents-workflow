@@ -207,11 +207,6 @@ import {
   runMeetingControlAction
 } from "./meeting-control-actions.js";
 import {
-  createRouteShellActionHandlers,
-  createRouteShellActionRegistry,
-  runRouteShellAction
-} from "./route-shell-actions.js";
-import {
   createRuntimeBridgeActionHandlers,
   createRuntimeBridgeActionRegistry,
   runRuntimeBridgeAction
@@ -8518,38 +8513,6 @@ export const {
   meetingDisperse
 } = MEETING_CONTROL_ACTION_HANDLERS;
 
-export const ROUTE_SHELL_ACTION_HANDLERS = createRouteShellActionHandlers({
-  canRouteToRegisteredInstance,
-  cleanFileSegment,
-  createMessageFlow,
-  ensureWorkflowLayout,
-  findActiveRegisteredAgentInstances,
-  isRouteShellIngress,
-  isRouteShellOnlyRow,
-  meetingDispatch,
-  meetingIngest,
-  messageFlowIdFromParts,
-  messageFlowSourceChannel,
-  normalizeAgentId,
-  normalizeAgentPlatform,
-  normalizeMeetingRef,
-  normalizeReturnPolicy,
-  normalizeRuntime,
-  normalizeWorkflowIngressAdapter,
-  nowIso,
-  readMessageFlow,
-  registrySnapshot,
-  runtimeBridgeDrain: (...args) => runtimeBridgeDrain(...args),
-  sortRegisteredTargets,
-  updateMessageFlow
-});
-
-export const ROUTE_SHELL_ACTION_REGISTRY = createRouteShellActionRegistry(ROUTE_SHELL_ACTION_HANDLERS);
-
-export const {
-  routeShellIngest
-} = ROUTE_SHELL_ACTION_HANDLERS;
-
 export const RUNTIME_BRIDGE_ACTION_HANDLERS = createRuntimeBridgeActionHandlers({
   appendWorkflowEvent,
   claimQueuedDispatch,
@@ -8940,8 +8903,6 @@ export async function runWorkflowAction(rootDir, input = {}) {
   if (meetingDispatchResult.handled) return meetingDispatchResult.value;
   const meetingControlResult = await runMeetingControlAction(MEETING_CONTROL_ACTION_REGISTRY, action, rootDir, input);
   if (meetingControlResult.handled) return meetingControlResult.value;
-  const routeShellResult = await runRouteShellAction(ROUTE_SHELL_ACTION_REGISTRY, action, rootDir, input);
-  if (routeShellResult.handled) return routeShellResult.value;
   const dispatchReconcileResult = await runDispatchReconcileAction(DISPATCH_RECONCILE_ACTION_REGISTRY, action, rootDir, input);
   if (dispatchReconcileResult.handled) return dispatchReconcileResult.value;
   const statusResult = await runStatusAction(STATUS_ACTION_REGISTRY, action, rootDir, input);

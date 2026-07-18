@@ -50,18 +50,21 @@ Batch F closes these source/public entry points:
 - The control-loop runtime auto-discovery path ignores queued
   `openclaw_route_shell` rows instead of creating repeated retired drain jobs.
 
-## What Remains
+## Batch G Deletion Follow-Up
 
-`src/route-shell-actions.js` remains temporarily as archived implementation
-source. It has an empty action registry, so it is not callable through the
-normal workflow action surface.
+Batch G removes the archived `src/route-shell-actions.js` implementation and
+the empty route-shell registry wiring from `src/workflow.js`. Route-shell public
+actions remain unknown actions, and retired runtime input is still rejected by
+`meeting.dispatch` and `runtime.bridge.drain`.
 
-Next deletion batch may remove:
+Batch G intentionally keeps shared historical/runtime vocabulary outside the
+deleted implementation:
 
-- `src/route-shell-actions.js`;
-- route-shell exports from `src/workflow.js`;
-- route-shell-specific normalization/archive code that no shared runtime
-adapter still needs.
+- `openclaw_route_shell` runtime values in historical read models, topology, and
+  registry normalization;
+- dormant/disabled live registry rows used as migration evidence;
+- v2 worker backend rejection for `openclaw_route_shell`;
+- route-shell live-state audits and documentation.
 
 ## Required Gate
 
