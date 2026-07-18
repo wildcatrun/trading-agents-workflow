@@ -5557,7 +5557,7 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(closeout.candidates[1].candidateType, "cat_claw_closeout_required");
   assert.equal(closeout.candidates[1].followUpAction, "workflow.supervisor.closeout.preview");
   assert.equal(closeout.candidates[1].status, "preview_available");
-  assert.equal(closeout.candidates[1].executorStatus, "replacement_gap");
+  assert.equal(closeout.candidates[1].executorStatus, "checkpoint_gated_executor_available");
 
   const closeoutMutationCountsBefore = {
     artifactIndex: sqliteCount(closeoutFixture.dbFile, "artifact_index"),
@@ -5565,6 +5565,7 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     dispatches: sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"),
     humanGateBatches: sqliteCount(closeoutFixture.dbFile, "human_gate_batches"),
     humanGateRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"),
+    closeoutRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"),
     messageFlows: sqliteCount(closeoutFixture.dbFile, "message_flows"),
     outbox: sqliteCount(closeoutFixture.dbFile, "telegram_outbox"),
     controlLoopJobs: sqliteCount(closeoutFixture.dbFile, "control_loop_jobs"),
@@ -5597,7 +5598,7 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(checkpointPreview.would.updateArtifactIndex, false);
   assert.equal(checkpointPreview.limitations.includes("v2_checkpoint_writer_not_implemented"), true);
   const closeoutPreview = await runAction(closeoutFixture.root, {
-    action: "workflow.supervisor.closeout",
+    action: "workflow.supervisor.closeout.preview",
     workflowId: closeoutFixture.workflowId,
     planId: "plan-v2-kernel"
   });
@@ -5606,23 +5607,27 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(closeoutPreview.previewOnly, true);
   assert.equal(closeoutPreview.status, "ready");
   assert.equal(closeoutPreview.closeoutCandidateCount, 1);
-  assert.equal(closeoutPreview.closeoutCandidates[0].candidateType, "cat_claw_closeout_preview");
+  assert.equal(closeoutPreview.closeoutCandidates[0].candidateType, "cat_claw_closeout");
   assert.equal(closeoutPreview.closeoutCandidates[0].previewOnly, true);
   assert.equal(closeoutPreview.closeoutCandidates[0].mutatesNow, false);
-  assert.equal(closeoutPreview.closeoutCandidates[0].followUpAction, "workflow.supervisor.closeout.preview");
-  assert.equal(closeoutPreview.closeoutCandidates[0].executorStatus, "replacement_gap");
+  assert.equal(closeoutPreview.closeoutCandidates[0].followUpAction, "workflow.supervisor.closeout");
+  assert.equal(closeoutPreview.closeoutCandidates[0].status, "checkpoint_required");
+  assert.equal(closeoutPreview.closeoutCandidates[0].executorStatus, "precondition_failed");
   assert.equal(closeoutPreview.closeoutCandidates[0].checkpointPreview.wouldWriteCheckpointNow, false);
   assert.equal(closeoutPreview.closeoutCandidates[0].closeoutPreview.wouldDispatchCatClawNow, false);
   assert.equal(closeoutPreview.would.mutate, false);
   assert.equal(closeoutPreview.would.dispatch, false);
   assert.equal(closeoutPreview.would.writeCheckpoint, false);
-  assert.equal(closeoutPreview.limitations.includes("final_v2_closeout_executor_not_implemented"), true);
+  assert.equal(closeoutPreview.would.writeCloseoutArtifact, false);
+  assert.equal(closeoutPreview.would.recordCloseout, false);
+  assert.equal(closeoutPreview.limitations.includes("workflow.supervisor.closeout execution requires an existing checkpoint boundary and separate write authorization"), true);
   assert.deepEqual({
     artifactIndex: sqliteCount(closeoutFixture.dbFile, "artifact_index"),
     checkpoints: sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"),
     dispatches: sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"),
     humanGateBatches: sqliteCount(closeoutFixture.dbFile, "human_gate_batches"),
     humanGateRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"),
+    closeoutRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"),
     messageFlows: sqliteCount(closeoutFixture.dbFile, "message_flows"),
     outbox: sqliteCount(closeoutFixture.dbFile, "telegram_outbox"),
     controlLoopJobs: sqliteCount(closeoutFixture.dbFile, "control_loop_jobs"),
@@ -5630,6 +5635,109 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     operations: sqliteCount(closeoutFixture.dbFile, "workflow_operations"),
     workflowTasks: sqliteCount(closeoutFixture.dbFile, "workflow_tasks")
   }, closeoutMutationCountsBefore);
+
+  await assertRejectsMessage(
+    () => runAction(closeoutFixture.root, {
+      action: "workflow.supervisor.closeout",
+      workflowId: closeoutFixture.workflowId,
+      planId: "plan-v2-kernel"
+    }),
+    /workflow supervisor closeout is not write-ready: checkpoint_required/
+  );
+
+  await runAction(closeoutFixture.root, {
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "cat_claw",
+    capabilities: { permissions: ["cat_claw.audit", "dispatch.write"] }
+  });
+  sqliteExec(closeoutFixture.dbFile, `
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES ('checkpoint-supervisor-closeout', '${closeoutFixture.workflowId}', 'completed', 'closeout', 'cat_claw_summary_required', 'Checkpoint before v2 closeout dispatch.', '{}', '[]', '[]', '[]', '["dispatch_cat_claw_closeout"]', '{}', 'workflows/checkpoints/checkpoint-supervisor-closeout.md', 'local_codex', '2026-07-18T00:00:00.000Z');`);
+  const closeoutReadyPreview = await runAction(closeoutFixture.root, {
+    action: "workflow.supervisor.closeout.preview",
+    workflowId: closeoutFixture.workflowId,
+    planId: "plan-v2-kernel",
+    reportAgent: "cat_body",
+    reportRuntime: "hermers",
+    closeoutId: "workflow_v2_closeout.tampered"
+  });
+  assert.equal(closeoutReadyPreview.closeoutCandidates[0].status, "ready_for_closeout");
+  assert.equal(closeoutReadyPreview.closeoutCandidates[0].executorStatus, "ready");
+  assert.equal(closeoutReadyPreview.closeoutCandidates[0].checkpointPreview.latestCheckpointId, "checkpoint-supervisor-closeout");
+  assert.equal(closeoutReadyPreview.closeoutCandidates[0].closeoutPreview.wouldDispatchCatClawNow, true);
+  assert.equal(closeoutReadyPreview.closeoutCandidates[0].closeoutPreview.reportTarget, "openclaw:cat_claw");
+  assert.notEqual(closeoutReadyPreview.closeoutCandidates[0].input.closeoutId, "workflow_v2_closeout.tampered");
+  await runAction(closeoutFixture.root, {
+    action: "runtime.agent.upsert",
+    runtime: "hermers",
+    platform: "hermers",
+    agentId: "cat_body",
+    capabilities: { permissions: ["workflow.verify"] }
+  });
+  const closeoutDenied = await runAction(closeoutFixture.root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.supervisor.closeout",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(closeoutDenied.allowed, false);
+  assert.equal(closeoutDenied.reason, "missing_capability:dispatch.write");
+  const executableCountsBefore = {
+    artifactIndex: sqliteCount(closeoutFixture.dbFile, "artifact_index"),
+    closeoutRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"),
+    dispatches: sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"),
+    messageFlows: sqliteCount(closeoutFixture.dbFile, "message_flows"),
+    outbox: sqliteCount(closeoutFixture.dbFile, "telegram_outbox")
+  };
+  const closeoutExecution = await runAction(closeoutFixture.root, {
+    action: "workflow.supervisor.closeout",
+    workflowId: closeoutFixture.workflowId,
+    planId: "plan-v2-kernel",
+    reportAgent: "cat_body",
+    reportRuntime: "hermers",
+    closeoutId: "workflow_v2_closeout.tampered",
+    callerAgent: "local_codex",
+    createdBy: "local_codex"
+  });
+  assert.equal(closeoutExecution.schemaVersion, "workflow_supervisor_closeout_result.v1");
+  assert.equal(closeoutExecution.writeBoundary, "closeout_artifact_record_and_cat_claw_dispatch_only");
+  assert.equal(closeoutExecution.closeoutId, closeoutReadyPreview.closeoutCandidates[0].input.closeoutId);
+  assert.notEqual(closeoutExecution.closeoutId, "workflow_v2_closeout.tampered");
+  assert.equal(closeoutExecution.didWriteCloseoutArtifact, true);
+  assert.equal(closeoutExecution.didRecordCloseout, true);
+  assert.equal(closeoutExecution.didDispatchCatClaw, true);
+  assert.equal(closeoutExecution.didWriteCheckpoint, false);
+  assert.equal(closeoutExecution.didRequestHumanGate, false);
+  assert.equal(closeoutExecution.didSendTelegram, false);
+  assert.equal(closeoutExecution.dispatch.agentId, "cat_claw");
+  assert.equal(closeoutExecution.dispatch.runtime, "openclaw");
+  assert.equal(closeoutExecution.dispatch.messageFlowId || "", "");
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index", `artifact_id='${closeoutExecution.closeoutId}' AND kind='workflow_v2_closeout'`), 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "protocol_objects", `object_id='${closeoutExecution.closeoutId}' AND object_type='workflow_v2_closeout_record' AND status='cat_claw_dispatch_queued'`), 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches", `dispatch_id='${closeoutExecution.dispatch.dispatchId}' AND dispatch_type='workflow_secretary_closeout_report' AND agent_id='cat_claw'`), 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "telegram_outbox"), executableCountsBefore.outbox);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index"), executableCountsBefore.artifactIndex + 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"), executableCountsBefore.closeoutRecords + 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"), executableCountsBefore.dispatches + 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "message_flows"), executableCountsBefore.messageFlows);
+
+  const closeoutAfterExecution = await runAction(closeoutFixture.root, {
+    action: "workflow.supervisor.closeout.preview",
+    workflowId: closeoutFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(closeoutAfterExecution.closeoutCandidates[0].status, "existing_closeout_available");
+  assert.equal(closeoutAfterExecution.closeoutCandidates[0].executorStatus, "already_recorded");
+  await assertRejectsMessage(
+    () => runAction(closeoutFixture.root, {
+      action: "workflow.supervisor.closeout",
+      workflowId: closeoutFixture.workflowId,
+      planId: "plan-v2-kernel"
+    }),
+    /workflow supervisor closeout is not write-ready: existing_closeout_available/
+  );
   const closeoutReadModel = new WorkflowReadModel({ dbFile: closeoutFixture.dbFile });
   const closeoutBoard = await closeoutReadModel.kanban({ workflowId: closeoutFixture.workflowId, limit: 50 });
   const closeoutPlanCard = closeoutBoard.columns.flatMap((column) => column.cards).find((card) => card.source === "workflow_v2_plans" && card.sourceId === "plan-v2-kernel");
@@ -19287,8 +19395,10 @@ async function testWorkflowActionPolicyRegistryCoverage() {
     targetAction: "workflow.supervisor.closeout"
   });
   assert.equal(supervisorCloseoutAliasPolicy.allowed, true);
-  assert.equal(supervisorCloseoutAliasPolicy.action, "workflow.supervisor.closeout.preview");
-  assert.equal(supervisorCloseoutAliasPolicy.readOnly, true);
+  assert.equal(supervisorCloseoutAliasPolicy.action, "workflow.supervisor.closeout");
+  assert.equal(supervisorCloseoutAliasPolicy.readOnly, false);
+  assert.equal(supervisorCloseoutAliasPolicy.mutating, true);
+  assert.equal(supervisorCloseoutAliasPolicy.requiredCapability, "dispatch.write");
   const supervisorCheckpointAliasPolicy = await runAction(root, {
     action: "workflow.permission.check",
     targetAction: "workflow.supervisor.checkpoint"

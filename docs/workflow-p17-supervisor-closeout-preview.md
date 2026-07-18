@@ -26,8 +26,8 @@ Gate, drain runtimes, or mutate workflow state.
 - `workflow.supervisor.closeout.preview` reads v2 readiness state and returns
   closeout candidates only when a plan decision is
   `cat_claw_summary_required`.
-- Returned candidates explicitly mark `executorStatus="replacement_gap"` because
-  the final v2 closeout executor is still not implemented.
+- P19 later changed the write follow-up to `workflow.supervisor.closeout` once a
+  checkpoint boundary exists.
 - The preview includes checkpoint and Cat Claw report boundaries with all
   `would*` mutation fields set to false.
 
@@ -38,13 +38,15 @@ previously bundled inside legacy `workflow.supervise.preview`:
 
 1. v2 readiness says whether a closeout is due;
 2. supervisor next-actions says the next safe preview surface;
-3. closeout preview states what evidence and executor gap remain.
+3. closeout preview states what evidence and checkpoint-gated executor status
+   remains.
 
 ## Remaining Gap
 
-Before mutating `workflow.supervise` can be frozen, a later slice must either
-implement a governed v2 Cat Claw closeout executor or explicitly retire the
-legacy closeout dispatch path with evidence.
+P19 implements the governed Cat Claw closeout executor. Mutating
+`workflow.supervise` still cannot be frozen until checkpoint writer,
+dispatch-sync, runtime-drain, blocked-report and Human Gate pending reporting
+parity are handled.
 
 P18 subsequently added `workflow.supervisor.checkpoint.preview` as read-only
 checkpoint parity. That still leaves the governed checkpoint writer as a

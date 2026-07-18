@@ -54,8 +54,8 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
   ["workflow.supervise", {
     decisionClass: "must_migrate",
     migrationStatus: "legacy_active",
-    replacement: "workflow.v2.validate",
-    recommendation: "extract valid supervisor checks into v2/shared readiness"
+    replacement: "workflow.supervisor.readiness.preview + workflow.supervisor.next_actions.preview + workflow.supervisor.closeout",
+    recommendation: "keep legacy supervise only until dispatch sync, checkpoint writer, runtime drain, and blocked/human-gate reporting parity are extracted"
   }],
   ["workflow.supervise.preview", {
     decisionClass: "compat_shell_only",
@@ -262,6 +262,7 @@ export const WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS = new Set([
   "workflow.v2.cat_claw_audit.record",
   "workflow.v2.human_gate_package.record",
   "workflow.v2.human_gate_request",
+  "workflow.supervisor.closeout",
   "telegram.outbox.delivery",
   "human_gate.inbox",
   "human_gate.console"
@@ -358,6 +359,7 @@ export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.v2.cat_claw_audit.record": { capability: "cat_claw.audit", risk: "medium", mutating: true },
   "workflow.v2.human_gate_package.record": { capability: "human_gate.write", risk: "high", mutating: true },
   "workflow.v2.human_gate_request": { capability: "human_gate.write", risk: "high", mutating: true },
+  "workflow.supervisor.closeout": { capability: "dispatch.write", risk: "high", mutating: true },
   "workflow.template.record_candidate": { capability: "workflow.write", risk: "medium", mutating: true },
   "workflow.template.instantiate.record": { capability: "workflow.write", risk: "medium", mutating: true },
   "workflow.template.eval.record": { capability: "workflow.verify", risk: "medium", mutating: true },

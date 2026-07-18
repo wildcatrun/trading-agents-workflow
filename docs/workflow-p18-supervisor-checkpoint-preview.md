@@ -40,3 +40,6 @@ retire the legacy checkpoint path.
 Before `workflow.checkpoint` or mutating `workflow.supervise` can be frozen, a
 later slice must implement a governed v2/shared checkpoint writer or explicitly
 retire checkpoint writing with evidence and rollback policy.
+
+P19 adds `workflow.supervisor.closeout`, but that executor requires an existing
+checkpoint boundary; it does not replace `workflow.checkpoint`.

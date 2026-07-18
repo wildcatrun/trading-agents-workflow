@@ -4380,13 +4380,19 @@ export async function workflowSupervisorReadinessPreview(rootDir, input = {}) {
 }
 
 const WORKFLOW_SUPERVISOR_NEXT_ACTIONS_HANDLERS = createWorkflowSupervisorNextActionsHandlers({
+  appendWorkflowEvent,
+  ensureWorkflowLayout,
+  meetingDispatch: (...args) => meetingDispatch(...args),
+  nowIso,
+  writeJsonArtifact,
   workflowV2ReadinessPreview: workflowSupervisorReadinessPreview
 });
 
 export const {
   workflowSupervisorNextActionsPreview,
   workflowSupervisorCheckpointPreview,
-  workflowSupervisorCloseoutPreview
+  workflowSupervisorCloseoutPreview,
+  workflowSupervisorCloseout
 } = WORKFLOW_SUPERVISOR_NEXT_ACTIONS_HANDLERS;
 
 const WORKFLOW_TEMPLATE_ACTION_HANDLERS = createWorkflowTemplateActionHandlers({
@@ -8794,6 +8800,7 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowSupervisorNextActionsPreview,
   workflowSupervisorCheckpointPreview,
   workflowSupervisorCloseoutPreview,
+  workflowSupervisorCloseout,
   workflowV2InfoStackPreview,
   workflowV2InfoStackRecord,
   workflowV2InfoStackRead,

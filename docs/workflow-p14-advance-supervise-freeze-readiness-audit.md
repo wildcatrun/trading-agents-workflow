@@ -48,10 +48,10 @@ This evidence supports "no observed live usage in current DB", but it does not p
 | Terminal dispatch sync into `workflow_tasks` | `workflow.advance` | Not covered by P12/P13. This is a legacy table reconciliation side effect. | Mutating advance not freeze-ready. |
 | Auto-dispatch of ready legacy tasks | `workflow.advance` | Not replaced. V2 has worker-spawn previews and create actions, but no one-shot legacy task auto-dispatch parity. | Mutating advance not freeze-ready. |
 | `workflow_runs.current_decision/status` mutation | `workflow.advance` | Not replaced; v2 plans use separate state fields. | Keep until legacy run rows are formally retired or migrated. |
-| Supervisor preview for drain/checkpoint/Cat Claw report | `workflow.supervise.preview` | Partially covered by `workflow.supervisor.next_actions.preview`; P13 exposes worker spawn, adapter drain readiness, Human Gate request, manager review, blocker review, and closeout gap. It does not implement checkpoint or final closeout executor parity. | Preview migration can start, deletion cannot. |
+| Supervisor preview for drain/checkpoint/Cat Claw report | `workflow.supervise.preview` | Partially covered by `workflow.supervisor.next_actions.preview`; P13 exposes worker spawn, adapter drain readiness, Human Gate request, manager review, blocker review, and closeout gap. P19 adds completed-plan closeout executor, but checkpoint writer/runtime-drain parity remains incomplete. | Preview migration can start, deletion cannot. |
 | Supervisor executor cycle | `workflow.supervise` | Not covered as a single authorized executor. V2 has separate mutating actions for control-loop ticks, adapter drain, worker result, Human Gate package/request, and worker lifecycle. | Mutating supervise not freeze-ready. |
 | Checkpoint write | `workflow.supervise` -> `workflowCheckpoint` | Not replaced by P12/P13. | Mutating supervise not freeze-ready. |
-| Cat Claw closeout dispatch and optional drain | `workflow.supervise` -> `meetingDispatch` / `runtimeBridgeDrain` | P13 marks final closeout action as `replacement_gap`. | Mutating supervise not freeze-ready. |
+| Cat Claw closeout dispatch and optional drain | `workflow.supervise` -> `meetingDispatch` / `runtimeBridgeDrain` | P19 adds completed-plan `workflow.supervisor.closeout`; blocked/Human Gate pending report paths and optional drain parity remain outside this slice. | Mutating supervise not freeze-ready. |
 
 ## Action-Level Decision
 
@@ -77,7 +77,7 @@ Decision: keep as diagnostic compatibility.
 Reason:
 
 - It is the current read-only wrapper that tells operators whether a real legacy supervisor cycle would drain runtimes, checkpoint, or create a Cat Claw report dispatch.
-- P13 covers "what should be considered next" for v2 plans, but not full parity for checkpoint and final closeout executor behavior.
+- P13 covers "what should be considered next" for v2 plans. P19 covers completed-plan closeout dispatch, but not checkpoint writer/runtime-drain parity.
 
 Freeze path:
 
@@ -144,8 +144,10 @@ Do not freeze `workflow.advance` or `workflow.supervise` until mutating parity i
 
 P17 adds `workflow.supervisor.closeout.preview` as the read-only closeout preview
 called out by this audit. This reduces the preview gap for completed v2 plans,
-but it does not implement the final Cat Claw closeout executor and therefore
-does not make mutating `workflow.supervise` freeze-ready.
+but by itself did not implement the final Cat Claw closeout executor. P19 later
+adds the executor; mutating `workflow.supervise` remains not freeze-ready due to
+the remaining checkpoint, dispatch-sync, runtime-drain and non-completed report
+gaps.
 
 ## P18 Follow-Up
 
@@ -154,3 +156,11 @@ preview called out by this audit. This makes the checkpoint recovery-boundary
 gap visible from v2 supervisor surfaces, but it does not implement a v2/shared
 checkpoint writer and therefore does not make `workflow.checkpoint` or mutating
 `workflow.supervise` freeze-ready.
+
+## P19 Follow-Up
+
+P19 adds `workflow.supervisor.closeout` as the governed completed-plan Cat Claw
+closeout executor. It writes closeout evidence and queues one idempotent
+`openclaw:cat_claw` dispatch after an existing checkpoint boundary is present.
+It does not replace checkpoint writing, dispatch sync, runtime drain, blocked
+reporting, or Human Gate pending reporting.
