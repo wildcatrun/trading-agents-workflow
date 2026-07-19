@@ -17736,6 +17736,7 @@ async function testControlLoopWorkflowSuperviseEnqueuesTargetedDrain() {
   const tick = await runAction(root, {
     action: "workflow.control_loop.tick",
     jobLimit: 1,
+    legacyWorkflowSuperviseLane: true,
     drainQueued: false,
     deliverOutbox: false,
     ensureHumanGateRequests: false,
@@ -17785,6 +17786,7 @@ async function testControlLoopWorkflowSuperviseEnqueuesTargetedDrain() {
   const openclawTick = await runAction(openclawRoot, {
     action: "workflow.control_loop.tick",
     jobLimit: 1,
+    legacyWorkflowSuperviseLane: true,
     drainQueued: false,
     deliverOutbox: false,
     ensureHumanGateRequests: false,
@@ -17840,7 +17842,6 @@ VALUES ('job-disabled-legacy-supervise-preexisting', 'workflow_supervise', 'work
     action: "workflow.control_loop.tick",
     jobLimit: 1,
     runtimeLimit: 1,
-    legacyWorkflowSuperviseLane: false,
     drainQueued: true,
     autoDispatch: true,
     deliverOutbox: false,
@@ -17924,6 +17925,33 @@ VALUES ('job-disabled-legacy-supervise-env-preexisting', 'workflow_supervise', '
   } finally {
     restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_SUPERVISE_LANE", previousLegacyLaneEnv);
   }
+
+  const envOptInRoot = await tempRoot("control-loop-legacy-supervise-lane-env-opt-in");
+  const envOptInWorkflowId = "workflow-legacy-supervise-lane-env-opt-in";
+  await seedWorkflowRun(envOptInRoot, {
+    workflowId: envOptInWorkflowId,
+    status: "active",
+    summary: "env opt-in should preserve legacy supervise compatibility"
+  });
+  const previousOptInEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_SUPERVISE_LANE;
+  process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_SUPERVISE_LANE = "1";
+  try {
+    const envOptInTick = await runAction(envOptInRoot, {
+      action: "workflow.control_loop.tick",
+      jobLimit: 1,
+      drainQueued: false,
+      deliverOutbox: false,
+      ensureHumanGateRequests: false,
+      createHumanGateInbox: false,
+      autoDispatch: false
+    });
+    assert.equal(envOptInTick.status, "ok");
+    assert.equal(envOptInTick.claimedJobs?.[0]?.jobType, "workflow_supervise");
+    assert.equal(envOptInTick.jobResults?.[0]?.status, "done");
+    assert.equal(sqliteCount(path.join(envOptInRoot, "tracking.db"), "control_loop_jobs", `job_type='workflow_supervise' AND workflow_id='${envOptInWorkflowId}' AND status='done'`), 1);
+  } finally {
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_SUPERVISE_LANE", previousOptInEnv);
+  }
 }
 
 async function testControlLoopSeedsStaleDeliveringOutbox() {
@@ -17959,6 +17987,7 @@ async function testControlLoopBacksOffBlockedWorkflowSupervise() {
   const first = await runAction(root, {
     action: "workflow.control_loop.tick",
     jobLimit: 1,
+    legacyWorkflowSuperviseLane: true,
     autoDispatch: false,
     drainQueued: false,
     deliverOutbox: false,
@@ -17972,6 +18001,7 @@ async function testControlLoopBacksOffBlockedWorkflowSupervise() {
   const second = await runAction(root, {
     action: "workflow.control_loop.tick",
     jobLimit: 1,
+    legacyWorkflowSuperviseLane: true,
     autoDispatch: false,
     drainQueued: false,
     deliverOutbox: false,

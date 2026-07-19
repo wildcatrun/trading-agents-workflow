@@ -61,3 +61,9 @@ P24 live audit found the dev-server state root clean for this lane: no
 `workflow_runs`, no `workflow_tasks`, no `workflow_supervise` control-loop jobs,
 and no workflow state log references. This supports a future default-close
 cutover patch, while keeping explicit opt-in compatibility available.
+
+## P25 Follow-Up
+
+P25 changes the default from compatible-on to default-closed. The input and env
+switches documented above remain available, but `true` is now the compatibility
+opt-in value and `false` is the default.

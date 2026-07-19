@@ -107,15 +107,15 @@ Before flipping the default from compatible-on to default-closed, complete all o
 5. preserve an explicit compatibility override for emergency recovery;
 6. record the cutover evidence path.
 
-## Recommended Next Patch
+## P25 Follow-Up
 
-P25 can flip `legacyWorkflowSuperviseLaneEnabled()` default from `true` to `false` while preserving opt-in compatibility through:
+P25 flips `legacyWorkflowSuperviseLaneEnabled()` default from `true` to `false` while preserving opt-in compatibility through:
 
 - request input: `legacyWorkflowSuperviseLane: true`;
 - request input aliases documented in P23;
 - env override: `TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_SUPERVISE_LANE=1`.
 
-P25 should also add regression proving:
+P25 also adds regression proving:
 
 - default tick does not seed or claim `workflow_supervise`;
 - explicit opt-in still preserves old compatibility behavior;

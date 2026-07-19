@@ -95,7 +95,7 @@ function legacyWorkflowSuperviseLaneEnabled(input = {}) {
   if (explicit !== undefined && explicit !== null && explicit !== "") return boolOption(explicit, true);
   const env = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_SUPERVISE_LANE;
   if (env !== undefined && env !== null && env !== "") return boolOption(env, true);
-  return true;
+  return false;
 }
 
 function controlLoopJobLeaseMs(input = {}, job = null) {
