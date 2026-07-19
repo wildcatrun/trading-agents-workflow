@@ -13,7 +13,7 @@ Status: audit only. This document does not authorize freezing, deleting, or chan
 - terminal dispatch receipt reconciliation into legacy `workflow_tasks`;
 - legacy task auto-dispatch and `workflow_runs.current_decision` updates;
 - checkpoint creation during supervisor closeout;
-- runtime bridge drain orchestration for dispatches created by the supervisor;
+- deferred runtime drain evidence for dispatches created by the supervisor, with actual generic drain owned by control-loop `runtime_drain`;
 - Cat Claw closeout/report dispatch when legacy decisions require human-visible summary.
 
 The correct Batch C posture is `legacy_active / allowed_until_replaced`: keep the actions gated by legacy mutating policy, extract valid responsibilities into shared or v2-native modules, then freeze only the empty shell after evidence proves no useful dependency remains.
@@ -39,7 +39,7 @@ The correct Batch C posture is `legacy_active / allowed_until_replaced`: keep th
 | `workflow_runs.current_decision` and status update | `workflow.advance` writes the latest decision and maps selected decisions to `workflow_runs.status`. | V2 plan state is separate and does not update legacy run rows. | `must_migrate_or_archive`. | Legacy run status becomes stale; status/read-model evidence diverges from actual receipt state. |
 | Supervisor multi-cycle progression | `workflow.supervise` loops over `workflowAdvance`, optionally drains newly dispatched runtimes, and then performs a final sync pass. | V2 next-actions preview suggests candidates but does not execute a full supervisor cycle. V2 control-loop/worker/adapter actions are separate executors. | `must_migrate_to_v2_service_or_retire`. | A single authorized supervisor call can no longer progress legacy workflows or enqueue drains. |
 | Checkpoint write | `workflow.supervise` calls `workflowCheckpoint` unless dry-run/checkpoint is disabled. | No proven v2 checkpoint/recovery parity across plan/node/worker/session/Human Gate state. | `must_migrate`. | Recovery evidence and incident closeout lose a durable checkpoint boundary. |
-| Runtime drain after supervisor dispatch | `workflow.supervise` may call `runtimeBridgeDrain` directly; `workflow.control_loop.tick` also enqueues `runtime_drain` jobs for supervisor-created dispatches. | `workflow.v2.adapter_runner.*` exists, but real wrapper/adapter runner cutover is not complete; `runtime.bridge.drain` remains shared substrate. | `shared_runtime_substrate`; do not freeze as v1. | Runtime dispatches remain queued or stale without terminal receipt evidence. |
+| Runtime drain after supervisor dispatch | After P21, `workflow.supervise` no longer calls `runtimeBridgeDrain` directly; it records `deferredRuntimeDrains`. `workflow.control_loop.tick` enqueues `runtime_drain` jobs for supervisor-created dispatches. | `workflow.v2.adapter_runner.*` exists, but real wrapper/adapter runner cutover is not complete; `runtime.bridge.drain` remains shared substrate for generic dispatch drain. | `shared_runtime_substrate`; do not freeze as v1. | Runtime dispatches remain queued or stale without terminal receipt evidence. |
 | Cat Claw closeout/report dispatch | `workflow.supervise` dispatches `workflow_secretary_report` / `human_gate_report` to `openclaw:cat_claw` for `cat_claw_summary_required`, `blocked`, or `human_gate_pending`. | P19 adds `workflow.supervisor.closeout` for completed v2 plans only: it requires an existing checkpoint, writes closeout evidence, and queues one idempotent Cat Claw dispatch. Blocked and Human Gate pending report parity are not replaced yet. | `partial_migration`. | Completed-plan closeout has a v2 path; blocked/human-gate legacy workflows still depend on legacy reporting until separate parity exists. |
 | Permission/audit/telemetry | Action policy marks mutating advance/supervise as high risk; preview/read surfaces remain explicit diagnostics. | Shared action gateway and migration telemetry should remain. | `shared_control_surface`. | Mutating compatibility is accidentally exposed or hidden without evidence. |
 
@@ -51,7 +51,7 @@ The correct Batch C posture is `legacy_active / allowed_until_replaced`: keep th
 | Main plugin CLI/API | `index.js` still exposes CLI commands for advance/supervise and preview variants. | Mutating commands are governed by legacy action policy; do not delete until no live dependency remains. |
 | Governance CLI | `bin/cat-meeting-governance.mjs` still maps workflow-advance/supervise commands to these actions. | Same as plugin CLI: preserve while legacy executor remains possible through explicit operator path. |
 | Control loop job runner | `src/control-loop-tick-actions.js` calls `workflowSupervisor` for `workflow_supervise` jobs, disables checkpoint in that path, then enqueues `runtime_drain` jobs for dispatches created by supervisor. | Directly proves `workflow.supervise` is not just old UI code. A freeze would affect queued control-loop recovery/progression jobs. |
-| Runtime bridge | `workflow.supervise` and control-loop jobs both depend on `runtimeBridgeDrain`. | `runtime.bridge.drain` is shared infrastructure, not v1-only code. |
+| Runtime bridge | After P21, control-loop `runtime_drain`, direct operator runtime bridge calls, status guidance, and compatibility paths depend on `runtimeBridgeDrain`; `workflow.supervise` records deferred drain evidence only. | `runtime.bridge.drain` is shared infrastructure, not v1-only code. |
 | Dispatch adapter | `workflow.advance` and `workflow.supervise` depend on `meetingDispatch`. | `meeting.dispatch` is shared adapter/evidence substrate until a replacement bridge is proven. |
 | Task helper | `workflow.advance` depends on private `workflowTaskUpdate` and direct SQL writes. | Public task mutation was removed, but the private helper remains valid compatibility support. |
 | Message flow | dispatch sync checks `messageFlowForDispatch` before marking legacy tasks done. | Do not bypass delivery/receipt truth when extracting reconciler behavior. |
@@ -64,7 +64,7 @@ The correct Batch C posture is `legacy_active / allowed_until_replaced`: keep th
 3. Move legacy ready-task auto-dispatch either into the shared reconciler with strict opt-in or retire it after proving no active legacy workflow remains.
 4. Define v2 checkpoint/recovery parity covering plan, node, worker, adapter job, session, Human Gate, receipt, and side-effect uncertainty state.
 5. Replace Cat Claw closeout/report dispatch with a v2 closeout package / Human Gate / Cat Claw report executor, not only a preview candidate.
-6. Split runtime drain ownership: keep `runtime.bridge.drain` as shared substrate until v2 adapter runner service has live wrapper evidence.
+6. Split runtime drain ownership: P21 removes direct supervisor drain; keep `runtime.bridge.drain` as shared substrate until generic dispatch drain has a proven replacement, because v2 adapter runner only covers v2 adapter jobs.
 7. After the above, downgrade `workflow.advance` and `workflow.supervise` from `legacy_active` to `compat_shell_only` or `removed`, then run full regression to find accidental useful dependencies.
 
 ## Freeze Decision

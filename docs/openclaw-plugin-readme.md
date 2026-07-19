@@ -400,13 +400,13 @@ Use `workflow.supervise` as the normal wanman-style control loop for durable ini
 
 - sync completed or failed runtime dispatches back into `workflow_tasks`
 - run `workflow.advance` and optionally create ready dispatches
-- optionally drain runtime bridge queues for the runtimes touched in that cycle
+- when `drain=true`, record deferred runtime-drain evidence for runtimes touched in that cycle; actual generic dispatch draining is owned by control-loop `runtime_drain` jobs
 - write a compact checkpoint for session overflow recovery
 - when the run is blocked, waiting on Human Gate, or ready for close-out, create a `cat_claw` report dispatch so the secretary agent submits a next-action package to Flashcat
 
 `workflow.supervise` keeps Flashcat in the observer/approval role. Cat-brain `main` still owns decomposition and orchestration; `cat_claw` still owns formal reporting and Human Gate intake. The supervisor does not make trading decisions, bypass Gateway, bypass Human Gate, or execute trades.
 
-Use `workflow.supervise.preview` only as a legacy compatibility diagnostic for old `workflow_tasks` / `workflow_runs` cards. It wraps `workflow.advance.preview` and reports whether a real supervise cycle would checkpoint, drain runtimes, or create a Cat Claw report dispatch, but it does not execute any of those writes. New console evidence-gap and v2 readiness planning should use `workflow.supervisor.next_actions.preview`; completed v2 plan closeout review should use `workflow.supervisor.checkpoint.preview`, `workflow.supervisor.checkpoint`, and `workflow.supervisor.closeout.preview`. `workflow.supervisor.checkpoint.preview` is read-only; `workflow.supervisor.checkpoint` writes the v2 checkpoint boundary without mutating legacy run/task state. `workflow.supervisor.closeout.preview` is read-only; `workflow.supervisor.closeout` is the governed closeout executor and requires an existing checkpoint boundary before it writes closeout evidence and queues a Cat Claw dispatch.
+Use `workflow.supervise.preview` only as a legacy compatibility diagnostic for old `workflow_tasks` / `workflow_runs` cards. It wraps `workflow.advance.preview` and reports whether a real supervise cycle would checkpoint, defer runtime drains, or create a Cat Claw report dispatch, but it does not execute any of those writes. New console evidence-gap and v2 readiness planning should use `workflow.supervisor.next_actions.preview`; completed v2 plan closeout review should use `workflow.supervisor.checkpoint.preview`, `workflow.supervisor.checkpoint`, and `workflow.supervisor.closeout.preview`. `workflow.supervisor.checkpoint.preview` is read-only; `workflow.supervisor.checkpoint` writes the v2 checkpoint boundary without mutating legacy run/task state. `workflow.supervisor.closeout.preview` is read-only; `workflow.supervisor.closeout` is the governed closeout executor and requires an existing checkpoint boundary before it writes closeout evidence and queues a Cat Claw dispatch.
 
 CLI example:
 
@@ -475,7 +475,7 @@ node bin/cat-meeting-governance.mjs telegram-outbox --deliver --account cat_claw
 
 This makes Cat Claw reporting two-phase but self-contained: runtime report produced, then IM delivery receipt recorded. Workflow completion should not assume Flashcat received a Human Gate package until the outbox row is `sent`.
 
-When `workflow.supervise --drain` creates a Cat Claw closeout dispatch, it drains that exact dispatch and lets `runtime-bridge` deliver the report outbox. If delivery fails, the report dispatch can still be `acked`, but the returned `reportDelivery.status` and `telegram_outbox.status` must be treated as the communication-plane truth.
+After P21, `workflow.supervise --drain` no longer drains Cat Claw report dispatches inline. It returns `catClawReportDrainDeferred` and leaves actual generic dispatch execution to the control-loop `runtime_drain` lane / `runtime.bridge.drain` recovery path. A report dispatch must not be treated as delivered until runtime receipt and Telegram outbox evidence prove delivery; `reportDelivery.status` and `telegram_outbox.status` remain the communication-plane truth.
 
 Use `human_gate.inbox` or its secretary-facing alias `human_gate.console` when Flashcat would otherwise receive many one-off Cat Claw requests. It gathers pending `human_gate_record` objects, Human-Gate review gates, gated workflow tasks, and queued or failed Cat Claw Telegram report deliveries into one batch. The output is a queryable `human_gate_batches` row, `human_gate_batch_items`, and paired HTML/JSON artifacts under `human-gates/inbox/`.
 

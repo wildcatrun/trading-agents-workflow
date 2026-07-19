@@ -3200,6 +3200,7 @@ async function testWorkflowSupervisorExtractedActionContracts() {
   assert.deepEqual(preview.wouldDrainRuntimes, ["hermers"]);
   assert.equal(preview.wouldCheckpoint, false);
   assert.equal(preview.wouldCatClawReport, null);
+  assert.equal(preview.limitations.includes("Runtime drain is no longer executed by workflow.supervise; generic dispatch draining is deferred to control-loop runtime_drain jobs."), true);
   assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches"), 0);
   assert.equal(sqliteCount(dbFile, "workflow_tasks", "task_id='task-supervisor-ready' AND status='pending'"), 1);
 
@@ -3254,8 +3255,86 @@ async function testWorkflowSupervisorExtractedActionContracts() {
   assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "workflow_id='wf-supervisor-contract' AND dispatch_type='task' AND priority='steer'"), 1);
   assert.equal(sqliteCount(dbFile, "workflow_tasks", "task_id='task-supervisor-ready' AND status='in_progress'"), 1);
 
+  const supervisorSource = await fs.readFile(path.resolve("src/workflow-supervisor-actions.js"), "utf8");
+  assert.equal(supervisorSource.includes("runtimeBridgeDrain"), false);
+
+  const drainRoot = await tempRoot("workflow-supervisor-deferred-drain");
+  const drainWorkflowId = "wf-supervisor-deferred-drain";
+  await runtimeAgentUpsert(drainRoot, {
+    runtime: "hermers",
+    platform: "hermers",
+    agentId: "cat_body",
+    displayName: "Cat Body",
+    role: "developer",
+    endpointRef: "hermers-profile:catbody",
+    workflowIngressAdapter: "acp",
+    executionAdapter: "acp",
+    canReceiveDispatch: true,
+    routingPolicy: { primary: true, routingRank: 1 }
+  });
+  await seedWorkflowRun(drainRoot, {
+    workflowId: drainWorkflowId,
+    workflowType: "initiative",
+    status: "active",
+    summary: "Workflow supervisor deferred drain.",
+    objective: "Supervisor must not directly drain generic dispatches."
+  });
+  await seedWorkflowTask(drainRoot, {
+    workflowId: drainWorkflowId,
+    taskId: "task-supervisor-deferred-drain",
+    ownerAgent: "cat_body",
+    agentId: "cat_body",
+    runtime: "hermers",
+    status: "pending",
+    priority: "steer",
+    expectedArtifact: "artifact://supervisor-deferred-drain",
+    summary: "Ready supervisor deferred drain task.",
+    prompt: "Execute supervisor deferred drain task.",
+    createdBy: "main"
+  });
+  const drainDbFile = path.join(drainRoot, "tracking.db");
+  const deferredDrain = await workflowSupervisor(drainRoot, {
+    workflowId: drainWorkflowId,
+    meetingId: "meeting-supervisor-deferred-drain",
+    autoDispatch: true,
+    drain: true,
+    checkpoint: false,
+    autoReport: false,
+    maxCycles: 3,
+    limit: 3,
+    timeoutSeconds: 45
+  });
+  assert.equal(deferredDrain.cycles.length, 1);
+  assert.equal(deferredDrain.cycles[0].runtimeDrains.length, 0);
+  assert.equal(deferredDrain.cycles[0].deferredRuntimeDrains.length, 1);
+  assert.equal(deferredDrain.deferredRuntimeDrains.length, 1);
+  assert.equal(deferredDrain.deferredRuntimeDrains[0].action, "runtime.bridge.drain");
+  assert.equal(deferredDrain.deferredRuntimeDrains[0].runtime, "hermers");
+  assert.equal(deferredDrain.deferredRuntimeDrains[0].limit, 3);
+  assert.equal(deferredDrain.deferredRuntimeDrains[0].timeoutSeconds, 45);
+  assert.equal(deferredDrain.deferredRuntimeDrains[0].status, "deferred");
+  assert.equal(deferredDrain.deferredRuntimeDrains[0].dispatchIds.length, 1);
+  assert.equal(sqliteCount(drainDbFile, "mixed_meeting_dispatches", "workflow_id='wf-supervisor-deferred-drain' AND dispatch_type='task'"), 1);
+  assert.equal(sqliteCount(drainDbFile, "workflow_events", "event_type='runtime.receipt'"), 0);
+
   const reportRoot = await tempRoot("workflow-supervisor-report-preview");
   const reportWorkflowId = "wf-supervisor-report-preview";
+  await runtimeAgentUpsert(reportRoot, {
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "cat_claw",
+    displayName: "猫爪",
+    role: "secretary",
+    endpointRef: "openclaw:cat_claw",
+    workflowIngressAdapter: "openclaw_native",
+    executionAdapter: "native",
+    imIngressOwner: "openclaw_gateway",
+    imIngressAdapter: "openclaw_native",
+    imIdentity: "openclaw_native",
+    executionIdentity: "openclaw_native",
+    canReceiveDispatch: true,
+    routingPolicy: { primary: true, routingRank: 1 }
+  });
   await seedWorkflowRun(reportRoot, {
     workflowId: reportWorkflowId,
     workflowType: "initiative",
@@ -3292,6 +3371,29 @@ async function testWorkflowSupervisorExtractedActionContracts() {
   });
   assert.equal(sqliteCount(reportDbFile, "mixed_meeting_dispatches"), 0);
   assert.equal(sqliteCount(reportDbFile, "workflow_checkpoints"), 0);
+
+  const reportSupervised = await workflowSupervisor(reportRoot, {
+    workflowId: reportWorkflowId,
+    autoDispatch: true,
+    autoReport: true,
+    checkpoint: false,
+    drain: true,
+    reportRuntime: "openclaw",
+    reportAgent: "cat_claw",
+    timeoutSeconds: 60
+  });
+  assert.equal(reportSupervised.finalAdvance.decision, "cat_claw_summary_required");
+  assert.equal(Boolean(reportSupervised.catClawReport?.dispatchId), true);
+  assert.equal(reportSupervised.catClawReportDrain, null);
+  assert.equal(reportSupervised.catClawReportDrainDeferred.action, "runtime.bridge.drain");
+  assert.equal(reportSupervised.catClawReportDrainDeferred.runtime, "openclaw");
+  assert.equal(reportSupervised.catClawReportDrainDeferred.dispatchId, reportSupervised.catClawReport.dispatchId);
+  assert.equal(reportSupervised.catClawReportDrainDeferred.limit, 1);
+  assert.equal(reportSupervised.catClawReportDrainDeferred.timeoutSeconds, 60);
+  assert.equal(reportSupervised.catClawReportDrainDeferred.status, "deferred");
+  assert.equal(reportSupervised.deferredRuntimeDrains.some((item) => item.dispatchId === reportSupervised.catClawReport.dispatchId), true);
+  assert.equal(sqliteCount(reportDbFile, "mixed_meeting_dispatches", "dispatch_type='workflow_secretary_report' AND agent_id='cat_claw'"), 1);
+  assert.equal(sqliteCount(reportDbFile, "workflow_events", "event_type='runtime.receipt'"), 0);
 }
 
 async function testWorkflowTaskExtractedActionContracts() {

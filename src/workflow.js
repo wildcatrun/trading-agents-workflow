@@ -4264,7 +4264,6 @@ export const WORKFLOW_SUPERVISOR_ACTION_HANDLERS = createWorkflowSupervisorActio
   normalizeAgentId,
   normalizeRuntime,
   nowIso,
-  runtimeBridgeDrain: (...args) => runtimeBridgeDrain(...args),
   workflowAdvance,
   workflowAdvancePreview,
   workflowCheckpoint

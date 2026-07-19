@@ -39,7 +39,6 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
   const normalizeAgentId = requireContextFunction(context, "normalizeAgentId");
   const normalizeRuntime = requireContextFunction(context, "normalizeRuntime");
   const nowIso = requireContextFunction(context, "nowIso");
-  const runtimeBridgeDrain = requireContextFunction(context, "runtimeBridgeDrain");
   const workflowAdvance = requireContextFunction(context, "workflowAdvance");
   const workflowAdvancePreview = requireContextFunction(context, "workflowAdvancePreview");
   const workflowCheckpoint = requireContextFunction(context, "workflowCheckpoint");
@@ -89,6 +88,7 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
     const dryRun = boolOption(input.dryRun ?? input.dry_run, false);
     const writeCheckpoint = !dryRun && boolOption(input.checkpoint ?? input.writeCheckpoint ?? input.write_checkpoint, true);
     const cycles = [];
+    const deferredRuntimeDrains = [];
     let finalAdvance = null;
     for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
       const advance = await workflowAdvance(rootDir, {
@@ -99,22 +99,28 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
         autoDispatch,
         syncDispatches: true
       });
-      const cycleRecord = { cycle, advance, runtimeDrains: [] };
+      const cycleRecord = { cycle, advance, runtimeDrains: [], deferredRuntimeDrains: [] };
       cycles.push(cycleRecord);
       finalAdvance = advance;
       if (!drain || dryRun || !advance.dispatched.length) break;
       const runtimes = [...new Set(advance.dispatched.map((item) => item.runtime).filter(Boolean))];
       for (const runtime of runtimes) {
-        const drained = await runtimeBridgeDrain(rootDir, {
-          ...input,
-          workflowRootDir: paths.root,
+        const deferred = {
+          action: "runtime.bridge.drain",
           runtime,
+          dispatchIds: advance.dispatched
+            .filter((item) => item.runtime === runtime)
+            .map((item) => item.dispatchId || item.dispatch_id || "")
+            .filter(Boolean),
           limit: runtimeLimit,
           timeoutSeconds,
-          dryRun: false
-        });
-        cycleRecord.runtimeDrains.push(drained);
+          status: "deferred",
+          reason: "workflow.supervise no longer executes runtime.bridge.drain directly; control-loop runtime_drain jobs own generic dispatch draining"
+        };
+        cycleRecord.deferredRuntimeDrains.push(deferred);
+        deferredRuntimeDrains.push(deferred);
       }
+      break;
     }
     finalAdvance = await workflowAdvance(rootDir, {
       ...input,
@@ -136,6 +142,7 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
       : null;
     let catClawReport = null;
     let catClawReportDrain = null;
+    let catClawReportDrainDeferred = null;
     if (autoReport && ["cat_claw_summary_required", "blocked", "human_gate_pending"].includes(finalAdvance.decision)) {
       const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
       const workflow = workflowRows[0] || { workflow_id: workflowId };
@@ -162,15 +169,16 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
         }
       });
       if (drain && !dryRun && catClawReport?.dispatchId) {
-        catClawReportDrain = await runtimeBridgeDrain(rootDir, {
-          ...input,
-          workflowRootDir: paths.root,
+        catClawReportDrainDeferred = {
+          action: "runtime.bridge.drain",
           runtime: catClawReport.runtime,
           dispatchId: catClawReport.dispatchId,
           limit: 1,
           timeoutSeconds,
-          dryRun: false
-        });
+          status: "deferred",
+          reason: "workflow.supervise no longer executes Cat Claw report runtime drain directly; control-loop runtime_drain jobs own generic dispatch draining"
+        };
+        deferredRuntimeDrains.push(catClawReportDrainDeferred);
       }
     }
     return {
@@ -180,10 +188,12 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
       completedAt: nowIso(),
       cycles,
       dispatched,
+      deferredRuntimeDrains,
       finalAdvance,
       checkpoint,
       catClawReport,
       catClawReportDrain,
+      catClawReportDrainDeferred,
       dryRun,
       dbFile: paths.dbFile
     };
@@ -234,7 +244,8 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
       } : null,
       limitations: [
         "Preview is read-only and does not model later cycles after wouldDispatch tasks run.",
-        "Runtime drain, checkpoint creation, Telegram outbox delivery, and Cat Claw report dispatch are not executed."
+        "Runtime drain is no longer executed by workflow.supervise; generic dispatch draining is deferred to control-loop runtime_drain jobs.",
+        "Checkpoint creation, Telegram outbox delivery, and Cat Claw report dispatch are not executed."
       ],
       dbFile: paths.dbFile
     };

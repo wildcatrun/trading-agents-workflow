@@ -38,7 +38,7 @@ The correct Batch C posture is:
 
 | Caller / Dependency | Current Link | Freeze Implication |
 | --- | --- | --- |
-| `workflow.supervise` | Calls `workflowCheckpoint`, `meetingDispatch`, and optionally `runtimeBridgeDrain`. | Batch C advance/supervise cannot freeze these dependencies first. |
+| `workflow.supervise` | Calls `workflowCheckpoint` and `meetingDispatch`; after P21 it records deferred drain evidence instead of directly calling `runtimeBridgeDrain`. | Batch C advance/supervise cannot freeze checkpoint/dispatch dependencies first; generic drain remains owned by control-loop `runtime_drain`. |
 | `workflow.control_loop.tick` | Runs `workflow_supervise`, enqueues `runtime_drain`, runs `scheduled_dispatch`, and calls `meetingDispatch` for retry-style jobs. | Control-loop recovery depends on these shared actions. |
 | `route_shell.ingest` | Creates governed dispatch through `meetingDispatch` and can immediately call `runtimeBridgeDrain`. | Route-shell archive compatibility still depends on shared adapter surfaces. |
 | `human_gate` archive path | Uses `workflowCheckpoint` for archive/checkpoint evidence. | Checkpoint cannot be deleted before Human Gate archive parity is proven. |
