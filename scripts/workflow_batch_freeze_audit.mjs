@@ -353,7 +353,7 @@ function auditPolicy(candidate, registryActions, registrySources) {
       continue;
     }
 
-    if (candidate.currentStatus === "compat_shell_only" || candidate.currentStatus.startsWith("legacy_active") || candidate.currentStatus.includes("deprecated") || candidate.currentStatus === "shared_substrate") {
+    if (candidate.currentStatus === "compat_shell_only" || candidate.currentStatus === "frozen_compatibility" || candidate.currentStatus.startsWith("legacy_active") || candidate.currentStatus.includes("deprecated") || candidate.currentStatus === "shared_substrate") {
       if (!registered && !aliasTarget) failures.push(`${action}: active/shared/compat action is not registered and is not an alias`);
     }
 

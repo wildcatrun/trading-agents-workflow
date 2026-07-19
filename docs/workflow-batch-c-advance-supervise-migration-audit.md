@@ -4,7 +4,7 @@ Date: 2026-07-18
 
 Scope: `workflow.advance`, `workflow.supervise`, legacy aliases `workflow.supervisor`, and their Batch B preview companions.
 
-Status: audit only. This document does not authorize freezing, deleting, or changing runtime behavior.
+Status: superseded for default runtime posture by P26. This document remains the responsibility decomposition baseline; P26 freezes standalone mutating action entry points after live-clean evidence while preserving explicit compatibility escape hatch.
 
 ## Executive Conclusion
 
@@ -16,7 +16,7 @@ Status: audit only. This document does not authorize freezing, deleting, or chan
 - deferred runtime drain evidence for dispatches created by the supervisor, with actual generic drain owned by control-loop `runtime_drain`;
 - Cat Claw closeout/report dispatch when legacy decisions require human-visible summary.
 
-The correct Batch C posture is `legacy_active / allowed_until_replaced`: keep the actions gated by legacy mutating policy, extract valid responsibilities into shared or v2-native modules, then freeze only the empty shell after evidence proves no useful dependency remains.
+P26 updates the Batch C posture to `frozen_compatibility`: keep the handlers only as a strict escape hatch, keep default execution blocked, and continue extracting or retiring any legacy-only responsibilities before final removal.
 
 ## Runtime Topology
 
@@ -73,8 +73,8 @@ Current decision for Batch C:
 
 | Action | Batch C Decision | Reason |
 | --- | --- | --- |
-| `workflow.advance` | Keep gated; do not freeze/delete. | Still owns legacy dispatch sync, task transitions, and workflow run decision/status updates. |
-| `workflow.supervise` / `workflow.supervisor` | Keep gated; do not freeze/delete. | Still owns supervisor cycle, checkpoint, runtime drain, and Cat Claw closeout/report execution. |
+| `workflow.advance` | Frozen compatibility entry point after P26. | Live audit found no active legacy rows/tasks/jobs; handler remains only behind strict env escape hatch for proven legacy recovery. |
+| `workflow.supervise` / `workflow.supervisor` | Frozen compatibility entry point after P26. | Automatic control-loop lane is default-closed, v2 rows have closeout/report parity, and no live legacy rows were found; handler remains only behind strict env escape hatch. |
 | `workflow.advance.preview` | Keep compatibility diagnostic only. | Batch B already migrated default read surfaces; historical legacy diagnostics remain useful. |
 | `workflow.supervise.preview` / `workflow.supervisor.preview` | Keep compatibility diagnostic only. | V2 next-actions preview is not an executor and still declares closeout replacement gap. |
 

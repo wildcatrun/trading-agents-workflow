@@ -12818,12 +12818,26 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(workflowActionMigrationInfo("workflow.supervise.preview").decisionClass, "compat_shell_only");
     assert.equal(workflowActionMigrationInfo("workflow.supervise.preview").migrationStatus, "read_surface_migrated");
     assert.equal(workflowActionMigrationInfo("workflow.supervise.preview").replacement, "workflow.supervisor.next_actions.preview");
-    assert.equal(workflowActionMigrationInfo("workflow.advance").decisionClass, "must_migrate");
-    assert.equal(workflowActionMigrationInfo("workflow.advance").migrationStatus, "legacy_active");
+    assert.equal(workflowActionMigrationInfo("workflow.advance").decisionClass, "compat_shell_only");
+    assert.equal(workflowActionMigrationInfo("workflow.advance").migrationStatus, "frozen_compatibility");
     assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.advance"].mutating, true);
-    assert.equal(workflowActionMigrationInfo("workflow.supervise").decisionClass, "must_migrate");
-    assert.equal(workflowActionMigrationInfo("workflow.supervise").migrationStatus, "legacy_active");
+    assert.equal(workflowActionMigrationInfo("workflow.supervise").decisionClass, "compat_shell_only");
+    assert.equal(workflowActionMigrationInfo("workflow.supervise").migrationStatus, "frozen_compatibility");
     assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.supervise"].mutating, true);
+    let aliasBlocked = null;
+    for (const frozenAction of ["workflow.advance", "workflow.supervise", "workflow.supervisor"]) {
+      const blocked = await runAction(root, {
+        action: frozenAction,
+        workflowId: "wf-convergence-frozen-compatibility"
+      });
+      assert.equal(blocked.status, "blocked");
+      assert.equal(blocked.allowed, false);
+      assert.equal(blocked.reason, "legacy_action_disabled");
+      assert.equal(blocked.enableEnv, "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1");
+      if (frozenAction === "workflow.supervisor") aliasBlocked = blocked;
+    }
+    assert.equal(aliasBlocked.action, "workflow.supervise");
+    assert.equal(aliasBlocked.requestedAction, "workflow.supervisor");
     assert.equal(workflowActionMigrationInfo("workflow.pause").decisionClass, "must_migrate");
     assert.equal(workflowActionMigrationInfo("workflow.swarm.plan"), null);
     assert.equal(workflowActionMigrationInfo("route_shell.ingest"), null);
@@ -12894,16 +12908,17 @@ SELECT status, next_state, payload_json
 FROM workflow_events
 WHERE event_type='workflow.action_migration_telemetry'
 ORDER BY created_at;`);
-    assert.equal(telemetryRows.length, 0);
+    assert.equal(telemetryRows.length, 3);
     const telemetryPayloads = telemetryRows.map((row) => JSON.parse(row.payload_json));
-    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), []);
+    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["workflow.advance", "workflow.supervise", "workflow.supervise"]);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.task.launch.list"), false);
     const meetingMirrorTelemetry = telemetryPayloads.filter((row) => row.legacyCompatibilitySource === "meeting.action_item");
     assert.deepEqual(meetingMirrorTelemetry, []);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.run.upsert"), false);
     assert.equal(telemetryRows.filter((row) => row.status === "legacy_active").length, 0);
     assert.equal(telemetryRows.filter((row) => row.status === "deprecated").length, 0);
-    assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 0);
+    assert.equal(telemetryRows.filter((row) => row.status === "frozen_compatibility").length, 3);
+    assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 3);
     assert.equal(telemetryRows.filter((row) => row.next_state === "archive_no_migration").length, 0);
     assert.equal(telemetryPayloads.every((row) => row.telemetryOnly === true), true);
 
@@ -13053,6 +13068,12 @@ ORDER BY created_at;`);
       }),
       /workflow permission denied: action=workflow\.task\.create .*reason=unknown_workflow_action/
     );
+    const strictLegacySupervisor = await runAction(root, {
+      action: "workflow.supervise",
+      workflowId: "wf-convergence-strict-bool"
+    });
+    assert.equal(strictLegacySupervisor.status, "blocked");
+    assert.equal(strictLegacySupervisor.reason, "legacy_action_disabled");
     const strictGeneric = await runAction(root, {
       action: "workflow.v2.worker_spawn.create",
       workflowId: "wf-convergence-strict-bool",
@@ -13077,6 +13098,23 @@ ORDER BY created_at;`);
         intervalSeconds: 3600
       }),
       /production schedule requires an approved active\/default workflow template/
+    );
+
+    process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS = "1";
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.advance",
+        workflowId: "wf-convergence-explicit-legacy-missing"
+      }),
+      /workflow not found: wf-convergence-explicit-legacy-missing/
+    );
+    process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS = "true";
+    await assertRejectsMessage(
+      () => runAction(root, {
+        action: "workflow.supervise",
+        workflowId: "wf-convergence-explicit-legacy-true-missing"
+      }),
+      /workflow not found: wf-convergence-explicit-legacy-true-missing/
     );
   } finally {
     restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS", legacyEnv);

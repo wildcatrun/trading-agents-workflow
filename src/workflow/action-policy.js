@@ -41,10 +41,10 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
     recommendation: "canonicalize legacy task list reads before retirement"
   }],
   ["workflow.advance", {
-    decisionClass: "must_migrate",
-    migrationStatus: "legacy_active",
-    replacement: "workflow.v2.validate",
-    recommendation: "extract valid progression checks into v2/shared validators"
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.supervisor.readiness.preview + workflow.supervisor.next_actions.preview + workflow.dispatch.reconcile + workflow.control_loop.tick shared maintenance lanes",
+    recommendation: "default-disabled compatibility executor only; do not use for new workflow progression, and remove after the legacy action escape hatch window closes"
   }],
   ["workflow.advance.preview", {
     decisionClass: "compat_shell_only",
@@ -53,10 +53,10 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
     recommendation: "compatibility diagnostic only for legacy task/run history; use semantic supervisor readiness for new read surfaces"
   }],
   ["workflow.supervise", {
-    decisionClass: "must_migrate",
-    migrationStatus: "legacy_active",
-    replacement: "workflow.supervisor.readiness.preview + workflow.supervisor.next_actions.preview + workflow.supervisor.closeout",
-    recommendation: "keep legacy supervise only until dispatch sync, checkpoint writer, runtime drain, and blocked/human-gate reporting parity are extracted"
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.supervisor.readiness.preview + workflow.supervisor.next_actions.preview + workflow.supervisor.closeout + workflow.supervisor.report + workflow.control_loop.tick shared maintenance lanes",
+    recommendation: "default-disabled compatibility executor only; do not use for new workflow supervision, and remove after the legacy action escape hatch window closes"
   }],
   ["workflow.supervise.preview", {
     decisionClass: "compat_shell_only",
