@@ -54,3 +54,10 @@ jobs, a shared runtime-drain candidate, and a due schedule. With the lane
 disabled, the tick skips `workflow_supervise`, claims shared `runtime_drain` or
 `scheduled_dispatch`, drains the local Codex inbox dispatch, dispatches the due
 schedule, and leaves legacy workflow rows unchanged.
+
+## P24 Follow-Up
+
+P24 live audit found the dev-server state root clean for this lane: no
+`workflow_runs`, no `workflow_tasks`, no `workflow_supervise` control-loop jobs,
+and no workflow state log references. This supports a future default-close
+cutover patch, while keeping explicit opt-in compatibility available.

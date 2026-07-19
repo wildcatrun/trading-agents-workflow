@@ -4,7 +4,7 @@ Date: 2026-07-18
 
 Scope: `workflow.schedule.*`, `workflow.scheduler.*`, `workflow.schedules`, `workflow.control_loop.tick`, `workflow.loop.tick`, `workflow.reconciler.tick`, `workflow.control_loop.job.requeue*`, and v2 control-loop adjacency.
 
-Status: audit plus P23 isolation follow-up. This document does not authorize freezing, deleting, or changing runtime defaults.
+Status: audit plus P23/P24 follow-up. This document does not authorize freezing, deleting, or changing runtime defaults without a separate cutover patch.
 
 ## Executive Conclusion
 
@@ -34,7 +34,7 @@ The correct Batch C posture is split, not delete:
 | Scheduled dispatch execution | `runScheduledDispatchJobCore` calls `meetingDispatch`, updates `scheduled_runs`, records `last_dispatch_id`, and enqueues `runtime_drain`. | Shared dispatch/runtime adapter substrate or a future v2 schedule runner with equivalent receipt behavior. | `must_migrate_before_freeze`. | Scheduled jobs may be marked due but never reach runtime or receipt drain. |
 | Schedule state controls | `workflow.schedule.pause/resume/disable` only update schedule status and next-run state. | Keep as scheduler controls; do not confuse with workflow plan pause/resume/stop. | `shared_scheduler_keep`. | Operators cannot stop future recurring runs without deleting the schedule. |
 | Generic control-loop lease/budget | `workflowControlLoopTick` leases the control loop, seeds maintenance jobs, claims jobs by budget, records events, and prunes retention. | Shared maintenance executor; v2 worker loop is adjacent, not a replacement. | `shared_maintenance_keep`. | Mechanical queues stop making bounded progress or lose lease protection. |
-| Legacy workflow supervise lane | Control loop seeds and executes `workflow_supervise` jobs for legacy `workflow_runs`, with idle cooldowns and runtime drains after dispatch. P23 adds a disabled-lane mode that skips both seeding and claiming this job type while leaving shared maintenance active. | Extract or retire after v2 supervisor/readiness and closeout parity is proven, live legacy rows are audited, and cutover is explicitly authorized. | `legacy_lane_isolated_not_retired`. | Freezing the whole control loop to retire this lane also freezes shared maintenance; disabling the lane must not claim old `workflow_supervise` jobs. |
+| Legacy workflow supervise lane | Control loop seeds and executes `workflow_supervise` jobs for legacy `workflow_runs`, with idle cooldowns and runtime drains after dispatch. P23 adds a disabled-lane mode that skips both seeding and claiming this job type while leaving shared maintenance active. P24 live audit found no live legacy rows/jobs on dev-server. | Default-close in a separate P25 cutover patch while preserving explicit opt-in compatibility override. | `legacy_lane_isolated_not_retired`. | Freezing the whole control loop to retire this lane also freezes shared maintenance; default-close must not affect shared maintenance or remove the emergency opt-in path. |
 | Runtime drain lane | Control loop enqueues/runs `runtime_drain` jobs and exact dispatch drains. | Shared runtime bridge now; v2 adapter runner only covers v2 worker adapter jobs. | `shared_substrate_keep`. | Runtime dispatches stop producing terminal receipt evidence. |
 | Stale dispatch reconcile | Control loop runs `stale_dispatch_reconcile` jobs with bounded limits and statuses. | Shared dispatch recovery substrate. | `shared_substrate_keep`. | Stale queued/in-flight dispatches remain unresolved. |
 | Message-flow reconcile | Control loop runs `message_flow_reconcile` for pending message-flow states. | Shared message-flow evidence and delivery substrate. | `shared_substrate_keep`. | Message bus recovery and failed delivery reconciliation stop. |
@@ -68,7 +68,7 @@ The correct Batch C posture is split, not delete:
 | `workflow.loop.tick` / `workflow.reconciler.tick` aliases | Keep for now; mark for later alias audit. | Alias removal should happen only after operator/docs/CLI callers are confirmed migrated. |
 | `workflow.control_loop.job.requeue.preview` | Keep as safe repair diagnostic. | Preview explains whether failed/dead-letter or expired leased jobs can be requeued without executing side effects. |
 | `workflow.control_loop.job.requeue` | Keep as governed repair. | It only requeues job state with operator reason and evidence; it does not execute dispatch/outbox/trading side effects itself. |
-| `workflow_supervise` lane inside control loop | Isolated in P23; not retired. | This is the legacy orchestration lane; it should not be used as a reason to delete the shared maintenance executor. |
+| `workflow_supervise` lane inside control loop | Isolated in P23; live-clean in P24; default-close candidate for P25. | This is the legacy orchestration lane; it should not be used as a reason to delete the shared maintenance executor. |
 | Raw schedule diagnostics gate | Keep disabled by default. | It is useful for migration diagnostics, but production schedules should remain approval-bound. |
 
 ## Required Migration Sequence
@@ -81,6 +81,23 @@ The correct Batch C posture is split, not delete:
 6. Extend regression coverage from the P23 runtime-drain proof to scheduled dispatch, stale dispatch reconcile, message-flow reconcile, Human Gate, outbox, and job requeue repair before any default flip.
 7. Run an observation window in which the generic control-loop reports lane-level progress and dead-letter rates before freezing any legacy lane.
 8. Only after the above, retire raw schedule diagnostics and legacy control-loop aliases if no audited caller remains.
+
+## P24 Follow-Up
+
+P24 live audit on `2026-07-19` found the dev-server state root clean for the legacy supervise lane:
+
+- no `workflow_runs`;
+- no `workflow_tasks`;
+- no `control_loop_jobs` with `job_type='workflow_supervise'`;
+- no active schedules;
+- no queued dispatches;
+- no `workflow_supervise` references in workflow state JSONL/log artifacts.
+
+Evidence is recorded under:
+
+`/home/flashcat/multi-agent-hedge-fund-framework/ops-artifacts/codex-working/20260719T-p24-live-legacy-supervise-audit`
+
+This makes the legacy supervise lane a default-close candidate, not a deletion candidate. The shared control-loop action and maintenance lanes remain protected Batch C/D substrate.
 
 ## Regression Plan Before Any Future Freeze
 
