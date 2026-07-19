@@ -164,3 +164,14 @@ closeout executor. It writes closeout evidence and queues one idempotent
 `openclaw:cat_claw` dispatch after an existing checkpoint boundary is present.
 It does not replace checkpoint writing, dispatch sync, runtime drain, blocked
 reporting, or Human Gate pending reporting.
+
+## P22 / P23 Follow-Up
+
+P22 adds `workflow.supervisor.report` for blocked and Human Gate pending v2
+plans after an existing checkpoint boundary. P23 isolates the control-loop
+`workflow_supervise` lane behind an explicit compatibility switch so shared
+maintenance can be tested without seeding or claiming legacy supervise jobs.
+
+Mutating `workflow.advance` / `workflow.supervise` are still not deletion-ready:
+legacy task/dispatch sync, legacy task/run state transitions, live legacy
+row/job audit, and default cutover authorization remain open.

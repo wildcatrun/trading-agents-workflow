@@ -49,3 +49,11 @@ Remaining `workflow.advance` / `workflow.supervise` legacy blockers are now narr
 - legacy supervisor compatibility shell / direct operator path.
 
 `runtime.bridge.drain`, `meeting.dispatch`, `message_flow`, Human Gate, and runtime registry remain shared substrate.
+
+## P23 Follow-Up
+
+P23 adds an explicit control-loop compatibility switch for the legacy
+`workflow_supervise` lane. With the switch disabled, `workflow.control_loop.tick`
+does not seed or claim `workflow_supervise` jobs, while shared maintenance lanes
+continue to run. This is an isolation proof only; defaults remain compatible
+until live legacy rows/jobs are audited and cutover is authorized.

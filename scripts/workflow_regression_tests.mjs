@@ -17802,6 +17802,130 @@ async function testControlLoopWorkflowSuperviseEnqueuesTargetedDrain() {
   assert.equal(JSON.parse(openclawJobs[0].payload_json).timeoutSeconds, 300);
 }
 
+async function testControlLoopLegacySuperviseLaneCanBeDisabled() {
+  const root = await tempRoot("control-loop-disable-legacy-supervise-lane");
+  const workflowId = "workflow-disable-legacy-supervise-lane";
+  await runAction(root, {
+    action: "runtime.agent.upsert",
+    platform: "local_codex",
+    runtime: "local_codex",
+    agentId: "codex",
+    displayName: "Local Codex",
+    canReceiveDispatch: true,
+    workflowIngressAdapter: "local_codex_inbox"
+  });
+  await seedWorkflowRun(root, {
+    workflowId,
+    status: "active",
+    summary: "disabled legacy supervise lane must not seed or claim workflow_supervise"
+  });
+  const dbFile = path.join(root, "tracking.db");
+  const createdAt = new Date(Date.now() - 60_000).toISOString();
+  sqliteExec(dbFile, `
+INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at)
+VALUES ('job-disabled-legacy-supervise-preexisting', 'workflow_supervise', 'workflow_supervise:${workflowId}', 'flash', 'queued', '${workflowId}', '', '{"workflowId":"${workflowId}"}', '{}', 0, 20, '', '', '', '', ${sqlValue(createdAt)}, ${sqlValue(createdAt)}, '');`);
+  const sent = await runAction(root, {
+    action: "workflow.message_flow.send",
+    fromAgent: "tester",
+    fromRuntime: "local_codex",
+    targets: ["local_codex:codex"],
+    body: "shared runtime drain must continue while legacy supervise lane is disabled",
+    workflowId,
+    meetingId: workflowId,
+    returnPolicy: "silent"
+  });
+  const dispatchId = sent.dispatches[0].dispatchId;
+
+  const tick = await runAction(root, {
+    action: "workflow.control_loop.tick",
+    jobLimit: 1,
+    runtimeLimit: 1,
+    legacyWorkflowSuperviseLane: false,
+    drainQueued: true,
+    autoDispatch: true,
+    deliverOutbox: false,
+    ensureHumanGateRequests: false,
+    createHumanGateInbox: false
+  });
+  assert.equal(tick.status, "ok");
+  assert.equal(tick.claimedJobs?.[0]?.jobType, "runtime_drain");
+  assert.equal(tick.jobResults?.[0]?.status, "done");
+  assert.equal(tick.jobResults?.[0]?.result?.results?.[0]?.dispatchId, dispatchId);
+  assert.equal(Boolean(tick.seededJobs?.some((job) => job.jobType === "workflow_supervise")), false);
+  assert.equal(sqliteCount(dbFile, "control_loop_jobs", "job_type='workflow_supervise'"), 1);
+  assert.equal(sqliteCount(dbFile, "control_loop_jobs", "job_type='workflow_supervise' AND status='queued' AND lease_owner=''"), 1);
+  assert.equal(sqliteCount(dbFile, "control_loop_jobs", "job_type='workflow_supervise' AND status IN ('running','done','failed')"), 0);
+  const workflowRow = sqliteJson(dbFile, `
+SELECT status, current_decision AS currentDecision
+FROM workflow_runs
+WHERE workflow_id='${workflowId}'
+LIMIT 1;`)[0];
+  assert.equal(workflowRow.status, "active");
+  assert.equal(workflowRow.currentDecision, "");
+  const dispatchRow = sqliteJson(dbFile, `
+SELECT status
+FROM mixed_meeting_dispatches
+WHERE dispatch_id='${dispatchId}'
+LIMIT 1;`)[0];
+  assert.equal(dispatchRow.status, "acked");
+
+  const envRoot = await tempRoot("control-loop-disable-legacy-supervise-lane-env");
+  const envWorkflowId = "workflow-disable-legacy-supervise-lane-env";
+  await runAction(envRoot, {
+    action: "runtime.agent.upsert",
+    platform: "openclaw",
+    runtime: "openclaw",
+    agentId: "main",
+    displayName: "猫之脑",
+    canReceiveDispatch: true,
+    executionAdapter: "openclaw"
+  });
+  await seedWorkflowRun(envRoot, {
+    workflowId: envWorkflowId,
+    status: "active",
+    summary: "env disabled legacy supervise lane must not block scheduled dispatch"
+  });
+  const dueAt = new Date(Date.now() - 60_000).toISOString();
+  await runAction(envRoot, {
+    action: "workflow.schedule.upsert",
+    scheduleId: "schedule-disabled-legacy-supervise-lane-env",
+    runtime: "openclaw",
+    agentId: "main",
+    prompt: "scheduled dispatch should run when legacy supervise lane is disabled by env",
+    scheduleKind: "interval",
+    intervalSeconds: 3600,
+    nextRunAt: dueAt,
+    maxAttempts: 1
+  });
+  const envDbFile = path.join(envRoot, "tracking.db");
+  sqliteExec(envDbFile, `
+INSERT INTO control_loop_jobs(job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, payload_json, result_json, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, created_at, updated_at, completed_at)
+VALUES ('job-disabled-legacy-supervise-env-preexisting', 'workflow_supervise', 'workflow_supervise:${envWorkflowId}', 'flash', 'queued', '${envWorkflowId}', '', '{"workflowId":"${envWorkflowId}"}', '{}', 0, 20, '', '', '', '', ${sqlValue(createdAt)}, ${sqlValue(createdAt)}, '');`);
+  const previousLegacyLaneEnv = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_SUPERVISE_LANE;
+  process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_SUPERVISE_LANE = "0";
+  try {
+    const envTick = await runAction(envRoot, {
+      action: "workflow.control_loop.tick",
+      jobLimit: 1,
+      drainQueued: false,
+      deliverOutbox: false,
+      ensureHumanGateRequests: false,
+      createHumanGateInbox: false,
+      autoDispatch: true
+    });
+    assert.equal(envTick.status, "ok");
+    assert.equal(envTick.claimedJobs?.[0]?.jobType, "scheduled_dispatch");
+    assert.equal(envTick.jobResults?.[0]?.status, "done");
+    assert.equal(envTick.jobResults?.[0]?.result?.status, "dispatched");
+    assert.equal(Boolean(envTick.seededJobs?.some((job) => job.jobType === "workflow_supervise")), false);
+    assert.equal(sqliteCount(envDbFile, "scheduled_runs", "schedule_id='schedule-disabled-legacy-supervise-lane-env' AND status='dispatched'"), 1);
+    assert.equal(sqliteCount(envDbFile, "control_loop_jobs", "job_type='workflow_supervise' AND status='queued' AND lease_owner=''"), 1);
+    assert.equal(sqliteCount(envDbFile, "control_loop_jobs", "job_type='workflow_supervise' AND status IN ('running','done','failed')"), 0);
+  } finally {
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_SUPERVISE_LANE", previousLegacyLaneEnv);
+  }
+}
+
 async function testControlLoopSeedsStaleDeliveringOutbox() {
   const root = await tempRoot("stale-delivering-outbox");
   const request = await requestHumanGate(root, { workflowId: "workflow-stale-delivering", meetingId: "meeting-stale-delivering" });
@@ -23245,6 +23369,7 @@ try {
     ["message_flow control-loop runtime drains", testControlLoopDrainsMessageFlowRuntimes],
     ["control_loop auto runtime discovery", testControlLoopAutoDiscoversQueuedDispatchRuntimes],
     ["control_loop workflow supervise targeted drain", testControlLoopWorkflowSuperviseEnqueuesTargetedDrain],
+    ["control_loop legacy supervise lane can be disabled", testControlLoopLegacySuperviseLaneCanBeDisabled],
     ["control_loop stale delivering outbox", testControlLoopSeedsStaleDeliveringOutbox],
     ["control_loop blocked workflow supervise cooldown", testControlLoopBacksOffBlockedWorkflowSupervise],
     ["trade_intent fail-closed", testTradeIntentFailClosed],

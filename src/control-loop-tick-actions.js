@@ -85,6 +85,19 @@ function controlLoopWorkflowSuperviseCooldownMs(input = {}, status = "") {
   return Math.min(24 * 3600_000, Math.max(0, number));
 }
 
+function legacyWorkflowSuperviseLaneEnabled(input = {}) {
+  const explicit = input.legacyWorkflowSuperviseLane
+    ?? input.legacy_workflow_supervise_lane
+    ?? input.enableLegacyWorkflowSuperviseLane
+    ?? input.enable_legacy_workflow_supervise_lane
+    ?? input.workflowSuperviseLane
+    ?? input.workflow_supervise_lane;
+  if (explicit !== undefined && explicit !== null && explicit !== "") return boolOption(explicit, true);
+  const env = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_SUPERVISE_LANE;
+  if (env !== undefined && env !== null && env !== "") return boolOption(env, true);
+  return true;
+}
+
 function controlLoopJobLeaseMs(input = {}, job = null) {
   const requested = boundedNumber([input.jobLeaseMs, input.job_lease_ms], 120_000, 10_000, 60 * 60_000);
   const payload = job ? parseJsonValue(job.payload_json || job.payload, {}) : {};
@@ -161,6 +174,7 @@ export function createControlLoopTickActionHandlers(context = {}) {
     const deliverOutbox = boolOption(input.deliverOutbox ?? input.deliver_outbox, true);
     const ensureHumanGateRequests = boolOption(input.ensureHumanGateRequests ?? input.ensure_human_gate_requests, true);
     const createHumanGateInbox = boolOption(input.createHumanGateInbox ?? input.create_human_gate_inbox, true);
+    const legacySuperviseLane = legacyWorkflowSuperviseLaneEnabled(input);
     const explicitRuntimeInput = input.runtime !== undefined || input.runtimes !== undefined;
     const requestedRuntimeValues = explicitRuntimeInput ? toList(input.runtimes ?? input.runtime) : [];
     const invalidRequestedRuntimes = requestedRuntimeValues.filter((runtime) => !normalizeKnownRuntime(runtime));
@@ -179,14 +193,14 @@ export function createControlLoopTickActionHandlers(context = {}) {
 
     seeded.push(...await seedDueScheduleJobs(paths, input));
 
-    const workflowRows = await sqlite(paths.dbFile, `
+    const workflowRows = legacySuperviseLane ? await sqlite(paths.dbFile, `
 SELECT workflow_id, status, current_decision, payload_json, updated_at
 FROM workflow_runs
 WHERE status IN (${sqlStringList(statuses)})
 ORDER BY
   CASE status WHEN 'waiting_human' THEN 0 WHEN 'blocked' THEN 1 ELSE 2 END,
   updated_at
-LIMIT ${maxWorkflows};`, { json: true });
+LIMIT ${maxWorkflows};`, { json: true }) : [];
     for (const row of workflowRows) {
       const payload = parseJsonValue(row.payload_json, {});
       const flashLane = boolOption(payload.flashLane ?? payload.flash_lane ?? payload.tradingExecution ?? payload.trading_execution, false);
@@ -413,14 +427,18 @@ SELECT
     const owner = String(input.claimOwner || input.claim_owner || input.owner || input.leaseOwner || input.lease_owner || `pid:${process.pid}:${safeId("claim")}`).trim();
     const limit = Math.max(1, Math.min(20, Number(input.jobLimit || input.job_limit || 4)));
     const now = nowIso();
+    const legacySuperviseFilter = legacyWorkflowSuperviseLaneEnabled(input) ? "" : "AND job_type != 'workflow_supervise'";
     const rows = await sqlite(paths.dbFile, `
 SELECT *
 FROM control_loop_jobs
 WHERE (
+  (
     status IN ('queued','retry_scheduled')
     AND (next_run_at IS NULL OR next_run_at='' OR next_run_at <= ${sqlValue(now)})
   )
   OR (status='running' AND lease_until <= ${sqlValue(now)})
+)
+${legacySuperviseFilter}
 ORDER BY
   CASE priority WHEN 'flash' THEN -1 WHEN 'steer' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
   created_at
