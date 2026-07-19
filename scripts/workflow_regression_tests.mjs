@@ -5607,8 +5607,10 @@ VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-
   assert.equal(humanGate.decision, "human_gate_pending");
   assert.equal(humanGate.candidates[0].candidateType, "workflow_checkpoint_preview");
   assert.equal(humanGate.candidates[0].followUpAction, "workflow.supervisor.checkpoint.preview");
-  assert.equal(humanGate.candidates[1].followUpAction, "workflow.v2.human_gate_request.preview");
-  assert.equal(humanGate.candidates[1].input.packageId, "package-supervisor-next-hgate");
+  assert.equal(humanGate.candidates[1].candidateType, "cat_claw_report_required");
+  assert.equal(humanGate.candidates[1].followUpAction, "workflow.supervisor.report.preview");
+  assert.equal(humanGate.candidates[2].followUpAction, "workflow.v2.human_gate_request.preview");
+  assert.equal(humanGate.candidates[2].input.packageId, "package-supervisor-next-hgate");
   const humanGateCheckpointPreview = await runAction(hgateFixture.root, {
     action: "workflow.supervisor.checkpoint.preview",
     workflowId: hgateFixture.workflowId,
@@ -5616,7 +5618,142 @@ VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-
   });
   assert.equal(humanGateCheckpointPreview.status, "ready");
   assert.equal(humanGateCheckpointPreview.checkpointCandidateCount, 1);
-  assert.equal(humanGateCheckpointPreview.checkpointCandidates[0].reason, "v2_plan_needs_checkpoint_boundary_before_closeout_or_human_gate");
+  assert.equal(humanGateCheckpointPreview.checkpointCandidates[0].reason, "v2_plan_needs_checkpoint_boundary_before_human_gate_report_or_request");
+  const humanGateReportPreviewBeforeCheckpoint = await runAction(hgateFixture.root, {
+    action: "workflow.supervisor.report.preview",
+    workflowId: hgateFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(humanGateReportPreviewBeforeCheckpoint.operation, "workflow.supervisor.report.preview");
+  assert.equal(humanGateReportPreviewBeforeCheckpoint.dryRun, true);
+  assert.equal(humanGateReportPreviewBeforeCheckpoint.previewOnly, true);
+  assert.equal(humanGateReportPreviewBeforeCheckpoint.reportCandidateCount, 1);
+  assert.equal(humanGateReportPreviewBeforeCheckpoint.reportCandidates[0].status, "checkpoint_required");
+  assert.equal(humanGateReportPreviewBeforeCheckpoint.reportCandidates[0].executorStatus, "precondition_failed");
+  assert.equal(humanGateReportPreviewBeforeCheckpoint.reportCandidates[0].reportPreview.dispatchType, "human_gate_report");
+  assert.equal(humanGateReportPreviewBeforeCheckpoint.would.dispatch, false);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "mixed_meeting_dispatches"), 0);
+  await assertRejectsMessage(
+    () => runAction(hgateFixture.root, {
+      action: "workflow.supervisor.report",
+      workflowId: hgateFixture.workflowId,
+      planId: "plan-v2-kernel"
+    }),
+    /workflow supervisor report is not write-ready: checkpoint_required/
+  );
+  await runAction(hgateFixture.root, {
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "main",
+    capabilities: { permissions: ["workflow.checkpoint"] }
+  });
+  const humanGateCheckpoint = await runAction(hgateFixture.root, {
+    action: "workflow.supervisor.checkpoint",
+    workflowId: hgateFixture.workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "main",
+    createdBy: "main"
+  });
+  assert.equal(humanGateCheckpoint.resumePayload.readinessDecision, "human_gate_pending");
+  await runAction(hgateFixture.root, {
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "cat_claw",
+    capabilities: { permissions: ["cat_claw.audit", "dispatch.write"] }
+  });
+  const humanGateReportReadyPreview = await runAction(hgateFixture.root, {
+    action: "workflow.supervisor.report.preview",
+    workflowId: hgateFixture.workflowId,
+    planId: "plan-v2-kernel",
+    reportAgent: "cat_body",
+    reportRuntime: "hermers",
+    reportId: "workflow_supervisor_report.tampered"
+  });
+  assert.equal(humanGateReportReadyPreview.reportCandidates[0].status, "ready_for_report");
+  assert.equal(humanGateReportReadyPreview.reportCandidates[0].executorStatus, "ready");
+  assert.equal(humanGateReportReadyPreview.reportCandidates[0].checkpointPreview.latestCheckpointId, humanGateCheckpoint.checkpointId);
+  assert.equal(humanGateReportReadyPreview.reportCandidates[0].reportPreview.wouldDispatchCatClawNow, true);
+  assert.equal(humanGateReportReadyPreview.reportCandidates[0].reportPreview.reportTarget, "openclaw:cat_claw");
+  assert.notEqual(humanGateReportReadyPreview.reportCandidates[0].input.reportId, "workflow_supervisor_report.tampered");
+  const hgateReportCountsBefore = {
+    artifactIndex: sqliteCount(hgateFixture.dbFile, "artifact_index"),
+    reportRecords: sqliteCount(hgateFixture.dbFile, "protocol_objects", "object_type='workflow_supervisor_report_record'"),
+    dispatches: sqliteCount(hgateFixture.dbFile, "mixed_meeting_dispatches"),
+    humanGateRecords: sqliteCount(hgateFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"),
+    messageFlows: sqliteCount(hgateFixture.dbFile, "message_flows"),
+    outbox: sqliteCount(hgateFixture.dbFile, "telegram_outbox"),
+    workflowTasks: sqliteCount(hgateFixture.dbFile, "workflow_tasks"),
+    workflowRuns: sqliteCount(hgateFixture.dbFile, "workflow_runs"),
+    events: sqliteCount(hgateFixture.dbFile, "workflow_events"),
+    planHumanGatePending: sqliteCount(hgateFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND workflow_state='human_gate_request_due'"),
+    reviewingNodes: sqliteCount(hgateFixture.dbFile, "workflow_v2_plan_nodes", "status='reviewing'")
+  };
+  const humanGateReport = await runAction(hgateFixture.root, {
+    action: "workflow.supervisor.report",
+    workflowId: hgateFixture.workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "local_codex",
+    createdBy: "local_codex",
+    reportAgent: "cat_body",
+    reportRuntime: "hermers",
+    reportId: "workflow_supervisor_report.tampered"
+  });
+  assert.equal(humanGateReport.schemaVersion, "workflow_supervisor_report_result.v1");
+  assert.equal(humanGateReport.writeBoundary, "report_artifact_record_and_cat_claw_dispatch_only");
+  assert.equal(humanGateReport.readinessDecision, "human_gate_pending");
+  assert.equal(humanGateReport.reportId, humanGateReportReadyPreview.reportCandidates[0].input.reportId);
+  assert.notEqual(humanGateReport.reportId, "workflow_supervisor_report.tampered");
+  assert.equal(humanGateReport.didWriteReportArtifact, true);
+  assert.equal(humanGateReport.didRecordReport, true);
+  assert.equal(humanGateReport.didDispatchCatClaw, true);
+  assert.equal(humanGateReport.didWriteCheckpoint, false);
+  assert.equal(humanGateReport.didRequestHumanGate, false);
+  assert.equal(humanGateReport.didSendTelegram, false);
+  assert.equal(humanGateReport.didDrainRuntime, false);
+  assert.equal(humanGateReport.didUpdateV2PlanState, false);
+  assert.equal(humanGateReport.didUpdateV2NodeState, false);
+  assert.equal(humanGateReport.dispatch.runtime, "openclaw");
+  assert.equal(humanGateReport.dispatch.agentId, "cat_claw");
+  assert.equal(sqliteCount(hgateFixture.dbFile, "artifact_index", `artifact_id='${humanGateReport.reportId}' AND kind='workflow_supervisor_report'`), 1);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "protocol_objects", `object_id='${humanGateReport.reportId}' AND object_type='workflow_supervisor_report_record' AND status='cat_claw_dispatch_queued'`), 1);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "mixed_meeting_dispatches", `dispatch_id='${humanGateReport.dispatch.dispatchId}' AND dispatch_type='human_gate_report' AND agent_id='cat_claw'`), 1);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"), hgateReportCountsBefore.humanGateRecords);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "telegram_outbox"), hgateReportCountsBefore.outbox);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "message_flows"), hgateReportCountsBefore.messageFlows);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "workflow_tasks"), hgateReportCountsBefore.workflowTasks);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "workflow_runs"), hgateReportCountsBefore.workflowRuns);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND workflow_state='human_gate_request_due'"), hgateReportCountsBefore.planHumanGatePending);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "workflow_v2_plan_nodes", "status='reviewing'"), hgateReportCountsBefore.reviewingNodes);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "artifact_index"), hgateReportCountsBefore.artifactIndex + 1);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "protocol_objects", "object_type='workflow_supervisor_report_record'"), hgateReportCountsBefore.reportRecords + 1);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "mixed_meeting_dispatches"), hgateReportCountsBefore.dispatches + 1);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "workflow_events"), hgateReportCountsBefore.events + 2);
+  const humanGateReportDispatchRow = sqliteJson(hgateFixture.dbFile, `SELECT payload_json AS payloadJson FROM mixed_meeting_dispatches WHERE dispatch_id='${humanGateReport.dispatch.dispatchId}' LIMIT 1;`)[0];
+  const humanGateReportDispatchPayload = JSON.parse(humanGateReportDispatchRow.payloadJson);
+  assert.equal(humanGateReportDispatchPayload.payload.reportTarget, "openclaw:cat_claw");
+  assert.equal(humanGateReportDispatchPayload.payload.noDirectHumanGate, true);
+  assert.equal(humanGateReportDispatchPayload.payload.noDirectTelegram, true);
+  const humanGateReportReplay = await runAction(hgateFixture.root, {
+    action: "workflow.supervisor.report",
+    workflowId: hgateFixture.workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "local_codex",
+    createdBy: "local_codex"
+  });
+  assert.equal(humanGateReportReplay.reportId, humanGateReport.reportId);
+  assert.equal(humanGateReportReplay.dispatch.dispatchId, humanGateReport.dispatch.dispatchId);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "artifact_index"), hgateReportCountsBefore.artifactIndex + 1);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "protocol_objects", "object_type='workflow_supervisor_report_record'"), hgateReportCountsBefore.reportRecords + 1);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "mixed_meeting_dispatches"), hgateReportCountsBefore.dispatches + 1);
+  const humanGateReportAfterExecution = await runAction(hgateFixture.root, {
+    action: "workflow.supervisor.report.preview",
+    workflowId: hgateFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(humanGateReportAfterExecution.reportCandidates[0].status, "existing_report_available");
+  assert.equal(humanGateReportAfterExecution.reportCandidates[0].executorStatus, "already_recorded");
 
   const draftFixture = await setupWorkflowV2KernelPlanFixture("workflow-supervisor-next-actions-draft-hgate");
   sqliteExec(draftFixture.dbFile, `
@@ -5640,7 +5777,97 @@ VALUES ('package-supervisor-next-draft', '${draftFixture.workflowId}', 'plan-v2-
     planId: "plan-v2-kernel"
   });
   assert.equal(blocked.decision, "blocked");
-  assert.equal(blocked.candidates[0].candidateType, "operator_blocker_review");
+  assert.equal(blocked.candidates[0].candidateType, "workflow_checkpoint_preview");
+  assert.equal(blocked.candidates[0].followUpAction, "workflow.supervisor.checkpoint.preview");
+  assert.equal(blocked.candidates[1].candidateType, "operator_blocker_review");
+  assert.equal(blocked.candidates[2].candidateType, "cat_claw_report_required");
+  assert.equal(blocked.candidates[2].followUpAction, "workflow.supervisor.report.preview");
+  const blockedCheckpointPreview = await runAction(blockedFixture.root, {
+    action: "workflow.supervisor.checkpoint.preview",
+    workflowId: blockedFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(blockedCheckpointPreview.status, "ready");
+  assert.equal(blockedCheckpointPreview.checkpointCandidates[0].input.readinessDecision, "blocked");
+  assert.equal(blockedCheckpointPreview.checkpointCandidates[0].reason, "v2_plan_needs_checkpoint_boundary_before_blocked_report");
+  const blockedReportPreviewBeforeCheckpoint = await runAction(blockedFixture.root, {
+    action: "workflow.supervisor.report.preview",
+    workflowId: blockedFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(blockedReportPreviewBeforeCheckpoint.reportCandidates[0].status, "checkpoint_required");
+  assert.equal(blockedReportPreviewBeforeCheckpoint.reportCandidates[0].reportPreview.dispatchType, "workflow_secretary_report");
+  await runAction(blockedFixture.root, {
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "main",
+    capabilities: { permissions: ["workflow.checkpoint"] }
+  });
+  const blockedCheckpoint = await runAction(blockedFixture.root, {
+    action: "workflow.supervisor.checkpoint",
+    workflowId: blockedFixture.workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "main",
+    createdBy: "main"
+  });
+  assert.equal(blockedCheckpoint.resumePayload.readinessDecision, "blocked");
+  await runAction(blockedFixture.root, {
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "cat_claw",
+    capabilities: { permissions: ["cat_claw.audit", "dispatch.write"] }
+  });
+  const blockedReportReadyPreview = await runAction(blockedFixture.root, {
+    action: "workflow.supervisor.report.preview",
+    workflowId: blockedFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(blockedReportReadyPreview.reportCandidates[0].status, "ready_for_report");
+  const blockedReportCountsBefore = {
+    artifactIndex: sqliteCount(blockedFixture.dbFile, "artifact_index"),
+    reportRecords: sqliteCount(blockedFixture.dbFile, "protocol_objects", "object_type='workflow_supervisor_report_record'"),
+    dispatches: sqliteCount(blockedFixture.dbFile, "mixed_meeting_dispatches"),
+    events: sqliteCount(blockedFixture.dbFile, "workflow_events"),
+    blockedPlans: sqliteCount(blockedFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND workflow_state='blocked'"),
+    planNodes: sqliteCount(blockedFixture.dbFile, "workflow_v2_plan_nodes")
+  };
+  const blockedReport = await runAction(blockedFixture.root, {
+    action: "workflow.supervisor.report",
+    workflowId: blockedFixture.workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "local_codex",
+    createdBy: "local_codex"
+  });
+  assert.equal(blockedReport.readinessDecision, "blocked");
+  assert.equal(blockedReport.didUpdateV2PlanState, false);
+  assert.equal(blockedReport.didUpdateV2NodeState, false);
+  assert.equal(blockedReport.dispatch.runtime, "openclaw");
+  assert.equal(blockedReport.dispatch.agentId, "cat_claw");
+  assert.equal(sqliteCount(blockedFixture.dbFile, "mixed_meeting_dispatches", `dispatch_id='${blockedReport.dispatch.dispatchId}' AND dispatch_type='workflow_secretary_report' AND agent_id='cat_claw'`), 1);
+  assert.equal(sqliteCount(blockedFixture.dbFile, "protocol_objects", `object_id='${blockedReport.reportId}' AND object_type='workflow_supervisor_report_record'`), 1);
+  assert.equal(sqliteCount(blockedFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND workflow_state='blocked'"), blockedReportCountsBefore.blockedPlans);
+  assert.equal(sqliteCount(blockedFixture.dbFile, "workflow_v2_plan_nodes"), blockedReportCountsBefore.planNodes);
+  const blockedDispatchRow = sqliteJson(blockedFixture.dbFile, `SELECT payload_json AS payloadJson FROM mixed_meeting_dispatches WHERE dispatch_id='${blockedReport.dispatch.dispatchId}' LIMIT 1;`)[0];
+  const blockedDispatchPayload = JSON.parse(blockedDispatchRow.payloadJson);
+  assert.equal(blockedDispatchPayload.payload.reportTarget, "openclaw:cat_claw");
+  assert.equal(blockedDispatchPayload.payload.noDirectHumanGate, true);
+  assert.equal(blockedDispatchPayload.payload.noDirectTelegram, true);
+  const blockedReportReplay = await runAction(blockedFixture.root, {
+    action: "workflow.supervisor.report",
+    workflowId: blockedFixture.workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "local_codex",
+    createdBy: "local_codex"
+  });
+  assert.equal(blockedReportReplay.reportId, blockedReport.reportId);
+  assert.equal(blockedReportReplay.dispatch.dispatchId, blockedReport.dispatch.dispatchId);
+  assert.equal(sqliteCount(blockedFixture.dbFile, "artifact_index"), blockedReportCountsBefore.artifactIndex + 1);
+  assert.equal(sqliteCount(blockedFixture.dbFile, "protocol_objects", "object_type='workflow_supervisor_report_record'"), blockedReportCountsBefore.reportRecords + 1);
+  assert.equal(sqliteCount(blockedFixture.dbFile, "mixed_meeting_dispatches"), blockedReportCountsBefore.dispatches + 1);
+  assert.equal(sqliteCount(blockedFixture.dbFile, "workflow_tasks"), 0);
+  assert.equal(sqliteCount(blockedFixture.dbFile, "workflow_runs"), 0);
 
   const closeoutFixture = await setupWorkflowV2KernelPlanFixture("workflow-supervisor-next-actions-closeout");
   sqliteExec(closeoutFixture.dbFile, `
@@ -5954,10 +6181,10 @@ async function testWorkflowV2ExtractedActionContracts() {
   const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-extracted-action-contracts");
   const { root, dbFile, workflowId } = fixture;
   const workflowModule = await import("../src/workflow.js");
-  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2Validate"]) {
+  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReportPreview", "workflowSupervisorReport", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2Validate"]) {
     assert.equal(typeof workflowModule[exportName], "function", `${exportName} should remain a public workflow.js export`);
   }
-  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.validate"]) {
+  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.report.preview", "workflow.supervisor.report", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.validate"]) {
     assert.equal(workflowModule.WORKFLOW_V2_ACTION_REGISTRY.has(action), true, `${action} should remain registered`);
   }
 

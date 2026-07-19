@@ -47,5 +47,5 @@ P21 must prove:
 
 - `workflow.advance` still owns legacy task dispatch sync and task/run mutation.
 - `workflow.supervise` still owns legacy checkpoint/report compatibility paths.
-- Blocked and Human Gate pending Cat Claw report parity is not fully replaced by v2 closeout.
+- P22 adds blocked and Human Gate pending Cat Claw report parity through `workflow.supervisor.report.preview` / `workflow.supervisor.report`.
 - Generic dispatch bridge naming remains meeting-era; replacement or aliasing requires a separate shared-adapter audit.

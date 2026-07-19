@@ -35,7 +35,8 @@ function candidate(id, type, followUpAction, reason, input = {}, details = {}) {
   };
 }
 
-const CHECKPOINT_PREVIEW_PLAN_DECISIONS = new Set(["human_gate_pending", "cat_claw_summary_required"]);
+const CHECKPOINT_PREVIEW_PLAN_DECISIONS = new Set(["blocked", "human_gate_pending", "cat_claw_summary_required"]);
+const REPORT_PLAN_DECISIONS = new Set(["blocked", "human_gate_pending"]);
 const SUPERVISOR_CLOSEOUT_REPORT_RUNTIME = "openclaw";
 const SUPERVISOR_CLOSEOUT_REPORT_AGENT = "cat_claw";
 
@@ -150,6 +151,14 @@ function candidatesForPlan(plan = {}, limit = 20) {
       { workflowId, planId },
       { status: "preview_available", executorStatus: "v2_checkpoint_writer_available", writeAction: "workflow.supervisor.checkpoint", note: "workflow.supervisor.checkpoint can write a v2 checkpoint boundary after separate authorization" }
     ));
+    result.push(candidate(
+      `cat_claw_report:${planId}`,
+      "cat_claw_report_required",
+      "workflow.supervisor.report.preview",
+      "human_gate_pending_v2_plan_requires_cat_claw_report_evidence",
+      { workflowId, planId },
+      { status: "preview_available", executorStatus: "checkpoint_gated_executor_available", note: "workflow.supervisor.report requires an existing checkpoint boundary before it writes report evidence and queues Cat Claw dispatch" }
+    ));
     for (const pkg of (plan.humanGatePackages || []).slice(0, limit)) {
       result.push(candidate(
         `human_gate_request:${pkg.packageId || result.length + 1}`,
@@ -167,12 +176,28 @@ function candidatesForPlan(plan = {}, limit = 20) {
   }
   if (plan.decision === "blocked") {
     result.push(candidate(
+      `checkpoint:${planId}`,
+      "workflow_checkpoint_preview",
+      "workflow.supervisor.checkpoint.preview",
+      "blocked_v2_plan_requires_checkpoint_boundary_before_cat_claw_report",
+      { workflowId, planId },
+      { status: "preview_available", executorStatus: "v2_checkpoint_writer_available", writeAction: "workflow.supervisor.checkpoint", note: "workflow.supervisor.checkpoint can write a v2 checkpoint boundary after separate authorization" }
+    ));
+    result.push(candidate(
       `blocker_review:${planId}`,
       "operator_blocker_review",
       "workflow.supervisor.readiness.preview",
       "blocked_v2_plan_requires_evidence_review_before_continuation",
       { workflowId, planId },
       { status: "blocked" }
+    ));
+    result.push(candidate(
+      `cat_claw_report:${planId}`,
+      "cat_claw_report_required",
+      "workflow.supervisor.report.preview",
+      "blocked_v2_plan_requires_cat_claw_report_evidence",
+      { workflowId, planId },
+      { status: "preview_available", executorStatus: "checkpoint_gated_executor_available", note: "workflow.supervisor.report requires an existing checkpoint boundary before it writes report evidence and queues Cat Claw dispatch" }
     ));
   }
   if (plan.decision === "cat_claw_summary_required") {
@@ -247,10 +272,16 @@ function supervisorCheckpointsForPlan(checkpoints = [], plan = {}, decision = ""
 function checkpointCandidateForPlan(plan = {}, checkpoints = []) {
   const workflowId = plan.workflowId || "";
   const planId = plan.planId || "";
+  const decision = plan.decision || "";
   const matchingCheckpoints = supervisorCheckpointsForPlan(checkpoints, plan, plan.decision || "");
   const latestCheckpoint = matchingCheckpoints[0] || null;
   const checkpointId = supervisorCheckpointIdForPlan(workflowId, planId, plan.decision || "");
   const ready = planNeedsCheckpointPreview(plan);
+  const missingReason = decision === "blocked"
+    ? "v2_plan_needs_checkpoint_boundary_before_blocked_report"
+    : decision === "human_gate_pending"
+      ? "v2_plan_needs_checkpoint_boundary_before_human_gate_report_or_request"
+      : "v2_plan_needs_checkpoint_boundary_before_closeout";
   return {
     candidateId: `checkpoint:${planId || workflowId || "unknown"}`,
     candidateType: "workflow_supervisor_checkpoint",
@@ -258,7 +289,7 @@ function checkpointCandidateForPlan(plan = {}, checkpoints = []) {
     executorStatus: ready ? "ready" : "precondition_failed",
     reason: latestCheckpoint
       ? "existing_checkpoint_boundary_available_for_v2_plan"
-      : "v2_plan_needs_checkpoint_boundary_before_closeout_or_human_gate",
+      : missingReason,
     previewOnly: true,
     mutatesNow: false,
     followUpAction: "workflow.supervisor.checkpoint.preview",
@@ -319,6 +350,32 @@ function closeoutDispatchIdempotencyKey(closeoutId) {
   return `workflow.supervisor.closeout:${closeoutId}:cat_claw_report`;
 }
 
+function evidenceRefsForPlan(plan = {}, options = {}) {
+  const refs = [
+    plan.planSpecArtifactRef || "",
+    ...(plan.readyNodes || []).map((node) => node.outputInfoId || "").filter(Boolean),
+    ...(plan.activeWorkers || []).map((worker) => worker.outputInfoId || worker.receiptRef || "").filter(Boolean),
+    ...(plan.activeAdapterJobs || []).map((job) => job.artifactRef || job.runnerReceiptRef || "").filter(Boolean),
+    ...(plan.humanGatePackages || []).flatMap((pkg) => pkg.evidenceRefs || [])
+  ];
+  if (options.includeDraftHumanGatePackages) {
+    refs.push(...(plan.draftHumanGatePackages || []).flatMap((pkg) => pkg.evidenceRefs || []));
+  }
+  return refs.filter(Boolean);
+}
+
+function reportIdForPlan(workflowId, planId, decision) {
+  return `workflow_supervisor_report.${textHash(`${workflowId}:${planId}:${decision}`).slice(0, 24)}`;
+}
+
+function reportDispatchIdempotencyKey(reportId) {
+  return `workflow.supervisor.report:${reportId}:cat_claw_report`;
+}
+
+function reportDispatchTypeForDecision(decision = "") {
+  return decision === "human_gate_pending" ? "human_gate_report" : "workflow_secretary_report";
+}
+
 async function closeoutRowsByPlan(dbFile, plans = [], limit = 20) {
   if (!dbFile || !plans.length) return new Map();
   const tableRows = await sqlite(dbFile, "SELECT name FROM sqlite_master WHERE type='table' AND name='protocol_objects' LIMIT 1;", { json: true });
@@ -339,6 +396,32 @@ LIMIT ${sqlValue(pairs.length * limit)};`, { json: true });
   for (const row of rows) {
     const payload = workflowV2JsonObject(row.payload_json, {});
     const key = `${payload.workflowId || ""}:${payload.planId || ""}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    if (grouped.get(key).length < limit) grouped.get(key).push(row);
+  }
+  return grouped;
+}
+
+async function reportRowsByPlan(dbFile, plans = [], limit = 20) {
+  if (!dbFile || !plans.length) return new Map();
+  const tableRows = await sqlite(dbFile, "SELECT name FROM sqlite_master WHERE type='table' AND name='protocol_objects' LIMIT 1;", { json: true });
+  if (!tableRows[0]) return new Map();
+  const pairs = plans
+    .map((plan) => ({ workflowId: String(plan.workflowId || "").trim(), planId: String(plan.planId || "").trim(), decision: String(plan.decision || "").trim() }))
+    .filter((plan) => plan.workflowId && plan.planId && plan.decision);
+  if (!pairs.length) return new Map();
+  const clauses = pairs.map((plan) => `(json_extract(po.payload_json, '$.workflowId')=${sqlValue(plan.workflowId)} AND json_extract(po.payload_json, '$.planId')=${sqlValue(plan.planId)} AND json_extract(po.payload_json, '$.readinessDecision')=${sqlValue(plan.decision)})`);
+  const rows = await sqlite(dbFile, `
+SELECT po.object_id, po.status, po.path, po.payload_json, po.created_at, po.updated_at
+FROM protocol_objects po
+WHERE po.object_type='workflow_supervisor_report_record'
+  AND (${clauses.join(" OR ")})
+ORDER BY po.created_at DESC
+LIMIT ${sqlValue(pairs.length * limit)};`, { json: true });
+  const grouped = new Map(pairs.map((plan) => [`${plan.workflowId}:${plan.planId}:${plan.decision}`, []]));
+  for (const row of rows) {
+    const payload = workflowV2JsonObject(row.payload_json, {});
+    const key = `${payload.workflowId || ""}:${payload.planId || ""}:${payload.readinessDecision || ""}`;
     if (!grouped.has(key)) grouped.set(key, []);
     if (grouped.get(key).length < limit) grouped.get(key).push(row);
   }
@@ -390,13 +473,7 @@ function closeoutCandidateForPlan(plan = {}, checkpoints = [], closeouts = [], i
       catClawAgent: SUPERVISOR_CLOSEOUT_REPORT_AGENT,
       readinessDecision: plan.decision || ""
     },
-    evidenceRefs: [
-      plan.planSpecArtifactRef || "",
-      ...(plan.readyNodes || []).map((node) => node.outputInfoId || "").filter(Boolean),
-      ...(plan.activeWorkers || []).map((worker) => worker.outputInfoId || worker.receiptRef || "").filter(Boolean),
-      ...(plan.activeAdapterJobs || []).map((job) => job.artifactRef || job.runnerReceiptRef || "").filter(Boolean),
-      ...(plan.humanGatePackages || []).flatMap((pkg) => pkg.evidenceRefs || [])
-    ].filter(Boolean),
+    evidenceRefs: evidenceRefsForPlan(plan),
     checkpointPreview: {
       wouldWriteCheckpointNow: false,
       checkpointAction: "workflow.supervisor.checkpoint",
@@ -422,6 +499,84 @@ function closeoutCandidateForPlan(plan = {}, checkpoints = [], closeouts = [], i
       path: latestCloseout.path || "",
       createdAt: latestCloseout.created_at || "",
       updatedAt: latestCloseout.updated_at || ""
+    } : null
+  };
+}
+
+function reportCandidateForPlan(plan = {}, checkpoints = [], reports = [], input = {}) {
+  const workflowId = plan.workflowId || "";
+  const planId = plan.planId || "";
+  const decision = plan.decision || "";
+  const matchingCheckpoints = supervisorCheckpointsForPlan(checkpoints, plan, decision);
+  const latestCheckpoint = matchingCheckpoints[0] || null;
+  const latestReport = reports[0] || null;
+  const reportId = reportIdForPlan(workflowId, planId, decision);
+  const ready = REPORT_PLAN_DECISIONS.has(decision) && Boolean(latestCheckpoint) && !latestReport;
+  return {
+    candidateId: `cat_claw_report:${planId || workflowId || "unknown"}`,
+    candidateType: "cat_claw_report",
+    status: latestReport
+      ? "existing_report_available"
+      : ready
+        ? "ready_for_report"
+        : REPORT_PLAN_DECISIONS.has(decision)
+          ? "checkpoint_required"
+          : "not_ready",
+    executorStatus: latestReport
+      ? "already_recorded"
+      : ready
+        ? "ready"
+        : "precondition_failed",
+    reason: latestReport
+      ? "v2_plan_supervisor_report_already_recorded"
+      : REPORT_PLAN_DECISIONS.has(decision)
+        ? latestCheckpoint
+          ? `${decision}_v2_plan_can_dispatch_cat_claw_report`
+          : `${decision}_v2_plan_requires_checkpoint_before_report`
+        : "v2_plan_not_ready_for_supervisor_report",
+    previewOnly: true,
+    mutatesNow: false,
+    followUpAction: latestReport ? "workflow.supervisor.report.preview" : "workflow.supervisor.report",
+    previewAction: "workflow.supervisor.report.preview",
+    writeAction: "workflow.supervisor.report",
+    workflowId,
+    planId,
+    input: {
+      workflowId,
+      planId,
+      reportId,
+      catBrainAgent: "main",
+      catClawAgent: SUPERVISOR_CLOSEOUT_REPORT_AGENT,
+      readinessDecision: decision
+    },
+    evidenceRefs: evidenceRefsForPlan(plan, { includeDraftHumanGatePackages: true }),
+    checkpointPreview: {
+      wouldWriteCheckpointNow: false,
+      checkpointAction: "workflow.supervisor.checkpoint",
+      checkpointParityStatus: latestCheckpoint ? "existing_checkpoint_available" : "checkpoint_required_before_report",
+      latestCheckpointId: latestCheckpoint?.checkpoint_id || "",
+      reason: latestCheckpoint
+        ? "report can reference existing checkpoint evidence"
+        : "report execution refuses to run without an existing checkpoint boundary"
+    },
+    reportPreview: {
+      wouldWriteReportArtifactNow: ready,
+      wouldRecordReportNow: ready,
+      wouldDispatchCatClawNow: ready,
+      wouldRequestHumanGateNow: false,
+      reportTarget: `${SUPERVISOR_CLOSEOUT_REPORT_RUNTIME}:${SUPERVISOR_CLOSEOUT_REPORT_AGENT}`,
+      requiredDecisions: [...REPORT_PLAN_DECISIONS],
+      readinessDecision: decision,
+      dispatchType: reportDispatchTypeForDecision(decision),
+      reportId,
+      dispatchIdempotencyKey: reportDispatchIdempotencyKey(reportId)
+    },
+    latestReport: latestReport ? {
+      reportId: latestReport.object_id || "",
+      status: latestReport.status || "",
+      path: latestReport.path || "",
+      createdAt: latestReport.created_at || "",
+      updatedAt: latestReport.updated_at || ""
     } : null
   };
 }
@@ -672,6 +827,260 @@ ON CONFLICT(object_id) DO UPDATE SET
     };
   }
 
+  async function workflowSupervisorReportPreview(rootDir, input = {}) {
+    const limit = Math.max(1, Math.min(100, Number(input.limit || input.detailLimit || input.detail_limit || 20) || 20));
+    const readiness = await workflowV2ReadinessPreview(rootDir, {
+      ...input,
+      includeDetails: true,
+      limit
+    });
+    const plans = readiness.plans || [];
+    const reportPlans = plans.filter((plan) => REPORT_PLAN_DECISIONS.has(plan.decision));
+    const checkpointsByWorkflow = await checkpointRowsByWorkflow(readiness.dbFile, reportPlans.map((plan) => plan.workflowId), limit);
+    const reportsByPlan = await reportRowsByPlan(readiness.dbFile, reportPlans, limit);
+    const reportCandidates = reportPlans
+      .map((plan) => reportCandidateForPlan(
+        plan,
+        checkpointsByWorkflow.get(plan.workflowId) || [],
+        reportsByPlan.get(`${plan.workflowId}:${plan.planId}:${plan.decision}`) || [],
+        input
+      ))
+      .slice(0, limit);
+    return {
+      operation: "workflow.supervisor.report.preview",
+      dryRun: true,
+      previewOnly: true,
+      ok: true,
+      status: reportCandidates.length ? "ready" : "not_ready",
+      generatedAt: readiness.generatedAt || firstText(input.generatedAt, input.generated_at, input.now),
+      decision: readiness.decision,
+      nextDecision: readiness.nextDecision || readiness.decision,
+      reasons: reportCandidates.length ? ["cat_claw_report_preview_available"] : ["no_v2_plan_ready_for_cat_claw_report"],
+      reportCandidateCount: reportCandidates.length,
+      reportCandidates,
+      would: {
+        mutate: false,
+        dispatch: false,
+        writeCheckpoint: false,
+        writeReportArtifact: false,
+        recordReport: false,
+        requestHumanGate: false,
+        sendTelegram: false,
+        drainRuntime: false
+      },
+      readiness,
+      limitations: [
+        "preview_only_no_state_mutation",
+        "does_not_write_workflow_checkpoint",
+        "does_not_write_report_artifact_or_record",
+        "does_not_dispatch_cat_claw_report",
+        "does_not_request_human_gate",
+        "workflow.supervisor.report execution requires an existing checkpoint boundary and separate write authorization"
+      ],
+      dbFile: readiness.dbFile
+    };
+  }
+
+  async function workflowSupervisorReport(rootDir, input = {}) {
+    const paths = await ensureWorkflowLayout(rootDir, input);
+    const preview = await workflowSupervisorReportPreview(rootDir, input);
+    const workflowId = firstText(input.workflowId, input.workflow_id);
+    const planId = firstText(input.planId, input.plan_id);
+    const candidate = preview.reportCandidates.find((item) => {
+      if (workflowId && item.workflowId !== workflowId) return false;
+      if (planId && item.planId !== planId) return false;
+      return true;
+    });
+    if (!candidate) throw new Error("workflow supervisor report is not available: no blocked or human_gate_pending v2 plan candidate");
+    if (candidate.executorStatus === "already_recorded") {
+      const reportId = candidate.input.reportId;
+      const dispatchRows = await sqlite(paths.dbFile, `
+SELECT dispatch_id, runtime, agent_id, dispatch_type, status, priority
+FROM mixed_meeting_dispatches
+WHERE idempotency_key=${sqlValue(reportDispatchIdempotencyKey(reportId))}
+LIMIT 1;`, { json: true });
+      const dispatchRow = dispatchRows[0] || null;
+      return {
+        schemaVersion: "workflow_supervisor_report_result.v1",
+        action: "workflow.supervisor.report",
+        workflowId: candidate.workflowId,
+        planId: candidate.planId,
+        reportId,
+        status: "already_recorded",
+        readinessDecision: candidate.input.readinessDecision,
+        writeBoundary: "report_artifact_record_and_cat_claw_dispatch_only",
+        didWriteReportArtifact: false,
+        didRecordReport: false,
+        didDispatchCatClaw: false,
+        didWriteCheckpoint: false,
+        didRequestHumanGate: false,
+        didSendTelegram: false,
+        didDrainRuntime: false,
+        didUpdateV2PlanState: false,
+        didUpdateV2NodeState: false,
+        artifact: candidate.latestReport ? {
+          artifactId: reportId,
+          kind: "workflow_supervisor_report",
+          relativePath: candidate.latestReport.path || ""
+        } : null,
+        dispatch: dispatchRow ? {
+          dispatchId: dispatchRow.dispatch_id || "",
+          runtime: dispatchRow.runtime || "",
+          agentId: dispatchRow.agent_id || "",
+          dispatchType: dispatchRow.dispatch_type || "",
+          status: dispatchRow.status || "",
+          priority: dispatchRow.priority || ""
+        } : null,
+        dbFile: paths.dbFile
+      };
+    }
+    if (candidate.executorStatus !== "ready") {
+      throw new Error(`workflow supervisor report is not write-ready: ${candidate.status}`);
+    }
+    const createdAt = nowIso();
+    const reportId = candidate.input.reportId;
+    const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "workflow_supervisor");
+    const reportAgent = SUPERVISOR_CLOSEOUT_REPORT_AGENT;
+    const reportRuntime = SUPERVISOR_CLOSEOUT_REPORT_RUNTIME;
+    const latestCheckpointId = candidate.checkpointPreview.latestCheckpointId || "";
+    const readinessDecision = candidate.input.readinessDecision;
+    const dispatchType = reportDispatchTypeForDecision(readinessDecision);
+    const reportPayload = redactSensitiveForPersistence({
+      schemaVersion: "workflow_supervisor_report_record.v1",
+      reportId,
+      workflowId: candidate.workflowId,
+      planId: candidate.planId,
+      status: "cat_claw_dispatch_queued",
+      createdAt,
+      createdBy,
+      catBrainAgent: candidate.input.catBrainAgent,
+      catClawAgent: reportAgent,
+      reportRuntime,
+      readinessDecision,
+      dispatchType,
+      checkpointId: latestCheckpointId,
+      evidenceRefs: candidate.evidenceRefs,
+      summary: firstText(input.summary, input.text, `${readinessDecision} v2 plan ${candidate.planId} requires Cat Claw report.`),
+      writeBoundary: "report_artifact_record_and_cat_claw_dispatch_only",
+      sideEffects: {
+        writesReportArtifact: true,
+        writesProtocolObject: true,
+        dispatchesCatClaw: true,
+        writesCheckpoint: false,
+        requestsHumanGate: false,
+        sendsTelegram: false,
+        drainsRuntime: false,
+        updatesV2PlanState: false,
+        updatesV2NodeState: false
+      },
+      payload: workflowV2JsonObject(input.payload, {})
+    });
+    const hash = jsonHash(reportPayload);
+    const relativePath = await writeJsonArtifact(paths.root, path.join(paths.workflowsDir, "reports"), reportId, { ...reportPayload, hash });
+    await sqlite(paths.dbFile, `
+INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES (${sqlValue(reportId)}, ${sqlValue(candidate.workflowId)}, 'workflow_supervisor_report', ${sqlValue(relativePath)}, ${sqlValue(reportPayload.summary)}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)})
+ON CONFLICT(artifact_id) DO UPDATE SET workflow_id=excluded.workflow_id, kind=excluded.kind, path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
+    await sqlite(paths.dbFile, `
+INSERT INTO protocol_objects(object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
+VALUES (${sqlValue(reportId)}, 'workflow_supervisor_report_record', 'cat_claw_dispatch_queued', 'workflow', ${sqlValue(createdBy)}, ${sqlValue(candidate.planId)}, ${sqlValue(relativePath)}, ${sqlValue(JSON.stringify(reportPayload))}, ${sqlValue(hash)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+ON CONFLICT(object_id) DO UPDATE SET
+  status=excluded.status,
+  source_system=excluded.source_system,
+  source_agent=excluded.source_agent,
+  parent_object_id=excluded.parent_object_id,
+  path=excluded.path,
+  payload_json=excluded.payload_json,
+  hash=excluded.hash,
+  updated_at=excluded.updated_at;`);
+    await appendWorkflowEvent(paths, {
+      eventType: "workflow.supervisor.report.recorded",
+      status: "cat_claw_dispatch_queued",
+      workflowId: candidate.workflowId,
+      traceId: `${candidate.workflowId}:report:${reportId}`,
+      actor: createdBy,
+      sourceRuntime: "workflow",
+      sourceAgent: createdBy,
+      idempotencyKey: `workflow_event:workflow.supervisor.report.recorded:${reportId}`,
+      artifactRef: relativePath,
+      payload: {
+        reportId,
+        planId: candidate.planId,
+        checkpointId: latestCheckpointId,
+        readinessDecision,
+        dispatchType,
+        reportAgent,
+        reportRuntime
+      },
+      createdAt
+    });
+    const dispatch = await meetingDispatch(rootDir, {
+      ...input,
+      workflowRootDir: paths.root,
+      meetingId: firstText(input.meetingId, input.meeting_id, candidate.workflowId),
+      workflowId: candidate.workflowId,
+      traceId: `${candidate.workflowId}:cat_claw_report:${textHash(reportId).slice(0, 16)}`,
+      idempotencyKey: reportDispatchIdempotencyKey(reportId),
+      runtime: reportRuntime,
+      agentId: reportAgent,
+      dispatchType,
+      priority: firstText(input.priority, "high"),
+      createdBy,
+      prompt: [
+        "你是猫爪 cat_claw，是 workflow 秘书、Human Gate 入口和向闪电猫汇报的收口 agent。",
+        "请基于 report artifact 与 checkpoint evidence，整理本 v2 plan 的正式异常/待确认报告。",
+        "不要自行绕过 workflow 创建 Human Gate；如需要闪电猫确认，只输出候选项、证据引用和建议下一步，交由受治理 Human Gate 流程处理。",
+        "",
+        `timestamp: ${createdAt}`,
+        `workflow_id: ${candidate.workflowId}`,
+        `plan_id: ${candidate.planId}`,
+        `readiness_decision: ${readinessDecision}`,
+        `report_id: ${reportId}`,
+        `checkpoint_id: ${latestCheckpointId}`,
+        `report_artifact: ${relativePath}`,
+        `evidence_refs: ${(candidate.evidenceRefs || []).join(", ")}`
+      ].join("\n"),
+      payload: {
+        reportId,
+        workflowId: candidate.workflowId,
+        planId: candidate.planId,
+        readinessDecision,
+        checkpointId: latestCheckpointId,
+        reportArtifactRef: relativePath,
+        reportTarget: "openclaw:cat_claw",
+        noDirectHumanGate: true,
+        noDirectTelegram: true
+      }
+    });
+    return {
+      schemaVersion: "workflow_supervisor_report_result.v1",
+      action: "workflow.supervisor.report",
+      workflowId: candidate.workflowId,
+      planId: candidate.planId,
+      reportId,
+      status: "cat_claw_dispatch_queued",
+      readinessDecision,
+      writeBoundary: "report_artifact_record_and_cat_claw_dispatch_only",
+      didWriteReportArtifact: true,
+      didRecordReport: true,
+      didDispatchCatClaw: Boolean(dispatch?.dispatchId),
+      didWriteCheckpoint: false,
+      didRequestHumanGate: false,
+      didSendTelegram: false,
+      didDrainRuntime: false,
+      didUpdateV2PlanState: false,
+      didUpdateV2NodeState: false,
+      artifact: {
+        artifactId: reportId,
+        kind: "workflow_supervisor_report",
+        relativePath,
+        hash
+      },
+      dispatch,
+      dbFile: paths.dbFile
+    };
+  }
+
   async function workflowSupervisorCheckpointPreview(rootDir, input = {}) {
     const limit = Math.max(1, Math.min(100, Number(input.limit || input.detailLimit || input.detail_limit || 20) || 20));
     const readiness = await workflowV2ReadinessPreview(rootDir, {
@@ -908,6 +1317,8 @@ ON CONFLICT(artifact_id) DO UPDATE SET workflow_id=excluded.workflow_id, kind=ex
     workflowSupervisorCheckpointPreview,
     workflowSupervisorCheckpoint,
     workflowSupervisorCloseoutPreview,
-    workflowSupervisorCloseout
+    workflowSupervisorCloseout,
+    workflowSupervisorReportPreview,
+    workflowSupervisorReport
   };
 }

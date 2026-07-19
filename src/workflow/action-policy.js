@@ -210,6 +210,7 @@ export const WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS = new Set([
   "workflow.supervisor.next_actions.preview",
   "workflow.supervisor.checkpoint.preview",
   "workflow.supervisor.closeout.preview",
+  "workflow.supervisor.report.preview",
   "workflow.v2.next_actions.preview",
   "workflow.v2.info_stack.preview",
   "workflow.v2.info_stack.read",
@@ -265,6 +266,7 @@ export const WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS = new Set([
   "workflow.v2.human_gate_request",
   "workflow.supervisor.checkpoint",
   "workflow.supervisor.closeout",
+  "workflow.supervisor.report",
   "telegram.outbox.delivery",
   "human_gate.inbox",
   "human_gate.console"
@@ -363,6 +365,7 @@ export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.v2.human_gate_request": { capability: "human_gate.write", risk: "high", mutating: true },
   "workflow.supervisor.checkpoint": { capability: "workflow.checkpoint", risk: "medium", mutating: true },
   "workflow.supervisor.closeout": { capability: "dispatch.write", risk: "high", mutating: true },
+  "workflow.supervisor.report": { capability: "dispatch.write", risk: "high", mutating: true },
   "workflow.template.record_candidate": { capability: "workflow.write", risk: "medium", mutating: true },
   "workflow.template.instantiate.record": { capability: "workflow.write", risk: "medium", mutating: true },
   "workflow.template.eval.record": { capability: "workflow.verify", risk: "medium", mutating: true },

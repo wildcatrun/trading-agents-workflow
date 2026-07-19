@@ -51,7 +51,7 @@ This evidence supports "no observed live usage in current DB", but it does not p
 | Supervisor preview for drain/checkpoint/Cat Claw report | `workflow.supervise.preview` | Partially covered by `workflow.supervisor.next_actions.preview`; P13 exposes worker spawn, adapter drain readiness, Human Gate request, manager review, blocker review, and closeout gap. P19 adds completed-plan closeout executor, but checkpoint writer/runtime-drain parity remains incomplete. | Preview migration can start, deletion cannot. |
 | Supervisor executor cycle | `workflow.supervise` | Not covered as a single authorized executor. V2 has separate mutating actions for control-loop ticks, adapter drain, worker result, Human Gate package/request, and worker lifecycle. | Mutating supervise not freeze-ready. |
 | Checkpoint write | `workflow.supervise` -> `workflowCheckpoint` | Not replaced by P12/P13. | Mutating supervise not freeze-ready. |
-| Cat Claw closeout dispatch and deferred drain evidence | `workflow.supervise` -> `meetingDispatch`; P21 removed direct `runtimeBridgeDrain` calls. | P19 adds completed-plan `workflow.supervisor.closeout`; blocked/Human Gate pending report paths remain outside this slice; actual generic drain is owned by control-loop `runtime_drain`. | Mutating supervise not freeze-ready. |
+| Cat Claw closeout/report dispatch and deferred drain evidence | `workflow.supervise` -> `meetingDispatch`; P21 removed direct `runtimeBridgeDrain` calls. | P19 adds completed-plan `workflow.supervisor.closeout`; P22 adds blocked/Human Gate pending `workflow.supervisor.report`; actual generic drain is owned by control-loop `runtime_drain`. | Mutating supervise still not freeze-ready until legacy row sync/dispatch is retired or extracted. |
 
 ## Action-Level Decision
 

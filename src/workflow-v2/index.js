@@ -8,6 +8,8 @@ export const WORKFLOW_V2_ACTION_HANDLER_NAMES = {
   "workflow.supervisor.checkpoint": "workflowSupervisorCheckpoint",
   "workflow.supervisor.closeout.preview": "workflowSupervisorCloseoutPreview",
   "workflow.supervisor.closeout": "workflowSupervisorCloseout",
+  "workflow.supervisor.report.preview": "workflowSupervisorReportPreview",
+  "workflow.supervisor.report": "workflowSupervisorReport",
   "workflow.v2.next_actions.preview": "workflowSupervisorNextActionsPreview",
   "workflow.v2.info_stack.preview": "workflowV2InfoStackPreview",
   "workflow.v2.info_stack.record": "workflowV2InfoStackRecord",
