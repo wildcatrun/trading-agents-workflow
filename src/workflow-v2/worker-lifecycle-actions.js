@@ -298,6 +298,21 @@ async function workflowV2WorkerSpawnPreview(rootDir, input = {}) {
   if (!nodeId) errors.push(workflowV2ValidationError("node_id_required", "worker spawn requires nodeId"));
   if (!sessionId) errors.push(workflowV2ValidationError("session_id_required", "worker spawn requires sessionId/sessionTemplateId from session repository"));
   if (!taskInputInfoId) errors.push(workflowV2ValidationError("task_input_info_id_required", "worker spawn requires taskInputInfoId pointer"));
+  if (fileExistsSync(paths.dbFile) && workflowId && planId) {
+    const planColumns = await tableColumns(paths.dbFile, "workflow_v2_plans");
+    if (planColumns.has("status") && planColumns.has("workflow_state")) {
+      const planRows = await sqlite(paths.dbFile, `
+SELECT status, workflow_state
+FROM workflow_v2_plans
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId)}
+LIMIT 1;`, { json: true });
+      const planRow = planRows[0];
+      if (planRow && (["blocked", "cancelled", "completed"].includes(planRow.status || "") || ["blocked", "terminated", "cancelled", "completed"].includes(planRow.workflow_state || ""))) {
+        errors.push(workflowV2ValidationError("plan_not_executable", `worker spawn is blocked by plan status=${planRow.status} workflowState=${planRow.workflow_state}`));
+      }
+    }
+  }
   errors.push(...await workflowV2PersistedPlanNodeHardGateErrors(paths, workflowId, planId));
   const autonomousLoopGate = await workflowV2AutonomousLoopSpawnGate(paths, workflowId, planId, nodeId, input);
   errors.push(...autonomousLoopGate.errors);

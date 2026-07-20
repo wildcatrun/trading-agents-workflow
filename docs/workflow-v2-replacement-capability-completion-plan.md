@@ -310,6 +310,34 @@ This does not freeze `workflow.pause`, `workflow.resume`, `workflow.stop`,
 gated until v2 state-transition execution and evaluator parity are implemented
 and tested.
 
+### P37 Progress
+
+P37 adds canonical v2 intervention execution actions:
+`workflow.v2.pause`, `workflow.v2.resume`, `workflow.v2.stop`, and
+`workflow.v2.terminate`.
+
+These actions are separate from legacy `workflow.pause`, `workflow.resume`,
+`workflow.stop`, and `workflow.terminate`. They require Human Gate evidence, Cat
+Claw audit evidence, an idempotency key, operator reason, and readiness blockers
+to be clear before writing. The write boundary is intentionally narrow:
+`workflow_v2_plans` plus a `workflow.v2.intervention.executed` event, with no
+mutation of legacy `workflow_runs`.
+
+State mapping after P37:
+
+- pause sets `workflow_v2_plans.status='blocked'` and
+  `workflow_state='blocked'`;
+- resume restores the previous plan status/workflow state recorded by the last
+  intervention when safe, otherwise falls back to `running` / `active`;
+- stop sets `status='cancelled'` and `workflow_state='cancelled'`;
+- terminate sets `status='cancelled'` and `workflow_state='terminated'`.
+
+P37 also gates v2 worker spawn, worker control-loop claim, and adapter-runner
+claim so blocked, cancelled, completed, or terminated plans do not continue
+creating or claiming work. This still does not freeze legacy intervention entry
+points; evaluator parity and an observation window remain required before any
+freeze decision.
+
 ### Exit Criteria
 
 - No intervention can pretend a workflow is paused/stopped while active

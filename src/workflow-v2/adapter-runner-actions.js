@@ -57,6 +57,18 @@ const WORKFLOW_V2_EXTERNAL_RUNNER_FIXTURE_FILES = new Set([
   path.join(WORKFLOW_V2_ADAPTER_RUNNER_SCRIPTS_DIR, "workflow_v2_external_runner_dry_run.mjs")
 ]);
 
+const ADAPTER_PLAN_EXECUTION_ALLOWED_SQL = `
+  AND NOT EXISTS (
+    SELECT 1
+    FROM workflow_v2_plans plan
+    WHERE plan.workflow_id=w.workflow_id
+      AND plan.plan_id=w.plan_id
+      AND (
+        plan.status IN ('blocked','cancelled','completed')
+        OR plan.workflow_state IN ('blocked','terminated','cancelled','completed')
+      )
+  )`;
+
 function requireContextFunction(context, name) {
   const value = context?.[name];
   if (typeof value !== "function") throw new Error(`workflow v2 adapter runner action dependency missing: ${name}`);
@@ -174,7 +186,8 @@ WHERE j.status IN ('queued','retry_scheduled')
   ${backendClause}
   AND w.status='running'
   AND w.lease_until > ${sqlValue(generatedAt)}
-  AND w.attempt=j.worker_attempt;`, { json: true });
+  AND w.attempt=j.worker_attempt
+  ${ADAPTER_PLAN_EXECUTION_ALLOWED_SQL};`, { json: true });
   const activeBackendJobs = Number(activeRows[0]?.count || 0);
   const dueCount = Number(dueRows[0]?.count || 0);
   const availableBackendSlots = Math.max(0, backendMaxActiveJobs - activeBackendJobs);
@@ -1121,6 +1134,7 @@ WHERE j.status IN ('queued','retry_scheduled')
   AND w.status='running'
   AND w.lease_until > ${sqlValue(generatedAt)}
   AND w.attempt=j.worker_attempt
+  ${ADAPTER_PLAN_EXECUTION_ALLOWED_SQL}
 ORDER BY
   CASE j.status WHEN 'retry_scheduled' THEN 0 ELSE 1 END,
   j.created_at ASC
@@ -1147,6 +1161,16 @@ WHERE adapter_job_id=${sqlValue(row.adapter_job_id)}
       AND w.status='running'
       AND w.lease_until > ${sqlValue(generatedAt)}
       AND w.attempt=workflow_v2_worker_adapter_jobs.worker_attempt
+      AND NOT EXISTS (
+        SELECT 1
+        FROM workflow_v2_plans plan
+        WHERE plan.workflow_id=w.workflow_id
+          AND plan.plan_id=w.plan_id
+          AND (
+            plan.status IN ('blocked','cancelled','completed')
+            OR plan.workflow_state IN ('blocked','terminated','cancelled','completed')
+          )
+      )
   )
   AND (
     SELECT COUNT(*)
@@ -1386,6 +1410,7 @@ WHERE j.status IN ('queued','retry_scheduled')
   AND w.status='running'
   AND w.lease_until > ${sqlValue(generatedAt)}
   AND w.attempt=j.worker_attempt
+  ${ADAPTER_PLAN_EXECUTION_ALLOWED_SQL}
 ORDER BY
   CASE j.status WHEN 'retry_scheduled' THEN 0 ELSE 1 END,
   j.created_at ASC

@@ -4314,6 +4314,29 @@ async function testWorkflowV2AdapterRunnerDrain() {
   });
   assert.equal(runnerPreview.count, 1);
   assert.equal(runnerPreview.jobs[0].workerRunId, successWorker.workerRun.workerRunId);
+  sqliteExec(dbFile, `
+INSERT INTO workflow_v2_plans(plan_id, workflow_id, plan_revision, status, workflow_state, task_owner_agent, planner_agent, objective, participant_managers_json, acceptance_criteria_json, constraints_json, human_gate_policy_json, plan_spec_artifact_ref, plan_spec_artifact_hash, payload_json, created_by, created_at, updated_at)
+VALUES ('plan-v2-runner', '${workflowId}', 1, 'running', 'active', 'cat_heart', 'main', 'Adapter runner blocked-plan gate fixture', '["cat_body"]', '[]', '{}', '{}', '', '', '{}', 'test', '2026-07-04T01:00:02.000Z', '2026-07-04T01:00:02.000Z');`);
+  sqliteExec(dbFile, `UPDATE workflow_v2_plans SET status='blocked', workflow_state='blocked' WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-runner';`);
+  const blockedPlanRunnerPreview = await runAction(root, {
+    action: "workflow.v2.adapter_runner.preview",
+    runtimeBackend: "hermers_docker_worker",
+    limit: 1,
+    generatedAt: "2026-07-04T01:00:02.000Z"
+  });
+  assert.equal(blockedPlanRunnerPreview.count, 0);
+  assert.equal(blockedPlanRunnerPreview.jobs.length, 0);
+  const blockedPlanDrain = await runAction(root, {
+    action: "workflow.v2.adapter_runner.drain",
+    runtimeBackend: "hermers_docker_worker",
+    runnerId: "mock-runner-blocked-plan",
+    limit: 1,
+    leaseMs: 30_000,
+    generatedAt: "2026-07-04T01:00:02.000Z"
+  });
+  assert.equal(blockedPlanDrain.submittedCount, 0);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"), 1);
+  sqliteExec(dbFile, `UPDATE workflow_v2_plans SET status='running', workflow_state='active' WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-runner';`);
   const wrapperContractCountsBefore = {
     queuedJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='queued'"),
     runningJobs: sqliteCount(dbFile, "workflow_v2_worker_adapter_jobs", "status='running'"),
@@ -5612,6 +5635,207 @@ VALUES ('incident-v2-intervention', 'active', 'incident', '["workflow"]', 'Activ
   assert.equal(blocked.activeAdapterJobs[0].adapterJobId, "adapter-v2-intervention-active");
 }
 
+async function testWorkflowV2InterventionStateTransitions() {
+  const fixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-intervention-transitions");
+  const { root, dbFile, workflowId } = fixture;
+  sqliteExec(dbFile, `
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES ('checkpoint-v2-intervention-transition', '${workflowId}', 'active', 'v2', 'intervention_transition_ready', 'Transition checkpoint', '{}', '[]', '[]', '[]', '[]', '{}', 'artifact://checkpoint-v2-intervention-transition', 'main', '2026-07-20T01:00:00.000Z');`);
+
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.pause",
+      workflowId,
+      planId: "plan-v2-kernel",
+      operatorReason: "missing policy evidence",
+      idempotencyKey: "idem-v2-intervention-missing"
+    }),
+    /workflow policy blocked: action=workflow\.v2\.pause policyOutcome=requires_human_gate/
+  );
+
+  const pause = await runAction(root, {
+    action: "workflow.v2.plan.pause",
+    workflowId,
+    planId: "plan-v2-kernel",
+    operatorReason: "pause before audited maintenance token abc",
+    humanGateId: "hg-v2-intervention-transition",
+    catClawAuditId: "audit-v2-intervention-transition",
+    idempotencyKey: "idem-v2-intervention-pause",
+    rollbackBoundary: "artifact://checkpoint-v2-intervention-transition",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex"
+  });
+  assert.equal(pause.operation, "workflow.v2.intervention.execute");
+  assert.equal(pause.action, "workflow.v2.pause");
+  assert.equal(pause.kind, "pause_plan");
+  assert.equal(pause.previousPlanStatus, "planned");
+  assert.equal(pause.previousWorkflowState, "planned");
+  assert.equal(pause.nextPlanStatus, "blocked");
+  assert.equal(pause.nextWorkflowState, "blocked");
+  assert.equal(pause.limitations.includes("does_not_mutate_legacy_workflow_runs"), true);
+  let planRow = sqliteJson(dbFile, "SELECT status, workflow_state AS workflowState, payload_json AS payloadJson FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planRow.status, "blocked");
+  assert.equal(planRow.workflowState, "blocked");
+  let planPayload = JSON.parse(planRow.payloadJson);
+  assert.equal(planPayload.intervention.last.kind, "pause_plan");
+  assert.equal(planPayload.intervention.last.operatorReasonPresent, true);
+  assert.equal(planRow.payloadJson.includes("token abc"), false);
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.resume",
+      workflowId,
+      planId: "plan-v2-kernel",
+      operatorReason: "conflicting replay must fail",
+      humanGateId: "hg-v2-intervention-transition",
+      catClawAuditId: "audit-v2-intervention-transition",
+      idempotencyKey: "idem-v2-intervention-pause",
+      rollbackBoundary: "artifact://checkpoint-v2-intervention-transition",
+      callerAgent: "local_codex",
+      callerRuntime: "local_codex",
+      sourceSystem: "local_codex"
+    }),
+    /idempotency conflict: action does not match existing event/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_runs", `workflow_id='${workflowId}'`), 0);
+
+  const replayedPause = await runAction(root, {
+    action: "workflow.v2.pause",
+    workflowId,
+    planId: "plan-v2-kernel",
+    operatorReason: "pause replay should not append history",
+    humanGateId: "hg-v2-intervention-transition",
+    catClawAuditId: "audit-v2-intervention-transition",
+    idempotencyKey: "idem-v2-intervention-pause",
+    rollbackBoundary: "artifact://checkpoint-v2-intervention-transition",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex"
+  });
+  assert.equal(replayedPause.status, "replayed");
+  planPayload = JSON.parse(sqliteJson(dbFile, "SELECT payload_json AS payloadJson FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0].payloadJson);
+  assert.equal(planPayload.intervention.history.length, 1);
+
+  const resume = await runAction(root, {
+    action: "workflow.v2.plan.resume",
+    workflowId,
+    planId: "plan-v2-kernel",
+    operatorReason: "resume after maintenance",
+    humanGateId: "hg-v2-intervention-transition",
+    catClawAuditId: "audit-v2-intervention-transition",
+    idempotencyKey: "idem-v2-intervention-resume",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex"
+  });
+  assert.equal(resume.kind, "resume_plan");
+  assert.equal(resume.nextPlanStatus, "planned");
+  assert.equal(resume.nextWorkflowState, "planned");
+  planRow = sqliteJson(dbFile, "SELECT status, workflow_state AS workflowState, payload_json AS payloadJson FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planRow.status, "planned");
+  assert.equal(planRow.workflowState, "planned");
+  planPayload = JSON.parse(planRow.payloadJson);
+  assert.equal(planPayload.intervention.history.length, 2);
+
+  const stop = await runAction(root, {
+    action: "workflow.v2.stop",
+    workflowId,
+    planId: "plan-v2-kernel",
+    operatorReason: "stop after audited closeout",
+    humanGateId: "hg-v2-intervention-transition",
+    catClawAuditId: "audit-v2-intervention-transition",
+    idempotencyKey: "idem-v2-intervention-stop",
+    rollbackBoundary: "artifact://checkpoint-v2-intervention-transition",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex"
+  });
+  assert.equal(stop.kind, "stop_plan");
+  assert.equal(stop.nextPlanStatus, "cancelled");
+  assert.equal(stop.nextWorkflowState, "cancelled");
+  planRow = sqliteJson(dbFile, "SELECT status, workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
+  assert.equal(planRow.status, "cancelled");
+  assert.equal(planRow.workflowState, "cancelled");
+  assert.equal(sqliteCount(dbFile, "workflow_events", `workflow_id='${workflowId}' AND event_type='workflow.v2.intervention.executed'`), 3);
+
+  const blockedFixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-intervention-transition-blocked");
+  const blockedWorker = await runAction(blockedFixture.root, workflowV2KernelWorkerInput(blockedFixture, {
+    workerRunId: "worker-v2-intervention-transition-blocker",
+    contextBudgetTokens: 1000
+  }));
+  assert.equal(blockedWorker.valid, true);
+  await assertRejectsMessage(
+    () => runAction(blockedFixture.root, {
+      action: "workflow.v2.terminate",
+      workflowId: blockedFixture.workflowId,
+      planId: "plan-v2-kernel",
+      operatorReason: "terminate while worker is active",
+      humanGateId: "hg-v2-intervention-blocked",
+      catClawAuditId: "audit-v2-intervention-blocked",
+      idempotencyKey: "idem-v2-intervention-blocked",
+      rollbackBoundary: "artifact://checkpoint-v2-intervention-blocked",
+      callerAgent: "local_codex",
+      callerRuntime: "local_codex",
+      sourceSystem: "local_codex"
+    }),
+    /workflow v2 intervention not eligible: action=workflow\.v2\.terminate blockers=active_workers,active_session_runs/
+  );
+  assert.equal(sqliteCount(blockedFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND workflow_state='planned'"), 1);
+
+  const gateFixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-intervention-execution-gates");
+  const gateWorker = await runAction(gateFixture.root, workflowV2KernelWorkerInput(gateFixture, {
+    workerRunId: "worker-v2-intervention-gated",
+    contextBudgetTokens: 1000
+  }));
+  assert.equal(gateWorker.valid, true);
+  sqliteExec(gateFixture.dbFile, `UPDATE workflow_v2_plans SET status='blocked', workflow_state='blocked' WHERE plan_id='plan-v2-kernel';`);
+  await assertRejectsMessage(
+    () => runAction(gateFixture.root, workflowV2KernelWorkerInput(gateFixture, {
+      workerRunId: "worker-v2-intervention-gated-after-pause",
+      contextBudgetTokens: 1000
+    })),
+    /plan_not_executable/
+  );
+  const gatedLoopPreview = await runAction(gateFixture.root, {
+    action: "workflow.v2.control_loop.preview",
+    workflowId: gateFixture.workflowId,
+    planId: "plan-v2-kernel",
+    generatedAt: "2026-07-20T02:00:00.000Z"
+  });
+  assert.equal(Number(gatedLoopPreview.counts.due || 0), 0);
+  assert.equal(gatedLoopPreview.runnableWorkers.length, 0);
+  const gatedLoopTick = await runAction(gateFixture.root, {
+    action: "workflow.v2.control_loop.tick",
+    workflowId: gateFixture.workflowId,
+    planId: "plan-v2-kernel",
+    generatedAt: "2026-07-20T02:00:00.000Z"
+  });
+  assert.equal(gatedLoopTick.claimedWorkers.length, 0);
+  assert.equal(sqliteCount(gateFixture.dbFile, "workflow_v2_worker_runs", "worker_run_id='worker-v2-intervention-gated' AND status='queued'"), 1);
+  for (const [status, workflowState] of [
+    ["cancelled", "cancelled"],
+    ["cancelled", "terminated"],
+    ["completed", "active"],
+    ["running", "completed"]
+  ]) {
+    sqliteExec(gateFixture.dbFile, `UPDATE workflow_v2_plans SET status='${status}', workflow_state='${workflowState}' WHERE plan_id='plan-v2-kernel';`);
+    const terminalPreview = await runAction(gateFixture.root, {
+      action: "workflow.v2.control_loop.preview",
+      workflowId: gateFixture.workflowId,
+      planId: "plan-v2-kernel",
+      generatedAt: "2026-07-20T02:01:00.000Z"
+    });
+    assert.equal(Number(terminalPreview.counts.due || 0), 0);
+    await assertRejectsMessage(
+      () => runAction(gateFixture.root, workflowV2KernelWorkerInput(gateFixture, {
+        workerRunId: `worker-v2-intervention-gated-${workflowState}`,
+        contextBudgetTokens: 1000
+      })),
+      /plan_not_executable/
+    );
+  }
+}
+
 async function testWorkflowSupervisorNextActionsPreview() {
   const missingRoot = await tempRoot("workflow-supervisor-next-actions-missing");
   const missing = await runAction(missingRoot, {
@@ -6522,14 +6746,15 @@ async function testWorkflowV2ExtractedActionContracts() {
   const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-extracted-action-contracts");
   const { root, dbFile, workflowId } = fixture;
   const workflowModule = await import("../src/workflow.js");
-  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReportPreview", "workflowSupervisorReport", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2InterventionReadinessPreview", "workflowV2Validate"]) {
+  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReportPreview", "workflowSupervisorReport", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2InterventionReadinessPreview", "workflowV2InterventionExecute", "workflowV2Validate"]) {
     assert.equal(typeof workflowModule[exportName], "function", `${exportName} should remain a public workflow.js export`);
   }
-  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.report.preview", "workflow.supervisor.report", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.intervention_readiness.preview", "workflow.v2.pause.preview", "workflow.v2.resume.preview", "workflow.v2.stop.preview", "workflow.v2.terminate.preview", "workflow.v2.validate"]) {
+  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.report.preview", "workflow.supervisor.report", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.intervention_readiness.preview", "workflow.v2.pause.preview", "workflow.v2.resume.preview", "workflow.v2.stop.preview", "workflow.v2.terminate.preview", "workflow.v2.pause", "workflow.v2.resume", "workflow.v2.stop", "workflow.v2.terminate", "workflow.v2.validate"]) {
     assert.equal(workflowModule.WORKFLOW_V2_ACTION_REGISTRY.has(action), true, `${action} should remain registered`);
   }
   assert.equal(canonicalWorkflowAction("workflow.v2.intervention-readiness.preview"), "workflow.v2.intervention_readiness.preview");
   assert.equal(canonicalWorkflowAction("workflow.v2.lifecycle.preview"), "workflow.v2.intervention_readiness.preview");
+  assert.equal(canonicalWorkflowAction("workflow.v2.plan.pause"), "workflow.v2.pause");
 
   const worker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
     workerRunId: "worker-v2-extracted-contract",
@@ -24112,6 +24337,7 @@ try {
     ["workflow v2 info stack and session binding", testWorkflowV2InfoStackAndSessionBinding],
     ["workflow v2 readiness preview", testWorkflowV2ReadinessPreview],
     ["workflow v2 intervention readiness preview", testWorkflowV2InterventionReadinessPreview],
+    ["workflow v2 intervention state transitions", testWorkflowV2InterventionStateTransitions],
     ["workflow supervisor next actions preview", testWorkflowSupervisorNextActionsPreview],
     ["workflow v2 extracted action contracts", testWorkflowV2ExtractedActionContracts],
     ["workflow v2 control loop scoped claim", testWorkflowV2ControlLoopScopedClaim],

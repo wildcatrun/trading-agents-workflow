@@ -68,6 +68,10 @@ export const WORKFLOW_V2_ACTION_HANDLER_NAMES = {
   "workflow.v2.resume.preview": "workflowV2InterventionReadinessPreview",
   "workflow.v2.stop.preview": "workflowV2InterventionReadinessPreview",
   "workflow.v2.terminate.preview": "workflowV2InterventionReadinessPreview",
+  "workflow.v2.pause": "workflowV2InterventionExecute",
+  "workflow.v2.resume": "workflowV2InterventionExecute",
+  "workflow.v2.stop": "workflowV2InterventionExecute",
+  "workflow.v2.terminate": "workflowV2InterventionExecute",
   "workflow.v2.validate": "workflowV2Validate",
   "workflow.template.preview": "workflowTemplatePreview",
   "workflow.template.daily_trading_catalog.preview": "workflowTemplateDailyTradingCatalogPreview",
@@ -101,5 +105,5 @@ export function createWorkflowV2ActionRegistry(handlers = {}) {
 export async function runWorkflowV2Action(registry, action, rootDir, input = {}, permissionDecision = null) {
   const handler = registry.get(action);
   if (!handler) return { handled: false, value: null };
-  return { handled: true, value: await handler(rootDir, input, permissionDecision) };
+  return { handled: true, value: await handler(rootDir, { ...input, action }, permissionDecision) };
 }

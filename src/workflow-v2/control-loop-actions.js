@@ -46,6 +46,18 @@ const WORKFLOW_V2_WORKER_RUN_CONTROL_COLUMNS = [
   "completed_at"
 ];
 
+const PLAN_EXECUTION_ALLOWED_SQL = `
+  AND NOT EXISTS (
+    SELECT 1
+    FROM workflow_v2_plans plan
+    WHERE plan.workflow_id=w.workflow_id
+      AND plan.plan_id=w.plan_id
+      AND (
+        plan.status IN ('blocked','cancelled','completed')
+        OR plan.workflow_state IN ('blocked','terminated','cancelled','completed')
+      )
+  )`;
+
 function requireContextFunction(context, name) {
   const value = context?.[name];
   if (typeof value !== "function") throw new Error(`workflow v2 control loop action dependency missing: ${name}`);
@@ -137,7 +149,7 @@ SELECT
   SUM(CASE WHEN w.status='running' AND COALESCE(w.lease_until,'')!='' AND w.lease_until <= ${sqlValue(generatedAt)} THEN 1 ELSE 0 END) AS expired_leases,
   SUM(CASE WHEN w.status='submitted_for_review' THEN 1 ELSE 0 END) AS submitted_for_review,
   SUM(CASE WHEN w.status IN ('accepted','rejected','failed','timed_out','cancelled') THEN 1 ELSE 0 END) AS terminal,
-  SUM(CASE WHEN w.status IN ('queued','retry_scheduled') AND (w.next_retry_at='' OR w.next_retry_at <= ${sqlValue(generatedAt)}) THEN 1 ELSE 0 END) AS due,
+  SUM(CASE WHEN w.status IN ('queued','retry_scheduled') AND (w.next_retry_at='' OR w.next_retry_at <= ${sqlValue(generatedAt)}) ${PLAN_EXECUTION_ALLOWED_SQL.replaceAll("w.", "w.")} THEN 1 ELSE 0 END) AS due,
   SUM(CASE WHEN p.preflight_id IS NULL OR p.workflow_id != w.workflow_id OR p.backend_id != w.runtime_backend OR p.status NOT IN ('pass','warn') THEN 1 ELSE 0 END) AS invalid_preflight
 FROM workflow_v2_worker_runs w
 LEFT JOIN workflow_v2_backend_preflights p ON p.preflight_id=w.preflight_id
@@ -153,6 +165,7 @@ WHERE w.status IN ('queued','retry_scheduled')
   AND p.workflow_id=w.workflow_id
   AND p.backend_id=w.runtime_backend
   AND p.status IN ('pass','warn')
+  ${PLAN_EXECUTION_ALLOWED_SQL}
   ${workerRunScope}
 ORDER BY w.updated_at ASC, w.created_at ASC
 LIMIT ${limit};`, { json: true });
@@ -256,6 +269,7 @@ WHERE w.status IN ('queued','retry_scheduled')
   AND p.workflow_id=w.workflow_id
   AND p.backend_id=w.runtime_backend
   AND p.status IN ('pass','warn')
+  ${PLAN_EXECUTION_ALLOWED_SQL}
   ${workerRunScope}
 ORDER BY w.updated_at ASC, w.created_at ASC
 LIMIT ${limit};`, { json: true });
@@ -282,6 +296,16 @@ WHERE worker_run_id=${sqlValue(row.worker_run_id)}
       AND p.workflow_id=workflow_v2_worker_runs.workflow_id
       AND p.backend_id=workflow_v2_worker_runs.runtime_backend
       AND p.status IN ('pass','warn')
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM workflow_v2_plans plan
+    WHERE plan.workflow_id=workflow_v2_worker_runs.workflow_id
+      AND plan.plan_id=workflow_v2_worker_runs.plan_id
+      AND (
+        plan.status IN ('blocked','cancelled','completed')
+        OR plan.workflow_state IN ('blocked','terminated','cancelled','completed')
+      )
   )
   ${updateWorkerRunScope};`);
     if (changed !== 1) continue;
