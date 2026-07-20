@@ -263,6 +263,20 @@ Build intervention and evaluation as explicit state-machine operations:
 8. Freeze legacy intervention/evaluate entry points only after v2 parity and
    operator path migration.
 
+### 2026-07-20 Implementation Note
+
+P35 added the first v2 replacement surface:
+`workflow.v2.intervention_readiness.preview` plus explicit pause/resume/stop/
+terminate preview aliases. This is read-only and does not mutate workflow
+state. It checks v2 plan scope, active worker runs, adapter jobs, session runs,
+shared dispatches, Telegram outbox, Human Gate packages, pending Human Gates,
+latest checkpoint, side-effect uncertainty, and scoped active incidents.
+
+This does not freeze `workflow.pause`, `workflow.resume`, `workflow.stop`,
+`workflow.terminate`, or `workflow.evaluate`. Those legacy entry points remain
+gated until v2 state-transition execution and evaluator parity are implemented
+and tested.
+
 ### Exit Criteria
 
 - No intervention can pretend a workflow is paused/stopped while active

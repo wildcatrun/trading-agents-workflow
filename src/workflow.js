@@ -43,6 +43,7 @@ import { createWorkflowV2ReviewActionHandlers } from "./workflow-v2/review-actio
 import { createWorkflowV2HumanGateActionHandlers } from "./workflow-v2/human-gate-actions.js";
 import { createWorkflowV2PlanActionHandlers } from "./workflow-v2/plan-actions.js";
 import { createWorkflowV2ReadinessActionHandlers } from "./workflow-v2/readiness-actions.js";
+import { createWorkflowV2InterventionReadinessActionHandlers } from "./workflow-v2/intervention-readiness-actions.js";
 import { createWorkflowSupervisorNextActionsHandlers } from "./workflow-v2/supervisor-next-actions.js";
 import { createWorkflowTemplateActionHandlers } from "./workflow-v2/template-actions.js";
 import { createWorkflowV2ValidateActionHandlers } from "./workflow-v2/validate-actions.js";
@@ -4373,6 +4374,17 @@ const WORKFLOW_V2_READINESS_ACTION_HANDLERS = createWorkflowV2ReadinessActionHan
 export const {
   workflowV2ReadinessPreview
 } = WORKFLOW_V2_READINESS_ACTION_HANDLERS;
+
+const WORKFLOW_V2_INTERVENTION_READINESS_ACTION_HANDLERS = createWorkflowV2InterventionReadinessActionHandlers({
+  ensureWorkflowLayout,
+  nowIso,
+  pendingHumanGateCount,
+  workflowPayloadSqlWhere
+});
+
+export const {
+  workflowV2InterventionReadinessPreview
+} = WORKFLOW_V2_INTERVENTION_READINESS_ACTION_HANDLERS;
 
 export async function workflowSupervisorReadinessPreview(rootDir, input = {}) {
   const result = await workflowV2ReadinessPreview(rootDir, input);
@@ -8866,6 +8878,7 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2HumanGatePackageRecord,
   workflowV2HumanGateRequestPreview,
   workflowV2HumanGateRequest,
+  workflowV2InterventionReadinessPreview,
   workflowV2Validate,
   workflowTemplatePreview,
   workflowTemplateDailyTradingCatalogPreview,

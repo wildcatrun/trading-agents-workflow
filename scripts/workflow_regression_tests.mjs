@@ -149,6 +149,7 @@ import {
   workflowInit,
   workflowInterventionExecute,
   workflowInterventionPreview,
+  workflowV2InterventionReadinessPreview,
   meetingDisperse,
   meetingDispatch,
   meetingIngest,
@@ -5536,6 +5537,79 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(closeout.would.catClawCloseout, true);
 }
 
+async function testWorkflowV2InterventionReadinessPreview() {
+  const cleanFixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-intervention-readiness-clean");
+  sqliteExec(cleanFixture.dbFile, `
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES ('checkpoint-v2-intervention-clean', '${cleanFixture.workflowId}', 'active', 'v2', 'intervention_ready', 'Clean v2 intervention checkpoint', '{}', '[]', '[]', '[]', '[]', '{}', 'artifact://checkpoint-v2-intervention-clean', 'main', '2026-07-20T00:00:00.000Z');`);
+  const cleanPause = await runAction(cleanFixture.root, {
+    action: "workflow.v2.pause.preview",
+    workflowId: cleanFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(cleanPause.operation, "workflow.v2.intervention_readiness.preview");
+  assert.equal(cleanPause.previewOnly, true);
+  assert.equal(cleanPause.dryRun, true);
+  assert.equal(cleanPause.kind, "pause_plan");
+  assert.equal(cleanPause.eligible, true);
+  assert.equal(cleanPause.plan.planId, "plan-v2-kernel");
+  assert.equal(cleanPause.latestCheckpoint.checkpoint_id, "checkpoint-v2-intervention-clean");
+  assert.equal(typeof workflowV2InterventionReadinessPreview, "function");
+
+  const invalidPlanOnly = await runAction(cleanFixture.root, {
+    action: "workflow.v2.intervention-readiness.preview",
+    planId: "plan-v2-intervention-missing"
+  });
+  assert.equal(invalidPlanOnly.operation, "workflow.v2.intervention_readiness.preview");
+  assert.equal(invalidPlanOnly.eligible, false);
+  assert.equal(invalidPlanOnly.plan, null);
+  assert.equal(Boolean(invalidPlanOnly.blockers.some((item) => item.code === "v2_plan_not_found")), true);
+
+  const stopWithoutCheckpointFixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-intervention-readiness-stop-no-checkpoint");
+  const stopWithoutCheckpoint = await runAction(stopWithoutCheckpointFixture.root, {
+    action: "workflow.v2.stop.preview",
+    workflowId: stopWithoutCheckpointFixture.workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(stopWithoutCheckpoint.kind, "stop_plan");
+  assert.equal(stopWithoutCheckpoint.eligible, false);
+  assert.equal(Boolean(stopWithoutCheckpoint.blockers.some((item) => item.code === "checkpoint_required")), true);
+
+  const blockedFixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-intervention-readiness-blockers");
+  const workflowId = blockedFixture.workflowId;
+  sqliteExec(blockedFixture.dbFile, `
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES ('checkpoint-v2-intervention-blockers', '${workflowId}', 'active', 'v2', 'intervention_blocked', 'Blocked v2 intervention checkpoint', '{}', '[]', '[]', '[]', '[]', '{}', 'artifact://checkpoint-v2-intervention-blockers', 'main', '2026-07-20T00:00:00.000Z');
+INSERT INTO workflow_v2_worker_runs(worker_run_id, workflow_id, plan_id, node_id, manager_agent, worker_agent_id, session_id, session_run_id, preflight_id, runtime_backend, status, attempt, max_attempts, lease_owner, lease_until, task_input_info_id, source_context_refs_json, payload_json, created_at, updated_at)
+VALUES ('worker-v2-intervention-active', '${workflowId}', 'plan-v2-kernel', 'node-v2-intervention', 'cat_body', 'cat_body', 'session-cat-body-worker', 'session-run-v2-intervention-active', 'preflight-v2-intervention', 'hermers_docker_worker', 'running', 1, 3, 'runner-a', '2999-01-01T00:00:00.000Z', 'info-v2-intervention-input', '[]', '{}', '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z');
+INSERT INTO workflow_v2_worker_adapter_jobs(adapter_job_id, workflow_id, plan_id, node_id, worker_run_id, session_run_id, runtime_backend, worker_attempt, status, lease_owner, lease_until, artifact_ref, info_id, manifest_hash, payload_json, created_by, created_at, updated_at)
+VALUES ('adapter-v2-intervention-active', '${workflowId}', 'plan-v2-kernel', 'node-v2-intervention', 'worker-v2-intervention-active', 'session-run-v2-intervention-active', 'hermers_docker_worker', 1, 'running', 'runner-a', '2999-01-01T00:00:00.000Z', 'artifact://workflow-v2/intervention-adapter.json', 'info-v2-intervention-adapter', 'sha256:adapter', '{}', 'workflow_v2', '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z');
+INSERT INTO workflow_session_runs(run_id, session_id, pack_version, workflow_id, task_id, dispatch_id, worker_id, status, input_json, worker_input_json, output_json, receipt_ref, error, started_at, completed_at, created_at, updated_at)
+VALUES ('session-run-v2-intervention-active', 'session-cat-body-worker', 1, '${workflowId}', 'node-v2-intervention', '', 'cat_body', 'running', '{}', '{}', '{}', '', '', '2026-07-20T00:00:00.000Z', '', '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z');
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-v2-intervention-active', '${workflowId}', '${workflowId}', 'trace-v2-intervention', 'idem-v2-intervention-dispatch', 'hermes', 'cat_body', 'hermes:cat_body', 'workflow_v2_worker', 'sent', 'normal', 1, 3, '', '', '', 'prompt', '{}', 'main', '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z', '', '', '2026-07-20T00:00:00.000Z');
+INSERT INTO telegram_outbox(outbox_id, meeting_id, target_kind, target_ref, message_type, status, text, payload_json, created_at, updated_at)
+VALUES ('outbox-v2-intervention-active', '${workflowId}', 'private', '8390724843', 'human_gate_request', 'queued', 'queued intervention outbox', '{}', '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z');
+INSERT INTO side_effect_ledger(side_effect_id, trace_id, workflow_id, dispatch_id, idempotency_key, owner_agent, side_effect_type, status, input_hash, output_hash, artifact_ref, payload_json, created_at, updated_at)
+VALUES ('side-effect-v2-intervention', 'trace-v2-intervention', '${workflowId}', 'dispatch-v2-intervention-active', 'idem-v2-intervention-side-effect', 'cat_body', 'external_delivery', 'uncertain', 'hash-in', '', '', '{}', '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z');
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-v2-intervention', 'active', 'incident', '["workflow"]', 'Active intervention incident', 'main', 'workflow intervention unsafe', '', '', '', 'resolve blockers', '[]', '{"workflowId":"${workflowId}"}', '2026-07-20T00:00:00.000Z', '', '', '2026-07-20T00:00:00.000Z');`);
+  const blocked = await runAction(blockedFixture.root, {
+    action: "workflow.v2.terminate.preview",
+    workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(blocked.kind, "terminate_plan");
+  assert.equal(blocked.eligible, false);
+  assert.equal(blocked.riskTier, "P0-critical");
+  for (const code of ["active_workers", "active_adapter_jobs", "active_session_runs", "active_dispatches", "active_outbox", "side_effect_uncertain", "active_incidents"]) {
+    assert.equal(Boolean(blocked.blockers.some((item) => item.code === code)), true, `${code} blocker should be present`);
+  }
+  assert.equal(blocked.counts.workers.running, 1);
+  assert.equal(blocked.activeWorkers[0].workerRunId, "worker-v2-intervention-active");
+  assert.equal(blocked.activeAdapterJobs[0].adapterJobId, "adapter-v2-intervention-active");
+}
+
 async function testWorkflowSupervisorNextActionsPreview() {
   const missingRoot = await tempRoot("workflow-supervisor-next-actions-missing");
   const missing = await runAction(missingRoot, {
@@ -6446,12 +6520,14 @@ async function testWorkflowV2ExtractedActionContracts() {
   const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-extracted-action-contracts");
   const { root, dbFile, workflowId } = fixture;
   const workflowModule = await import("../src/workflow.js");
-  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReportPreview", "workflowSupervisorReport", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2Validate"]) {
+  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReportPreview", "workflowSupervisorReport", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2InterventionReadinessPreview", "workflowV2Validate"]) {
     assert.equal(typeof workflowModule[exportName], "function", `${exportName} should remain a public workflow.js export`);
   }
-  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.report.preview", "workflow.supervisor.report", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.validate"]) {
+  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.report.preview", "workflow.supervisor.report", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.intervention_readiness.preview", "workflow.v2.pause.preview", "workflow.v2.resume.preview", "workflow.v2.stop.preview", "workflow.v2.terminate.preview", "workflow.v2.validate"]) {
     assert.equal(workflowModule.WORKFLOW_V2_ACTION_REGISTRY.has(action), true, `${action} should remain registered`);
   }
+  assert.equal(canonicalWorkflowAction("workflow.v2.intervention-readiness.preview"), "workflow.v2.intervention_readiness.preview");
+  assert.equal(canonicalWorkflowAction("workflow.v2.lifecycle.preview"), "workflow.v2.intervention_readiness.preview");
 
   const worker = await runAction(root, workflowV2KernelWorkerInput(fixture, {
     workerRunId: "worker-v2-extracted-contract",
@@ -23900,6 +23976,7 @@ try {
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],
     ["workflow v2 info stack and session binding", testWorkflowV2InfoStackAndSessionBinding],
     ["workflow v2 readiness preview", testWorkflowV2ReadinessPreview],
+    ["workflow v2 intervention readiness preview", testWorkflowV2InterventionReadinessPreview],
     ["workflow supervisor next actions preview", testWorkflowSupervisorNextActionsPreview],
     ["workflow v2 extracted action contracts", testWorkflowV2ExtractedActionContracts],
     ["workflow v2 control loop scoped claim", testWorkflowV2ControlLoopScopedClaim],

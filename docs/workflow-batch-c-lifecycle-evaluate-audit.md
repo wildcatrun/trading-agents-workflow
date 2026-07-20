@@ -6,6 +6,12 @@ Scope: `workflow.pause`, `workflow.resume`, `workflow.stop`, `workflow.terminate
 
 Status: audit only. This document does not authorize freezing, deleting, or changing runtime behavior.
 
+Implementation update, 2026-07-20: P35 added
+`workflow.v2.intervention_readiness.preview` as the first v2 replacement
+readiness surface. It is a read-only preflight over v2 plan state and shared
+runtime evidence; it does not freeze or retire legacy lifecycle/evaluate
+actions.
+
 ## Executive Conclusion
 
 These actions are not deletion-ready, but they are not equivalent in migration value:
