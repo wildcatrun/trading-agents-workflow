@@ -98,7 +98,8 @@ import {
 import {
   createCheckpointActionHandlers,
   createCheckpointActionRegistry,
-  runCheckpointAction
+  runCheckpointAction,
+  workflowCheckpointAllowsLegacyWrite
 } from "./checkpoint-actions.js";
 import {
   appendWorkflowEvent,
@@ -387,6 +388,7 @@ const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
   "workflow.supervisor.readiness.preview",
   "workflow.v2.readiness.preview",
   "workflow.supervisor.next_actions.preview",
+  "workflow.archive.checkpoint.preview",
   "workflow.supervisor.checkpoint.preview",
   "workflow.supervisor.closeout.preview",
   "workflow.supervisor.report.preview",
@@ -4183,7 +4185,8 @@ export const CHECKPOINT_ACTION_HANDLERS = createCheckpointActionHandlers({
 export const CHECKPOINT_ACTION_REGISTRY = createCheckpointActionRegistry(CHECKPOINT_ACTION_HANDLERS);
 
 export const {
-  workflowCheckpoint
+  workflowCheckpoint,
+  workflowCheckpointLegacyExport
 } = CHECKPOINT_ACTION_HANDLERS;
 
 export const CONTROL_LOOP_JOB_ACTION_HANDLERS = createControlLoopJobActionHandlers({
@@ -4267,7 +4270,8 @@ export const WORKFLOW_SUPERVISOR_ACTION_HANDLERS = createWorkflowSupervisorActio
   nowIso,
   workflowAdvance,
   workflowAdvancePreview,
-  workflowCheckpoint
+  workflowCheckpoint,
+  workflowCheckpointLegacyExport
 });
 
 export const WORKFLOW_SUPERVISOR_ACTION_REGISTRY = createWorkflowSupervisorActionRegistry(WORKFLOW_SUPERVISOR_ACTION_HANDLERS);
@@ -4391,6 +4395,8 @@ const WORKFLOW_SUPERVISOR_NEXT_ACTIONS_HANDLERS = createWorkflowSupervisorNextAc
 
 export const {
   workflowSupervisorNextActionsPreview,
+  workflowArchiveCheckpointPreview,
+  workflowArchiveCheckpoint,
   workflowSupervisorCheckpointPreview,
   workflowSupervisorCheckpoint,
   workflowSupervisorCloseoutPreview,
@@ -8682,7 +8688,8 @@ export const HUMAN_GATE_ACTION_HANDLERS = createHumanGateActionHandlers({
   telegramLinkFor,
   textHash,
   verifyTelegramWebAppInitData,
-  workflowCheckpoint,
+  workflowArchiveCheckpoint,
+  workflowCheckpointLegacyExport,
   writeJsonArtifact,
   writeTextArtifact,
   DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID,
@@ -8802,6 +8809,8 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2ReadinessPreview,
   workflowSupervisorReadinessPreview,
   workflowSupervisorNextActionsPreview,
+  workflowArchiveCheckpointPreview,
+  workflowArchiveCheckpoint,
   workflowSupervisorCheckpointPreview,
   workflowSupervisorCheckpoint,
   workflowSupervisorCloseoutPreview,
@@ -8879,6 +8888,14 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
 export async function runWorkflowAction(rootDir, input = {}) {
   const requestedAction = String(input.action || "workflow.status");
   const action = canonicalWorkflowAction(requestedAction);
+  if (action === "workflow.checkpoint.legacy_alias" || action === "workflow.checkpoint.legacy_export") {
+    const checkpointResult = await runCheckpointAction(CHECKPOINT_ACTION_REGISTRY, action, rootDir, { ...input, requestedAction });
+    if (checkpointResult.handled) return checkpointResult.value;
+  }
+  if (action === "workflow.checkpoint" && !workflowCheckpointAllowsLegacyWrite(input)) {
+    const checkpointResult = await runCheckpointAction(CHECKPOINT_ACTION_REGISTRY, action, rootDir, { ...input, requestedAction });
+    if (checkpointResult.handled) return checkpointResult.value;
+  }
   if (workflowInternalTaskCompatibilityEnabled(input, action)) {
     if (action === "workflow.task.create") return workflowTaskCreate(rootDir, input);
     if (action === "workflow.task.update") return workflowTaskUpdate(rootDir, input);

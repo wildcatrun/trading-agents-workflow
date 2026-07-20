@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 import { runAction } from "../src/core.js";
 import { strictBoolOption } from "../src/workflow/json.js";
+import { workflowCheckpointCommandInput } from "../src/workflow/checkpoint-routing.js";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 
 const LEGACY_CLI_SHELL_ENV = "TRADING_AGENTS_WORKFLOW_CLI_ALLOW_LEGACY_MUTATING_SHELLS";
 
@@ -27,7 +30,7 @@ function usage() {
   trading-agents-workflow workflow-schedule-pause --id ID [--root DIR]
   trading-agents-workflow workflow-schedule-resume --id ID [--reset-next-run true|false] [--root DIR]
   trading-agents-workflow workflow-schedule-disable --id ID [--root DIR]
-  trading-agents-workflow workflow-checkpoint --workflow ID [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
+  trading-agents-workflow workflow-checkpoint --workflow ID [--source-class legacy_compat_checkpoint|v2_plan_checkpoint|human_gate_archive_checkpoint] [--plan ID] [--human-gate ID] [--button ID] [--decision-status STATUS] [--summary TEXT] [--next-action TEXT] [--token-budget N] [--compact-at N] [--root DIR]
   trading-agents-workflow workflow-session-pack-upsert --session ID --owner-agent AGENT --task-type TYPE --purpose TEXT [--runtime-target TARGET] [--working-context JSON] [--tool-policy JSON] [--input-schema JSON] [--output-schema JSON] [--evidence-refs JSON] [--checkpoint-refs JSON] [--resource-budget JSON] [--metadata JSON] [--root DIR]
   trading-agents-workflow workflow-session-pack-get --session ID [--root DIR]
   trading-agents-workflow workflow-session-pack-list [--status active|draft|disabled|archived] [--owner-agent AGENT] [--task-type TYPE] [--limit N] [--root DIR]
@@ -394,16 +397,7 @@ function toAction({ command, positional, options }) {
     case "workflow-checkpoint":
       return {
         root,
-        input: {
-          action: "workflow.checkpoint",
-          workflowId: options.workflow,
-          checkpointId: options.checkpoint,
-          summary: options.summary,
-          nextActions: listOption(options["next-action"]),
-          tokenBudget: options["token-budget"],
-          compactAtPercent: options["compact-at"],
-          restorePolicy: options["restore-policy"]
-        }
+        input: workflowCheckpointCommandInput(options)
       };
     case "workflow-session-pack-upsert":
       return {
@@ -742,4 +736,22 @@ async function main() {
   }
 }
 
-process.exit(await main());
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+  }
+}
+
+if (isMainModule()) {
+  process.exit(await main());
+}
+
+export {
+  commandRoot,
+  isMainModule,
+  parseArgv,
+  toAction
+};

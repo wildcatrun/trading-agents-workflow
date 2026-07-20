@@ -219,7 +219,8 @@ export function createHumanGateActionHandlers(context = {}) {
   const telegramLinkFor = requireContextFunction(context, "telegramLinkFor");
   const textHash = requireContextFunction(context, "textHash");
   const verifyTelegramWebAppInitData = requireContextFunction(context, "verifyTelegramWebAppInitData");
-  const workflowCheckpoint = requireContextFunction(context, "workflowCheckpoint");
+  const workflowCheckpointLegacyExport = requireContextFunction(context, "workflowCheckpointLegacyExport");
+  const workflowArchiveCheckpoint = typeof context?.workflowArchiveCheckpoint === "function" ? context.workflowArchiveCheckpoint : null;
   const writeJsonArtifact = requireContextFunction(context, "writeJsonArtifact");
   const writeTextArtifact = requireContextFunction(context, "writeTextArtifact");
   const DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID = requireContextValue(context, "DEFAULT_FLASHCAT_TELEGRAM_CHAT_ID");
@@ -1510,6 +1511,7 @@ WHERE human_gate_id=${sqlValue(button.human_gate_id)}
     });
     let dispatch = null;
     let archiveCheckpoint = null;
+    let archiveCheckpointPath = "";
     const closeoutDispatches = [];
     if (["approved", "rejected"].includes(button.decision_status)) {
       const catTailAudit = await catTailPreOrderRiskAuditDispatchSpec(paths, button, feedbackText, selectedAt);
@@ -1606,16 +1608,42 @@ WHERE human_gate_id=${sqlValue(button.human_gate_id)}
       });
     }
     if (workflowDecision?.archived) {
-      archiveCheckpoint = await workflowCheckpoint(rootDir, {
+      const buttonPayload = parseJsonValue(button.payload_json, {});
+      const nestedButtonPayload = humanGateButtonNestedPayload(buttonPayload);
+      const archiveCheckpointInput = {
         workflowRootDir: paths.root,
         workflowId: button.workflow_id,
+        planId: firstText(buttonPayload.planId, buttonPayload.plan_id, nestedButtonPayload.planId, nestedButtonPayload.plan_id),
+        humanGateId: button.human_gate_id,
+        buttonId: button.button_id,
+        decisionStatus: button.decision_status,
+        selectedAt,
+        feedbackReceivedAt,
+        flashcatOriginalWords: feedbackText,
         summary: `Flashcat selected Human Gate closeout button: ${button.label}. Archive the workflow as completed/closed while preserving resume state.`,
         nextActions: [
           "cat_brain main closes workflow state, confirms no pending unsafe side effects remain, and records resume boundary.",
           "cat_claw prepares final Chinese closeout report with archive id, checkpoint id, and resume instructions."
         ],
         createdBy: "cat_claw"
-      });
+      };
+      if (workflowArchiveCheckpoint) {
+        try {
+          archiveCheckpoint = await workflowArchiveCheckpoint(rootDir, archiveCheckpointInput);
+          archiveCheckpointPath = "workflow.archive.checkpoint";
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!/not available|not write-ready|matching v2|matchingV2Plan|no matching v2/i.test(message)) throw error;
+        }
+      }
+      if (!archiveCheckpoint) {
+        archiveCheckpoint = await workflowCheckpointLegacyExport(rootDir, {
+          ...archiveCheckpointInput,
+          action: "workflow.checkpoint.legacy_export",
+          sourceClass: "human_gate_archive_legacy_fallback_checkpoint"
+        });
+        archiveCheckpointPath = "workflow.checkpoint.legacy_export.human_gate_archive_fallback";
+      }
       closeoutDispatches.push(await safeMeetingDispatchWithRetry(rootDir, paths, {
         workflowRootDir: paths.root,
         meetingId: button.meeting_id || button.workflow_id,
@@ -1711,7 +1739,8 @@ WHERE human_gate_id=${sqlValue(button.human_gate_id)}
         flashcatOriginalWords: feedbackText,
         workflowDecision,
         dispatchId: dispatch?.dispatchId || "",
-        archiveCheckpointId: archiveCheckpoint?.checkpointId || ""
+        archiveCheckpointId: archiveCheckpoint?.checkpointId || "",
+        archiveCheckpointPath
       }
     });
     return {
@@ -1724,6 +1753,7 @@ WHERE human_gate_id=${sqlValue(button.human_gate_id)}
       label: button.label,
       workflowDecision,
       archiveCheckpoint,
+      archiveCheckpointPath,
       resume,
       dispatch,
       closeoutDispatches,

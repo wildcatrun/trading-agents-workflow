@@ -18,10 +18,22 @@ export const WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT = Object.freeze({
 
 const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
   ["workflow.checkpoint", {
-    decisionClass: "must_migrate",
-    migrationStatus: "legacy_active",
-    replacement: "workflow.supervisor.checkpoint",
-    recommendation: "keep only for legacy workflow_runs/workflow_tasks checkpoints until v2/shared checkpoint coverage is fully proven"
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_writer_diagnostic",
+    replacement: "workflow.supervisor.checkpoint + workflow.archive.checkpoint + workflow.checkpoint.legacy_export",
+    recommendation: "mutating writer is frozen; use v2/shared checkpoint writers or read-only legacy export"
+  }],
+  ["workflow.checkpoint.legacy_alias", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_alias_diagnostic",
+    replacement: "workflow-checkpoint --source-class v2_plan_checkpoint | human_gate_archive_checkpoint | legacy_compat_checkpoint (read-only legacy_export)",
+    recommendation: "do not write through ambiguous context checkpoint aliases; choose an explicit source class"
+  }],
+  ["workflow.checkpoint.legacy_export", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_read_only_export",
+    replacement: "workflow.supervisor.checkpoint + workflow.archive.checkpoint",
+    recommendation: "use only to inspect old workflow_runs/workflow_tasks recovery state without writing checkpoint rows"
   }],
   ["workflow.task.draft", {
     decisionClass: "compat_shell_only",
@@ -208,6 +220,7 @@ export const WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS = new Set([
   "workflow.supervisor.readiness.preview",
   "workflow.v2.readiness.preview",
   "workflow.supervisor.next_actions.preview",
+  "workflow.archive.checkpoint.preview",
   "workflow.supervisor.checkpoint.preview",
   "workflow.supervisor.closeout.preview",
   "workflow.supervisor.report.preview",
@@ -243,7 +256,6 @@ export const WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS = new Set([
 ]);
 
 export const WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS = new Set([
-  "workflow.checkpoint",
   "workflow.pause",
   "workflow.resume",
   "workflow.stop",
@@ -264,6 +276,7 @@ export const WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS = new Set([
   "workflow.v2.cat_claw_audit.record",
   "workflow.v2.human_gate_package.record",
   "workflow.v2.human_gate_request",
+  "workflow.archive.checkpoint",
   "workflow.supervisor.checkpoint",
   "workflow.supervisor.closeout",
   "workflow.supervisor.report",
@@ -300,6 +313,9 @@ export const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.verification.list",
   "workflow.session_pack.get",
   "workflow.session_pack.list",
+  "workflow.checkpoint",
+  "workflow.checkpoint.legacy_alias",
+  "workflow.checkpoint.legacy_export",
   "workflow.template.preview",
   "workflow.template.daily_trading_catalog.preview",
   "workflow.template.search",
@@ -330,7 +346,6 @@ export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.schedule.pause": { capability: "schedule.write", risk: "high", mutating: true },
   "workflow.schedule.resume": { capability: "schedule.write", risk: "high", mutating: true },
   "workflow.schedule.disable": { capability: "schedule.write", risk: "high", mutating: true },
-  "workflow.checkpoint": { capability: "workflow.checkpoint", risk: "medium", mutating: true },
   "workflow.event.append": { capability: "workflow.event.write", risk: "medium", mutating: true },
   "workflow.runtime_event.record": { capability: "workflow.event.write", risk: "medium", mutating: true },
   "workflow.verification.record": { capability: "workflow.verify", risk: "medium", mutating: true },
@@ -363,6 +378,7 @@ export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.v2.cat_claw_audit.record": { capability: "cat_claw.audit", risk: "medium", mutating: true },
   "workflow.v2.human_gate_package.record": { capability: "human_gate.write", risk: "high", mutating: true },
   "workflow.v2.human_gate_request": { capability: "human_gate.write", risk: "high", mutating: true },
+  "workflow.archive.checkpoint": { capability: "workflow.checkpoint", risk: "medium", mutating: true },
   "workflow.supervisor.checkpoint": { capability: "workflow.checkpoint", risk: "medium", mutating: true },
   "workflow.supervisor.closeout": { capability: "dispatch.write", risk: "high", mutating: true },
   "workflow.supervisor.report": { capability: "dispatch.write", risk: "high", mutating: true },

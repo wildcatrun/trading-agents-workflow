@@ -342,6 +342,80 @@ function checkpointCandidateForPlan(plan = {}, checkpoints = []) {
   };
 }
 
+function archiveCheckpointIdForInput(input = {}, workflowId = "", planId = "") {
+  const humanGateId = firstText(input.humanGateId, input.human_gate_id, input.batchId, input.batch_id);
+  const buttonId = firstText(input.buttonId, input.button_id, input.buttonKey, input.button_key);
+  const decisionStatus = firstText(input.decisionStatus, input.decision_status, input.status, "archived");
+  return `workflow_archive_checkpoint.${textHash(`${workflowId}:${planId}:${humanGateId}:${buttonId}:${decisionStatus}`).slice(0, 24)}`;
+}
+
+function archiveCheckpointCandidateForPlan(plan = {}, input = {}) {
+  const workflowId = firstText(input.workflowId, input.workflow_id, plan.workflowId);
+  const planId = firstText(input.planId, input.plan_id, plan.planId);
+  const sourceStatePresent = plan.synthetic !== true && Boolean(plan.workflowId && plan.planId);
+  const checkpointId = archiveCheckpointIdForInput(input, workflowId, planId);
+  const humanGateId = firstText(input.humanGateId, input.human_gate_id, input.batchId, input.batch_id);
+  const buttonId = firstText(input.buttonId, input.button_id, input.buttonKey, input.button_key);
+  const decisionStatus = firstText(input.decisionStatus, input.decision_status, input.status, "archived");
+  const nextActions = workflowV2JsonArray(input.nextActions || input.next_actions, [
+    "record archive checkpoint with dedicated v2/shared writer",
+    "keep Human Gate closeout dispatch separate from checkpoint persistence",
+    "do not require legacy workflow_runs/workflow_tasks rows"
+  ]);
+  const missingInputFields = [];
+  if (!workflowId) missingInputFields.push("workflowId");
+  if (!firstText(input.planId, input.plan_id)) missingInputFields.push("planId");
+  if (!humanGateId) missingInputFields.push("humanGateId");
+  if (!buttonId) missingInputFields.push("buttonId");
+  if (!sourceStatePresent) missingInputFields.push("matchingV2Plan");
+  const ready = missingInputFields.length === 0;
+  return {
+    candidateId: `archive_checkpoint:${humanGateId || planId || workflowId || "unknown"}`,
+    candidateType: "workflow_archive_checkpoint",
+    sourceClass: sourceStatePresent ? "v2_plan_archive_checkpoint" : "missing_v2_plan_archive_checkpoint",
+    status: ready ? "preview_available" : "input_required",
+    executorStatus: ready ? "ready" : "precondition_failed",
+    reason: sourceStatePresent
+      ? "human_gate_archive_closeout_can_use_v2_plan_evidence_without_legacy_workflow_rows"
+      : "human_gate_archive_checkpoint_preview_requires_matching_v2_plan_state",
+    previewOnly: true,
+    mutatesNow: false,
+    followUpAction: "workflow.archive.checkpoint.preview",
+    previewAction: "workflow.archive.checkpoint.preview",
+    writeAction: "workflow.archive.checkpoint",
+    workflowId,
+    planId,
+    humanGateId,
+    buttonId,
+    decisionStatus,
+    missingInputFields,
+    input: {
+      workflowId,
+      planId,
+      checkpointId,
+      humanGateId,
+      buttonId,
+      decisionStatus
+    },
+    checkpointPreview: {
+      schemaVersion: "workflow_archive_checkpoint_record.v1",
+      resumePayloadSchemaVersion: "workflow_archive_checkpoint_resume.v1",
+      wouldWriteCheckpointNow: true,
+      wouldWriteArtifactNow: true,
+      wouldUpdateArtifactIndexNow: true,
+      wouldDispatchNow: false,
+      wouldRequestHumanGateNow: false,
+      wouldSendTelegramNow: false,
+      wouldDrainRuntimeNow: false,
+      wouldUpdateV2PlanStateNow: false,
+      wouldUpdateV2NodeStateNow: false,
+      checkpointId,
+      nextActions
+    },
+    evidenceRefs: evidenceRefsForPlan(plan, { includeDraftHumanGatePackages: true })
+  };
+}
+
 function closeoutIdForPlan(workflowId, planId) {
   return `workflow_v2_closeout.${textHash(`${workflowId}:${planId}`).slice(0, 24)}`;
 }
@@ -678,6 +752,289 @@ export function createWorkflowSupervisorNextActionsHandlers(context = {}) {
         "workflow.supervisor.closeout execution requires an existing checkpoint boundary and separate write authorization"
       ],
       dbFile: readiness.dbFile
+    };
+  }
+
+  async function workflowArchiveCheckpointPreview(rootDir, input = {}) {
+    const limit = Math.max(1, Math.min(100, Number(input.limit || input.detailLimit || input.detail_limit || 20) || 20));
+    const workflowId = firstText(input.workflowId, input.workflow_id);
+    const planId = firstText(input.planId, input.plan_id);
+    const readiness = await workflowV2ReadinessPreview(rootDir, {
+      ...input,
+      includeDetails: true,
+      limit
+    });
+    const plans = (readiness.plans || []).filter((plan) => {
+      if (workflowId && plan.workflowId !== workflowId) return false;
+      if (planId && plan.planId !== planId) return false;
+      return true;
+    });
+    const fallbackPlan = {
+      workflowId,
+      planId,
+      decision: "human_gate_archive_closeout",
+      synthetic: true
+    };
+    const archivePlans = plans.length ? plans : [fallbackPlan];
+    const archiveCheckpointCandidates = archivePlans
+      .map((plan) => archiveCheckpointCandidateForPlan(plan, input))
+      .slice(0, limit);
+    const readyCount = archiveCheckpointCandidates.filter((item) => item.status === "preview_available").length;
+    return {
+      operation: "workflow.archive.checkpoint.preview",
+      dryRun: true,
+      previewOnly: true,
+      ok: true,
+      status: readyCount ? "ready" : "input_required",
+      generatedAt: readiness.generatedAt || firstText(input.generatedAt, input.generated_at, input.now),
+      decision: "archive_checkpoint_preview",
+      readinessDecision: readiness.decision || "",
+      reasons: readyCount
+        ? ["human_gate_archive_checkpoint_replacement_preview_available"]
+        : ["human_gate_archive_checkpoint_preview_requires_workflow_id_human_gate_id_button_id_and_matching_v2_plan"],
+      archiveCheckpointCandidateCount: archiveCheckpointCandidates.length,
+      archiveCheckpointCandidates,
+      would: {
+        mutate: false,
+        writeCheckpoint: true,
+        writeArtifact: true,
+        updateArtifactIndex: true,
+        dispatch: false,
+        requestHumanGate: false,
+        sendTelegram: false,
+        drainRuntime: false,
+        updateWorkflowRun: false,
+        updateWorkflowTask: false,
+        updateV2PlanState: false,
+        updateV2NodeState: false
+      },
+      readiness,
+      limitations: [
+        "preview_only_no_state_mutation",
+        "does_not_require_legacy_workflow_runs_or_workflow_tasks",
+        "workflow.archive.checkpoint requires separate write authorization",
+        "does_not_dispatch",
+        "does_not_request_human_gate",
+        "does_not_update_workflow_run_or_task_state",
+        "does_not_update_v2_plan_or_node_state"
+      ],
+      dbFile: readiness.dbFile
+    };
+  }
+
+  async function workflowArchiveCheckpoint(rootDir, input = {}) {
+    const paths = await ensureWorkflowLayout(rootDir, input);
+    const preview = await workflowArchiveCheckpointPreview(rootDir, input);
+    const workflowId = firstText(input.workflowId, input.workflow_id);
+    const planId = firstText(input.planId, input.plan_id);
+    const humanGateId = firstText(input.humanGateId, input.human_gate_id, input.batchId, input.batch_id);
+    const buttonId = firstText(input.buttonId, input.button_id, input.buttonKey, input.button_key);
+    const candidate = preview.archiveCheckpointCandidates.find((item) => {
+      if (workflowId && item.workflowId !== workflowId) return false;
+      if (planId && item.planId !== planId) return false;
+      if (humanGateId && item.humanGateId !== humanGateId) return false;
+      if (buttonId && item.buttonId !== buttonId) return false;
+      return true;
+    });
+    if (!candidate) throw new Error("workflow archive checkpoint is not available: no matching v2 archive checkpoint candidate");
+    if (candidate.executorStatus !== "ready") {
+      throw new Error(`workflow archive checkpoint is not write-ready: ${candidate.status}`);
+    }
+    const createdAt = firstText(input.createdAt, input.created_at, input.selectedAt, input.selected_at, input.feedbackReceivedAt, input.feedback_received_at) || nowIso();
+    const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "cat_claw");
+    const readinessPlan = (preview.readiness?.plans || []).find((plan) => plan.workflowId === candidate.workflowId && plan.planId === candidate.planId) || {};
+    const nextActions = workflowV2JsonArray(input.nextActions || input.next_actions, candidate.checkpointPreview.nextActions || []);
+    const artifactRefs = [
+      ...(candidate.evidenceRefs || []),
+      ...(workflowV2JsonArray(input.evidenceRefs || input.evidence_refs, []))
+    ].filter(Boolean);
+    const contextBudget = {
+      mode: firstText(input.mode, input.contextMode, input.context_mode, "workflow_archive_checkpoint"),
+      tokenBudget: Number(input.tokenBudget || input.token_budget || 0) || null,
+      compactAtPercent: Number(input.compactAtPercent || input.compact_at_percent || 70) || 70,
+      restorePolicy: firstText(input.restorePolicy, input.restore_policy, "load_archive_checkpoint_plus_referenced_artifacts_only")
+    };
+    const resumePayload = redactSensitiveForPersistence({
+      schemaVersion: "workflow_archive_checkpoint_resume.v1",
+      workflowId: candidate.workflowId,
+      planId: candidate.planId,
+      humanGateId: candidate.humanGateId,
+      buttonId: candidate.buttonId,
+      decisionStatus: candidate.decisionStatus,
+      selectedAt: firstText(input.selectedAt, input.selected_at, ""),
+      feedbackReceivedAt: firstText(input.feedbackReceivedAt, input.feedback_received_at, ""),
+      flashcatOriginalWords: firstText(input.flashcatOriginalWords, input.flashcat_original_words, input.feedbackText, input.feedback_text, ""),
+      generatedAt: createdAt,
+      createdBy,
+      sourceClass: candidate.sourceClass,
+      planStatus: readinessPlan.status || "",
+      workflowState: readinessPlan.workflowState || "",
+      readinessDecision: preview.readinessDecision || "",
+      objective: readinessPlan.objective || "",
+      taskOwnerAgent: readinessPlan.taskOwnerAgent || "",
+      plannerAgent: readinessPlan.plannerAgent || "",
+      participantManagers: readinessPlan.participantManagers || [],
+      counts: readinessPlan.counts || {},
+      nodeIds: (readinessPlan.nodes || []).map((node) => node.nodeId).filter(Boolean),
+      activeWorkerRunIds: (readinessPlan.activeWorkers || []).map((worker) => worker.workerRunId).filter(Boolean),
+      reviewWorkerRunIds: (readinessPlan.reviewWorkers || []).map((worker) => worker.workerRunId).filter(Boolean),
+      activeAdapterJobIds: (readinessPlan.activeAdapterJobs || []).map((job) => job.adapterJobId).filter(Boolean),
+      humanGatePackageIds: (readinessPlan.humanGatePackages || []).map((pkg) => pkg.packageId).filter(Boolean),
+      draftHumanGatePackageIds: (readinessPlan.draftHumanGatePackages || []).map((pkg) => pkg.packageId).filter(Boolean),
+      planSpecArtifactRef: readinessPlan.planSpecArtifactRef || "",
+      artifactRefs,
+      nextActions
+    });
+    const checkpointId = candidate.input.checkpointId;
+    const checkpointRecord = redactSensitiveForPersistence({
+      schemaVersion: "workflow_archive_checkpoint_record.v1",
+      checkpointId,
+      workflowId: candidate.workflowId,
+      planId: candidate.planId,
+      humanGateId: candidate.humanGateId,
+      buttonId: candidate.buttonId,
+      status: "archived",
+      phase: "archived",
+      decision: "human_gate_archived_complete",
+      summary: firstText(input.summary, input.text, `Human Gate archive checkpoint for workflow ${candidate.workflowId}.`),
+      resumePayload,
+      activeTasks: [],
+      blockedTasks: [],
+      artifactRefs,
+      nextActions,
+      contextBudget,
+      v2StateSummary: {
+        nodes: Number(readinessPlan.counts?.nodes || 0),
+        readyNodes: Number(readinessPlan.counts?.readyNodes || 0),
+        activeWorkers: Number(readinessPlan.counts?.activeWorkers || 0),
+        reviewWorkers: Number(readinessPlan.counts?.reviewWorkers || 0),
+        activeAdapterJobs: Number(readinessPlan.counts?.activeAdapterJobs || 0),
+        humanGatePackages: Number(readinessPlan.counts?.humanGatePackages || 0)
+      },
+      writeBoundary: "archive_checkpoint_artifact_row_and_event_only",
+      sideEffects: {
+        writesCheckpoint: true,
+        writesCheckpointArtifact: true,
+        updatesArtifactIndex: true,
+        dispatchesCatClaw: false,
+        requestsHumanGate: false,
+        sendsTelegram: false,
+        drainsRuntime: false,
+        updatesWorkflowRunState: false,
+        updatesWorkflowTaskState: false,
+        updatesV2PlanState: false,
+        updatesV2NodeState: false
+      },
+      payload: workflowV2JsonObject(input.payload, {}),
+      createdBy,
+      createdAt
+    });
+    const hash = jsonHash(checkpointRecord);
+    const jsonRelativePath = await writeJsonArtifact(paths.root, paths.checkpointsDir, checkpointId, { ...checkpointRecord, hash });
+    const markdown = [
+      "# Workflow Archive Checkpoint",
+      "",
+      `- checkpoint_id: ${checkpointId}`,
+      `- workflow_id: ${candidate.workflowId}`,
+      `- plan_id: ${candidate.planId}`,
+      `- human_gate_id: ${candidate.humanGateId}`,
+      `- button_id: ${candidate.buttonId}`,
+      `- status: ${checkpointRecord.status}`,
+      `- phase: ${checkpointRecord.phase}`,
+      `- decision: ${checkpointRecord.decision}`,
+      `- created_by: ${createdBy}`,
+      `- created_at: ${createdAt}`,
+      `- json_artifact: ${jsonRelativePath}`,
+      "",
+      "## Summary",
+      "",
+      checkpointRecord.summary,
+      "",
+      "## Resume Payload",
+      "",
+      "```json",
+      JSON.stringify(resumePayload, null, 2),
+      "```",
+      "",
+      "## Next Actions",
+      "",
+      nextActions.length ? nextActions.map((action) => `- ${action}`).join("\n") : "- none"
+    ].join("\n");
+    const markdownRelativePath = await writeTextArtifact(paths.root, paths.checkpointsDir, checkpointId, "md", markdown);
+    await sqlite(paths.dbFile, `
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES (${sqlValue(checkpointId)}, ${sqlValue(candidate.workflowId)}, ${sqlValue(checkpointRecord.status)}, ${sqlValue(checkpointRecord.phase)}, ${sqlValue(checkpointRecord.decision)}, ${sqlValue(checkpointRecord.summary)}, ${sqlValue(JSON.stringify(resumePayload))}, '[]', '[]', ${sqlValue(JSON.stringify(artifactRefs))}, ${sqlValue(JSON.stringify(nextActions))}, ${sqlValue(JSON.stringify(contextBudget))}, ${sqlValue(markdownRelativePath)}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)})
+ON CONFLICT(checkpoint_id) DO UPDATE SET
+  workflow_id=excluded.workflow_id,
+  status=excluded.status,
+  phase=excluded.phase,
+  decision=excluded.decision,
+  summary=excluded.summary,
+  resume_payload_json=excluded.resume_payload_json,
+  active_tasks_json=excluded.active_tasks_json,
+  blocked_tasks_json=excluded.blocked_tasks_json,
+  artifact_refs_json=excluded.artifact_refs_json,
+  next_actions_json=excluded.next_actions_json,
+  context_budget_json=excluded.context_budget_json,
+  path=excluded.path,
+  created_by=excluded.created_by,
+  created_at=excluded.created_at;`);
+    await sqlite(paths.dbFile, `
+INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES (${sqlValue(checkpointId)}, ${sqlValue(candidate.workflowId)}, 'workflow_checkpoint', ${sqlValue(markdownRelativePath)}, ${sqlValue(checkpointRecord.summary)}, ${sqlValue(createdBy)}, ${sqlValue(createdAt)})
+ON CONFLICT(artifact_id) DO UPDATE SET workflow_id=excluded.workflow_id, kind=excluded.kind, path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
+    await appendWorkflowEvent(paths, {
+      eventType: "workflow.archive.checkpoint.recorded",
+      status: "recorded",
+      workflowId: candidate.workflowId,
+      traceId: `${candidate.workflowId}:archive_checkpoint:${checkpointId}`,
+      humanGateId: candidate.humanGateId,
+      actor: createdBy,
+      sourceRuntime: "workflow",
+      sourceAgent: createdBy,
+      idempotencyKey: `workflow_event:workflow.archive.checkpoint.recorded:${checkpointId}`,
+      artifactRef: markdownRelativePath,
+      payload: {
+        checkpointId,
+        planId: candidate.planId,
+        humanGateId: candidate.humanGateId,
+        buttonId: candidate.buttonId,
+        decisionStatus: candidate.decisionStatus,
+        jsonArtifactRef: jsonRelativePath,
+        writeBoundary: "archive_checkpoint_artifact_row_and_event_only"
+      },
+      createdAt
+    });
+    return {
+      schemaVersion: "workflow_archive_checkpoint_result.v1",
+      action: "workflow.archive.checkpoint",
+      workflowId: candidate.workflowId,
+      planId: candidate.planId,
+      humanGateId: candidate.humanGateId,
+      buttonId: candidate.buttonId,
+      checkpointId,
+      status: "recorded",
+      writeBoundary: "archive_checkpoint_artifact_row_and_event_only",
+      didWriteCheckpoint: true,
+      didWriteArtifact: true,
+      didUpdateArtifactIndex: true,
+      didDispatch: false,
+      didRequestHumanGate: false,
+      didSendTelegram: false,
+      didDrainRuntime: false,
+      didUpdateWorkflowRun: false,
+      didUpdateWorkflowTask: false,
+      didUpdateV2PlanState: false,
+      didUpdateV2NodeState: false,
+      artifact: {
+        artifactId: checkpointId,
+        kind: "workflow_checkpoint",
+        relativePath: markdownRelativePath,
+        jsonRelativePath,
+        hash
+      },
+      resumePayload,
+      dbFile: paths.dbFile
     };
   }
 
@@ -1130,6 +1487,7 @@ ON CONFLICT(object_id) DO UPDATE SET
     const preview = await workflowSupervisorCheckpointPreview(rootDir, input);
     const workflowId = firstText(input.workflowId, input.workflow_id);
     const planId = firstText(input.planId, input.plan_id);
+    if (!planId) throw new Error("workflow supervisor checkpoint requires planId");
     const candidate = preview.checkpointCandidates.find((item) => {
       if (workflowId && item.workflowId !== workflowId) return false;
       if (planId && item.planId !== planId) return false;
@@ -1314,6 +1672,8 @@ ON CONFLICT(artifact_id) DO UPDATE SET workflow_id=excluded.workflow_id, kind=ex
 
   return {
     workflowSupervisorNextActionsPreview,
+    workflowArchiveCheckpointPreview,
+    workflowArchiveCheckpoint,
     workflowSupervisorCheckpointPreview,
     workflowSupervisorCheckpoint,
     workflowSupervisorCloseoutPreview,

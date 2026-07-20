@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { LEGACY_ROOT, runAction } from "./src/core.js";
 import { controlLoopWorkerKillAfterMs } from "./src/control-loop-budget.js";
+import { registerWorkflowCheckpointCliCommand } from "./src/workflow/checkpoint-cli-command.js";
 
 const PLUGIN_ID = "trading-agents-workflow";
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -232,6 +233,8 @@ const toolParameters = {
         "workflow.supervisor.readiness.preview",
         "workflow.supervisor.next_actions.preview",
         "workflow.supervisor.next-actions.preview",
+        "workflow.archive.checkpoint",
+        "workflow.archive.checkpoint.preview",
         "workflow.supervisor.checkpoint",
         "workflow.supervisor.checkpoint.preview",
         "workflow.supervisor.closeout",
@@ -275,6 +278,8 @@ const toolParameters = {
         "workflow.schedule.disable",
         "workflow.scheduler.disable",
         "workflow.checkpoint",
+        "workflow.checkpoint.legacy_export",
+        "workflow.checkpoint.legacy_alias",
         "workflow.context_checkpoint",
         "context.checkpoint",
         "workflow.event.append",
@@ -506,7 +511,14 @@ const toolParameters = {
     limit: { type: "number" },
     includeDetails: { type: "boolean" },
     include_details: { type: "boolean" },
+    sourceClass: { type: "string" },
+    source_class: { type: "string" },
     checkpointId: { type: "string" },
+    checkpoint_id: { type: "string" },
+    buttonId: { type: "string" },
+    button_id: { type: "string" },
+    decisionStatus: { type: "string" },
+    decision_status: { type: "string" },
     nextActions: { type: "array", items: { type: "string" } },
     tokenBudget: { type: "number" },
     compactAtPercent: { type: "number" },
@@ -706,6 +718,8 @@ const governanceWorkflowActions = new Set([
   "workflow.supervisor.readiness.preview",
   "workflow.supervisor.next_actions.preview",
   "workflow.supervisor.next-actions.preview",
+  "workflow.archive.checkpoint",
+  "workflow.archive.checkpoint.preview",
   "workflow.supervisor.checkpoint",
   "workflow.supervisor.checkpoint.preview",
   "workflow.supervisor.closeout",
@@ -736,6 +750,10 @@ const governanceWorkflowActions = new Set([
   "workflow.schedule.list",
   "workflow.schedules",
   "workflow.scheduler.list",
+  "workflow.checkpoint.legacy_export",
+  "workflow.checkpoint.legacy_alias",
+  "workflow.context_checkpoint",
+  "context.checkpoint",
   "human_gate.request",
   "human_gate.inbox",
   "human_gate.console",
@@ -768,6 +786,14 @@ const governanceToolParameters = {
     dispatch_id: { type: "string" },
     flowId: { type: "string" },
     flow_id: { type: "string" },
+    sourceClass: { type: "string" },
+    source_class: { type: "string" },
+    checkpointId: { type: "string" },
+    checkpoint_id: { type: "string" },
+    buttonId: { type: "string" },
+    button_id: { type: "string" },
+    decisionStatus: { type: "string" },
+    decision_status: { type: "string" },
     humanGateId: { type: "string" },
     human_gate_id: { type: "string" },
     limit: { type: "number" },
@@ -1421,29 +1447,10 @@ function registerCli(api) {
         }), null, 2));
       });
 
-    command.command("workflow-checkpoint")
-      .requiredOption("--workflow <workflowId>", "Workflow id")
-      .option("--checkpoint <checkpointId>", "Checkpoint id")
-      .option("--summary <summary>", "Checkpoint summary")
-      .option("--next-action <action>", "Next action; repeatable", (value, previous) => [...previous, value], [])
-      .option("--token-budget <tokens>", "Context token budget")
-      .option("--compact-at <percent>", "Compaction trigger percent")
-      .option("--restore-policy <policy>", "Restore policy")
-      .option("--workflow-root <dir>", "Trading agents workflow root directory")
-      .option("--root <dir>", "Meeting protocol root directory")
-      .action(async (options) => {
-        console.log(JSON.stringify(await runAction(commandRoot(options, api), {
-          action: "workflow.checkpoint",
-          workflowRootDir: options.workflowRoot,
-          workflowId: options.workflow,
-          checkpointId: options.checkpoint,
-          summary: options.summary,
-          nextActions: options.nextAction,
-          tokenBudget: Number(options.tokenBudget),
-          compactAtPercent: Number(options.compactAt),
-          restorePolicy: options.restorePolicy
-        }), null, 2));
-      });
+    registerWorkflowCheckpointCliCommand(command, {
+      runAction,
+      commandRoot: (options) => commandRoot(options, api)
+    });
 
     command.command("workflow-session-pack-upsert")
       .requiredOption("--session <sessionId>", "Session pack id")

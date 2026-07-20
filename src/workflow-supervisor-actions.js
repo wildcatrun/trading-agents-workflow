@@ -41,7 +41,7 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
   const nowIso = requireContextFunction(context, "nowIso");
   const workflowAdvance = requireContextFunction(context, "workflowAdvance");
   const workflowAdvancePreview = requireContextFunction(context, "workflowAdvancePreview");
-  const workflowCheckpoint = requireContextFunction(context, "workflowCheckpoint");
+  const workflowCheckpointLegacyExport = requireContextFunction(context, "workflowCheckpointLegacyExport");
 
   function supervisorReportPrompt(workflow, advanceResult, checkpointResult, input = {}) {
     const summary = advanceResult.summary || {};
@@ -132,10 +132,12 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
     });
     const dispatched = cycles.flatMap((cycle) => cycle.advance?.dispatched || []);
     const checkpoint = writeCheckpoint
-      ? await workflowCheckpoint(rootDir, {
+      ? await workflowCheckpointLegacyExport(rootDir, {
         ...input,
+        action: "workflow.checkpoint.legacy_export",
         workflowRootDir: paths.root,
         workflowId,
+        sourceClass: "legacy_supervise_escape_hatch_checkpoint",
         summary: input.summary || `Supervisor checkpoint at ${startedAt}; decision=${finalAdvance.decision}`,
         nextActions: input.nextActions || input.next_actions || []
       })
@@ -191,6 +193,7 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
       deferredRuntimeDrains,
       finalAdvance,
       checkpoint,
+      checkpointPath: checkpoint ? "workflow.checkpoint.legacy_export.legacy_supervise_escape_hatch" : "",
       catClawReport,
       catClawReportDrain,
       catClawReportDrainDeferred,

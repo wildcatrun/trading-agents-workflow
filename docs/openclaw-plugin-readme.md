@@ -553,7 +553,19 @@ Cat Claw must preserve the original confirmation timestamp, source channel, butt
 
 ## Workflow Checkpoints
 
-Use `workflow.checkpoint` whenever a workflow phase ends, context approaches the compaction threshold, a Human Gate package is submitted, or a new session needs to continue prior work. The checkpoint is the durable recovery package for cat-brain `main`; it keeps the session small by storing only the minimum resumable state plus artifact references.
+Use checkpoint writers as explicit recovery boundaries, not as implicit session
+history replay. For v2 plan recovery use `workflow-checkpoint --workflow <id>
+--source-class v2_plan_checkpoint --plan <id>`. For v2 Human Gate archive
+closeout use `workflow-checkpoint --workflow <id> --source-class
+human_gate_archive_checkpoint --plan <id> --human-gate <id> --button <id>`.
+Use the default legacy
+`legacy_compat_checkpoint` path only to inspect old `workflow_runs` /
+`workflow_tasks` recovery state through the read-only
+`workflow.checkpoint.legacy_export` diagnostic.
+The older `workflow.context_checkpoint` and `context.checkpoint` aliases are
+diagnostic-only and no longer write checkpoints.
+`workflow.checkpoint` itself is also diagnostic-only after P34; known
+compatibility callers should use `workflow.checkpoint.legacy_export`.
 
 Checkpoint contents:
 
@@ -641,7 +653,7 @@ node bin/cat-meeting-governance.mjs cat_claw-audit --root "$ROOT"
 node bin/cat-meeting-governance.mjs workflow-v2-plan-create --workflow demo-initiative --plan demo-plan-001 --objective "Improve long-term stock tracking" --owner cat_heart --manager cat_body --manager cat_nose --acceptance-criteria "next action package exists" --root "$ROOT"
 node bin/cat-meeting-governance.mjs workflow-task --dry-run true --workflow demo-initiative --owner main --summary "Preview a non-mutating legacy task draft only" --root "$ROOT"
 node bin/cat-meeting-governance.mjs workflow-advance --workflow demo-initiative --root "$ROOT"
-node bin/cat-meeting-governance.mjs workflow-checkpoint --workflow demo-initiative --summary "Context recovery checkpoint" --next-action "continue active tasks" --root "$ROOT"
+node bin/cat-meeting-governance.mjs workflow-checkpoint --workflow demo-initiative --source-class legacy_compat_checkpoint --summary "Context recovery checkpoint" --next-action "continue active tasks" --root "$ROOT"
 
 node bin/cat-meeting-governance.mjs runtime-agent --runtime openclaw --platform openclaw --agent cat_tail --execution-adapter native --im-ingress-owner openclaw_gateway --im-ingress-adapter openclaw_native --workflow-ingress-adapter openclaw_native --role pre_order_risk_audit_and_final_trading_risk_control --endpoint openclaw-agent:cat_tail --root "$ROOT"
 PROPOSAL=$(node bin/cat-meeting-governance.mjs trade-proposal --asset stock --symbol 000001.SZ --summary "cat_heart proposal demo" --side buy --quantity 100 --root "$ROOT")

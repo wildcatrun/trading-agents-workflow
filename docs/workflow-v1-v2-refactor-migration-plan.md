@@ -18,6 +18,11 @@ Migration implementation targets must first pass the value audit in
 `docs/workflow-v1-v2-migration-worthiness-audit.md`. A code block being old,
 large, or marked legacy is not sufficient reason to migrate it.
 The active batch freeze ledger is `docs/workflow-freeze-pool-p7.md`.
+The replacement capability completion plan for the remaining non-freezable
+execution surfaces is
+`docs/workflow-v2-replacement-capability-completion-plan.md`; its read-model and
+domain cleanup work is a default-kernel cutover requirement, not a blanket
+precondition for every legacy freeze.
 
 ## Current Release Position
 
@@ -435,7 +440,10 @@ Code should be archived rather than deleted when:
 
 ## Immediate Next Engineering Tasks
 
-1. Create `docs/workflow-v1-action-deprecation-ledger.md`.
+1. Complete the core replacement capability workstreams in
+   `docs/workflow-v2-replacement-capability-completion-plan.md` before any
+   additional v1 execution freeze attempt; treat its read-model/domain cleanup
+   stream as a default-kernel cutover requirement.
 2. Extract `WORKFLOW_ACTION_ALIASES` from `src/workflow.js`.
 3. Extract schema initialization blocks from `src/workflow.js` into domain
    modules.

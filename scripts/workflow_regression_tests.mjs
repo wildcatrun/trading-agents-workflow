@@ -9,6 +9,8 @@ import path from "node:path";
 import { buildConsoleConfig, createConsoleServer, operatorActionSignatureOk, workflowChildPayload } from "../src/console/server.js";
 import { WorkflowActionGateway } from "../src/console/action-gateway.js";
 import { WorkflowReadModel } from "../src/console/read-model.js";
+import { parseArgv as parseWorkflowCliArgv, toAction as workflowCliToAction } from "../bin/cat-meeting-governance.mjs";
+import { registerWorkflowCheckpointCliCommand } from "../src/workflow/checkpoint-cli-command.js";
 import {
   WORKFLOW_ACTION_PERMISSION_RULES,
   WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS,
@@ -5929,6 +5931,129 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(checkpointPreview.would.writeArtifact, true);
   assert.equal(checkpointPreview.would.updateArtifactIndex, true);
   assert.equal(checkpointPreview.limitations.includes("workflow.supervisor.checkpoint requires separate write authorization"), true);
+  const archiveCheckpointCountsBefore = {
+    artifactIndex: sqliteCount(closeoutFixture.dbFile, "artifact_index"),
+    checkpoints: sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"),
+    dispatches: sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"),
+    humanGateBatches: sqliteCount(closeoutFixture.dbFile, "human_gate_batches"),
+    humanGateRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"),
+    closeoutRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"),
+    messageFlows: sqliteCount(closeoutFixture.dbFile, "message_flows"),
+    outbox: sqliteCount(closeoutFixture.dbFile, "telegram_outbox"),
+    operations: sqliteCount(closeoutFixture.dbFile, "workflow_operations"),
+    workflowTasks: sqliteCount(closeoutFixture.dbFile, "workflow_tasks"),
+    workflowRuns: sqliteCount(closeoutFixture.dbFile, "workflow_runs")
+  };
+  const archiveCheckpointPreview = await runAction(closeoutFixture.root, {
+    action: "workflow.archive.checkpoint.preview",
+    workflowId: closeoutFixture.workflowId,
+    planId: "plan-v2-kernel",
+    humanGateId: "hg-archive-preview",
+    buttonId: "archive_closeout",
+    decisionStatus: "archived",
+    nextActions: ["closeout already archived; no runtime dispatch"]
+  });
+  assert.equal(archiveCheckpointPreview.operation, "workflow.archive.checkpoint.preview");
+  assert.equal(archiveCheckpointPreview.dryRun, true);
+  assert.equal(archiveCheckpointPreview.previewOnly, true);
+  assert.equal(archiveCheckpointPreview.status, "ready");
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidateCount, 1);
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidates[0].candidateType, "workflow_archive_checkpoint");
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidates[0].sourceClass, "v2_plan_archive_checkpoint");
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidates[0].previewOnly, true);
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidates[0].mutatesNow, false);
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidates[0].executorStatus, "ready");
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidates[0].writeAction, "workflow.archive.checkpoint");
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidates[0].checkpointPreview.schemaVersion, "workflow_archive_checkpoint_record.v1");
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidates[0].checkpointPreview.resumePayloadSchemaVersion, "workflow_archive_checkpoint_resume.v1");
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidates[0].checkpointPreview.wouldWriteCheckpointNow, true);
+  assert.equal(archiveCheckpointPreview.archiveCheckpointCandidates[0].checkpointPreview.wouldDispatchNow, false);
+  assert.equal(archiveCheckpointPreview.would.mutate, false);
+  assert.equal(archiveCheckpointPreview.would.writeCheckpoint, true);
+  assert.equal(archiveCheckpointPreview.would.dispatch, false);
+  assert.equal(archiveCheckpointPreview.would.requestHumanGate, false);
+  assert.equal(archiveCheckpointPreview.would.updateWorkflowRun, false);
+  assert.equal(archiveCheckpointPreview.would.updateWorkflowTask, false);
+  assert.equal(archiveCheckpointPreview.limitations.includes("does_not_require_legacy_workflow_runs_or_workflow_tasks"), true);
+  assert.equal(archiveCheckpointPreview.limitations.includes("workflow.archive.checkpoint requires separate write authorization"), true);
+  assert.deepEqual({
+    artifactIndex: sqliteCount(closeoutFixture.dbFile, "artifact_index"),
+    checkpoints: sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"),
+    dispatches: sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"),
+    humanGateBatches: sqliteCount(closeoutFixture.dbFile, "human_gate_batches"),
+    humanGateRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"),
+    closeoutRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"),
+    messageFlows: sqliteCount(closeoutFixture.dbFile, "message_flows"),
+    outbox: sqliteCount(closeoutFixture.dbFile, "telegram_outbox"),
+    operations: sqliteCount(closeoutFixture.dbFile, "workflow_operations"),
+    workflowTasks: sqliteCount(closeoutFixture.dbFile, "workflow_tasks"),
+    workflowRuns: sqliteCount(closeoutFixture.dbFile, "workflow_runs")
+  }, archiveCheckpointCountsBefore);
+  const missingArchiveCheckpointPreview = await runAction(closeoutFixture.root, {
+    action: "workflow.archive.checkpoint.preview",
+    workflowId: closeoutFixture.workflowId,
+    planId: "plan-v2-kernel",
+    buttonId: "archive_closeout"
+  });
+  assert.equal(missingArchiveCheckpointPreview.status, "input_required");
+  assert.equal(missingArchiveCheckpointPreview.archiveCheckpointCandidates[0].status, "input_required");
+  assert.equal(missingArchiveCheckpointPreview.archiveCheckpointCandidates[0].missingInputFields.includes("humanGateId"), true);
+  const unknownArchiveCheckpointPreview = await runAction(closeoutFixture.root, {
+    action: "workflow.archive.checkpoint.preview",
+    workflowId: "wf-unknown-archive-preview",
+    planId: "plan-unknown-archive-preview",
+    humanGateId: "hg-archive-preview",
+    buttonId: "archive_closeout"
+  });
+  assert.equal(unknownArchiveCheckpointPreview.status, "input_required");
+  assert.equal(unknownArchiveCheckpointPreview.archiveCheckpointCandidates[0].sourceClass, "missing_v2_plan_archive_checkpoint");
+  assert.equal(unknownArchiveCheckpointPreview.archiveCheckpointCandidates[0].executorStatus, "precondition_failed");
+  assert.equal(unknownArchiveCheckpointPreview.archiveCheckpointCandidates[0].missingInputFields.includes("matchingV2Plan"), true);
+  const ambiguousArchiveFixture = await setupWorkflowV2KernelPlanFixture("workflow-archive-checkpoint-ambiguous");
+  await runAction(ambiguousArchiveFixture.root, {
+    action: "workflow.v2.plan.create",
+    workflowId: ambiguousArchiveFixture.workflowId,
+    planId: "plan-v2-kernel-alt",
+    objective: "Persist alternate v2 orchestration plan.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body"],
+    ...v2PlanContract()
+  });
+  await runAction(ambiguousArchiveFixture.root, {
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "cat_claw",
+    capabilities: { permissions: ["workflow.checkpoint"] }
+  });
+  const ambiguousArchiveCountsBefore = {
+    checkpoints: sqliteCount(ambiguousArchiveFixture.dbFile, "workflow_checkpoints"),
+    artifactIndex: sqliteCount(ambiguousArchiveFixture.dbFile, "artifact_index"),
+    archiveCheckpointEvents: sqliteCount(ambiguousArchiveFixture.dbFile, "workflow_events", `event_type='workflow.archive.checkpoint.recorded' AND workflow_id='${ambiguousArchiveFixture.workflowId}'`)
+  };
+  const ambiguousArchivePreview = await runAction(ambiguousArchiveFixture.root, {
+    action: "workflow.archive.checkpoint.preview",
+    workflowId: ambiguousArchiveFixture.workflowId,
+    humanGateId: "hg-archive-ambiguous",
+    buttonId: "archive_closeout"
+  });
+  assert.equal(ambiguousArchivePreview.status, "input_required");
+  assert.equal(ambiguousArchivePreview.archiveCheckpointCandidateCount, 2);
+  assert.equal(ambiguousArchivePreview.archiveCheckpointCandidates.every((item) => item.missingInputFields.includes("planId")), true);
+  await assertRejectsMessage(
+    () => runAction(ambiguousArchiveFixture.root, {
+      action: "workflow.archive.checkpoint",
+      workflowId: ambiguousArchiveFixture.workflowId,
+      humanGateId: "hg-archive-ambiguous",
+      buttonId: "archive_closeout",
+      callerAgent: "cat_claw",
+      callerRuntime: "openclaw"
+    }),
+    /workflow archive checkpoint is not write-ready: input_required/
+  );
+  assert.equal(sqliteCount(ambiguousArchiveFixture.dbFile, "workflow_checkpoints"), ambiguousArchiveCountsBefore.checkpoints);
+  assert.equal(sqliteCount(ambiguousArchiveFixture.dbFile, "artifact_index"), ambiguousArchiveCountsBefore.artifactIndex);
+  assert.equal(sqliteCount(ambiguousArchiveFixture.dbFile, "workflow_events", `event_type='workflow.archive.checkpoint.recorded' AND workflow_id='${ambiguousArchiveFixture.workflowId}'`), ambiguousArchiveCountsBefore.archiveCheckpointEvents);
   const closeoutPreview = await runAction(closeoutFixture.root, {
     action: "workflow.supervisor.closeout.preview",
     workflowId: closeoutFixture.workflowId,
@@ -5968,6 +6093,118 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     workflowTasks: sqliteCount(closeoutFixture.dbFile, "workflow_tasks")
   }, closeoutMutationCountsBefore);
 
+  await runAction(closeoutFixture.root, {
+    action: "runtime.agent.upsert",
+    runtime: "openclaw",
+    platform: "openclaw",
+    agentId: "cat_claw",
+    capabilities: { permissions: ["workflow.checkpoint", "dispatch.write"] }
+  });
+  const archiveWriterCountsBefore = {
+    artifactIndex: sqliteCount(closeoutFixture.dbFile, "artifact_index"),
+    checkpoints: sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"),
+    dispatches: sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"),
+    humanGateBatches: sqliteCount(closeoutFixture.dbFile, "human_gate_batches"),
+    humanGateRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"),
+    closeoutRecords: sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"),
+    messageFlows: sqliteCount(closeoutFixture.dbFile, "message_flows"),
+    outbox: sqliteCount(closeoutFixture.dbFile, "telegram_outbox"),
+    workflowTasks: sqliteCount(closeoutFixture.dbFile, "workflow_tasks"),
+    workflowRuns: sqliteCount(closeoutFixture.dbFile, "workflow_runs"),
+    archiveCheckpointEvents: sqliteCount(closeoutFixture.dbFile, "workflow_events", `event_type='workflow.archive.checkpoint.recorded' AND workflow_id='${closeoutFixture.workflowId}'`),
+    planCompleted: sqliteCount(closeoutFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND status='completed' AND workflow_state='completed'"),
+    nodesCompleted: sqliteCount(closeoutFixture.dbFile, "workflow_v2_plan_nodes", `workflow_id='${closeoutFixture.workflowId}' AND status='completed'`)
+  };
+  const archiveCheckpoint = await runAction(closeoutFixture.root, {
+    action: "workflow.archive.checkpoint",
+    workflowId: closeoutFixture.workflowId,
+    planId: "plan-v2-kernel",
+    humanGateId: "hg-archive-writer",
+    buttonId: "archive_closeout",
+    decisionStatus: "terminated",
+    selectedAt: "2026-07-20T00:00:00.000Z",
+    feedbackReceivedAt: "2026-07-20T00:00:01.000Z",
+    flashcatOriginalWords: "闪电猫原话：归档。",
+    createdBy: "cat_claw",
+    callerAgent: "cat_claw",
+    callerRuntime: "openclaw"
+  });
+  assert.equal(archiveCheckpoint.schemaVersion, "workflow_archive_checkpoint_result.v1");
+  assert.equal(archiveCheckpoint.writeBoundary, "archive_checkpoint_artifact_row_and_event_only");
+  assert.equal(archiveCheckpoint.didWriteCheckpoint, true);
+  assert.equal(archiveCheckpoint.didWriteArtifact, true);
+  assert.equal(archiveCheckpoint.didUpdateArtifactIndex, true);
+  assert.equal(archiveCheckpoint.didDispatch, false);
+  assert.equal(archiveCheckpoint.didRequestHumanGate, false);
+  assert.equal(archiveCheckpoint.didSendTelegram, false);
+  assert.equal(archiveCheckpoint.didDrainRuntime, false);
+  assert.equal(archiveCheckpoint.didUpdateWorkflowRun, false);
+  assert.equal(archiveCheckpoint.didUpdateWorkflowTask, false);
+  assert.equal(archiveCheckpoint.didUpdateV2PlanState, false);
+  assert.equal(archiveCheckpoint.didUpdateV2NodeState, false);
+  assert.equal(archiveCheckpoint.resumePayload.schemaVersion, "workflow_archive_checkpoint_resume.v1");
+  assert.equal(archiveCheckpoint.resumePayload.planId, "plan-v2-kernel");
+  assert.equal(archiveCheckpoint.resumePayload.humanGateId, "hg-archive-writer");
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints", `checkpoint_id='${archiveCheckpoint.checkpointId}' AND workflow_id='${closeoutFixture.workflowId}' AND decision='human_gate_archived_complete'`), 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index", `artifact_id='${archiveCheckpoint.checkpointId}' AND kind='workflow_checkpoint'`), 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_events", `event_type='workflow.archive.checkpoint.recorded' AND workflow_id='${closeoutFixture.workflowId}'`), archiveWriterCountsBefore.archiveCheckpointEvents + 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"), archiveWriterCountsBefore.dispatches);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"), archiveWriterCountsBefore.humanGateRecords);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"), archiveWriterCountsBefore.closeoutRecords);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "message_flows"), archiveWriterCountsBefore.messageFlows);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "telegram_outbox"), archiveWriterCountsBefore.outbox);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_tasks"), archiveWriterCountsBefore.workflowTasks);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_runs"), 0);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND status='completed' AND workflow_state='completed'"), archiveWriterCountsBefore.planCompleted);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_v2_plan_nodes", `workflow_id='${closeoutFixture.workflowId}' AND status='completed'`), archiveWriterCountsBefore.nodesCompleted);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"), archiveWriterCountsBefore.checkpoints + 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index"), archiveWriterCountsBefore.artifactIndex + 1);
+  const archiveHumanGateRequest = await requestHumanGate(closeoutFixture.root, {
+    workflowId: closeoutFixture.workflowId,
+    meetingId: closeoutFixture.workflowId,
+    humanGateId: "hg-v2-archive-retarget",
+    text: "猫爪正式汇报：v2 archive checkpoint retarget 回归测试。请选择方案或归档收口。",
+    addDefaultControls: false,
+    buttons: [
+      ...planButtons(),
+      {
+        label: "终止并归档",
+        status: "terminated",
+        role: "terminate",
+        summary: "确认当前 v2 工作流已完成并归档。",
+        prompt: "归档收口，不生成新方案。",
+        rollback: "如需恢复，从 archive checkpoint 继续。",
+        payload: { planId: "plan-v2-kernel" }
+      }
+    ]
+  });
+  const archiveTerminateButton = archiveHumanGateRequest.buttons.find((button) => button.decisionStatus === "terminated");
+  const archiveHumanGateCountsBefore = {
+    checkpoints: sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"),
+    dispatches: sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"),
+    workflowRuns: sqliteCount(closeoutFixture.dbFile, "workflow_runs"),
+    workflowTasks: sqliteCount(closeoutFixture.dbFile, "workflow_tasks"),
+    archiveEvents: sqliteCount(closeoutFixture.dbFile, "workflow_events", `event_type='workflow.archive.checkpoint.recorded' AND workflow_id='${closeoutFixture.workflowId}'`)
+  };
+  const archiveHumanGate = await runAction(closeoutFixture.root, {
+    action: "human_gate.resume",
+    token: archiveTerminateButton.callbackToken,
+    text: "闪电猫原话：确认 v2 archive 分支归档。"
+  });
+  assert.equal(archiveHumanGate.workflowDecision.archived, true);
+  assert.equal(archiveHumanGate.archiveCheckpointPath, "workflow.archive.checkpoint");
+  assert.equal(archiveHumanGate.archiveCheckpoint.schemaVersion, "workflow_archive_checkpoint_result.v1");
+  assert.equal(archiveHumanGate.archiveCheckpoint.planId, "plan-v2-kernel");
+  assert.equal(archiveHumanGate.archiveCheckpoint.humanGateId, "hg-v2-archive-retarget");
+  assert.equal(archiveHumanGate.closeoutDispatches.length, 2);
+  assert.deepEqual(new Set(archiveHumanGate.closeoutDispatches.map((item) => item.agentId)), new Set(["main", "cat_claw"]));
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"), archiveHumanGateCountsBefore.checkpoints + 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints", `checkpoint_id='${archiveHumanGate.archiveCheckpoint.checkpointId}' AND decision='human_gate_archived_complete'`), 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches") >= archiveHumanGateCountsBefore.dispatches + 1, true);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_runs"), archiveHumanGateCountsBefore.workflowRuns);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_tasks"), archiveHumanGateCountsBefore.workflowTasks);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_events", `event_type='workflow.archive.checkpoint.recorded' AND workflow_id='${closeoutFixture.workflowId}'`), archiveHumanGateCountsBefore.archiveEvents + 1);
+
   await assertRejectsMessage(
     () => runAction(closeoutFixture.root, {
       action: "workflow.supervisor.closeout",
@@ -5992,6 +6229,14 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   });
   assert.equal(checkpointDenied.allowed, false);
   assert.equal(checkpointDenied.reason, "missing_capability:workflow.checkpoint");
+  const archiveCheckpointDenied = await runAction(closeoutFixture.root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.archive.checkpoint",
+    callerAgent: "cat_body",
+    callerRuntime: "hermers"
+  });
+  assert.equal(archiveCheckpointDenied.allowed, false);
+  assert.equal(archiveCheckpointDenied.reason, "missing_capability:workflow.checkpoint");
   await runAction(closeoutFixture.root, {
     action: "runtime.agent.upsert",
     runtime: "openclaw",
@@ -5999,6 +6244,14 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     agentId: "main",
     capabilities: { permissions: ["workflow.checkpoint"] }
   });
+  const archiveCheckpointAllowed = await runAction(closeoutFixture.root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.archive.checkpoint",
+    callerAgent: "main",
+    callerRuntime: "openclaw"
+  });
+  assert.equal(archiveCheckpointAllowed.allowed, true);
+  assert.equal(archiveCheckpointAllowed.requiredCapability, "workflow.checkpoint");
   const checkpointCountsBefore = {
     artifactIndex: sqliteCount(closeoutFixture.dbFile, "artifact_index"),
     checkpoints: sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"),
@@ -6009,10 +6262,22 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     outbox: sqliteCount(closeoutFixture.dbFile, "telegram_outbox"),
     workflowTasks: sqliteCount(closeoutFixture.dbFile, "workflow_tasks"),
     workflowRuns: sqliteCount(closeoutFixture.dbFile, "workflow_runs"),
-    events: sqliteCount(closeoutFixture.dbFile, "workflow_events"),
+    supervisorCheckpointEvents: sqliteCount(closeoutFixture.dbFile, "workflow_events", `event_type='workflow.supervisor.checkpoint.recorded' AND workflow_id='${closeoutFixture.workflowId}'`),
     planCompleted: sqliteCount(closeoutFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND status='completed' AND workflow_state='completed'"),
     nodesCompleted: sqliteCount(closeoutFixture.dbFile, "workflow_v2_plan_nodes", `workflow_id='${closeoutFixture.workflowId}' AND status='completed'`)
   };
+  await assert.rejects(
+    () => runAction(closeoutFixture.root, {
+      action: "workflow.supervisor.checkpoint",
+      workflowId: closeoutFixture.workflowId,
+      callerAgent: "main",
+      createdBy: "main"
+    }),
+    /workflow supervisor checkpoint requires planId/
+  );
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints"), checkpointCountsBefore.checkpoints);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index"), checkpointCountsBefore.artifactIndex);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_events", `event_type='workflow.supervisor.checkpoint.recorded' AND workflow_id='${closeoutFixture.workflowId}'`), checkpointCountsBefore.supervisorCheckpointEvents);
   const checkpointExecution = await runAction(closeoutFixture.root, {
     action: "workflow.supervisor.checkpoint",
     workflowId: closeoutFixture.workflowId,
@@ -6038,7 +6303,7 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(checkpointExecution.resumePayload.nextActions.includes("workflow.supervisor.closeout"), true);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints", `checkpoint_id='${checkpointExecution.checkpointId}' AND workflow_id='${closeoutFixture.workflowId}' AND decision='cat_claw_summary_required'`), 1);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index", `artifact_id='${checkpointExecution.checkpointId}' AND kind='workflow_checkpoint'`), 1);
-  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_events", `event_type='workflow.supervisor.checkpoint.recorded' AND workflow_id='${closeoutFixture.workflowId}'`), checkpointCountsBefore.events + 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_events", `event_type='workflow.supervisor.checkpoint.recorded' AND workflow_id='${closeoutFixture.workflowId}'`), checkpointCountsBefore.supervisorCheckpointEvents + 1);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"), checkpointCountsBefore.dispatches);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"), checkpointCountsBefore.humanGateRecords);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "protocol_objects", "object_type='workflow_v2_closeout_record'"), checkpointCountsBefore.closeoutRecords);
@@ -16301,17 +16566,14 @@ async function testSessionExtractedActionContracts() {
 async function testCheckpointExtractedActionContracts() {
   const expectedHandlers = {
     "workflow.checkpoint": "workflowCheckpoint",
-    "workflow.context_checkpoint": "workflowCheckpoint",
-    "context.checkpoint": "workflowCheckpoint"
+    "workflow.checkpoint.legacy_export": "workflowCheckpointLegacyExport",
+    "workflow.checkpoint.legacy_alias": "workflowCheckpointLegacyAlias"
   };
   for (const [action, handlerName] of Object.entries(expectedHandlers)) {
     assert.equal(CHECKPOINT_ACTION_REGISTRY.has(action), true, `${action} should be registered in the extracted checkpoint registry`);
     assert.equal(CHECKPOINT_ACTION_HANDLER_NAMES[action], handlerName, `${action} should map to the extracted ${handlerName} handler`);
   }
   assert.equal(typeof workflowCheckpoint, "function");
-  const directRegistry = createCheckpointActionRegistry({ workflowCheckpoint });
-  assert.equal(directRegistry.get("workflow.context_checkpoint"), workflowCheckpoint);
-  assert.equal(directRegistry.get("context.checkpoint"), workflowCheckpoint);
   assert.throws(() => createCheckpointActionHandlers({}), /checkpoint action dependency missing: ensureWorkflowLayout/);
   assert.throws(
     () => createCheckpointActionHandlers({
@@ -16343,6 +16605,190 @@ async function testCheckpointExtractedActionContracts() {
     writeTextArtifact: async () => "checkpoints/test.md"
   });
   assert.equal(typeof directHandlers.workflowCheckpoint, "function");
+  assert.equal(typeof directHandlers.workflowCheckpointLegacyExport, "function");
+  assert.equal(typeof directHandlers.workflowCheckpointLegacyAlias, "function");
+  const directRegistry = createCheckpointActionRegistry(directHandlers);
+  assert.equal(directRegistry.get("workflow.checkpoint"), directHandlers.workflowCheckpoint);
+  assert.equal(directRegistry.get("workflow.checkpoint.legacy_export"), directHandlers.workflowCheckpointLegacyExport);
+  assert.equal(directRegistry.get("workflow.checkpoint.legacy_alias"), directHandlers.workflowCheckpointLegacyAlias);
+  const legacyCheckpointCli = workflowCliToAction(parseWorkflowCliArgv([
+    "workflow-checkpoint",
+    "--root", "/tmp/workflow-checkpoint-cli-root",
+    "--workflow", "wf-cli-legacy",
+    "--summary", "legacy compatibility checkpoint"
+  ]));
+  assert.equal(legacyCheckpointCli.input.action, "workflow.checkpoint.legacy_export");
+  assert.equal(legacyCheckpointCli.input.sourceClass, "legacy_compat_checkpoint");
+  assert.equal(legacyCheckpointCli.input.workflowId, "wf-cli-legacy");
+  const v2CheckpointCli = workflowCliToAction(parseWorkflowCliArgv([
+    "workflow-checkpoint",
+    "--root", "/tmp/workflow-checkpoint-cli-root",
+    "--workflow", "wf-cli-v2",
+    "--source-class", "v2_plan_checkpoint",
+    "--plan", "plan-cli-v2",
+    "--summary", "v2 plan checkpoint"
+  ]));
+  assert.equal(v2CheckpointCli.input.action, "workflow.supervisor.checkpoint");
+  assert.equal(v2CheckpointCli.input.sourceClass, "v2_plan_checkpoint");
+  assert.equal(v2CheckpointCli.input.planId, "plan-cli-v2");
+  const archiveCheckpointCli = workflowCliToAction(parseWorkflowCliArgv([
+    "workflow-checkpoint",
+    "--root", "/tmp/workflow-checkpoint-cli-root",
+    "--workflow", "wf-cli-archive",
+    "--source-class", "human_gate_archive_checkpoint",
+    "--plan", "plan-cli-archive",
+    "--human-gate", "hgate-cli-archive",
+    "--button", "button-archive",
+    "--decision-status", "archived"
+  ]));
+  assert.equal(archiveCheckpointCli.input.action, "workflow.archive.checkpoint");
+  assert.equal(archiveCheckpointCli.input.sourceClass, "human_gate_archive_checkpoint");
+  assert.equal(archiveCheckpointCli.input.humanGateId, "hgate-cli-archive");
+  assert.equal(archiveCheckpointCli.input.buttonId, "button-archive");
+  assert.throws(
+    () => workflowCliToAction(parseWorkflowCliArgv([
+      "workflow-checkpoint",
+      "--root", "/tmp/workflow-checkpoint-cli-root",
+      "--workflow", "wf-cli-v2-missing-plan",
+      "--source-class", "v2_plan_checkpoint"
+    ])),
+    /requires --plan/
+  );
+  assert.throws(
+    () => workflowCliToAction(parseWorkflowCliArgv([
+      "workflow-checkpoint",
+      "--root", "/tmp/workflow-checkpoint-cli-root",
+      "--workflow", "wf-cli-archive-missing",
+      "--source-class", "human_gate_archive_checkpoint",
+      "--plan", "plan-cli-archive"
+    ])),
+    /requires --human-gate, --button/
+  );
+  const cliSymlinkRoot = await tempRoot("workflow-checkpoint-cli-symlink");
+  const cliSymlinkPath = path.join(cliSymlinkRoot, "trading-agents-workflow-symlink.mjs");
+  await fs.symlink(path.resolve("bin/cat-meeting-governance.mjs"), cliSymlinkPath);
+  const symlinkOutput = execFileSync("node", [cliSymlinkPath, "status", "--root", cliSymlinkRoot], { encoding: "utf8" }).trim();
+  const symlinkStatus = JSON.parse(symlinkOutput);
+  assert.equal(symlinkStatus.schemaVersion, 8);
+  assert.equal(symlinkStatus.root, cliSymlinkRoot);
+  const registeredCheckpointCommand = {
+    name: "",
+    options: [],
+    handler: null,
+    requiredOption(flag) {
+      this.options.push({ required: true, flag });
+      return this;
+    },
+    option(flag) {
+      this.options.push({ required: false, flag });
+      return this;
+    },
+    action(handler) {
+      this.handler = handler;
+      return this;
+    }
+  };
+  const fakeProgram = {
+    command(name) {
+      registeredCheckpointCommand.name = name;
+      return registeredCheckpointCommand;
+    }
+  };
+  const pluginCliCalls = [];
+  registerWorkflowCheckpointCliCommand(fakeProgram, {
+    commandRoot: (options) => options.root || "/tmp/workflow-plugin-cli-root",
+    runAction: async (rootDir, input) => {
+      pluginCliCalls.push({ rootDir, input });
+      return { ok: true, rootDir, input };
+    }
+  });
+  assert.equal(registeredCheckpointCommand.name, "workflow-checkpoint");
+  assert.equal(registeredCheckpointCommand.options.some((option) => option.flag === "--source-class <class>"), true);
+  assert.equal(registeredCheckpointCommand.options.some((option) => option.flag === "--decision-status <status>"), true);
+  assert.equal(typeof registeredCheckpointCommand.handler, "function");
+  const originalConsoleLog = console.log;
+  try {
+    console.log = () => {};
+    await registeredCheckpointCommand.handler({
+      root: "/tmp/workflow-plugin-cli-root",
+      workflow: "wf-plugin-cli-archive",
+      sourceClass: "human_gate_archive_checkpoint",
+      plan: "plan-plugin-cli-archive",
+      humanGate: "hgate-plugin-cli-archive",
+      button: "button-plugin-cli-archive",
+      decisionStatus: "archived",
+      nextAction: ["continue_archive_closeout"]
+    });
+  } finally {
+    console.log = originalConsoleLog;
+  }
+  assert.equal(pluginCliCalls.length, 1);
+  assert.equal(pluginCliCalls[0].rootDir, "/tmp/workflow-plugin-cli-root");
+  assert.equal(pluginCliCalls[0].input.action, "workflow.archive.checkpoint");
+  assert.equal(pluginCliCalls[0].input.sourceClass, "human_gate_archive_checkpoint");
+  assert.equal(pluginCliCalls[0].input.planId, "plan-plugin-cli-archive");
+  assert.equal(pluginCliCalls[0].input.humanGateId, "hgate-plugin-cli-archive");
+  assert.equal(pluginCliCalls[0].input.buttonId, "button-plugin-cli-archive");
+  const aliasFreshRoot = await tempRoot("checkpoint-alias-fresh-root");
+  const aliasFreshRootDb = path.join(aliasFreshRoot, "workflow_control_plane.db");
+  const aliasFreshRootArtifacts = path.join(aliasFreshRoot, "artifacts");
+  await fs.rm(aliasFreshRoot, { recursive: true, force: true });
+  const freshAliasBlocked = await runAction(aliasFreshRoot, {
+    action: "workflow.context_checkpoint",
+    workflowId: "wf-fresh-alias",
+    checkpointId: "checkpoint-fresh-alias"
+  });
+  assert.equal(freshAliasBlocked.status, "blocked");
+  assert.equal(freshAliasBlocked.didInitializeLayout, false);
+  assert.equal(await pathExists(aliasFreshRootDb), false);
+  assert.equal(await pathExists(aliasFreshRootArtifacts), false);
+
+  const bareCheckpointFreshRoot = await tempRoot("checkpoint-bare-fresh-root");
+  const bareCheckpointFreshRootDb = path.join(bareCheckpointFreshRoot, "workflow_control_plane.db");
+  const bareCheckpointFreshRootArtifacts = path.join(bareCheckpointFreshRoot, "artifacts");
+  await fs.rm(bareCheckpointFreshRoot, { recursive: true, force: true });
+  const freshBareCheckpointBlocked = await runAction(bareCheckpointFreshRoot, {
+    action: "workflow.checkpoint",
+    workflowId: "wf-fresh-bare",
+    checkpointId: "checkpoint-fresh-bare"
+  });
+  assert.equal(freshBareCheckpointBlocked.status, "blocked");
+  assert.equal(freshBareCheckpointBlocked.reason, "legacy_checkpoint_writer_frozen");
+  assert.equal(freshBareCheckpointBlocked.didInitializeLayout, false);
+  assert.equal(await pathExists(bareCheckpointFreshRootDb), false);
+  assert.equal(await pathExists(bareCheckpointFreshRootArtifacts), false);
+
+  const unsupportedCheckpointFreshRoot = await tempRoot("checkpoint-unsupported-fresh-root");
+  const unsupportedCheckpointFreshRootDb = path.join(unsupportedCheckpointFreshRoot, "workflow_control_plane.db");
+  const unsupportedCheckpointFreshRootArtifacts = path.join(unsupportedCheckpointFreshRoot, "artifacts");
+  await fs.rm(unsupportedCheckpointFreshRoot, { recursive: true, force: true });
+  const freshUnsupportedCheckpointBlocked = await runAction(unsupportedCheckpointFreshRoot, {
+    action: "workflow.checkpoint",
+    sourceClass: "v2_plan_checkpoint",
+    workflowId: "wf-fresh-unsupported",
+    checkpointId: "checkpoint-fresh-unsupported"
+  });
+  assert.equal(freshUnsupportedCheckpointBlocked.status, "blocked");
+  assert.equal(freshUnsupportedCheckpointBlocked.reason, "legacy_checkpoint_writer_frozen");
+  assert.equal(freshUnsupportedCheckpointBlocked.didInitializeLayout, false);
+  assert.equal(await pathExists(unsupportedCheckpointFreshRootDb), false);
+  assert.equal(await pathExists(unsupportedCheckpointFreshRootArtifacts), false);
+
+  const legacyExportFreshRoot = await tempRoot("checkpoint-legacy-export-fresh-root");
+  const legacyExportFreshRootDb = path.join(legacyExportFreshRoot, "workflow_control_plane.db");
+  const legacyExportFreshRootArtifacts = path.join(legacyExportFreshRoot, "artifacts");
+  await fs.rm(legacyExportFreshRoot, { recursive: true, force: true });
+  const freshLegacyExport = await runAction(legacyExportFreshRoot, {
+    action: "workflow.checkpoint.legacy_export",
+    sourceClass: "legacy_compat_checkpoint",
+    workflowId: "wf-fresh-legacy-export",
+    checkpointId: "checkpoint-fresh-legacy-export"
+  });
+  assert.equal(freshLegacyExport.status, "missing_db");
+  assert.equal(freshLegacyExport.didInitializeLayout, false);
+  assert.equal(freshLegacyExport.didWriteCheckpoint, false);
+  assert.equal(await pathExists(legacyExportFreshRootDb), false);
+  assert.equal(await pathExists(legacyExportFreshRootArtifacts), false);
 
   const root = await tempRoot("checkpoint-extracted-contracts");
   const workflowId = "workflow-checkpoint-extracted";
@@ -16379,7 +16825,11 @@ async function testCheckpointExtractedActionContracts() {
 INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
 VALUES ('artifact-checkpoint-evidence', '${workflowId}', 'evidence', 'artifact://checkpoint-evidence', 'Checkpoint evidence', 'local_codex', '2099-01-01T00:00:01.000Z');`);
 
-  const checkpoint = await runAction(root, {
+  const aliasCountsBefore = {
+    checkpoints: sqliteCount(dbFile, "workflow_checkpoints"),
+    artifacts: sqliteCount(dbFile, "artifact_index")
+  };
+  const contextAliasBlocked = await runAction(root, {
     action: "workflow.context_checkpoint",
     workflowId,
     checkpointId: "checkpoint-extracted",
@@ -16390,44 +16840,17 @@ VALUES ('artifact-checkpoint-evidence', '${workflowId}', 'evidence', 'artifact:/
     restorePolicy: "load_checkpoint_only",
     createdBy: "local_codex"
   });
-  assert.equal(checkpoint.checkpointId, "checkpoint-extracted");
-  assert.equal(checkpoint.workflowId, workflowId);
-  assert.equal(checkpoint.status, "active");
-  assert.equal(checkpoint.resumePayload.counts.activeTasks, 1);
-  assert.equal(checkpoint.resumePayload.counts.blockedTasks, 1);
-  assert.equal(checkpoint.resumePayload.activeTaskIds.includes("task-checkpoint-active"), true);
-  assert.equal(checkpoint.resumePayload.blockedTaskIds.includes("task-checkpoint-blocked"), true);
-  assert.equal(checkpoint.resumePayload.artifactRefs.includes("artifact://checkpoint-evidence"), true);
-  assert.equal(checkpoint.resumePayload.artifactRefs.includes("artifact://task-checkpoint-active"), true);
-  assert.equal(checkpoint.relativePath.includes("checkpoint-extracted"), true);
-  assert.equal(checkpoint.jsonRelativePath.includes("checkpoint-extracted"), true);
+  assert.equal(contextAliasBlocked.action, "workflow.checkpoint.legacy_alias");
+  assert.equal(contextAliasBlocked.requestedAction, "workflow.context_checkpoint");
+  assert.equal(contextAliasBlocked.status, "blocked");
+  assert.equal(contextAliasBlocked.reason, "ambiguous_context_checkpoint_alias_retired");
+  assert.equal(contextAliasBlocked.didWriteCheckpoint, false);
+  assert.equal(contextAliasBlocked.replacements.some((item) => item.sourceClass === "v2_plan_checkpoint"), true);
+  assert.equal(contextAliasBlocked.replacements.some((item) => item.sourceClass === "legacy_compat_checkpoint"), true);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints"), aliasCountsBefore.checkpoints);
+  assert.equal(sqliteCount(dbFile, "artifact_index"), aliasCountsBefore.artifacts);
 
-  const row = sqliteJson(dbFile, `
-SELECT active_tasks_json AS activeTasksJson, blocked_tasks_json AS blockedTasksJson,
-  artifact_refs_json AS artifactRefsJson, next_actions_json AS nextActionsJson,
-  context_budget_json AS contextBudgetJson, path, created_by AS createdBy
-FROM workflow_checkpoints
-WHERE checkpoint_id='checkpoint-extracted'
-LIMIT 1;`)[0];
-  assert.equal(Boolean(row), true);
-  assert.equal(row.createdBy, "local_codex");
-  assert.equal(row.path, checkpoint.relativePath);
-  assert.equal(JSON.parse(row.activeTasksJson).some((task) => task.task_id === "task-checkpoint-active"), true);
-  assert.equal(JSON.parse(row.blockedTasksJson).some((task) => task.task_id === "task-checkpoint-blocked"), true);
-  assert.equal(JSON.parse(row.artifactRefsJson).some((artifact) => artifact.path === "artifact://checkpoint-evidence"), true);
-  assert.deepEqual(JSON.parse(row.nextActionsJson), ["continue_active_task", "resolve_blocked_task"]);
-  assert.equal(JSON.parse(row.contextBudgetJson).tokenBudget, 2048);
-  assert.equal(JSON.parse(row.contextBudgetJson).compactAtPercent, 65);
-  assert.equal(JSON.parse(row.contextBudgetJson).restorePolicy, "load_checkpoint_only");
-  assert.equal(sqliteCount(dbFile, "artifact_index", "artifact_id='checkpoint-extracted' AND kind='workflow_checkpoint'"), 1);
-
-  const markdown = await fs.readFile(path.join(root, checkpoint.relativePath), "utf8");
-  const json = JSON.parse(await fs.readFile(path.join(root, checkpoint.jsonRelativePath), "utf8"));
-  assert.equal(markdown.includes("Extracted checkpoint action contract."), true);
-  assert.equal(json.activeTasks.some((task) => task.task_id === "task-checkpoint-active"), true);
-  assert.equal(json.blockedTasks.some((task) => task.task_id === "task-checkpoint-blocked"), true);
-
-  const coreAliasCheckpoint = await runAction(root, {
+  const coreAliasBlocked = await runAction(root, {
     action: "context.checkpoint",
     workflowId,
     checkpointId: "checkpoint-extracted-core-alias",
@@ -16435,18 +16858,110 @@ LIMIT 1;`)[0];
     nextActions: ["core_alias_checkpoint"],
     createdBy: "local_codex"
   });
-  assert.equal(coreAliasCheckpoint.checkpointId, "checkpoint-extracted-core-alias");
-  assert.equal(coreAliasCheckpoint.workflowId, workflowId);
+  assert.equal(coreAliasBlocked.action, "workflow.checkpoint.legacy_alias");
+  assert.equal(coreAliasBlocked.requestedAction, "context.checkpoint");
+  assert.equal(coreAliasBlocked.status, "blocked");
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints"), aliasCountsBefore.checkpoints);
+
+  const bareLegacyCheckpointBlocked = await runAction(root, {
+    action: "workflow.checkpoint",
+    workflowId,
+    checkpointId: "checkpoint-extracted-bare",
+    summary: "Bare legacy checkpoint should be blocked.",
+    createdBy: "local_codex"
+  });
+  assert.equal(bareLegacyCheckpointBlocked.action, "workflow.checkpoint");
+  assert.equal(bareLegacyCheckpointBlocked.status, "blocked");
+  assert.equal(bareLegacyCheckpointBlocked.reason, "legacy_checkpoint_writer_frozen");
+  assert.equal(bareLegacyCheckpointBlocked.didWriteCheckpoint, false);
+  assert.equal(bareLegacyCheckpointBlocked.didInitializeLayout, false);
+  assert.equal(bareLegacyCheckpointBlocked.replacements.some((item) => item.action === "workflow.checkpoint.legacy_export"), true);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints"), aliasCountsBefore.checkpoints);
+
+  const unsupportedLegacyCheckpointBlocked = await runAction(root, {
+    action: "workflow.checkpoint",
+    sourceClass: "v2_plan_checkpoint",
+    workflowId,
+    checkpointId: "checkpoint-extracted-wrong-source",
+    summary: "Unsupported source class should be blocked.",
+    createdBy: "local_codex"
+  });
+  assert.equal(unsupportedLegacyCheckpointBlocked.status, "blocked");
+  assert.equal(unsupportedLegacyCheckpointBlocked.reason, "legacy_checkpoint_writer_frozen");
+  assert.equal(unsupportedLegacyCheckpointBlocked.didInitializeLayout, false);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints"), aliasCountsBefore.checkpoints);
+
+  const legacyExport = await runAction(root, {
+    action: "workflow.checkpoint.legacy_export",
+    sourceClass: "legacy_compat_checkpoint",
+    workflowId,
+    checkpointId: "checkpoint-extracted-legacy-export",
+    summary: "Read-only legacy checkpoint export.",
+    nextActions: ["legacy_export_only"],
+    createdBy: "local_codex"
+  });
+  assert.equal(legacyExport.status, "exported");
+  assert.equal(legacyExport.workflowId, workflowId);
+  assert.equal(legacyExport.legacyCheckpointId, "checkpoint-extracted-legacy-export");
+  assert.equal(legacyExport.checkpointId, "");
+  assert.equal(legacyExport.didWriteCheckpoint, false);
+  assert.equal(legacyExport.didWriteArtifact, false);
+  assert.equal(legacyExport.didInitializeLayout, false);
+  assert.equal(legacyExport.resumePayload.nextActions.includes("legacy_export_only"), true);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints"), aliasCountsBefore.checkpoints);
+  assert.equal(sqliteCount(dbFile, "artifact_index"), aliasCountsBefore.artifacts);
+
+  const checkpoint = await runAction(root, {
+    action: "workflow.checkpoint",
+    sourceClass: "legacy_compat_checkpoint",
+    workflowId,
+    checkpointId: "checkpoint-extracted",
+    summary: "Extracted checkpoint action contract.",
+    nextActions: ["continue_active_task", "resolve_blocked_task"],
+    tokenBudget: 2048,
+    compactAtPercent: 65,
+    restorePolicy: "load_checkpoint_only",
+    createdBy: "local_codex"
+  });
+  assert.equal(checkpoint.status, "blocked");
+  assert.equal(checkpoint.reason, "legacy_checkpoint_writer_frozen");
+  assert.equal(checkpoint.didWriteCheckpoint, false);
+  assert.equal(checkpoint.didWriteArtifact, false);
+  assert.equal(checkpoint.didInitializeLayout, false);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints"), aliasCountsBefore.checkpoints);
+  assert.equal(sqliteCount(dbFile, "artifact_index"), aliasCountsBefore.artifacts);
+
+  for (const sourceClass of [
+    "legacy_checkpoint",
+    "legacy",
+    "legacy_supervise_escape_hatch_checkpoint",
+    "human_gate_archive_legacy_fallback_checkpoint"
+  ]) {
+    const sourceCheckpoint = await runAction(root, {
+      action: "workflow.checkpoint",
+      sourceClass,
+      workflowId,
+      checkpointId: `checkpoint-extracted-${sourceClass}`,
+      summary: `Accepted source class ${sourceClass}.`,
+      nextActions: [`source_class_${sourceClass}`],
+      createdBy: "local_codex"
+    });
+    assert.equal(sourceCheckpoint.status, "blocked");
+    assert.equal(sourceCheckpoint.reason, "legacy_checkpoint_writer_frozen");
+    assert.equal(sourceCheckpoint.didWriteCheckpoint, false);
+  }
 
   const directExportCheckpoint = await workflowCheckpoint(root, {
+    sourceClass: "legacy_compat_checkpoint",
     workflowId,
     checkpointId: "checkpoint-extracted-direct-export",
     summary: "Direct export checkpoint contract.",
     nextActions: ["direct_export_checkpoint"],
     createdBy: "local_codex"
   });
-  assert.equal(directExportCheckpoint.checkpointId, "checkpoint-extracted-direct-export");
-  assert.equal(directExportCheckpoint.workflowId, workflowId);
+  assert.equal(directExportCheckpoint.status, "blocked");
+  assert.equal(directExportCheckpoint.reason, "legacy_checkpoint_writer_frozen");
+  assert.equal(directExportCheckpoint.didWriteCheckpoint, false);
 
   const supervised = await runAction(root, {
     action: "workflow.supervise",
@@ -16459,9 +16974,13 @@ LIMIT 1;`)[0];
     nextActions: ["supervisor_checkpoint"]
   });
   assert.equal(supervised.checkpoint.workflowId, workflowId);
+  assert.equal(supervised.checkpointPath, "workflow.checkpoint.legacy_export.legacy_supervise_escape_hatch");
+  assert.equal(supervised.checkpoint.status, "exported");
+  assert.equal(supervised.checkpoint.didWriteCheckpoint, false);
   assert.equal(supervised.checkpoint.resumePayload.nextActions.includes("supervisor_checkpoint"), true);
-  assert.equal(sqliteCount(dbFile, "workflow_checkpoints", "checkpoint_id IN ('checkpoint-extracted', 'checkpoint-extracted-core-alias', 'checkpoint-extracted-direct-export')"), 3);
-  assert.equal(sqliteCount(dbFile, "workflow_checkpoints", "summary='Supervisor direct caller checkpoint contract.'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints", "checkpoint_id IN ('checkpoint-extracted', 'checkpoint-extracted-core-alias', 'checkpoint-extracted-direct-export')"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints", "checkpoint_id LIKE 'checkpoint-extracted-legacy%' OR checkpoint_id='checkpoint-extracted-human_gate_archive_legacy_fallback_checkpoint'"), 0);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints", "summary='Supervisor direct caller checkpoint contract.'"), 0);
 
   const archiveRequest = await requestHumanGate(root, {
     workflowId,
@@ -16477,9 +16996,12 @@ LIMIT 1;`)[0];
     text: "闪电猫原话：确认该 checkpoint 抽取测试归档收口。"
   });
   assert.equal(archived.workflowDecision.archived, true);
+  assert.equal(archived.archiveCheckpointPath, "workflow.checkpoint.legacy_export.human_gate_archive_fallback");
+  assert.equal(archived.archiveCheckpoint.status, "exported");
+  assert.equal(archived.archiveCheckpoint.didWriteCheckpoint, false);
   assert.equal(archived.archiveCheckpoint.workflowId, workflowId);
   assert.equal(archived.archiveCheckpoint.resumePayload.nextActions.includes("cat_brain main closes workflow state, confirms no pending unsafe side effects remain, and records resume boundary."), true);
-  assert.equal(sqliteCount(dbFile, "workflow_checkpoints", "summary LIKE 'Flashcat selected Human Gate closeout button:%'"), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_checkpoints", "summary LIKE 'Flashcat selected Human Gate closeout button:%'"), 0);
 }
 
 async function testMessageFlowRuntimeBridge() {
@@ -20012,6 +20534,9 @@ async function testWorkflowActionPolicyRegistryCoverage() {
   const indexSource = await fs.readFile(path.resolve("index.js"), "utf8");
   assert.equal((indexSource.match(/"workflow\.supervisor\.checkpoint"/g) || []).length >= 2, true);
   assert.equal(indexSource.includes('"workflow.supervisor.checkpoint.preview"'), true);
+  assert.equal(indexSource.includes('"workflow.archive.checkpoint"'), true);
+  assert.equal(indexSource.includes('"workflow.archive.checkpoint.preview"'), true);
+  assert.equal(indexSource.includes("registerWorkflowCheckpointCliCommand(command"), true);
   assert.equal((indexSource.match(/"workflow\.supervisor\.closeout"/g) || []).length >= 2, true);
   assert.equal(indexSource.includes('"workflow.supervisor.closeout.preview"'), true);
 }

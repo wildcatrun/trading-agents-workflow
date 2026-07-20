@@ -6,12 +6,24 @@ import {
   sqlValue,
   sqlite
 } from "./workflow/sqlite.js";
+import {
+  fileExistsSync,
+  workflowPaths
+} from "./workflow/paths.js";
 
 export const CHECKPOINT_ACTION_HANDLER_NAMES = {
   "workflow.checkpoint": "workflowCheckpoint",
-  "workflow.context_checkpoint": "workflowCheckpoint",
-  "context.checkpoint": "workflowCheckpoint"
+  "workflow.checkpoint.legacy_export": "workflowCheckpointLegacyExport",
+  "workflow.checkpoint.legacy_alias": "workflowCheckpointLegacyAlias"
 };
+
+const LEGACY_CHECKPOINT_SOURCE_CLASSES = new Set([
+  "legacy_compat_checkpoint",
+  "legacy_checkpoint",
+  "legacy",
+  "legacy_supervise_escape_hatch_checkpoint",
+  "human_gate_archive_legacy_fallback_checkpoint"
+]);
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -27,6 +39,91 @@ function numberOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+export function workflowCheckpointSourceClass(input = {}) {
+  return String(input.sourceClass || input.source_class || "").trim().replace(/-/g, "_");
+}
+
+function workflowCheckpointSourceRequiredDiagnostic(rootDir, input = {}) {
+  const requestedAction = String(input.requestedAction || input.action || "workflow.checkpoint").trim();
+  const sourceClass = workflowCheckpointSourceClass(input);
+  return {
+    schemaVersion: "workflow_checkpoint_source_required_result.v1",
+    action: "workflow.checkpoint",
+    requestedAction,
+    sourceClass,
+    status: "blocked",
+    allowed: false,
+    mutating: false,
+    writeBlocked: true,
+    reason: sourceClass ? "unsupported_legacy_checkpoint_source_class" : "legacy_checkpoint_source_class_required",
+    message: sourceClass
+      ? "workflow.checkpoint only accepts explicit legacy compatibility source classes."
+      : "workflow.checkpoint requires an explicit legacy compatibility source class.",
+    acceptedSourceClasses: [...LEGACY_CHECKPOINT_SOURCE_CLASSES].sort(),
+    replacements: [
+      {
+        sourceClass: "v2_plan_checkpoint",
+        action: "workflow.supervisor.checkpoint",
+        cli: "workflow-checkpoint --workflow <id> --source-class v2_plan_checkpoint --plan <id>"
+      },
+      {
+        sourceClass: "human_gate_archive_checkpoint",
+        action: "workflow.archive.checkpoint",
+        cli: "workflow-checkpoint --workflow <id> --source-class human_gate_archive_checkpoint --plan <id> --human-gate <id> --button <id>"
+      },
+      {
+        sourceClass: "legacy_compat_checkpoint",
+        action: "workflow.checkpoint.legacy_export",
+        cli: "workflow-checkpoint --workflow <id> --source-class legacy_compat_checkpoint"
+      }
+    ],
+    didWriteCheckpoint: false,
+    didWriteArtifact: false,
+    didUpdateArtifactIndex: false,
+    didInitializeLayout: false,
+    rootDir: String(rootDir || "")
+  };
+}
+
+function workflowCheckpointFrozenDiagnostic(rootDir, input = {}) {
+  const requestedAction = String(input.requestedAction || input.action || "workflow.checkpoint").trim();
+  const sourceClass = workflowCheckpointSourceClass(input);
+  return {
+    schemaVersion: "workflow_checkpoint_frozen_result.v1",
+    action: "workflow.checkpoint",
+    requestedAction,
+    sourceClass,
+    status: "blocked",
+    allowed: false,
+    mutating: false,
+    writeBlocked: true,
+    reason: "legacy_checkpoint_writer_frozen",
+    message: "workflow.checkpoint mutating writer is frozen; use v2/shared checkpoint writers or workflow.checkpoint.legacy_export for read-only legacy recovery inspection.",
+    replacements: [
+      {
+        sourceClass: "v2_plan_checkpoint",
+        action: "workflow.supervisor.checkpoint",
+        cli: "workflow-checkpoint --workflow <id> --source-class v2_plan_checkpoint --plan <id>"
+      },
+      {
+        sourceClass: "human_gate_archive_checkpoint",
+        action: "workflow.archive.checkpoint",
+        cli: "workflow-checkpoint --workflow <id> --source-class human_gate_archive_checkpoint --plan <id> --human-gate <id> --button <id>"
+      },
+      {
+        sourceClass: "legacy_compat_checkpoint",
+        action: "workflow.checkpoint.legacy_export",
+        cli: "workflow-checkpoint --workflow <id> --source-class legacy_compat_checkpoint"
+      }
+    ],
+    didWriteCheckpoint: false,
+    didWriteArtifact: false,
+    didUpdateArtifactIndex: false,
+    didInitializeLayout: false,
+    rootDir: String(rootDir || "")
+  };
 }
 
 function renderWorkflowCheckpointMarkdown(record) {
@@ -72,9 +169,47 @@ ${record.nextActions.length ? record.nextActions.map(actionLine).join("\n") : "-
 }
 
 async function workflowCheckpointCore(paths, input = {}, helpers = {}) {
-  const pendingHumanGateCount = requireContextFunction(helpers, "pendingHumanGateCount");
   const writeJsonArtifact = requireContextFunction(helpers, "writeJsonArtifact");
   const writeTextArtifact = requireContextFunction(helpers, "writeTextArtifact");
+  const record = await collectWorkflowCheckpointRecord(paths, input, helpers);
+  const jsonRelPath = await writeJsonArtifact(paths.root, paths.checkpointsDir, record.checkpointId, record);
+  const markdownRelPath = await writeTextArtifact(paths.root, paths.checkpointsDir, record.checkpointId, "md", renderWorkflowCheckpointMarkdown(record));
+  await sqlite(paths.dbFile, `
+INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
+VALUES (${sqlValue(record.checkpointId)}, ${sqlValue(record.workflowId)}, ${sqlValue(record.status)}, ${sqlValue(record.phase)}, ${sqlValue(record.decision)}, ${sqlValue(record.summary)}, ${sqlValue(JSON.stringify(record.resumePayload))}, ${sqlValue(JSON.stringify(record.activeTasks))}, ${sqlValue(JSON.stringify(record.blockedTasks))}, ${sqlValue(JSON.stringify(record.artifactRefs))}, ${sqlValue(JSON.stringify(record.nextActions))}, ${sqlValue(JSON.stringify(record.contextBudget))}, ${sqlValue(markdownRelPath)}, ${sqlValue(record.createdBy)}, ${sqlValue(record.createdAt)})
+ON CONFLICT(checkpoint_id) DO UPDATE SET
+  status=excluded.status,
+  phase=excluded.phase,
+  decision=excluded.decision,
+  summary=excluded.summary,
+  resume_payload_json=excluded.resume_payload_json,
+  active_tasks_json=excluded.active_tasks_json,
+  blocked_tasks_json=excluded.blocked_tasks_json,
+  artifact_refs_json=excluded.artifact_refs_json,
+  next_actions_json=excluded.next_actions_json,
+  context_budget_json=excluded.context_budget_json,
+  path=excluded.path,
+  created_by=excluded.created_by,
+  created_at=excluded.created_at;`);
+  await sqlite(paths.dbFile, `
+INSERT INTO artifact_index(artifact_id, instrument_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES (${sqlValue(record.checkpointId)}, NULL, ${sqlValue(record.workflowId)}, 'workflow_checkpoint', ${sqlValue(markdownRelPath)}, ${sqlValue(record.summary)}, ${sqlValue(record.createdBy)}, ${sqlValue(record.createdAt)})
+ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
+  return {
+    checkpointId: record.checkpointId,
+    workflowId: record.workflowId,
+    status: record.status,
+    phase: record.phase,
+    decision: record.decision,
+    relativePath: markdownRelPath,
+    jsonRelativePath: jsonRelPath,
+    resumePayload: record.resumePayload,
+    dbFile: paths.dbFile
+  };
+}
+
+async function collectWorkflowCheckpointRecord(paths, input = {}, helpers = {}) {
+  const pendingHumanGateCount = requireContextFunction(helpers, "pendingHumanGateCount");
   const workflowId = String(input.workflowId || input.workflow_id || "").trim();
   if (!workflowId) throw new Error("workflowId is required");
   const createdAt = nowIso();
@@ -159,40 +294,92 @@ LIMIT 50;`, { json: true });
     createdBy: input.createdBy || input.created_by || input.from || "main",
     createdAt
   };
-  const jsonRelPath = await writeJsonArtifact(paths.root, paths.checkpointsDir, checkpointId, record);
-  const markdownRelPath = await writeTextArtifact(paths.root, paths.checkpointsDir, checkpointId, "md", renderWorkflowCheckpointMarkdown(record));
-  await sqlite(paths.dbFile, `
-INSERT INTO workflow_checkpoints(checkpoint_id, workflow_id, status, phase, decision, summary, resume_payload_json, active_tasks_json, blocked_tasks_json, artifact_refs_json, next_actions_json, context_budget_json, path, created_by, created_at)
-VALUES (${sqlValue(checkpointId)}, ${sqlValue(workflowId)}, ${sqlValue(record.status)}, ${sqlValue(record.phase)}, ${sqlValue(record.decision)}, ${sqlValue(record.summary)}, ${sqlValue(JSON.stringify(resumePayload))}, ${sqlValue(JSON.stringify(activeTasks))}, ${sqlValue(JSON.stringify(blockedTasks))}, ${sqlValue(JSON.stringify(artifactRefs))}, ${sqlValue(JSON.stringify(nextActions))}, ${sqlValue(JSON.stringify(contextBudget))}, ${sqlValue(markdownRelPath)}, ${sqlValue(record.createdBy)}, ${sqlValue(createdAt)})
-ON CONFLICT(checkpoint_id) DO UPDATE SET
-  status=excluded.status,
-  phase=excluded.phase,
-  decision=excluded.decision,
-  summary=excluded.summary,
-  resume_payload_json=excluded.resume_payload_json,
-  active_tasks_json=excluded.active_tasks_json,
-  blocked_tasks_json=excluded.blocked_tasks_json,
-  artifact_refs_json=excluded.artifact_refs_json,
-  next_actions_json=excluded.next_actions_json,
-  context_budget_json=excluded.context_budget_json,
-  path=excluded.path,
-  created_by=excluded.created_by,
-  created_at=excluded.created_at;`);
-  await sqlite(paths.dbFile, `
-INSERT INTO artifact_index(artifact_id, instrument_id, workflow_id, kind, path, summary, created_by, created_at)
-VALUES (${sqlValue(checkpointId)}, NULL, ${sqlValue(workflowId)}, 'workflow_checkpoint', ${sqlValue(markdownRelPath)}, ${sqlValue(record.summary)}, ${sqlValue(record.createdBy)}, ${sqlValue(createdAt)})
-ON CONFLICT(artifact_id) DO UPDATE SET path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
-  return {
-    checkpointId,
-    workflowId,
-    status: record.status,
-    phase: record.phase,
-    decision: record.decision,
-    relativePath: markdownRelPath,
-    jsonRelativePath: jsonRelPath,
-    resumePayload,
-    dbFile: paths.dbFile
-  };
+  return record;
+}
+
+async function workflowCheckpointLegacyExportCore(rootDir, input = {}, helpers = {}) {
+  const requestedAction = String(input.requestedAction || input.action || "workflow.checkpoint.legacy_export").trim();
+  const sourceClass = workflowCheckpointSourceClass(input) || "legacy_compat_checkpoint";
+  const workflowId = String(input.workflowId || input.workflow_id || "").trim();
+  const paths = workflowPaths(rootDir, input);
+  if (!fileExistsSync(paths.dbFile)) {
+    return {
+      schemaVersion: "workflow_checkpoint_legacy_export_result.v1",
+      action: "workflow.checkpoint.legacy_export",
+      requestedAction,
+      sourceClass,
+      status: "missing_db",
+      allowed: true,
+      mutating: false,
+      writeBlocked: true,
+      reason: "workflow_state_db_missing",
+      message: "legacy checkpoint export did not run because the workflow state DB does not exist.",
+      workflowId,
+      checkpointId: "",
+      resumePayload: null,
+      didWriteCheckpoint: false,
+      didWriteArtifact: false,
+      didUpdateArtifactIndex: false,
+      didInitializeLayout: false,
+      dbFile: paths.dbFile,
+      rootDir: paths.root
+    };
+  }
+  try {
+    const record = await collectWorkflowCheckpointRecord(paths, input, helpers);
+    return {
+      schemaVersion: "workflow_checkpoint_legacy_export_result.v1",
+      action: "workflow.checkpoint.legacy_export",
+      requestedAction,
+      sourceClass,
+      status: "exported",
+      allowed: true,
+      mutating: false,
+      writeBlocked: true,
+      reason: "legacy_checkpoint_export_read_only",
+      message: "legacy checkpoint recovery state was exported read-only; no checkpoint row or artifact was written.",
+      workflowId: record.workflowId,
+      checkpointId: "",
+      legacyCheckpointId: record.checkpointId,
+      resumePayload: record.resumePayload,
+      activeTasks: record.activeTasks,
+      blockedTasks: record.blockedTasks,
+      artifactRefs: record.artifactRefs,
+      nextActions: record.nextActions,
+      contextBudget: record.contextBudget,
+      record,
+      didWriteCheckpoint: false,
+      didWriteArtifact: false,
+      didUpdateArtifactIndex: false,
+      didInitializeLayout: false,
+      dbFile: paths.dbFile,
+      rootDir: paths.root
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/^workflow not found:/.test(message)) throw error;
+    return {
+      schemaVersion: "workflow_checkpoint_legacy_export_result.v1",
+      action: "workflow.checkpoint.legacy_export",
+      requestedAction,
+      sourceClass,
+      status: "missing_legacy_workflow",
+      allowed: true,
+      mutating: false,
+      writeBlocked: true,
+      reason: "legacy_workflow_not_found",
+      message,
+      workflowId,
+      checkpointId: "",
+      resumePayload: null,
+      didWriteCheckpoint: false,
+      didWriteArtifact: false,
+      didUpdateArtifactIndex: false,
+      didInitializeLayout: false,
+      dbFile: paths.dbFile,
+      rootDir: paths.root
+    };
+  }
 }
 
 export function createCheckpointActionRegistry(handlers = {}) {
@@ -217,15 +404,59 @@ export function createCheckpointActionHandlers(context = {}) {
   const writeTextArtifact = requireContextFunction(context, "writeTextArtifact");
 
   async function workflowCheckpoint(rootDir, input = {}) {
-    const paths = await ensureWorkflowLayout(rootDir, input);
-    return workflowCheckpointCore(paths, input, {
-      pendingHumanGateCount,
-      writeJsonArtifact,
-      writeTextArtifact
+    return workflowCheckpointFrozenDiagnostic(rootDir, input);
+  }
+
+  async function workflowCheckpointLegacyAlias(rootDir, input = {}) {
+    const requestedAction = String(input.requestedAction || input.action || "").trim();
+    return {
+      schemaVersion: "workflow_checkpoint_legacy_alias_result.v1",
+      action: "workflow.checkpoint.legacy_alias",
+      requestedAction,
+      status: "blocked",
+      allowed: false,
+      mutating: false,
+      writeBlocked: true,
+      reason: "ambiguous_context_checkpoint_alias_retired",
+      message: "context checkpoint aliases are retired; use an explicit checkpoint source class instead.",
+      replacements: [
+        {
+          sourceClass: "v2_plan_checkpoint",
+          action: "workflow.supervisor.checkpoint",
+          cli: "workflow-checkpoint --workflow <id> --source-class v2_plan_checkpoint --plan <id>"
+        },
+        {
+          sourceClass: "human_gate_archive_checkpoint",
+          action: "workflow.archive.checkpoint",
+          cli: "workflow-checkpoint --workflow <id> --source-class human_gate_archive_checkpoint --plan <id> --human-gate <id> --button <id>"
+        },
+        {
+          sourceClass: "legacy_compat_checkpoint",
+          action: "workflow.checkpoint.legacy_export",
+          cli: "workflow-checkpoint --workflow <id> --source-class legacy_compat_checkpoint"
+        }
+      ],
+      didWriteCheckpoint: false,
+      didWriteArtifact: false,
+      didUpdateArtifactIndex: false,
+      didInitializeLayout: false,
+      rootDir: String(rootDir || "")
+    };
+  }
+
+  async function workflowCheckpointLegacyExport(rootDir, input = {}) {
+    return workflowCheckpointLegacyExportCore(rootDir, input, {
+      pendingHumanGateCount
     });
   }
 
   return {
-    workflowCheckpoint
+    workflowCheckpoint,
+    workflowCheckpointLegacyExport,
+    workflowCheckpointLegacyAlias
   };
+}
+
+export function workflowCheckpointAllowsLegacyWrite(input = {}) {
+  return false;
 }

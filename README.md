@@ -22,7 +22,7 @@ Platform-local lists such as Hermers profiles, OpenClaw agent config, Codex sess
 
 `workflow.advance` is the first supervisor loop. It inspects tasks, dependencies, receipts, artifacts, and Human Gate state, then decides whether to plan, dispatch ready work, keep collecting receipts, ask `cat_claw` for a summary package, mark the run blocked, or complete it.
 
-`workflow.checkpoint` creates the session-overflow recovery package. It snapshots objective, acceptance criteria, phase, decision, active tasks, blocked tasks, artifact refs, Human Gate pressure, and next actions into `workflow_checkpoints` plus JSON/Markdown artifacts under `workflows/checkpoints/`. New agent sessions should restore from the latest checkpoint and referenced artifacts instead of replaying the full chat history.
+`workflow.checkpoint` is now a frozen legacy compatibility diagnostic and no longer writes old `workflow_runs` / `workflow_tasks` checkpoint rows. Operator CLI recovery should use `workflow-checkpoint --workflow <id> --source-class v2_plan_checkpoint --plan <id>` for v2 supervisor checkpoint boundaries, `workflow-checkpoint --workflow <id> --source-class human_gate_archive_checkpoint --plan <id> --human-gate <id> --button <id>` for archive closeout boundaries, or the default `legacy_compat_checkpoint` only to inspect old legacy recovery state through `workflow.checkpoint.legacy_export`.
 
 `workflow.session_pack.*` and `workflow.session_run.*` provide the first workflow-native session store. They let the workflow prepare compact, task-specific worker input from stored context, tool policy, evidence refs, checkpoint refs, and per-run input. This is for repeatable worker execution and retry safety; it does not replace workflows, checkpoints, receipts, artifacts, or Human Gate records. Development notes are in `docs/workflow-session-store.md`.
 
@@ -44,6 +44,51 @@ for ending the v1/v2 coexistence period at `v1.0.0`.
 classifies each legacy/shared code block as must-migrate, compatibility shell,
 optional/template-later, shared substrate, or archive/no-migration before any
 implementation slice is selected.
+
+`workflow-v2-replacement-capability-completion-plan` records the remaining
+core replacement capability work that must be completed before additional v1
+execution freezes:
+checkpoint/archive recovery, intervention/evaluation, scheduler/maintenance
+service split, and generic runtime dispatch bridge. It also tracks read-model
+and domain cleanup needed before default-kernel cutover.
+
+`workflow-p28-archive-checkpoint-writer` records the R1 archive checkpoint
+slice: `workflow.archive.checkpoint.preview`, the authorized
+`workflow.archive.checkpoint` writer, and the Human Gate archive retarget for
+matching v2 plan state. Legacy archive closeout without matching v2 plan state
+now uses read-only `workflow.checkpoint.legacy_export` after P33;
+`workflow.checkpoint` is not frozen by this slice.
+
+`workflow-p29-checkpoint-cli-source-class-routing` records the operator CLI
+retarget slice: `workflow-checkpoint` now supports explicit `--source-class`
+routing to legacy compatibility, v2 supervisor checkpoint, or Human Gate archive
+checkpoint writers without silently changing the default legacy path.
+
+`workflow-p30-context-checkpoint-alias-retirement` records the ambiguous alias
+retirement slice: `workflow.context_checkpoint` and `context.checkpoint` now
+return a blocked diagnostic instead of writing through `workflow.checkpoint`.
+Known legacy compatibility recovery now uses read-only
+`workflow.checkpoint.legacy_export`.
+
+`workflow-p31-explicit-legacy-checkpoint-source-gate` records the source gate
+slice: bare `workflow.checkpoint` calls now return a blocked diagnostic, while
+explicit legacy compatibility sources and internal fallback sources were later
+retargeted to read-only export in P33 and final-frozen in P34.
+
+`workflow-p32-legacy-checkpoint-usage-audit` records the read-only usage audit:
+the dev-server state-root snapshot has no legacy checkpoint rows or keyword
+evidence of recent legacy recovery use, and the then-remaining write-capable
+compatibility mechanisms are converted to read-only export in P33.
+
+`workflow-p33-legacy-checkpoint-export-diagnostic` records the read-only
+replacement slice: operator legacy recovery, legacy supervise escape-hatch
+checkpointing, and Human Gate archive fallback now use
+`workflow.checkpoint.legacy_export` instead of writing legacy checkpoint rows.
+
+`workflow-p34-final-checkpoint-writer-freeze` records the final freeze slice:
+`workflow.checkpoint` itself is now a non-mutating diagnostic; v2/shared
+checkpoint writes must use `workflow.supervisor.checkpoint` or
+`workflow.archive.checkpoint`.
 
 `message_flow` is the governed delivery layer for agent-to-agent, route-shell, Telegram-return, and local Codex inbox traffic. `local_codex` / `codex` is now an allowed inbox target through the workflow plugin, but it records delivery evidence only; formal reports, Human Gate requests, and trading-related confirmations still require the governed IM/Human Gate path. Closure details are in `docs/message-flow-closure.md`.
 
@@ -178,6 +223,7 @@ and reload or restart the actual Gateway only through the approved runbook.
 - `docs/workflow-v2-unified-next-plan.md` - current v2.1+ development plan: split the long v2 regression first, then mechanically modularize `workflow.js`, add a v2 action registry, and only then resume real Hermers/Claude Code worker adapter work.
 - `docs/workflow-v1-v2-refactor-migration-plan.md` - topology-driven refactor and migration plan for making v2 the default kernel by `v1.0.0`, reducing v1 to compatibility shims, and protecting shared substrate.
 - `docs/workflow-v1-v2-migration-worthiness-audit.md` - migration value audit that separates must-migrate blocks from compatibility shells, optional/template-later work, shared substrate, and archive/no-migration surfaces.
+- `docs/workflow-v2-replacement-capability-completion-plan.md` - execution plan for completing the remaining replacement capability families before further v1 execution freezes or the v2 default-kernel cutover.
 - `docs/workflow-p17-supervisor-closeout-preview.md` - P17 read-only closeout preview slice for completed v2 plans.
 - `docs/workflow-p18-supervisor-checkpoint-preview.md` - P18 read-only checkpoint preview slice for v2 recovery-boundary parity and the remaining checkpoint writer gap.
 - `docs/workflow-p19-supervisor-closeout-executor.md` - P19 governed closeout executor for completed v2 plans; writes closeout evidence and queues one Cat Claw dispatch without Human Gate/Telegram/runtime drain side effects.
@@ -195,6 +241,6 @@ and reload or restart the actual Gateway only through the approved runbook.
 - Record `trading-agents-workflow` problems, causes, fixes, delivery receipts, and follow-up decisions inside this plugin first. Agent `AGENTS.md` files are auxiliary behavior mirrors, not the primary issue record.
 - Keep workflow dispatch, receipt, runtime and side-effect records auditable.
 - Keep each active workflow tied to explicit next actions; meeting conclusions that require Flashcat confirmation should include the next action package for `cat_claw`, not just a passive summary.
-- Treat session context as disposable execution space. Durable state must be in `workflow_runs`, `workflow_tasks`, `workflow_checkpoints`, receipts, and artifacts.
+- Treat session context as disposable execution space. Durable state must be in governed workflow state tables, v2/shared checkpoint records, receipts, and artifacts; legacy `workflow.checkpoint` is frozen diagnostic-only.
 - Treat the public Wanman repository as a limited architecture reference. The target behavior is the more advanced continuous supervisor loop observed on the live Wanman product: decompose, dispatch, collect artifacts, review, and continue until accepted, blocked, or stopped.
 - Do not commit runtime databases, local credentials, private keys, raw account data, generated dependency directories, or large archives.
