@@ -150,6 +150,8 @@ import {
   workflowInterventionExecute,
   workflowInterventionPreview,
   workflowV2InterventionReadinessPreview,
+  dispatchPackageCreate,
+  dispatchPackagePreview,
   meetingDisperse,
   meetingDispatch,
   meetingIngest,
@@ -15707,11 +15709,35 @@ LIMIT 1;`)[0];
 }
 
 async function testMeetingDispatchExtractedActionContracts() {
+  assert.equal(MEETING_DISPATCH_ACTION_REGISTRY.has("dispatch.package.preview"), true, "dispatch.package.preview should be registered in the extracted meeting dispatch registry");
+  assert.equal(MEETING_DISPATCH_ACTION_REGISTRY.has("dispatch.package.create"), true, "dispatch.package.create should be registered in the extracted meeting dispatch registry");
   assert.equal(MEETING_DISPATCH_ACTION_REGISTRY.has("meeting.dispatch"), true, "meeting.dispatch should be registered in the extracted meeting dispatch registry");
+  assert.equal(MEETING_DISPATCH_ACTION_HANDLER_NAMES["dispatch.package.preview"], "dispatchPackagePreview");
+  assert.equal(MEETING_DISPATCH_ACTION_HANDLER_NAMES["dispatch.package.create"], "dispatchPackageCreate");
   assert.equal(MEETING_DISPATCH_ACTION_HANDLER_NAMES["meeting.dispatch"], "meetingDispatch");
+  assert.equal(typeof dispatchPackagePreview, "function");
+  assert.equal(typeof dispatchPackageCreate, "function");
   assert.equal(typeof meetingDispatch, "function");
-  const directRegistry = createMeetingDispatchActionRegistry({ meetingDispatch });
+  assert.equal(canonicalWorkflowAction("dispatch.package"), "dispatch.package.preview");
+  assert.equal(canonicalWorkflowAction("workflow.dispatch.package"), "dispatch.package.preview");
+  assert.equal(canonicalWorkflowAction("workflow.dispatch.package.create"), "dispatch.package.create");
+  const directRegistry = createMeetingDispatchActionRegistry({ dispatchPackagePreview, dispatchPackageCreate, meetingDispatch });
+  assert.equal(directRegistry.get("dispatch.package.preview"), dispatchPackagePreview);
+  assert.equal(directRegistry.get("dispatch.package.create"), dispatchPackageCreate);
   assert.equal(directRegistry.get("meeting.dispatch"), meetingDispatch);
+
+  const coldRoot = path.join(os.tmpdir(), `dispatch-package-preview-cold-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const coldPreview = await dispatchPackagePreview(coldRoot, {
+    meetingId: "meeting-dispatch-cold",
+    workflowId: "workflow-dispatch-cold",
+    runtime: "hermers",
+    agentId: "cat_body",
+    prompt: "cold root should not initialize"
+  });
+  assert.equal(coldPreview.eligible, false);
+  assert.deepEqual(coldPreview.blockers, ["workflow_layout_missing"]);
+  assert.equal(coldPreview.failureType, "workflow_layout_missing");
+  assert.equal(await pathExists(coldRoot), false);
 
   const root = await tempRoot("meeting-dispatch-extracted-contracts");
   await runtimeAgentUpsert(root, {
@@ -15731,7 +15757,7 @@ async function testMeetingDispatchExtractedActionContracts() {
     routingPolicy: { primary: true, routingRank: 1 }
   });
 
-  const direct = await meetingDispatch(root, {
+  const preview = await dispatchPackagePreview(root, {
     meetingId: "meeting-dispatch-contract",
     workflowId: "workflow-dispatch-contract",
     traceId: "trace-dispatch-contract",
@@ -15750,6 +15776,41 @@ async function testMeetingDispatchExtractedActionContracts() {
     maxAttempts: 3,
     payload: { source: "direct_export" }
   });
+  assert.equal(preview.operation, "dispatch.package.preview");
+  assert.equal(preview.canonicalCreateAction, "dispatch.package.create");
+  assert.equal(preview.compatibilityCreateAction, "meeting.dispatch");
+  assert.equal(preview.eligible, true);
+  assert.deepEqual(preview.blockers, []);
+  assert.equal(preview.wouldCreate, true);
+  assert.equal(preview.wouldDeduplicate, false);
+  assert.equal(preview.runtime, "hermers");
+  assert.equal(preview.platform, "hermers");
+  assert.equal(preview.workflowIngressAdapter, "acp");
+  assert.equal(preview.messageFlowPreview.returnPolicy, "reply_to_source_chat");
+  assert.equal(sqliteCount(preview.dbFile, "mixed_meeting_dispatches", "idempotency_key='idem-dispatch-contract'"), 0);
+  assert.equal(sqliteCount(preview.dbFile, "message_flows", `flow_id='${preview.messageFlowPreview.flowId}'`), 0);
+
+  const direct = await dispatchPackageCreate(root, {
+    meetingId: "meeting-dispatch-contract",
+    workflowId: "workflow-dispatch-contract",
+    traceId: "trace-dispatch-contract",
+    idempotencyKey: "idem-dispatch-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    dispatchType: "discussion_turn",
+    prompt: "Meeting dispatch extracted contract body.",
+    sourceChannel: "telegram",
+    accountId: "cat_claw",
+    chatId: "-100123456",
+    senderId: "8390724843",
+    sourceMessageId: "msg-dispatch-contract",
+    returnPolicy: "reply_to_source_chat",
+    priority: "high",
+    maxAttempts: 3,
+    payload: { source: "direct_export" }
+  });
+  assert.equal(direct.operation, "dispatch.package.create");
+  assert.equal(direct.compatibilityOperation, "meeting.dispatch");
   assert.equal(direct.meetingId, "meeting-dispatch-contract");
   assert.equal(direct.workflowId, "workflow-dispatch-contract");
   assert.equal(direct.traceId, "trace-dispatch-contract");
@@ -15768,8 +15829,48 @@ async function testMeetingDispatchExtractedActionContracts() {
   assert.equal(sqliteCount(dbFile, "message_flows", `flow_id='${direct.messageFlowId}' AND dispatch_id='${direct.dispatchId}' AND status='route_registered' AND return_policy='reply_to_source_chat' AND target_runtime='hermers'`), 1);
   assert.equal(sqliteCount(dbFile, "workflow_events", `event_type='dispatch.created' AND dispatch_id='${direct.dispatchId}'`), 1);
 
+  const postCreatePreview = await runAction(root, {
+    action: "workflow.dispatch.package.preview",
+    meetingId: "meeting-dispatch-contract",
+    workflowId: "workflow-dispatch-contract",
+    traceId: "trace-dispatch-contract",
+    idempotencyKey: "idem-dispatch-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    prompt: "Meeting dispatch extracted contract body.",
+    sourceChannel: "telegram",
+    accountId: "cat_claw",
+    chatId: "-100123456",
+    senderId: "8390724843",
+    sourceMessageId: "msg-dispatch-contract",
+    returnPolicy: "reply_to_source_chat"
+  });
+  assert.equal(postCreatePreview.operation, "dispatch.package.preview");
+  assert.equal(postCreatePreview.wouldCreate, false);
+  assert.equal(postCreatePreview.wouldDeduplicate, true);
+  assert.equal(postCreatePreview.existingDispatchId, direct.dispatchId);
+
+  const bareAliasPreview = await runAction(root, {
+    action: "dispatch.package",
+    meetingId: "meeting-dispatch-contract",
+    workflowId: "workflow-dispatch-contract",
+    traceId: "trace-dispatch-contract",
+    idempotencyKey: "idem-dispatch-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    prompt: "Meeting dispatch extracted contract body.",
+    sourceChannel: "telegram",
+    accountId: "cat_claw",
+    chatId: "-100123456",
+    senderId: "8390724843",
+    sourceMessageId: "msg-dispatch-contract",
+    returnPolicy: "reply_to_source_chat"
+  });
+  assert.equal(bareAliasPreview.operation, "dispatch.package.preview");
+  assert.equal(bareAliasPreview.wouldDeduplicate, true);
+
   const deduped = await runAction(root, {
-    action: "meeting.dispatch",
+    action: "workflow.dispatch.package.create",
     meetingId: "meeting-dispatch-contract",
     workflowId: "workflow-dispatch-contract",
     traceId: "trace-dispatch-contract",
@@ -15788,6 +15889,40 @@ async function testMeetingDispatchExtractedActionContracts() {
   assert.equal(deduped.dispatchId, direct.dispatchId);
   assert.equal(deduped.runtime, "hermers");
   assert.equal(sqliteCount(dbFile, "mixed_meeting_dispatches", "idempotency_key='idem-dispatch-contract'"), 1);
+
+  const routeShellPreview = await dispatchPackagePreview(root, {
+    meetingId: "meeting-dispatch-contract",
+    workflowId: "workflow-dispatch-contract",
+    runtime: "openclaw_route_shell",
+    agentId: "cat_body",
+    prompt: "retired route shell"
+  });
+  assert.equal(routeShellPreview.eligible, false);
+  assert.deepEqual(routeShellPreview.blockers, ["route_shell_retired"]);
+  assert.equal(routeShellPreview.failureType, "route_shell_retired");
+
+  const unresolvedPreview = await dispatchPackagePreview(root, {
+    meetingId: "meeting-dispatch-contract",
+    workflowId: "workflow-dispatch-contract",
+    runtime: "hermers",
+    agentId: "cat_unknown",
+    prompt: "unknown target"
+  });
+  assert.equal(unresolvedPreview.eligible, false);
+  assert.deepEqual(unresolvedPreview.blockers, ["runtime_target_unresolved"]);
+  assert.equal(unresolvedPreview.failureType, "runtime_target_unresolved");
+
+  const invalidMessageFlowPreview = await dispatchPackagePreview(root, {
+    meetingId: "meeting-dispatch-contract",
+    workflowId: "workflow-dispatch-contract",
+    runtime: "hermers",
+    agentId: "cat_body",
+    prompt: "missing return path",
+    returnPolicy: "reply_to_source_chat"
+  });
+  assert.equal(invalidMessageFlowPreview.eligible, false);
+  assert.deepEqual(invalidMessageFlowPreview.blockers, ["message_flow_validation_failed"]);
+  assert.equal(invalidMessageFlowPreview.failureType, "message_flow_validation_failed");
 
   await assert.rejects(
     () => meetingDispatch(root, {

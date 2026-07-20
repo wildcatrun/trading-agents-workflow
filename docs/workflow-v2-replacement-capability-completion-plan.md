@@ -372,6 +372,26 @@ the replacement lands.
    unaudited caller remains.
 7. Freeze meeting-era names only as shells after call-site migration.
 
+### P36 Progress
+
+P36 added the first canonical shared dispatch-package surface:
+`dispatch.package.preview` and `dispatch.package.create`.
+
+This is intentionally **not** a v2-local registry and does not rename
+`message_flow`, `runtime_agents`, or `runtime.bridge.drain`. The preview action
+performs read-only target resolution through `runtime_agents`, idempotency
+inspection, route-shell fail-closed reporting, message-flow eligibility
+validation, and artifact payload preview. The create action delegates to the
+existing dispatch writer and returns `compatibilityOperation=meeting.dispatch`,
+so current runtime dispatch rows, artifacts, `message_flow` records, and
+workflow events stay on the proven substrate while new callers get a
+meeting-neutral name.
+
+P36 does not freeze `meeting.dispatch`, `meeting.ingest`, `meeting.resume`,
+`meeting.disperse`, `meeting.runtime_participant`, or `runtime.bridge.drain`.
+Those remain active/shared until call-site migration, live observation, and
+runtime bridge parity evidence are complete.
+
 ### Exit Criteria
 
 - Generic dispatches still create auditable rows/artifacts and receipt events.

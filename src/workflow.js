@@ -385,6 +385,7 @@ const HUMAN_GATE_ZH_TEXT = new Map([
 
 const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
   "workflow.task.draft",
+  "dispatch.package.preview",
   "workflow.v2.plan.preview",
   "workflow.supervisor.readiness.preview",
   "workflow.v2.readiness.preview",
@@ -8525,6 +8526,8 @@ export const MEETING_DISPATCH_ACTION_HANDLERS = createMeetingDispatchActionHandl
 export const MEETING_DISPATCH_ACTION_REGISTRY = createMeetingDispatchActionRegistry(MEETING_DISPATCH_ACTION_HANDLERS);
 
 export const {
+  dispatchPackagePreview,
+  dispatchPackageCreate,
   meetingDispatch
 } = MEETING_DISPATCH_ACTION_HANDLERS;
 

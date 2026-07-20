@@ -100,6 +100,12 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
     replacement: "v2 plan/node/worker stop state transition",
     recommendation: "map stop semantics onto v2 plans, nodes, workers, adapter jobs, Human Gate waits, and side-effect uncertainty"
   }],
+  ["meeting.dispatch", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "dispatch.package.preview + dispatch.package.create",
+    recommendation: "use canonical generic dispatch package actions for new callers; keep meeting.dispatch as a compatibility shim during the observation window"
+  }],
   ["meeting.resume", {
     decisionClass: "optional_or_template_later",
     migrationStatus: "legacy_active",
@@ -333,6 +339,7 @@ export const WORKFLOW_PERMISSION_READ_ACTIONS = new Set([
   "workflow.template.rollback.preview",
   "workflow.template.extract.preview",
   "workflow.schedule.list",
+  "dispatch.package.preview",
   "human_gate.web_app_review",
   "human_gate.inbox",
   "message_flow.list",
@@ -397,6 +404,7 @@ export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "runtime.agent.upsert": { capability: "registry.write", risk: "high", mutating: true, requiresCatClawAudit: true },
   "meeting.runtime_participant": { capability: "dispatch.write", risk: "medium", mutating: true },
   "telegram.live": { capability: "telegram.configure", risk: "high", mutating: true, requiresCatClawAudit: true },
+  "dispatch.package.create": { capability: "dispatch.write", risk: "high", mutating: true },
   "meeting.dispatch": { capability: "dispatch.write", risk: "high", mutating: true },
   "meeting.ingest": { capability: "receipt.write", risk: "medium", mutating: true },
   "workflow.dispatch.reconcile": { capability: "dispatch.reconcile", risk: "high", mutating: true },

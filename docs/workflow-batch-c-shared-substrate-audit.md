@@ -13,6 +13,7 @@ These code blocks are not disposable v1 leftovers:
 - `workflow.checkpoint` is still the only implemented durable checkpoint writer for the legacy workflow-row shape and Human Gate archive closeout. P20 added `workflow.supervisor.checkpoint` for v2 supervisor boundaries, but P27 confirms that parity is partial and the old writer must migrate or be retargeted before freeze.
 - `runtime.bridge.drain` is shared runtime dispatch infrastructure for queued `mixed_meeting_dispatches`; it is used by legacy supervisor/control-loop paths, route-shell compatibility, status recovery guidance, and runtime adapter execution. It must not be frozen as v1.
 - `meeting.dispatch` is the shared dispatch/evidence creation path, not only a meeting feature. It resolves `runtime_agents`, enforces idempotency, creates `message_flow`, writes dispatch rows/artifacts, and appends workflow events.
+- Implementation update, 2026-07-20: P36 added canonical shared `dispatch.package.preview` and `dispatch.package.create` actions. They keep `meeting.dispatch` behavior intact during cutover; `dispatch.package.create` delegates to the existing dispatch writer and marks `compatibilityOperation=meeting.dispatch`.
 
 The correct Batch C posture is:
 
@@ -52,7 +53,7 @@ The correct Batch C posture is:
 | --- | --- | --- |
 | `workflow.checkpoint` | Keep; do not freeze/delete after P27. | V2 supervisor checkpoint parity exists only for v2 boundary rows; Human Gate archive closeout and legacy compatibility callers are not retargeted. |
 | `runtime.bridge.drain` | Keep as shared runtime substrate. | It drains generic queued dispatches and produces runtime receipt/failure evidence outside v2 adapter jobs. |
-| `meeting.dispatch` | Keep as shared adapter/evidence substrate. | It is the canonical dispatch creation, message-flow, idempotency, registry-resolution, and event path. |
+| `meeting.dispatch` | Keep as shared adapter/evidence substrate during P36 cutover. | `dispatch.package.create` is the new canonical caller surface, but it still delegates to this proven writer until call-site migration and observation are complete. |
 | `meeting.ingest`, `meeting.resume`, `meeting.disperse`, `meeting.runtime_participant` | Keep pending separate adapter audit. | These may contain meeting-era naming, but they still participate in shared message/dispatch/receipt semantics. |
 
 ## Required Migration Sequence

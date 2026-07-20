@@ -1260,6 +1260,10 @@ export async function runAction(rootDir, input = {}) {
     action === "workflow.message_flow.send" ||
     action === "workflow.message_flow.reconcile" ||
     action === "meeting.runtime_participant" ||
+    action === "dispatch.package" ||
+    action.startsWith("dispatch.package.") ||
+    action === "workflow.dispatch.package" ||
+    action.startsWith("workflow.dispatch.package.") ||
     action === "meeting.dispatch" ||
     action === "meeting.ingest" ||
     action === "meeting.resume" ||
