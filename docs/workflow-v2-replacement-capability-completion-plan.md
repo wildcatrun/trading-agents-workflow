@@ -14,13 +14,46 @@ engineering plan. Its purpose is to identify which old Workflow surfaces still
 need replacement capability, what the replacement must own, and what evidence
 is required before a freeze or retirement decision.
 
+This is not a universal v1 deletion project. Old naming, large file size, or a
+legacy label is not enough to justify migration, freeze, or retirement.
+
+## Freeze / Retirement Eligibility Rule
+
 The governing rule is strict:
 
 ```text
-Only a legacy code block with an equivalent v2 or shared replacement is eligible
-for migration, freeze, or retirement. If no replacement exists, keep the block
-as legacy_active / shared_substrate and build the replacement first.
+Only a legacy code block with an equivalent v2/shared replacement, or a proven
+no-dependency/no-retention block, is eligible for migration, freeze, or
+retirement. If no replacement exists and the block still owns useful behavior,
+keep it as legacy_active / shared_substrate and build the replacement first.
 ```
+
+Eligible candidates must fit one of these two classes:
+
+1. **Overlapped capability:** v2 or a shared replacement already owns the same
+   useful behavior, with parity evidence and call-site migration evidence.
+2. **No-dependency retiree:** the block has no v2/runtime/live-state dependency,
+   no active caller, and no remaining audit/read/history value beyond Git.
+
+Excluded from v1 freeze/retirement:
+
+- shared substrate used by v2, runtime adapters, Human Gate, `message_flow`,
+  outbox, readiness, receipt, incident, side-effect, or trading boundaries;
+- `legacy_active` blocks that still own valid behavior and lack a proven
+  replacement;
+- read-only/archive evidence surfaces that still preserve historical inspection
+  or recovery value;
+- old-named infrastructure that v2 deliberately continues to use as shared
+  substrate.
+
+Decision order for any future batch is:
+
+1. classify the block as overlapped, no-dependency, shared substrate, or active
+   legacy;
+2. prove the replacement or prove no dependency/no retention;
+3. inventory live callers, state tables, runtime paths, and evidence readers;
+4. only then move the row into a freeze candidate state;
+5. run the unified batch regression and independent review before delivery.
 
 This plan does not authorize deleting shared infrastructure. It also does not
 authorize renaming shared infrastructure to v2 merely to make the code look
@@ -29,8 +62,8 @@ coexisting legacy/new implementation that requires a temporary disambiguator.
 
 ## Current Count
 
-As of P27, no further legacy execution block should be frozen by default before
-replacement work is completed.
+As of P36, no further legacy execution block should be frozen by default before
+replacement work is completed or no-dependency/no-retention evidence is proven.
 
 Remaining replacement work is **4 capability families**:
 
@@ -493,7 +526,9 @@ If any answer is missing, the correct status is `legacy_active`,
 - `docs/workflow-v1-v2-migration-worthiness-audit.md` remains the value gate.
 - `docs/workflow-batch-freeze-table.md` remains the current action-level freeze
   ledger.
-- `docs/workflow-p27-checkpoint-parity-audit.md` is the latest proof that
-  checkpoint replacement is incomplete.
+- `docs/workflow-p27-checkpoint-parity-audit.md` records the historical
+  checkpoint parity gap that blocked P27 freeze.
+- `docs/workflow-p34-final-checkpoint-writer-freeze.md` records the current
+  checkpoint writer freeze and read-only legacy export posture.
 - This document is the execution plan for completing the missing replacement
   capabilities identified by those documents.

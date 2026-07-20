@@ -17,6 +17,11 @@ migrating before any implementation work starts. It exists to prevent
 low-value migration work such as investing in a legacy block that already has a
 v2 replacement.
 
+This audit is not a mandate to migrate or delete every v1-named block. A block
+only becomes a freeze/retirement candidate when v2/shared code already owns the
+same useful behavior, or when the block is proven to have no v2/runtime/live
+dependency and no remaining read/history/audit retention value.
+
 ## Decision Classes
 
 | Class | Meaning | Allowed work |
@@ -31,8 +36,10 @@ v2 replacement.
 
 No code block should enter an implementation migration plan unless this audit
 classifies it as `must_migrate` or gives a concrete `compat_shell_only`
-translation target. A module being old, large, or marked legacy is not by
-itself a reason to migrate it.
+translation target. No code block should enter a freeze/removal batch unless it
+has a proven v2/shared replacement or proven no-dependency/no-retention status.
+A module being old, large, or marked legacy is not by itself a reason to
+migrate, freeze, or delete it.
 
 ## Evidence Inventory
 
@@ -197,8 +204,18 @@ If those answers are missing, the task is analysis, not implementation.
 
 ## Freeze Batch Evidence Gate
 
-A legacy code block may be frozen only when the freeze batch records all of the
-following evidence:
+A legacy code block may be frozen only when it is first classified as one of the
+following:
+
+1. **Overlapped capability:** a named v2 or shared replacement owns the same
+   useful behavior and preserves the required evidence contract.
+2. **No-dependency retiree:** no v2/runtime/live-state path, active caller, or
+   read/history/audit requirement still depends on the block.
+
+Shared substrate, active legacy behavior without replacement, and read-only
+archive evidence are not freeze candidates merely because their names predate
+v2. For an eligible candidate, the freeze batch must record all of the following
+evidence:
 
 1. **Replacement evidence.** Name the exact v2 or shared substrate action that
    owns the same useful production capability.
