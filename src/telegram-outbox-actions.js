@@ -616,11 +616,11 @@ LIMIT 1;`, { json: true });
       input.execution_reason ||
       ""
     ).trim();
-    const catClawAuditId = firstText(
-      input.catClawAuditId,
-      input.cat_claw_audit_id,
-      input.catClawAudit,
-      input.cat_claw_audit,
+    const protocolAuditId = firstText(
+      input.protocolAuditId,
+      input.protocol_audit_id,
+      input.protocolAudit,
+      input.protocol_audit,
       input.secretaryAuditId,
       input.secretary_audit_id
     );
@@ -659,8 +659,8 @@ LIMIT 1;`, { json: true });
     if (!deliveryOperatorReason) {
       governanceViolations.push({ code: "delivery_operator_reason_required", detail: "A future delivery execution must carry an explicit delivery operator reason." });
     }
-    if (messageType === "human_gate_request" && !catClawAuditId) {
-      governanceViolations.push({ code: "cat_claw_audit_required", detail: "Human Gate request delivery must be backed by Cat Claw/secretary audit evidence." });
+    if (messageType === "human_gate_request" && !protocolAuditId) {
+      governanceViolations.push({ code: "protocol_audit_required", detail: "Human Gate request delivery must be backed by Protocol audit evidence." });
     }
     if (messageType === "human_gate_request" && (approveOptionButtonCount < HUMAN_GATE_APPROVE_OPTION_MIN || approveOptionButtonCount > HUMAN_GATE_APPROVE_OPTION_MAX)) {
       governanceViolations.push({ code: "human_gate_buttons_incomplete", detail: `Human Gate request delivery expects ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} approve options plus pause and terminate controls.` });
@@ -719,11 +719,11 @@ LIMIT 1;`, { json: true });
           "idempotency key",
           "claimable outbox status",
           "bound Telegram target",
-          ...(messageType === "human_gate_request" ? ["Cat Claw/secretary audit evidence", `${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} approve buttons plus pause/terminate controls`] : [])
+          ...(messageType === "human_gate_request" ? ["Protocol audit evidence", `${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} approve buttons plus pause/terminate controls`] : [])
         ],
         evidencePresence: {
           deliveryOperatorReason: Boolean(deliveryOperatorReason),
-          catClawAudit: Boolean(catClawAuditId),
+          protocolAudit: Boolean(protocolAuditId),
           deliveryApproval: Boolean(deliveryApprovalId)
         },
         hardStops: [...violations, ...governanceViolations],
@@ -831,11 +831,11 @@ LIMIT 1;`, { json: true });
       input.executionReason,
       input.execution_reason
     );
-    const catClawAuditId = firstText(
-      input.catClawAuditId,
-      input.cat_claw_audit_id,
-      input.catClawAudit,
-      input.cat_claw_audit,
+    const protocolAuditId = firstText(
+      input.protocolAuditId,
+      input.protocol_audit_id,
+      input.protocolAudit,
+      input.protocol_audit,
       input.secretaryAuditId,
       input.secretary_audit_id
     );
@@ -886,8 +886,8 @@ LIMIT 1;`, { json: true });
     if (!requeueOperatorReason && requeueEligible) {
       governanceViolations.push({ code: "requeue_operator_reason_required", detail: "A future resend/requeue action must carry an explicit requeue or delivery operator reason." });
     }
-    if (messageType === "human_gate_request" && requeueEligible && !catClawAuditId) {
-      governanceViolations.push({ code: "cat_claw_audit_required", detail: "Human Gate notification redelivery must be backed by Cat Claw/secretary audit evidence." });
+    if (messageType === "human_gate_request" && requeueEligible && !protocolAuditId) {
+      governanceViolations.push({ code: "protocol_audit_required", detail: "Human Gate notification redelivery must be backed by Protocol audit evidence." });
     }
     if (messageType === "human_gate_request" && requeueEligible && !humanGateId) {
       governanceWarnings.push({ code: "human_gate_id_not_embedded", detail: "No Human Gate id was found in input or outbox payload; preserve the existing outbox id and button ids before any redelivery." });
@@ -939,7 +939,7 @@ LIMIT 1;`, { json: true });
         createNewTelegramOutbox: false,
         idempotencyRequired: true,
         operatorReasonRequired: true,
-        catClawAuditRequired: messageType === "human_gate_request",
+        protocolAuditRequired: messageType === "human_gate_request",
         humanGateId: humanGateId || "",
         buttonCount: deliveryPreview.buttonSummary?.buttonCount || 0,
         existingReceiptCount: receipts.length,
@@ -957,11 +957,11 @@ LIMIT 1;`, { json: true });
           "failed or stale-delivering outbox status",
           "bound Telegram target",
           "preserve original outbox id, Human Gate id, button ids, and existing receipts",
-          ...(messageType === "human_gate_request" ? ["Cat Claw/secretary audit evidence"] : [])
+          ...(messageType === "human_gate_request" ? ["Protocol audit evidence"] : [])
         ],
         evidencePresence: {
           requeueOperatorReason: Boolean(requeueOperatorReason),
-          catClawAudit: Boolean(catClawAuditId),
+          protocolAudit: Boolean(protocolAuditId),
           deliveryApproval: Boolean(deliveryApprovalId),
           humanGateId: Boolean(humanGateId)
         },
@@ -992,7 +992,7 @@ LIMIT 1;`, { json: true });
     const strategyCn = telegramRequeueStrategyChinese(requeue.strategy);
     const missingEvidence = [];
     if (!requeue.executionPolicy?.evidencePresence?.requeueOperatorReason) missingEvidence.push("明确的重投递/投递操作理由");
-    if (requeue.requeuePolicy?.catClawAuditRequired && !requeue.executionPolicy?.evidencePresence?.catClawAudit) missingEvidence.push("猫爪/秘书复核证据");
+    if (requeue.requeuePolicy?.protocolAuditRequired && !requeue.executionPolicy?.evidencePresence?.protocolAudit) missingEvidence.push("猫爪/秘书复核证据");
     if (!requeue.executionPolicy?.evidencePresence?.humanGateId && requeue.messageType === "human_gate_request") missingEvidence.push("原 Human Gate id");
     if (!requeue.deliveryExecutionEligible) missingEvidence.push("可用的 Telegram target/text/button 投递条件");
     const preservation = [
@@ -1001,7 +1001,7 @@ LIMIT 1;`, { json: true });
       `按钮数量：${requeue.requeuePolicy?.buttonCount ?? 0}，不得新建并行 Human Gate 决策对象`,
       `已有投递 receipt 数量：${requeue.requeuePolicy?.existingReceiptCount ?? 0}，必须原样保留并从已记录分片后续投递`,
       `目标：${requeue.targetKind || "-"}:${requeue.targetRef || "-"}`,
-      "未来实际执行只能进入 telegram.outbox.delivery，并由该动作二次校验 idempotency key、operator reason、Cat Claw audit 和 target"
+      "未来实际执行只能进入 telegram.outbox.delivery，并由该动作二次校验 idempotency key、operator reason、Protocol audit 和 target"
     ];
     const summaryLines = [
       `事项：Telegram outbox 重投递执行前确认包。`,
@@ -1022,7 +1022,7 @@ LIMIT 1;`, { json: true });
         buttonLabel: "方案 A：批准重投递",
         buttonStyle: "success",
         recommendation: requeue.governanceReady ? "recommended_when_operator_confirms" : "blocked_until_missing_evidence_resolved",
-        content: "在补齐/确认 Cat Claw audit、操作理由和 idempotency key 后，只允许通过 telegram.outbox.delivery 执行实际投递；不得新建 Human Gate 或新 outbox。",
+        content: "在补齐/确认 Protocol audit、操作理由和 idempotency key 后，只允许通过 telegram.outbox.delivery 执行实际投递；不得新建 Human Gate 或新 outbox。",
         nextStep: "由受控执行入口调用 telegram.outbox.delivery，并保留同一个 outbox/Human Gate/button/receipt 证据链。",
         executionBoundary: "telegram_delivery_only"
       },

@@ -216,8 +216,8 @@ function canarySteps({ runId, templateId, workflowId, planId, objective, retireA
       version: 1,
       targetStatus: "active",
       createdBy: "local_codex",
-      catBrainAuditId: `canary-cat-brain-audit-${runId}`,
-      catClawAuditId: `canary-cat-claw-audit-${runId}`,
+      governanceAuditId: `canary-governance-audit-${runId}`,
+      protocolAuditId: `canary-protocol-audit-${runId}`,
       evidenceRefs
     }],
     ["template-instantiate-preview", {

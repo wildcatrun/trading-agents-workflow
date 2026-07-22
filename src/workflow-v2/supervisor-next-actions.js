@@ -128,7 +128,7 @@ function candidatesForPlan(plan = {}, limit = 20) {
       result.push(candidate(
         `protocol_package_audit:${pkg.packageId || result.length + 1}`,
         "protocol_package_audit_preview",
-        "workflow.v2.cat_claw_package_audit.preview",
+        "workflow.v2.protocol_package_audit.preview",
         "draft_human_gate_package_requires_protocol_audit",
         {
           workflowId,
@@ -142,7 +142,7 @@ function candidatesForPlan(plan = {}, limit = 20) {
       result.push(candidate(
         `protocol_package_audit:${planId}`,
         "protocol_package_audit_preview",
-        "workflow.v2.cat_claw_package_audit.preview",
+        "workflow.v2.protocol_package_audit.preview",
         "draft_human_gate_package_requires_protocol_audit",
         { workflowId, planId },
         { status: "input_required" }

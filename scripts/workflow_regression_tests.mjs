@@ -67,7 +67,7 @@ import {
   workflowGovernanceRoles
 } from "../src/workflow/governance-roles.js";
 import {
-  workflowV2CatClawAuditRowById,
+  workflowV2ProtocolAuditRowById,
   workflowV2HumanGatePackageRow
 } from "../src/workflow-v2/human-gate-state.js";
 import { runAction as runActionRaw } from "../src/core.js";
@@ -1201,7 +1201,7 @@ VALUES
 
   const readiness = await new WorkflowReadModel({ dbFile }).humanGateReadiness("workflow-regression");
   assert.equal(readiness.schemaVersion, "human_gate_readiness.v1");
-  assert.equal(readiness.readyForCatClawAudit, true);
+  assert.equal(readiness.readyForProtocolAudit, true);
   assert.equal(readiness.readyForHumanGateSubmission, true);
   assert.equal(readiness.summary.approveOptionCount, 3);
   assert.equal(readiness.summary.recordCount, 1);
@@ -1247,7 +1247,7 @@ INSERT INTO legacy_marker(id) VALUES ('legacy-only');`);
   const readiness = await new WorkflowReadModel({ dbFile }).humanGateReadiness("workflow-legacy-readiness");
   assert.equal(readiness.schemaVersion, "human_gate_readiness.v1");
   assert.equal(readiness.status, "not_ready");
-  assert.equal(readiness.readyForCatClawAudit, false);
+  assert.equal(readiness.readyForProtocolAudit, false);
   assert.equal(readiness.summary.recordCount, 0);
   assert.equal(readiness.summary.buttonCount, 0);
   assert.equal(readiness.summary.checkpointCount, 0);
@@ -1570,7 +1570,7 @@ VALUES
 INSERT INTO protocol_objects(object_id, object_type, status, instrument_id, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
 VALUES ('hg-dead-letter-link', 'human_gate_record', 'approved', NULL, 'regression', 'cat_claw', '', 'artifact://hg-dead-letter-link', '{"workflowId":"${workflowId}","summary":"Human Gate evidence for flow-dead-delivery-completed token=hg-option-secret"}', 'hash-hg-dead-letter-link', '2026-05-31T00:00:06.000Z', '2026-05-31T00:00:07.000Z');
 INSERT INTO workflow_verification_results(verification_id, workflow_id, phase_id, phase_key, task_id, agent_run_id, dispatch_id, runtime_run_id, result_type, decision, verifier_agent, refuter_agent, source_runtime, source_agent, confidence, risk_band, summary, findings_json, recommendations_json, evidence_refs_json, artifact_refs_json, receipt_refs_json, payload_hash, payload_json, created_by, created_at)
-VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', '', 'dispatch-max-attempts', '', 'secretary_audit', 'pass', '', '', 'openclaw', 'cat_claw', 'high', 'P2', 'Cat Claw audit evidence token=audit-option-secret', '[]', '[]', '[]', '[]', '[]', 'hash-audit-dead-letter-link', '{}', 'cat_claw', '2026-05-31T00:00:08.000Z');`);
+VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', '', 'dispatch-max-attempts', '', 'secretary_audit', 'pass', '', '', 'openclaw', 'cat_claw', 'high', 'P2', 'Protocol audit evidence token=audit-option-secret', '[]', '[]', '[]', '[]', '[]', 'hash-audit-dead-letter-link', '{}', 'cat_claw', '2026-05-31T00:00:08.000Z');`);
   const evidenceOptions = await new WorkflowReadModel({ dbFile }).incidentEvidenceOptions(workflowId, {
     kind: "message_flow_delivery_missing",
     refId: "flow-dead-delivery-completed"
@@ -1578,21 +1578,21 @@ VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', ''
   assert.equal(evidenceOptions.schemaVersion, "workflow_incident_evidence_options.v1");
   assert.equal(evidenceOptions.writeMode, "read_only_derived_options");
   assert.equal(Boolean(evidenceOptions.humanGateOptions.some((row) => row.id === "hg-dead-letter-link" && row.recommended)), true);
-  assert.equal(Boolean(evidenceOptions.catClawAuditOptions.some((row) => row.id === "audit-dead-letter-link" && row.recommended)), true);
+  assert.equal(Boolean(evidenceOptions.protocolAuditOptions.some((row) => row.id === "audit-dead-letter-link" && row.recommended)), true);
   const linkedHumanGateOption = evidenceOptions.humanGateOptions.find((row) => row.id === "hg-dead-letter-link");
-  const linkedCatClawOption = evidenceOptions.catClawAuditOptions.find((row) => row.id === "audit-dead-letter-link");
+  const linkedProtocolOption = evidenceOptions.protocolAuditOptions.find((row) => row.id === "audit-dead-letter-link");
   assert.ok(linkedHumanGateOption);
-  assert.ok(linkedCatClawOption);
+  assert.ok(linkedProtocolOption);
   assert.equal(Boolean(linkedHumanGateOption.recommendationReasons.some((row) => row.code === "same_workflow")), true);
   assert.equal(Boolean(linkedHumanGateOption.recommendationReasons.some((row) => row.code === "cat_claw_source")), true);
   assert.equal(Boolean(linkedHumanGateOption.recommendationReasons.some((row) => row.code === "positive_status")), true);
   assert.equal(Boolean(linkedHumanGateOption.recommendationReasons.some((row) => row.code === "references_dead_letter")), true);
-  assert.equal(Boolean(linkedCatClawOption.recommendationReasons.some((row) => row.code === "secretary_audit")), true);
-  assert.equal(Boolean(linkedCatClawOption.recommendationReasons.some((row) => row.code === "cat_claw_source")), true);
-  assert.equal(Boolean(linkedCatClawOption.recommendationReasons.some((row) => row.code === "positive_decision")), true);
-  assert.equal(Boolean(linkedCatClawOption.recommendationReasons.some((row) => row.code === "references_dead_letter")), true);
+  assert.equal(Boolean(linkedProtocolOption.recommendationReasons.some((row) => row.code === "secretary_audit")), true);
+  assert.equal(Boolean(linkedProtocolOption.recommendationReasons.some((row) => row.code === "cat_claw_source")), true);
+  assert.equal(Boolean(linkedProtocolOption.recommendationReasons.some((row) => row.code === "positive_decision")), true);
+  assert.equal(Boolean(linkedProtocolOption.recommendationReasons.some((row) => row.code === "references_dead_letter")), true);
   assert.match(linkedHumanGateOption.recommendationSummary, /same workflow/);
-  assert.match(linkedCatClawOption.recommendationSummary, /secretary audit result/);
+  assert.match(linkedProtocolOption.recommendationSummary, /secretary audit result/);
   assert.equal(JSON.stringify(evidenceOptions).includes("hg-option-secret"), false);
   assert.equal(JSON.stringify(evidenceOptions).includes("audit-option-secret"), false);
   const routedEvidenceOptions = await workflowChildPayload(new WorkflowReadModel({ dbFile }), workflowId, "incident-evidence-options", {
@@ -1605,13 +1605,13 @@ VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', ''
     refId: "flow-dead-delivery-completed"
   });
   assert.equal(wrongWorkflowEvidenceOptions.counts.humanGateOptions, 0);
-  assert.equal(wrongWorkflowEvidenceOptions.counts.catClawAuditOptions, 0);
+  assert.equal(wrongWorkflowEvidenceOptions.counts.protocolAuditOptions, 0);
   const emptyWorkflowEvidenceOptions = await new WorkflowReadModel({ dbFile }).incidentEvidenceOptions("", {
     kind: "message_flow_delivery_missing",
     refId: "flow-dead-delivery-completed"
   });
   assert.equal(emptyWorkflowEvidenceOptions.counts.humanGateOptions, 0);
-  assert.equal(emptyWorkflowEvidenceOptions.counts.catClawAuditOptions, 0);
+  assert.equal(emptyWorkflowEvidenceOptions.counts.protocolAuditOptions, 0);
   const incidentPreview = await runAction(root, {
     action: "workflow.incident.from_dead_letter.preview",
     workflowId,
@@ -1652,7 +1652,7 @@ VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', ''
     kind: "message_flow_delivery_missing",
     refId: "flow-dead-delivery-completed",
     humanGateId: "hg-dead-letter-link",
-    catClawAuditId: "audit-dead-letter-link",
+    protocolAuditId: "audit-dead-letter-link",
     operatorReason: "猫爪复核通过，建立 incident 跟踪。 token=incident-secret"
   });
   assert.equal(incidentLinked.schemaVersion, "workflow_dead_letter_incident_link_result.v1");
@@ -1688,7 +1688,7 @@ VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', ''
   assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "incident_state" && row.status === "pass")), true);
   assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "dead_letter_evidence_current" && row.status === "pass")), true);
   assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "human_gate_evidence" && row.status === "pass")), true);
-  assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "cat_claw_audit" && row.status === "pass")), true);
+  assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "protocol_audit" && row.status === "pass")), true);
   assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "operator_reason" && row.status === "pass")), true);
   assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "rollback_boundary" && row.status === "pass")), true);
   assert.equal(Boolean(incidentCloseout.checklist.some((row) => row.key === "side_effect_boundary" && row.status === "pass")), true);
@@ -1704,7 +1704,7 @@ VALUES ('audit-dead-letter-link', '${workflowId}', '', 'secretary_audit', '', ''
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
 VALUES ('incident-legacy-closeout', 'active', 'degraded', '["workflow"]', 'Legacy closeout regression', 'main', 'Legacy incident has no workflow/dead-letter payload link.', 'Legacy incident should still be visible by incidentId.', 'Prepare governed closeout package.', 'Rollback boundary recorded.', 'Closeout evidence recorded.', '[]', '{"jsonRelPath":"bridge/incidents/incident-legacy-closeout.json"}', '2026-05-31T00:00:09.000Z', '', '', '2026-05-31T00:00:10.000Z');
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
-VALUES ('incident-legacy-ready-with-warning', 'active', 'degraded', '["workflow"]', 'Legacy closeout warning-only regression', 'main', 'Legacy incident has all required closeout evidence but only warning-level gaps.', 'Warnings should not send the worklist back to Cat Claw report preview forever.', 'Prepare Human Gate closeout package.', 'Rollback boundary recorded.', 'Closeout evidence recorded.', '[]', '{"operatorReason":"Required evidence is complete; warning-only gaps remain.","humanGateId":"N/A operational closeout","catClawAuditId":"flow.ready-warning-audit","incidentCandidate":{"rollbackBoundary":"No runtime, delivery, side-effect, or incident status mutation in preview."}}', '2026-05-31T00:00:10.500Z', '', '', '2026-05-31T00:00:10.500Z');
+VALUES ('incident-legacy-ready-with-warning', 'active', 'degraded', '["workflow"]', 'Legacy closeout warning-only regression', 'main', 'Legacy incident has all required closeout evidence but only warning-level gaps.', 'Warnings should not send the worklist back to Cat Claw report preview forever.', 'Prepare Human Gate closeout package.', 'Rollback boundary recorded.', 'Closeout evidence recorded.', '[]', '{"operatorReason":"Required evidence is complete; warning-only gaps remain.","humanGateId":"N/A operational closeout","protocolAuditId":"flow.ready-warning-audit","incidentCandidate":{"rollbackBoundary":"No runtime, delivery, side-effect, or incident status mutation in preview."}}', '2026-05-31T00:00:10.500Z', '', '', '2026-05-31T00:00:10.500Z');
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
 VALUES ('incident-nested-other-workflow', 'active', 'degraded', '["workflow"]', 'Nested workflow closeout regression', 'main', 'Nested workflow link belongs to another workflow.', 'Should not be readable through legacy fallback.', 'none', 'rollback boundary recorded', 'closeout evidence recorded', '[]', '{"payload":{"workflowId":"wf-console-operations-other"},"jsonRelPath":"bridge/incidents/incident-nested-other-workflow.json"}', '2026-05-31T00:00:11.000Z', '', '', '2026-05-31T00:00:12.000Z');
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
@@ -1883,7 +1883,7 @@ LIMIT 1;`);
     action: "workflow.incident.closeout.evidence.preview",
     workflowId,
     incidentId: "incident-legacy-closeout",
-    catClawAuditId: "audit-legacy-closeout"
+    protocolAuditId: "audit-legacy-closeout"
   });
   assert.equal(evidencePreviewMissing.schemaVersion, "workflow_incident_closeout_evidence_preview.v1");
   assert.equal(evidencePreviewMissing.readOnly, true);
@@ -1905,7 +1905,7 @@ LIMIT 1;`);
     workflowId,
     incidentId: "incident-legacy-closeout",
     humanGateEvidence: "hg-legacy-closeout-evidence",
-    catClawAuditId: "audit-legacy-closeout",
+    protocolAuditId: "audit-legacy-closeout",
     operatorReason: "猫爪复核 legacy incident，可进入 closeout 证据包准备。",
     rollbackBoundary: "补证动作只更新 incident evidence，不关闭 incident、不创建 Human Gate、不发 Telegram。"
   });
@@ -1934,7 +1934,7 @@ LIMIT 1;`);
   });
   assert.equal(legacyIncidentCloseoutAfterEvidence.status, "needs_closeout");
   assert.equal(legacyIncidentCloseoutAfterEvidence.checklist.find((row) => row.key === "human_gate_evidence")?.status, "pass");
-  assert.equal(legacyIncidentCloseoutAfterEvidence.checklist.find((row) => row.key === "cat_claw_audit")?.status, "pass");
+  assert.equal(legacyIncidentCloseoutAfterEvidence.checklist.find((row) => row.key === "protocol_audit")?.status, "pass");
   assert.equal(legacyIncidentCloseoutAfterEvidence.checklist.find((row) => row.key === "operator_reason")?.status, "pass");
   assert.equal(legacyIncidentCloseoutAfterEvidence.checklist.find((row) => row.key === "rollback_boundary")?.status, "pass");
   const closeoutEvidenceIncidentRows = sqliteJson(dbFile, "SELECT status, resolved_at AS resolvedAt, rollback_options AS rollbackOptions, timeline_json AS timelineJson, payload_json AS payloadJson FROM incident_states WHERE incident_id='incident-legacy-closeout';");
@@ -1948,7 +1948,7 @@ LIMIT 1;`);
   assert.equal(closeoutEvidencePayload.closeoutEvidence.workflowId, workflowId);
   assert.equal(closeoutEvidencePayload.closeoutEvidence.incidentId, "incident-legacy-closeout");
   assert.equal(closeoutEvidencePayload.closeoutEvidence.writeBoundary, "incident_closeout_evidence_only");
-  assert.equal(closeoutEvidencePayload.closeoutEvidence.catClawAuditId, "audit-legacy-closeout");
+  assert.equal(closeoutEvidencePayload.closeoutEvidence.protocolAuditId, "audit-legacy-closeout");
   const closeoutEvidenceEventRows = sqliteJson(dbFile, `
 SELECT event_type AS eventType, status, workflow_id AS workflowId, incident_id AS incidentId, payload_json AS payloadJson
 FROM workflow_events
@@ -2073,7 +2073,7 @@ LIMIT 1;`);
     packageKind: "human_gate_package",
     artifactId: "artifact-closeout-regression",
     humanGateId: "hg-dead-letter-link",
-    catClawAuditId: "audit-dead-letter-link",
+    protocolAuditId: "audit-dead-letter-link",
     operatorReason: "猫爪复核通过，持久化收口证据包。 token=closeout-artifact-secret"
   });
   assert.equal(closeoutArtifact.schemaVersion, "workflow_incident_closeout_artifact_result.v1");
@@ -2273,7 +2273,7 @@ ORDER BY artifact_id;`);
       incidentId: incidentLinked.incidentId,
       closeoutArtifactId: "artifact-closeout-regression",
       humanGateEvidence: "hg-console-dead-letter-link",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       operatorReason: "should not create Human Gate"
     }
   });
@@ -2288,7 +2288,7 @@ ORDER BY artifact_id;`);
       incidentId: incidentLinked.incidentId,
       packageKind: "human_gate_package",
       humanGateId: "hg-console-dead-letter-link",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       operatorReason: "should not persist"
     }
   });
@@ -2303,7 +2303,7 @@ ORDER BY artifact_id;`);
       kind: "message_flow_delivery_missing",
       refId: "flow-dead-delivery-completed",
       humanGateId: "hg-console-dead-letter-link",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       operatorReason: "should not run"
     }
   });
@@ -2372,7 +2372,7 @@ ORDER BY artifact_id;`);
       incidentId: incidentLinked.incidentId,
       closeoutArtifactId: "artifact-closeout-regression",
       humanGateEvidence: "hg-console-dead-letter-link",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       operatorReason: "console governed closeout Human Gate request token=closeout-hgate-secret"
     }
   });
@@ -2449,9 +2449,9 @@ LIMIT 1;`);
   assert.equal(gatewayTelegramDeliveryPreview.result.executionPolicy.previewOnly, true);
   assert.equal(gatewayTelegramDeliveryPreview.result.executionPolicy.governanceReady, false);
   assert.equal(gatewayTelegramDeliveryPreview.result.executionPolicy.evidencePresence.deliveryOperatorReason, false);
-  assert.equal(gatewayTelegramDeliveryPreview.result.executionPolicy.evidencePresence.catClawAudit, false);
+  assert.equal(gatewayTelegramDeliveryPreview.result.executionPolicy.evidencePresence.protocolAudit, false);
   assert.equal(Boolean(gatewayTelegramDeliveryPreview.result.governanceViolations.some((row) => row.code === "delivery_operator_reason_required")), true);
-  assert.equal(Boolean(gatewayTelegramDeliveryPreview.result.governanceViolations.some((row) => row.code === "cat_claw_audit_required")), true);
+  assert.equal(Boolean(gatewayTelegramDeliveryPreview.result.governanceViolations.some((row) => row.code === "protocol_audit_required")), true);
   assert.equal(gatewayTelegramDeliveryPreview.result.receiptPolicy.deliveryReceiptRequired, true);
   assert.equal(gatewayTelegramDeliveryPreview.result.receiptPolicy.humanGateDeliveryEvidence, "telegram_outbox_payload_delivery_required_before_closeout");
   assert.equal(JSON.stringify(gatewayTelegramDeliveryPreview).includes("closeout-hgate-secret"), false);
@@ -2526,7 +2526,7 @@ VALUES
     reason: "console governed failed requeue preview",
     payload: {
       outboxId: "outbox-requeue-preview-failed",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       deliveryApprovalId: "delivery-approval-preview-only",
       requeueOperatorReason: "explicit requeue reason"
     }
@@ -2536,7 +2536,7 @@ VALUES
   assert.equal(governedFailedRequeuePreview.result.recommendedNextAction, "telegram.outbox.delivery");
   assert.equal(governedFailedRequeuePreview.result.wouldUpdate.telegramOutboxStatus, "delivering_then_sent_or_failed");
   assert.equal(governedFailedRequeuePreview.result.executionPolicy.evidencePresence.requeueOperatorReason, true);
-  assert.equal(governedFailedRequeuePreview.result.executionPolicy.evidencePresence.catClawAudit, true);
+  assert.equal(governedFailedRequeuePreview.result.executionPolicy.evidencePresence.protocolAudit, true);
   assert.equal(governedFailedRequeuePreview.result.deliveryPreview.executionPolicy.evidencePresence.deliveryOperatorReason, true);
   const requeuePackagePreview = await gateway.handle({
     action: "telegram.outbox.requeue.execution_package.preview",
@@ -2544,7 +2544,7 @@ VALUES
     reason: "console failed requeue package preview",
     payload: {
       outboxId: "outbox-requeue-preview-failed",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       deliveryApprovalId: "delivery-approval-preview-only",
       requeueOperatorReason: "explicit requeue package reason"
     }
@@ -2574,7 +2574,7 @@ VALUES
   const directRequeuePackagePreview = await runAction(root, {
     action: "telegram.outbox.requeue.execution_package.preview",
     outboxId: "outbox-requeue-preview-failed",
-    catClawAuditId: "audit-console-dead-letter-link",
+    protocolAuditId: "audit-console-dead-letter-link",
     deliveryApprovalId: "delivery-approval-preview-only",
     requeueOperatorReason: "explicit direct requeue package reason"
   });
@@ -2587,7 +2587,7 @@ VALUES
     reason: "console alias requeue package preview",
     payload: {
       outboxId: "outbox-requeue-preview-failed",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       deliveryApprovalId: "delivery-approval-preview-only",
       requeueOperatorReason: "explicit alias requeue package reason"
     }
@@ -2603,7 +2603,7 @@ VALUES
     reason: "console stale requeue preview",
     payload: {
       outboxId: "outbox-requeue-preview-stale",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       requeueOperatorReason: "explicit stale requeue reason"
     }
   });
@@ -2618,7 +2618,7 @@ VALUES
     reason: "console fresh delivery requeue preview",
     payload: {
       outboxId: "outbox-requeue-preview-fresh",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       deliveryOperatorReason: "explicit fresh delivery reason"
     }
   });
@@ -2632,7 +2632,7 @@ VALUES
     reason: "console sent requeue preview",
     payload: {
       outboxId: "outbox-requeue-preview-sent",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       deliveryOperatorReason: "explicit sent delivery reason"
     }
   });
@@ -2659,7 +2659,7 @@ ORDER BY outbox_id;`);
     reason: "console telegram governed delivery preview",
     payload: {
       outboxId: gatewayCloseoutHumanGateWrite.result.telegramOutboxId,
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       deliveryApprovalId: "delivery-approval-preview-only",
       deliveryOperatorReason: "explicit delivery execution reason"
     }
@@ -2667,7 +2667,7 @@ ORDER BY outbox_id;`);
   assert.equal(gatewayTelegramDeliveryGovernedReady.ok, true);
   assert.equal(gatewayTelegramDeliveryGovernedReady.result.executionPolicy.governanceReady, true);
   assert.equal(gatewayTelegramDeliveryGovernedReady.result.executionPolicy.evidencePresence.deliveryOperatorReason, true);
-  assert.equal(gatewayTelegramDeliveryGovernedReady.result.executionPolicy.evidencePresence.catClawAudit, true);
+  assert.equal(gatewayTelegramDeliveryGovernedReady.result.executionPolicy.evidencePresence.protocolAudit, true);
   assert.equal(gatewayTelegramDeliveryGovernedReady.result.didSendTelegram, undefined);
   assert.equal(sqliteJson(dbFile, `
 SELECT status, payload_json LIKE '%deliveryClaim%' AS hasClaim
@@ -2709,7 +2709,7 @@ LIMIT 1;`)[0];
     payload: {
       workflowId: deliveryExecutionWorkflowId,
       outboxId: deliveryExecutionOutboxId,
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       deliveryApprovalId: "delivery-approval-preview-only",
       openclawBin: fakeTelegramBin
     }
@@ -2726,7 +2726,7 @@ LIMIT 1;`)[0];
     payload: {
       workflowId: deliveryExecutionWorkflowId,
       outboxId: deliveryExecutionOutboxId,
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       deliveryApprovalId: "delivery-approval-preview-only",
       deliveryOperatorReason: "explicit delivery execution reason",
       openclawBin: fakeTelegramBin
@@ -2766,7 +2766,7 @@ LIMIT 1;`)[0];
     payload: {
       workflowId: deliveryExecutionWorkflowId,
       outboxId: deliveryExecutionOutboxId,
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       deliveryApprovalId: "delivery-approval-preview-only",
       deliveryOperatorReason: "explicit delivery execution reason",
       openclawBin: fakeTelegramBin
@@ -2800,7 +2800,7 @@ LIMIT 1;`)[0];
   assert.equal(Boolean(deliveryPack.operations.deliveryExecutions.some((row) => row.outboxId === deliveryExecutionOutboxId)), true);
   sqliteExec(dbFile, `
 INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
-VALUES ('incident-delivery-closeout', 'monitoring', 'delivery', '["telegram"]', 'Delivery closeout regression', 'main', 'Telegram delivery receipt audit', 'Delivery completed and should be visible for closeout.', '', 'rollback boundary recorded', 'terminal delivery receipt complete', '[]', '{"workflowId":"${deliveryExecutionWorkflowId}","createdByAction":"workflow.incident.from_dead_letter","operatorReason":"delivery closeout regression","catClawAuditId":"audit-console-dead-letter-link","incidentCandidate":{"rollbackBoundary":"rollback boundary recorded"}}', '${deliveryExecutionCreatedAt}', '', '', '${deliveryExecutionCreatedAt}');`);
+VALUES ('incident-delivery-closeout', 'monitoring', 'delivery', '["telegram"]', 'Delivery closeout regression', 'main', 'Telegram delivery receipt audit', 'Delivery completed and should be visible for closeout.', '', 'rollback boundary recorded', 'terminal delivery receipt complete', '[]', '{"workflowId":"${deliveryExecutionWorkflowId}","createdByAction":"workflow.incident.from_dead_letter","operatorReason":"delivery closeout regression","protocolAuditId":"audit-console-dead-letter-link","incidentCandidate":{"rollbackBoundary":"rollback boundary recorded"}}', '${deliveryExecutionCreatedAt}', '', '', '${deliveryExecutionCreatedAt}');`);
   const deliveryCloseout = await deliveryReadModel.incidentCloseout(deliveryExecutionWorkflowId, { incidentId: "incident-delivery-closeout" });
   const deliveryCloseoutCheck = deliveryCloseout.checklist.find((row) => row.key === "telegram_delivery_receipt");
   assert.ok(deliveryCloseoutCheck);
@@ -2814,7 +2814,7 @@ VALUES ('incident-delivery-closeout', 'monitoring', 'delivery', '["telegram"]', 
       kind: "message_flow_delivery_missing",
       refId: "flow-dead-delivery-completed",
       humanGateId: "hg-console-dead-letter-link",
-      catClawAuditId: "audit-console-dead-letter-link",
+      protocolAuditId: "audit-console-dead-letter-link",
       operatorReason: "console governed write token=gateway-incident-secret"
     }
   });
@@ -3631,8 +3631,8 @@ WHERE object_id=${sqlValue(draftId)};`);
   sqliteExec(dbFile, `
 INSERT INTO workflow_v2_task_group_packages(package_id, workflow_id, plan_id, owner_review_id, task_owner_agent, task_group_agents_json, status, summary, manager_review_refs_json, owner_review_refs_json, artifact_refs_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
 VALUES ('package-v2-task-launch-contract', ${sqlValue(workflowId)}, 'plan-v2-task-launch-contract', '', 'cat_body', '["cat_body","cat_eyes"]', 'ready', 'V2 task group package callbackToken=must-not-persist-v2-summary', '[]', '[]', '[{"artifact":"artifact://v2-task-group","callbackToken":"must-not-persist-v2-artifact"}]', '[{"receipt":"receipt://v2-task-group","apiKey":"must-not-persist-v2-evidence"}]', ${sqlValue(JSON.stringify({ callbackToken: "must-not-persist-v2-task-group" }))}, 'cat_body', '2026-05-31T00:00:02.000Z', '2026-05-31T00:00:03.000Z');
-INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
-VALUES ('package-v2-hgate-task-launch-contract', ${sqlValue(workflowId)}, 'plan-v2-task-launch-contract', '', '', 'main', 'cat_claw', 'cat_claw_audited', '[{"optionId":"A","callbackToken":"must-not-persist-v2-option"},{"optionId":"B"}]', '[{"control":"pause","secret":"must-not-persist-v2-control"}]', '[{"receipt":"receipt://v2-hgate","accessToken":"must-not-persist-v2-hgate-evidence"}]', ${sqlValue(JSON.stringify({ summary: "V2 Human Gate package callbackToken=must-not-persist-v2-hgate-summary", callbackToken: "must-not-persist-v2-hgate" }))}, 'cat_claw', '2026-05-31T00:00:04.000Z', '2026-05-31T00:00:05.000Z');`);
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_protocol_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES ('package-v2-hgate-task-launch-contract', ${sqlValue(workflowId)}, 'plan-v2-task-launch-contract', '', '', 'main', 'cat_claw', 'protocol_audited', '[{"optionId":"A","callbackToken":"must-not-persist-v2-option"},{"optionId":"B"}]', '[{"control":"pause","secret":"must-not-persist-v2-control"}]', '[{"receipt":"receipt://v2-hgate","accessToken":"must-not-persist-v2-hgate-evidence"}]', ${sqlValue(JSON.stringify({ summary: "V2 Human Gate package callbackToken=must-not-persist-v2-hgate-summary", callbackToken: "must-not-persist-v2-hgate" }))}, 'cat_claw', '2026-05-31T00:00:04.000Z', '2026-05-31T00:00:05.000Z');`);
 
   const listed = await workflowTaskLaunchList(root, { workflowId });
   assert.equal(listed.count, 1);
@@ -5575,8 +5575,8 @@ async function testWorkflowV2ReadinessPreview() {
   sqliteExec(hgateFixture.dbFile, `
 UPDATE workflow_v2_plan_nodes SET status='reviewing' WHERE workflow_id='${hgateFixture.workflowId}';
 UPDATE workflow_v2_plans SET workflow_state='human_gate_request_due' WHERE workflow_id='${hgateFixture.workflowId}';
-INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
-VALUES ('package-v2-readiness-hgate', '${hgateFixture.workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'cat_claw_audited', '[]', '["pause","terminate"]', '["artifact://readiness-hgate"]', '{}', 'cat_claw', '2026-07-17T01:00:00.000Z', '2026-07-17T01:00:00.000Z');`);
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_protocol_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES ('package-v2-readiness-hgate', '${hgateFixture.workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'protocol_audited', '[]', '["pause","terminate"]', '["artifact://readiness-hgate"]', '{}', 'cat_claw', '2026-07-17T01:00:00.000Z', '2026-07-17T01:00:00.000Z');`);
   const humanGate = await runAction(hgateFixture.root, {
     action: "workflow.v2.readiness.preview",
     workflowId: hgateFixture.workflowId,
@@ -5589,7 +5589,7 @@ VALUES ('package-v2-readiness-hgate', '${hgateFixture.workflowId}', 'plan-v2-ker
   const draftHgateFixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-readiness-draft-human-gate");
   sqliteExec(draftHgateFixture.dbFile, `
 UPDATE workflow_v2_plan_nodes SET status='reviewing' WHERE workflow_id='${draftHgateFixture.workflowId}';
-INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_protocol_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
 VALUES ('package-v2-readiness-draft', '${draftHgateFixture.workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'draft', '[]', '[]', '["artifact://readiness-draft"]', '{}', 'cat_claw', '2026-07-17T01:01:00.000Z', '2026-07-17T01:01:00.000Z');`);
   const draftHumanGate = await runAction(draftHgateFixture.root, {
     action: "workflow.v2.readiness.preview",
@@ -5717,7 +5717,7 @@ VALUES ('checkpoint-v2-intervention-transition', '${workflowId}', 'active', 'v2'
     planId: "plan-v2-kernel",
     operatorReason: "pause before audited maintenance token abc",
     humanGateId: "hg-v2-intervention-transition",
-    catClawAuditId: "audit-v2-intervention-transition",
+    protocolAuditId: "audit-v2-intervention-transition",
     idempotencyKey: "idem-v2-intervention-pause",
     rollbackBoundary: "artifact://checkpoint-v2-intervention-transition",
     callerAgent: "local_codex",
@@ -5746,7 +5746,7 @@ VALUES ('checkpoint-v2-intervention-transition', '${workflowId}', 'active', 'v2'
       planId: "plan-v2-kernel",
       operatorReason: "conflicting replay must fail",
       humanGateId: "hg-v2-intervention-transition",
-      catClawAuditId: "audit-v2-intervention-transition",
+      protocolAuditId: "audit-v2-intervention-transition",
       idempotencyKey: "idem-v2-intervention-pause",
       rollbackBoundary: "artifact://checkpoint-v2-intervention-transition",
       callerAgent: "local_codex",
@@ -5763,7 +5763,7 @@ VALUES ('checkpoint-v2-intervention-transition', '${workflowId}', 'active', 'v2'
     planId: "plan-v2-kernel",
     operatorReason: "pause replay should not append history",
     humanGateId: "hg-v2-intervention-transition",
-    catClawAuditId: "audit-v2-intervention-transition",
+    protocolAuditId: "audit-v2-intervention-transition",
     idempotencyKey: "idem-v2-intervention-pause",
     rollbackBoundary: "artifact://checkpoint-v2-intervention-transition",
     callerAgent: "local_codex",
@@ -5780,7 +5780,7 @@ VALUES ('checkpoint-v2-intervention-transition', '${workflowId}', 'active', 'v2'
     planId: "plan-v2-kernel",
     operatorReason: "resume after maintenance",
     humanGateId: "hg-v2-intervention-transition",
-    catClawAuditId: "audit-v2-intervention-transition",
+    protocolAuditId: "audit-v2-intervention-transition",
     idempotencyKey: "idem-v2-intervention-resume",
     callerAgent: "local_codex",
     callerRuntime: "local_codex",
@@ -5801,7 +5801,7 @@ VALUES ('checkpoint-v2-intervention-transition', '${workflowId}', 'active', 'v2'
     planId: "plan-v2-kernel",
     operatorReason: "stop after audited closeout",
     humanGateId: "hg-v2-intervention-transition",
-    catClawAuditId: "audit-v2-intervention-transition",
+    protocolAuditId: "audit-v2-intervention-transition",
     idempotencyKey: "idem-v2-intervention-stop",
     rollbackBoundary: "artifact://checkpoint-v2-intervention-transition",
     callerAgent: "local_codex",
@@ -5829,7 +5829,7 @@ VALUES ('checkpoint-v2-intervention-transition', '${workflowId}', 'active', 'v2'
       planId: "plan-v2-kernel",
       operatorReason: "terminate while worker is active",
       humanGateId: "hg-v2-intervention-blocked",
-      catClawAuditId: "audit-v2-intervention-blocked",
+      protocolAuditId: "audit-v2-intervention-blocked",
       idempotencyKey: "idem-v2-intervention-blocked",
       rollbackBoundary: "artifact://checkpoint-v2-intervention-blocked",
       callerAgent: "local_codex",
@@ -5957,8 +5957,8 @@ async function testWorkflowSupervisorNextActionsPreview() {
   sqliteExec(hgateFixture.dbFile, `
 UPDATE workflow_v2_plan_nodes SET status='reviewing' WHERE workflow_id='${hgateFixture.workflowId}';
 UPDATE workflow_v2_plans SET workflow_state='human_gate_request_due' WHERE workflow_id='${hgateFixture.workflowId}';
-INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
-VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'cat_claw_audited', '[]', '["pause","terminate"]', '["artifact://supervisor-next-hgate"]', '{}', 'cat_claw', '2026-07-17T02:00:00.000Z', '2026-07-17T02:00:00.000Z');`);
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_protocol_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'protocol_audited', '[]', '["pause","terminate"]', '["artifact://supervisor-next-hgate"]', '{}', 'cat_claw', '2026-07-17T02:00:00.000Z', '2026-07-17T02:00:00.000Z');`);
   const humanGate = await runAction(hgateFixture.root, {
     action: "workflow.supervisor.next_actions.preview",
     workflowId: hgateFixture.workflowId,
@@ -6118,7 +6118,7 @@ VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-
   const draftFixture = await setupWorkflowV2KernelPlanFixture("workflow-supervisor-next-actions-draft-hgate");
   sqliteExec(draftFixture.dbFile, `
 UPDATE workflow_v2_plan_nodes SET status='reviewing' WHERE workflow_id='${draftFixture.workflowId}';
-INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_protocol_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
 VALUES ('package-supervisor-next-draft', '${draftFixture.workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'draft', '[]', '[]', '["artifact://supervisor-next-draft"]', '{}', 'cat_claw', '2026-07-17T02:01:00.000Z', '2026-07-17T02:01:00.000Z');`);
   const draft = await runAction(draftFixture.root, {
     action: "workflow.supervisor.next_actions.preview",
@@ -6126,7 +6126,7 @@ VALUES ('package-supervisor-next-draft', '${draftFixture.workflowId}', 'plan-v2-
     planId: "plan-v2-kernel"
   });
   assert.equal(draft.decision, "waiting_protocol_audit");
-  assert.equal(draft.candidates[0].followUpAction, "workflow.v2.cat_claw_package_audit.preview");
+  assert.equal(draft.candidates[0].followUpAction, "workflow.v2.protocol_package_audit.preview");
   assert.equal(draft.candidates[0].input.packageId, "package-supervisor-next-draft");
 
   const blockedFixture = await setupWorkflowV2KernelPlanFixture("workflow-supervisor-next-actions-blocked");
@@ -7412,8 +7412,8 @@ async function setupWorkflowV2GovernanceFixture(name = "workflow-v2-governance")
     summary: "Owner plus Cat Body task group package is ready for Cat Brain governance audit.",
     evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
   });
-  const catBrainAudit = await runAction(fixture.root, {
-    action: "workflow.v2.cat_brain_audit.record",
+  const governanceAudit = await runAction(fixture.root, {
+    action: "workflow.v2.governance_audit.record",
     workflowId: fixture.workflowId,
     planId: "plan-v2-kernel",
     taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
@@ -7422,18 +7422,18 @@ async function setupWorkflowV2GovernanceFixture(name = "workflow-v2-governance")
     summary: "Cat Brain governance audit approved the evidence chain.",
     evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
   });
-  const catClawAudit = await runAction(fixture.root, {
-    action: "workflow.v2.cat_claw_audit.record",
+  const protocolAudit = await runAction(fixture.root, {
+    action: "workflow.v2.protocol_audit.record",
     workflowId: fixture.workflowId,
     planId: "plan-v2-kernel",
-    catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+    governanceAuditId: governanceAudit.governanceAudit.auditId,
     callerAgent: "cat_claw",
     decision: "protocol_ready",
-    summary: "Cat Claw protocol audit passed; Human Gate package can be prepared.",
+    summary: "Protocol audit passed; Human Gate package can be prepared.",
     checks: ["options_present", "evidence_refs_present", "rollback_boundary_present"],
     evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
   });
-  return { ...fixture, ownerReview, taskGroupPackage, catBrainAudit, catClawAudit };
+  return { ...fixture, ownerReview, taskGroupPackage, governanceAudit, protocolAudit };
 }
 
 function workflowV2KernelHumanGateOptions() {
@@ -7506,8 +7506,8 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(closeoutCandidate.closeoutPreview.requiredDecision, "secretary_closeout_required");
 
   const governanceFixture = await setupWorkflowV2GovernanceFixture("workflow-governance-role-bindings-audit");
-  const roleBoundCatBrainAudit = await runAction(governanceFixture.root, {
-    action: "workflow.v2.cat_brain_audit.record",
+  const roleBoundGovernanceAudit = await runAction(governanceFixture.root, {
+    action: "workflow.v2.governance_audit.record",
     workflowId: governanceFixture.workflowId,
     planId: "plan-v2-kernel",
     taskGroupPackageId: governanceFixture.taskGroupPackage.taskGroupPackage.packageId,
@@ -7517,27 +7517,27 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     summary: "Role-bound governance audit.",
     evidenceRefs: ["artifact://role-bound-governance"]
   });
-  assert.equal(roleBoundCatBrainAudit.valid, true);
-  assert.equal(roleBoundCatBrainAudit.catBrainAudit.catBrainAgent, "cat_heart");
-  assert.equal(roleBoundCatBrainAudit.catBrainAudit.callerAgent, "cat_heart");
-  const roleBoundCatClawAudit = await runAction(governanceFixture.root, {
-    action: "workflow.v2.cat_claw_audit.record",
+  assert.equal(roleBoundGovernanceAudit.valid, true);
+  assert.equal(roleBoundGovernanceAudit.governanceAudit.catBrainAgent, "cat_heart");
+  assert.equal(roleBoundGovernanceAudit.governanceAudit.callerAgent, "cat_heart");
+  const roleBoundProtocolAudit = await runAction(governanceFixture.root, {
+    action: "workflow.v2.protocol_audit.record",
     workflowId: governanceFixture.workflowId,
     planId: "plan-v2-kernel",
-    catBrainAuditId: roleBoundCatBrainAudit.catBrainAudit.auditId,
+    governanceAuditId: roleBoundGovernanceAudit.governanceAudit.auditId,
     callerAgent: "local_codex",
     governanceRoles: roleBindings,
     decision: "protocol_ready",
     summary: "Role-bound protocol audit.",
     evidenceRefs: ["artifact://role-bound-governance"]
   });
-  assert.equal(roleBoundCatClawAudit.valid, true);
-  assert.equal(roleBoundCatClawAudit.catClawAudit.catClawAgent, "local_codex");
-  assert.equal(roleBoundCatClawAudit.catClawAudit.callerAgent, "local_codex");
+  assert.equal(roleBoundProtocolAudit.valid, true);
+  assert.equal(roleBoundProtocolAudit.protocolAudit.catClawAgent, "local_codex");
+  assert.equal(roleBoundProtocolAudit.protocolAudit.callerAgent, "local_codex");
   const roleBoundHumanGatePackage = await runAction(governanceFixture.root, {
     action: "workflow.v2.human_gate_package.record",
     workflowId: governanceFixture.workflowId,
-    sourceCatClawAuditId: roleBoundCatClawAudit.catClawAudit.auditId,
+    sourceProtocolAuditId: roleBoundProtocolAudit.protocolAudit.auditId,
     createdBy: "local_codex",
     governanceRoles: roleBindings,
     options: workflowV2KernelHumanGateOptions()
@@ -7562,10 +7562,10 @@ CREATE TABLE workflow_v2_human_gate_packages (
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL DEFAULT '',
   source_review_id TEXT NOT NULL DEFAULT '',
-  source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  source_protocol_audit_id TEXT NOT NULL DEFAULT '',
   cat_brain_agent TEXT NOT NULL DEFAULT 'main',
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'cat_claw_audited')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited')),
   options_json TEXT NOT NULL DEFAULT '[]',
   required_controls_json TEXT NOT NULL DEFAULT '[]',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
@@ -7575,11 +7575,11 @@ CREATE TABLE workflow_v2_human_gate_packages (
   updated_at TEXT NOT NULL DEFAULT ''
 );
 INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, status, options_json, required_controls_json, evidence_refs_json, created_by, created_at, updated_at)
-VALUES ('legacy-package-status-check', 'wf-legacy-status-check', 'plan-legacy-status-check', 'cat_claw_audited', '[]', '[]', '[]', 'cat_claw', '2026-07-22T00:00:00.000Z', '2026-07-22T00:00:00.000Z');`);
+VALUES ('legacy-package-status-check', 'wf-legacy-status-check', 'plan-legacy-status-check', 'protocol_audited', '[]', '[]', '[]', 'cat_claw', '2026-07-22T00:00:00.000Z', '2026-07-22T00:00:00.000Z');`);
   await runAction(migrationRoot, { action: "workflow.status" });
   const migratedTableSql = sqliteJson(migrationDbFile, "SELECT sql FROM sqlite_master WHERE type='table' AND name='workflow_v2_human_gate_packages' LIMIT 1;")[0].sql;
   assert.equal(migratedTableSql.includes("'protocol_audited'"), true);
-  assert.equal(sqliteCount(migrationDbFile, "workflow_v2_human_gate_packages", "package_id='legacy-package-status-check' AND status='cat_claw_audited'"), 1);
+  assert.equal(sqliteCount(migrationDbFile, "workflow_v2_human_gate_packages", "package_id='legacy-package-status-check' AND status='protocol_audited'"), 1);
   sqliteExec(migrationDbFile, `
 INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, status, options_json, required_controls_json, evidence_refs_json, created_by, created_at, updated_at)
 VALUES ('neutral-package-status-check', 'wf-legacy-status-check', 'plan-legacy-status-check', 'protocol_audited', '[]', '[]', '[]', 'local_codex', '2026-07-22T00:01:00.000Z', '2026-07-22T00:01:00.000Z');`);
@@ -7872,29 +7872,29 @@ FROM workflow_agent_runs WHERE agent_run_id='agent-run-state' LIMIT 1;`)[0];
 async function testWorkflowV2HumanGateStateHelpers() {
   const missingRoot = await tempRoot("workflow-v2-human-gate-state-missing");
   const missingPaths = { dbFile: path.join(missingRoot, "tracking.db") };
-  assert.equal(await workflowV2CatClawAuditRowById(missingPaths, "audit-missing"), null);
+  assert.equal(await workflowV2ProtocolAuditRowById(missingPaths, "audit-missing"), null);
   assert.equal(await workflowV2HumanGatePackageRow(missingPaths, { packageId: "package-missing" }), null);
 
   const root = await tempRoot("workflow-v2-human-gate-state");
   await runAction(root, { action: "workflow.init" });
   const dbFile = path.join(root, "tracking.db");
   const paths = { dbFile };
-  assert.equal(await workflowV2CatClawAuditRowById(paths, ""), null);
+  assert.equal(await workflowV2ProtocolAuditRowById(paths, ""), null);
   assert.equal(await workflowV2HumanGatePackageRow(paths, {}), null);
 
   sqliteExec(dbFile, `
-INSERT INTO workflow_v2_cat_claw_audits(audit_id, workflow_id, plan_id, cat_brain_audit_id, cat_claw_agent, decision, summary, checks_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+INSERT INTO workflow_v2_protocol_audits(audit_id, workflow_id, plan_id, governance_audit_id, cat_claw_agent, decision, summary, checks_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
 VALUES ('audit-hgate-state', 'wf-hgate-state', 'plan-hgate-state', 'brain-audit-hgate-state', 'cat_claw', 'protocol_ready', 'Human Gate state audit ready', '["options_present"]', '["artifact://hgate-state"]', '{"scope":"state"}', 'cat_claw', '2026-07-12T04:00:00.000Z', '2026-07-12T04:00:00.000Z');
-INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_protocol_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
 VALUES
-  ('package-hgate-state-old', 'wf-hgate-state', 'plan-hgate-state', '', 'audit-hgate-state', 'main', 'cat_claw', 'cat_claw_audited', '[]', '["pause"]', '["artifact://old"]', '{"order":"old"}', 'cat_claw', '2026-07-12T04:01:00.000Z', '2026-07-12T04:01:00.000Z'),
-  ('package-hgate-state-latest', 'wf-hgate-state', 'plan-hgate-state', '', 'audit-hgate-state', 'main', 'cat_claw', 'cat_claw_audited', '[]', '["pause","terminate"]', '["artifact://latest"]', '{"order":"latest"}', 'cat_claw', '2026-07-12T04:02:00.000Z', '2026-07-12T04:02:00.000Z'),
+  ('package-hgate-state-old', 'wf-hgate-state', 'plan-hgate-state', '', 'audit-hgate-state', 'main', 'cat_claw', 'protocol_audited', '[]', '["pause"]', '["artifact://old"]', '{"order":"old"}', 'cat_claw', '2026-07-12T04:01:00.000Z', '2026-07-12T04:01:00.000Z'),
+  ('package-hgate-state-latest', 'wf-hgate-state', 'plan-hgate-state', '', 'audit-hgate-state', 'main', 'cat_claw', 'protocol_audited', '[]', '["pause","terminate"]', '["artifact://latest"]', '{"order":"latest"}', 'cat_claw', '2026-07-12T04:02:00.000Z', '2026-07-12T04:02:00.000Z'),
   ('package-hgate-state-other', 'wf-hgate-state', 'plan-other', '', 'audit-hgate-state', 'main', 'cat_claw', 'draft', '[]', '[]', '[]', '{"order":"other"}', 'cat_claw', '2026-07-12T04:03:00.000Z', '2026-07-12T04:03:00.000Z');`);
 
-  const audit = await workflowV2CatClawAuditRowById(paths, "audit-hgate-state");
+  const audit = await workflowV2ProtocolAuditRowById(paths, "audit-hgate-state");
   assert.equal(audit.audit_id, "audit-hgate-state");
   assert.equal(audit.decision, "protocol_ready");
-  assert.equal(await workflowV2CatClawAuditRowById(paths, "audit-unknown"), null);
+  assert.equal(await workflowV2ProtocolAuditRowById(paths, "audit-unknown"), null);
 
   const byPackageId = await workflowV2HumanGatePackageRow(paths, { humanGatePackageId: "package-hgate-state-old" });
   assert.equal(byPackageId.package_id, "package-hgate-state-old");
@@ -7903,7 +7903,7 @@ VALUES
   const latestByFilters = await workflowV2HumanGatePackageRow(paths, {
     workflowId: "wf-hgate-state",
     planId: "plan-hgate-state",
-    sourceCatClawAuditId: "audit-hgate-state"
+    sourceProtocolAuditId: "audit-hgate-state"
   });
   assert.equal(latestByFilters.package_id, "package-hgate-state-latest");
   assert.equal(JSON.parse(latestByFilters.payload_json).order, "latest");
@@ -7911,7 +7911,7 @@ VALUES
   const byAliasFilters = await workflowV2HumanGatePackageRow(paths, {
     workflow_id: "wf-hgate-state",
     plan_id: "plan-hgate-state",
-    cat_claw_audit_id: "audit-hgate-state"
+    protocol_audit_id: "audit-hgate-state"
   });
   assert.equal(byAliasFilters.package_id, "package-hgate-state-latest");
 
@@ -8539,8 +8539,8 @@ async function testWorkflowV2FixedTemplatePlanGate() {
     templateId,
     version: 1,
     targetStatus: "default",
-    catBrainAuditId: "brain-fixed-template",
-    catClawAuditId: "claw-fixed-template",
+    governanceAuditId: "brain-fixed-template",
+    protocolAuditId: "claw-fixed-template",
     evidenceRefs: ["artifact://fixed-template/eval"]
   });
   await assertRejectsMessage(
@@ -8870,8 +8870,8 @@ async function testWorkflowTemplateSelfEvolution() {
     templateId,
     version: 1,
     targetStatus: "default",
-    catBrainAuditId: "brain-template-v1",
-    catClawAuditId: "claw-template-v1",
+    governanceAuditId: "brain-template-v1",
+    protocolAuditId: "claw-template-v1",
     evidenceRefs: ["artifact://template/eval"]
   });
   assert.equal(sqliteJson(dbFile, `SELECT default_version AS defaultVersion FROM workflow_v2_template_specs WHERE template_id='${templateId}' LIMIT 1;`)[0].defaultVersion, 1);
@@ -8886,8 +8886,8 @@ async function testWorkflowTemplateSelfEvolution() {
       templateId,
       version: 2,
       targetStatus: "active",
-      catBrainAuditId: "brain-template-v2-no-eval",
-      catClawAuditId: "claw-template-v2-no-eval"
+      governanceAuditId: "brain-template-v2-no-eval",
+      protocolAuditId: "claw-template-v2-no-eval"
     }),
     /workflow template promotion blocked: eval_evidence/
   );
@@ -8920,8 +8920,8 @@ async function testWorkflowTemplateSelfEvolution() {
     templateId,
     version: 2,
     targetStatus: "default",
-    catBrainAuditId: "brain-template-v2",
-    catClawAuditId: "claw-template-v2"
+    governanceAuditId: "brain-template-v2",
+    protocolAuditId: "claw-template-v2"
   });
   assert.equal(highRiskPromotionPreview.valid, false);
   assert.equal(Boolean(highRiskPromotionPreview.requirements.some((item) => item.type === "human_gate")), true);
@@ -8931,8 +8931,8 @@ async function testWorkflowTemplateSelfEvolution() {
       templateId,
       version: 2,
       targetStatus: "default",
-      catBrainAuditId: "brain-template-v2",
-      catClawAuditId: "claw-template-v2"
+      governanceAuditId: "brain-template-v2",
+      protocolAuditId: "claw-template-v2"
     }),
     /workflow template promotion blocked: human_gate/
   );
@@ -8941,8 +8941,8 @@ async function testWorkflowTemplateSelfEvolution() {
     templateId,
     version: 2,
     targetStatus: "default",
-    catBrainAuditId: "brain-template-v2",
-    catClawAuditId: "claw-template-v2",
+    governanceAuditId: "brain-template-v2",
+    protocolAuditId: "claw-template-v2",
     humanGateId: "hg-template-v2"
   });
   assert.equal(promotedV2.previousVersion, 1);
@@ -8963,15 +8963,15 @@ async function testWorkflowTemplateSelfEvolution() {
       templateId,
       rollbackToVersion: 1
     }),
-    /workflow template rollback blocked: rollback_reason,cat_brain_review,cat_claw_audit,human_gate/
+    /workflow template rollback blocked: rollback_reason,governance_audit,protocol_audit,human_gate/
   );
   const rollback = await runAction(root, {
     action: "workflow.template.rollback.record",
     templateId,
     rollbackToVersion: 1,
     rollbackReason: "restore previous approved template after high-risk candidate validation",
-    catBrainAuditId: "brain-template-rollback",
-    catClawAuditId: "claw-template-rollback",
+    governanceAuditId: "brain-template-rollback",
+    protocolAuditId: "claw-template-rollback",
     humanGateId: "hg-template-rollback"
   });
   assert.equal(rollback.rollbackVersion, 1);
@@ -9862,51 +9862,51 @@ async function testWorkflowV2ReviewChainFocused() {
   });
   assert.equal(taskGroupPackage.taskGroupPackage.status, "ready");
   const semanticCheckCountsBefore = {
-    catBrainAudits: sqliteCount(dbFile, "workflow_v2_cat_brain_audits"),
+    governanceAudits: sqliteCount(dbFile, "workflow_v2_governance_audits"),
     outbox: sqliteCount(dbFile, "telegram_outbox"),
     humanGate: sqliteCount(dbFile, "human_gate_batches")
   };
   const validSemanticCheckPreview = await runAction(root, {
-    action: "workflow.v2.cat_brain_semantic_check.preview",
+    action: "workflow.v2.governance_semantic_check.preview",
     workflowId,
     planId: "plan-v2-kernel",
     taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
-    rollbackRefs: ["checkpoint://workflow-v2/pre-cat-brain-audit"],
+    rollbackRefs: ["checkpoint://workflow-v2/pre-governance-audit"],
     evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
   });
   assert.equal(validSemanticCheckPreview.valid, true);
   assert.equal(validSemanticCheckPreview.readOnly, true);
-  assert.equal(validSemanticCheckPreview.wouldCreate.catBrainAudits, 0);
-  assert.equal(validSemanticCheckPreview.semanticCheck.nextAllowedAction, "workflow.v2.cat_brain_audit.record");
+  assert.equal(validSemanticCheckPreview.wouldCreate.governanceAudits, 0);
+  assert.equal(validSemanticCheckPreview.semanticCheck.nextAllowedAction, "workflow.v2.governance_audit.record");
   assert.equal(validSemanticCheckPreview.checks.find((row) => row.key === "manager_artifacts_present")?.status, "pass");
   const aliasSemanticCheckPreview = await runAction(root, {
     action: "workflow.v2.semantic-check.preview",
     workflowId,
     planId: "plan-v2-kernel",
     taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
-    rollbackRefs: ["checkpoint://workflow-v2/pre-cat-brain-audit"]
+    rollbackRefs: ["checkpoint://workflow-v2/pre-governance-audit"]
   });
-  assert.equal(aliasSemanticCheckPreview.action, "workflow.v2.cat_brain_semantic_check.preview");
+  assert.equal(aliasSemanticCheckPreview.action, "workflow.v2.governance_semantic_check.preview");
   assert.equal(aliasSemanticCheckPreview.valid, true);
   const ambiguousSemanticCheckPreview = await runAction(root, {
-    action: "workflow.v2.cat_brain_semantic_check.preview",
+    action: "workflow.v2.governance_semantic_check.preview",
     workflowId,
     planId: "plan-v2-kernel"
   });
   assert.equal(ambiguousSemanticCheckPreview.valid, false);
   assert.equal(Boolean(ambiguousSemanticCheckPreview.violations.some((item) => item.key === "exact_selector_present")), true);
   const mixedSelectorSemanticCheckPreview = await runAction(root, {
-    action: "workflow.v2.cat-brain-semantic-check.preview",
+    action: "workflow.v2.governance-semantic-check.preview",
     workflowId,
     planId: "plan-v2-kernel",
     taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
     ownerReviewId: ownerReview.ownerReview.reviewId,
-    rollbackRefs: ["checkpoint://workflow-v2/pre-cat-brain-audit"]
+    rollbackRefs: ["checkpoint://workflow-v2/pre-governance-audit"]
   });
   assert.equal(mixedSelectorSemanticCheckPreview.valid, false);
   assert.equal(Boolean(mixedSelectorSemanticCheckPreview.violations.some((item) => item.key === "exact_selector_present")), true);
   const noRollbackSemanticCheckPreview = await runAction(root, {
-    action: "workflow.v2.cat_brain_semantic_check.preview",
+    action: "workflow.v2.governance_semantic_check.preview",
     workflowId,
     planId: "plan-v2-kernel",
     taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId
@@ -9914,24 +9914,24 @@ async function testWorkflowV2ReviewChainFocused() {
   assert.equal(noRollbackSemanticCheckPreview.valid, false);
   assert.equal(Boolean(noRollbackSemanticCheckPreview.violations.some((item) => item.key === "rollback_anchors_present")), true);
   assert.deepEqual({
-    catBrainAudits: sqliteCount(dbFile, "workflow_v2_cat_brain_audits"),
+    governanceAudits: sqliteCount(dbFile, "workflow_v2_governance_audits"),
     outbox: sqliteCount(dbFile, "telegram_outbox"),
     humanGate: sqliteCount(dbFile, "human_gate_batches")
   }, semanticCheckCountsBefore);
   await assertRejectsMessage(
     () => runAction(root, {
-      action: "workflow.v2.cat_brain_audit.record",
+      action: "workflow.v2.governance_audit.record",
       workflowId,
       planId: "plan-v2-kernel",
       taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
       callerAgent: "cat_body",
       decision: "approved",
-      summary: "Unauthorized Cat Brain audit."
+      summary: "Unauthorized Governance audit."
     }),
     /caller_agent_not_authorized/
   );
-  const catBrainAudit = await runAction(root, {
-    action: "workflow.v2.cat_brain_audit.record",
+  const governanceAudit = await runAction(root, {
+    action: "workflow.v2.governance_audit.record",
     workflowId,
     planId: "plan-v2-kernel",
     taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
@@ -9939,13 +9939,13 @@ async function testWorkflowV2ReviewChainFocused() {
     decision: "approved",
     summary: "Cat Brain governance audit approved the evidence chain."
   });
-  assert.equal(catBrainAudit.catBrainAudit.decision, "approved");
+  assert.equal(governanceAudit.governanceAudit.decision, "approved");
   await assertRejectsMessage(
     () => runAction(root, {
-      action: "workflow.v2.cat_claw_audit.record",
+      action: "workflow.v2.protocol_audit.record",
       workflowId,
       planId: "plan-v2-kernel",
-      catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+      governanceAuditId: governanceAudit.governanceAudit.auditId,
       callerAgent: "catclaw",
       decision: "protocol_ready",
       summary: "Retired catclaw id must be rejected.",
@@ -9953,29 +9953,29 @@ async function testWorkflowV2ReviewChainFocused() {
     }),
     /retired agent id catclaw is invalid/
   );
-  const catClawAudit = await runAction(root, {
-    action: "workflow.v2.cat_claw_audit.record",
+  const protocolAudit = await runAction(root, {
+    action: "workflow.v2.protocol_audit.record",
     workflowId,
     planId: "plan-v2-kernel",
-    catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+    governanceAuditId: governanceAudit.governanceAudit.auditId,
     callerAgent: "cat_claw",
     decision: "protocol_ready",
-    summary: "Cat Claw protocol audit passed; Human Gate package can be prepared.",
+    summary: "Protocol audit passed; Human Gate package can be prepared.",
     evidenceRefs: ["artifact://workflow-v2/owner-package.json"]
   });
-  assert.equal(catClawAudit.catClawAudit.decision, "protocol_ready");
+  assert.equal(protocolAudit.protocolAudit.decision, "protocol_ready");
   planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
   assert.equal(planState.workflowState, "human_gate_request_due");
 }
 
 async function testWorkflowV2GovernanceHumanGateBridgeFocused() {
   const fixture = await setupWorkflowV2GovernanceFixture("workflow-v2-hgate-focused");
-  const { root, dbFile, workflowId, catClawAudit } = fixture;
+  const { root, dbFile, workflowId, protocolAudit } = fixture;
   await assertRejectsMessage(
     () => runAction(root, {
       action: "workflow.v2.human_gate_package.record",
       workflowId,
-      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
       status: "submitted",
       createdBy: "cat_claw"
     }),
@@ -9985,7 +9985,7 @@ async function testWorkflowV2GovernanceHumanGateBridgeFocused() {
     () => runAction(root, {
       action: "workflow.v2.human_gate_package.record",
       workflowId,
-      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
       createdBy: "cat_claw"
     }),
     /human_gate_options_required/
@@ -9993,7 +9993,7 @@ async function testWorkflowV2GovernanceHumanGateBridgeFocused() {
   const humanGatePackage = await runAction(root, {
     action: "workflow.v2.human_gate_package.record",
     workflowId,
-    sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+    sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
     createdBy: "cat_claw",
     options: workflowV2KernelHumanGateOptions()
   });
@@ -10010,13 +10010,13 @@ async function testWorkflowV2GovernanceHumanGateBridgeFocused() {
     evidenceRefs: [`artifact://workflow-v2/package-audit-option-${index + 1}.json`]
   }));
   const packageAuditPreview = await runAction(root, {
-    action: "workflow.v2.cat_claw_package_audit.preview",
+    action: "workflow.v2.protocol_package_audit.preview",
     humanGatePackage: {
       packageId: "package-audit-inline-valid",
       workflowId,
       planId: "plan-v2-kernel",
-      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
-      status: "cat_claw_audited",
+      sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
+      status: "protocol_audited",
       options: auditedOptions,
       requiredControls: ["pause", "terminate"],
       evidenceRefs: ["artifact://workflow-v2/owner-package.json"],
@@ -10036,32 +10036,32 @@ async function testWorkflowV2GovernanceHumanGateBridgeFocused() {
       packageId: "package-audit-inline-alias",
       workflowId,
       planId: "plan-v2-kernel",
-      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
-      status: "cat_claw_audited",
+      sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
+      status: "protocol_audited",
       options: auditedOptions,
       requiredControls: ["pause", "terminate"],
       evidenceRefs: ["artifact://workflow-v2/owner-package.json"]
     }
   });
-  assert.equal(aliasPackageAuditPreview.action, "workflow.v2.cat_claw_package_audit.preview");
+  assert.equal(aliasPackageAuditPreview.action, "workflow.v2.protocol_package_audit.preview");
   assert.equal(aliasPackageAuditPreview.valid, true);
   const ambiguousPackageAuditPreview = await runAction(root, {
-    action: "workflow.v2.cat_claw_package_audit.preview",
+    action: "workflow.v2.protocol_package_audit.preview",
     workflowId,
     planId: "plan-v2-kernel",
-    sourceCatClawAuditId: catClawAudit.catClawAudit.auditId
+    sourceProtocolAuditId: protocolAudit.protocolAudit.auditId
   });
   assert.equal(ambiguousPackageAuditPreview.valid, false);
   assert.equal(Boolean(ambiguousPackageAuditPreview.violations.some((item) => item.code === "exact_selector_or_inline_package")), true);
   const mixedSelectorPackageAuditPreview = await runAction(root, {
-    action: "workflow.v2.cat_claw_package_audit.preview",
+    action: "workflow.v2.protocol_package_audit.preview",
     packageId: humanGatePackage.humanGatePackage.packageId,
     humanGatePackage: {
       packageId: "package-audit-inline-mixed",
       workflowId,
       planId: "plan-v2-kernel",
-      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
-      status: "cat_claw_audited",
+      sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
+      status: "protocol_audited",
       options: auditedOptions,
       requiredControls: ["pause", "terminate"],
       evidenceRefs: ["artifact://workflow-v2/owner-package.json"]
@@ -10070,13 +10070,13 @@ async function testWorkflowV2GovernanceHumanGateBridgeFocused() {
   assert.equal(mixedSelectorPackageAuditPreview.valid, false);
   assert.equal(Boolean(mixedSelectorPackageAuditPreview.violations.some((item) => item.code === "exact_selector_or_inline_package")), true);
   const poisonedPackageAuditPreview = await runAction(root, {
-    action: "workflow.v2.cat_claw_package_audit.preview",
+    action: "workflow.v2.protocol_package_audit.preview",
     humanGatePackage: {
       packageId: "package-audit-inline-poisoned",
       workflowId,
       planId: "plan-v2-kernel",
-      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
-      status: "cat_claw_audited",
+      sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
+      status: "protocol_audited",
       options: auditedOptions,
       requiredControls: ["pause", "terminate"],
       evidenceRefs: ["artifact://workflow-v2/owner-package.json"],
@@ -10999,18 +10999,18 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
 
   await assertRejectsMessage(
     () => runAction(root, {
-      action: "workflow.v2.cat_brain_audit.record",
+      action: "workflow.v2.governance_audit.record",
       workflowId,
       planId: "plan-v2-kernel",
       taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
       callerAgent: "cat_body",
       decision: "approved",
-      summary: "Unauthorized Cat Brain audit."
+      summary: "Unauthorized Governance audit."
     }),
     /caller_agent_not_authorized/
   );
-  const catBrainAudit = await runAction(root, {
-    action: "workflow.v2.cat_brain_audit.record",
+  const governanceAudit = await runAction(root, {
+    action: "workflow.v2.governance_audit.record",
     workflowId,
     planId: "plan-v2-kernel",
     taskGroupPackageId: taskGroupPackage.taskGroupPackage.packageId,
@@ -11019,30 +11019,30 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
     summary: "Cat Brain governance audit approved the evidence chain.",
     evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
   });
-  assert.equal(catBrainAudit.valid, true);
-  assert.equal(catBrainAudit.catBrainAudit.decision, "approved");
+  assert.equal(governanceAudit.valid, true);
+  assert.equal(governanceAudit.governanceAudit.decision, "approved");
   planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
   assert.equal(planState.workflowState, "waiting_protocol_audit");
 
   await assertRejectsMessage(
     () => runAction(root, {
-      action: "workflow.v2.cat_claw_audit.record",
+      action: "workflow.v2.protocol_audit.record",
       workflowId,
       planId: "plan-v2-kernel",
-      catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+      governanceAuditId: governanceAudit.governanceAudit.auditId,
       callerAgent: "cat_body",
       decision: "protocol_ready",
-      summary: "Unauthorized Cat Claw audit.",
+      summary: "Unauthorized Protocol audit.",
       evidenceRefs: ["artifact://workflow-v2/owner-package.json"]
     }),
     /caller_agent_not_authorized/
   );
   await assertRejectsMessage(
     () => runAction(root, {
-      action: "workflow.v2.cat_claw_audit.record",
+      action: "workflow.v2.protocol_audit.record",
       workflowId,
       planId: "plan-v2-kernel",
-      catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+      governanceAuditId: governanceAudit.governanceAudit.auditId,
       callerAgent: "catclaw",
       decision: "protocol_ready",
       summary: "Retired catclaw id must be rejected.",
@@ -11050,19 +11050,19 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
     }),
     /retired agent id catclaw is invalid/
   );
-  const catClawAudit = await runAction(root, {
-    action: "workflow.v2.cat_claw_audit.record",
+  const protocolAudit = await runAction(root, {
+    action: "workflow.v2.protocol_audit.record",
     workflowId,
     planId: "plan-v2-kernel",
-    catBrainAuditId: catBrainAudit.catBrainAudit.auditId,
+    governanceAuditId: governanceAudit.governanceAudit.auditId,
     callerAgent: "cat_claw",
     decision: "protocol_ready",
-    summary: "Cat Claw protocol audit passed; Human Gate package can be prepared.",
+    summary: "Protocol audit passed; Human Gate package can be prepared.",
     checks: ["options_present", "evidence_refs_present", "rollback_boundary_present"],
     evidenceRefs: ["artifact://workflow-v2/owner-package.json", "receipt://workflow-v2/manager-review"]
   });
-  assert.equal(catClawAudit.valid, true);
-  assert.equal(catClawAudit.catClawAudit.decision, "protocol_ready");
+  assert.equal(protocolAudit.valid, true);
+  assert.equal(protocolAudit.protocolAudit.decision, "protocol_ready");
   planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
   assert.equal(planState.workflowState, "human_gate_request_due");
 
@@ -11070,7 +11070,7 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
     () => runAction(root, {
       action: "workflow.v2.human_gate_package.record",
       workflowId,
-      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
       status: "submitted",
       createdBy: "cat_claw"
     }),
@@ -11081,16 +11081,16 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
       action: "workflow.v2.human_gate_package.record",
       workflowId,
       planId: "plan-v2-kernel",
-      status: "cat_claw_audited",
+      status: "protocol_audited",
       createdBy: "cat_claw"
     }),
-    /source_cat_claw_audit_required/
+    /source_protocol_audit_required/
   );
   await assertRejectsMessage(
     () => runAction(root, {
       action: "workflow.v2.human_gate_package.record",
       workflowId,
-      sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+      sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
       createdBy: "cat_claw"
     }),
     /human_gate_options_required/
@@ -11131,24 +11131,24 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
     summary: "Cross-plan task group package ready.",
     evidenceRefs: ["artifact://workflow-v2/cross-plan-owner.json"]
   });
-  const crossCatBrainAudit = await runAction(root, {
-    action: "workflow.v2.cat_brain_audit.record",
+  const crossGovernanceAudit = await runAction(root, {
+    action: "workflow.v2.governance_audit.record",
     workflowId,
     planId: "plan-v2-cross-plan",
     taskGroupPackageId: crossTaskGroupPackage.taskGroupPackage.packageId,
     callerAgent: "main",
     decision: "approved",
-    summary: "Cross-plan Cat Brain audit.",
+    summary: "Cross-plan Governance audit.",
     evidenceRefs: ["artifact://workflow-v2/cross-plan-owner.json"]
   });
-  const crossCatClawAudit = await runAction(root, {
-    action: "workflow.v2.cat_claw_audit.record",
+  const crossProtocolAudit = await runAction(root, {
+    action: "workflow.v2.protocol_audit.record",
     workflowId,
     planId: "plan-v2-cross-plan",
-    catBrainAuditId: crossCatBrainAudit.catBrainAudit.auditId,
+    governanceAuditId: crossGovernanceAudit.governanceAudit.auditId,
     callerAgent: "cat_claw",
     decision: "protocol_ready",
-    summary: "Cross-plan Cat Claw audit must not bless another plan.",
+    summary: "Cross-plan Protocol audit must not bless another plan.",
     evidenceRefs: ["artifact://workflow-v2/cross-plan-owner.json"]
   });
   await assertRejectsMessage(
@@ -11156,17 +11156,17 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
       action: "workflow.v2.human_gate_package.record",
       workflowId,
       planId: "plan-v2-kernel",
-      sourceCatClawAuditId: crossCatClawAudit.catClawAudit.auditId,
+      sourceProtocolAuditId: crossProtocolAudit.protocolAudit.auditId,
       createdBy: "cat_claw"
     }),
-    /cat_claw_audit_plan_mismatch/
+    /protocol_audit_plan_mismatch/
   );
 
   await runAction(root, {
     action: "workflow.v2.plan.create",
     workflowId,
     planId: "plan-v2-owner-direct",
-    objective: "Owner-direct Cat Brain audit fixture.",
+    objective: "Owner-direct Governance audit fixture.",
     taskOwnerAgent: "cat_heart",
     participantManagers: [],
     ...v2PlanContract({
@@ -11188,8 +11188,8 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
     receiptRefs: ["receipt://workflow-v2/owner-direct"]
   });
   assert.equal(directOwnerReview.ownerReview.nextWorkflowState, "waiting_governance_review");
-  const directCatBrainAudit = await runAction(root, {
-    action: "workflow.v2.cat_brain_audit.record",
+  const directGovernanceAudit = await runAction(root, {
+    action: "workflow.v2.governance_audit.record",
     workflowId,
     planId: "plan-v2-owner-direct",
     ownerReviewId: directOwnerReview.ownerReview.reviewId,
@@ -11197,9 +11197,9 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
     decision: "approved",
     summary: "Cat Brain approved owner-direct evidence without a task group package."
   });
-  assert.equal(directCatBrainAudit.valid, true);
-  assert.equal(directCatBrainAudit.taskGroupPackage, null);
-  assert.equal(directCatBrainAudit.ownerReview.reviewId, directOwnerReview.ownerReview.reviewId);
+  assert.equal(directGovernanceAudit.valid, true);
+  assert.equal(directGovernanceAudit.taskGroupPackage, null);
+  assert.equal(directGovernanceAudit.ownerReview.reviewId, directOwnerReview.ownerReview.reviewId);
   planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-owner-direct' LIMIT 1;")[0];
   assert.equal(planState.workflowState, "waiting_protocol_audit");
 
@@ -11259,18 +11259,18 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`);
   const humanGatePackage = await runAction(root, {
     action: "workflow.v2.human_gate_package.record",
     workflowId,
-    sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
+    sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
     createdBy: "cat_claw",
     options: humanGateOptions
   });
   assert.equal(humanGatePackage.valid, true);
-  assert.equal(humanGatePackage.humanGatePackage.sourceCatClawAuditId, catClawAudit.catClawAudit.auditId);
+  assert.equal(humanGatePackage.humanGatePackage.sourceProtocolAuditId, protocolAudit.protocolAudit.auditId);
   assert.equal(humanGatePackage.humanGatePackage.status, "protocol_audited");
   assert.equal(humanGatePackage.humanGatePackage.options.length >= 2, true);
   assert.equal(humanGatePackage.humanGatePackage.options.length <= 5, true);
   assert.equal(humanGatePackage.humanGatePackage.options.every((option) => option.optionId && option.title && option.body && option.summary && option.prompt && option.rollback), true);
   assert.equal(sqliteCount(dbFile, "workflow_v2_human_gate_packages"), 1);
-  assert.equal(sqliteCount(dbFile, "workflow_v2_human_gate_packages", `plan_id='plan-v2-kernel' AND source_cat_claw_audit_id='${catClawAudit.catClawAudit.auditId}' AND status='protocol_audited'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_human_gate_packages", `plan_id='plan-v2-kernel' AND source_protocol_audit_id='${protocolAudit.protocolAudit.auditId}' AND status='protocol_audited'`), 1);
   planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
   assert.equal(planState.workflowState, "human_gate_request_due");
 
@@ -12624,7 +12624,7 @@ VALUES ('dispatch-intervention-execute', '${workflowId}', '${workflowId}', 'trac
       action: "workflow.resume",
       workflowId,
       humanGateId: "hg-intervention-execute",
-      catClawAuditId: "audit-intervention-execute",
+      protocolAuditId: "audit-intervention-execute",
       operatorReason: "resume from invalid status",
       rollbackBoundary: "artifact://checkpoint-intervention-execute"
     }),
@@ -12636,7 +12636,7 @@ VALUES ('dispatch-intervention-execute', '${workflowId}', '${workflowId}', 'trac
     workflowId,
     traceId: "trace-intervention-pause",
     humanGateId: "hg-intervention-execute",
-    catClawAuditId: "audit-intervention-execute",
+    protocolAuditId: "audit-intervention-execute",
     actor: "flashcat",
     operatorReason: "pause token abc before review",
     rollbackBoundary: "artifact://checkpoint-intervention-execute",
@@ -12655,7 +12655,7 @@ VALUES ('dispatch-intervention-execute', '${workflowId}', '${workflowId}', 'trac
     workflowId,
     traceId: "trace-intervention-resume",
     humanGateId: "hg-intervention-execute",
-    catClawAuditId: "audit-intervention-execute",
+    protocolAuditId: "audit-intervention-execute",
     actor: "flashcat",
     operatorReason: "resume after review",
     rollbackBoundary: "artifact://checkpoint-intervention-execute",
@@ -12674,7 +12674,7 @@ VALUES ('dispatch-intervention-execute', '${workflowId}', '${workflowId}', 'trac
       workflowId,
       traceId: "trace-intervention-stop",
       humanGateId: "hg-intervention-execute",
-      catClawAuditId: "audit-intervention-execute",
+      protocolAuditId: "audit-intervention-execute",
       rollbackBoundary: "artifact://checkpoint-intervention-execute"
     }
   });
@@ -12711,7 +12711,7 @@ LIMIT 1;`)[0];
     action: "workflow.stop",
     actor: "flashcat",
     reason: "read-only stop blocked",
-    payload: { workflowId, humanGateId: "hg", catClawAuditId: "audit", rollbackBoundary: "artifact://checkpoint" }
+    payload: { workflowId, humanGateId: "hg", protocolAuditId: "audit", rollbackBoundary: "artifact://checkpoint" }
   });
   assert.equal(readOnlyStop.ok, false);
   assert.equal(readOnlyStop.errorCode, "console_readonly");
@@ -12727,7 +12727,7 @@ LIMIT 1;`)[0];
     action: "workflow.terminate",
     workflowId: terminateWorkflowId,
     humanGateId: "hg-intervention-terminate",
-    catClawAuditId: "audit-intervention-terminate",
+    protocolAuditId: "audit-intervention-terminate",
     operatorReason: "terminate alias with evidence",
     rollbackBoundary: "artifact://checkpoint-intervention-terminate",
     idempotencyKey: "idem-intervention-terminate"
@@ -13316,7 +13316,7 @@ UPDATE workflow_v2_plan_nodes
 SET status='completed'
 WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-kernel';`);
   sqliteExec(dbFile, `
-INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_cat_claw_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, source_review_id, source_protocol_audit_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
 VALUES ('package-v2-evaluation-draft-hgate', '${workflowId}', 'plan-v2-kernel', '', '', 'main', 'cat_claw', 'draft', '[{"optionId":"A"},{"optionId":"B"}]', '["pause","terminate"]', '[]', '{}', 'main', '2026-07-06T00:00:31.000Z', '2026-07-06T00:00:31.000Z');`);
   const draftPackageSnapshot = await runAction(root, {
     action: "workflow.v2.evaluation_snapshot.preview",
@@ -14102,8 +14102,8 @@ async function testScheduleControlLoopDispatchIntegration() {
       templateId,
       version: 1,
       targetStatus: "default",
-      catBrainAuditId: "brain-schedule-dispatch-template",
-      catClawAuditId: "claw-schedule-dispatch-template",
+      governanceAuditId: "brain-schedule-dispatch-template",
+      protocolAuditId: "claw-schedule-dispatch-template",
       evidenceRefs: ["artifact://schedule-dispatch-template/eval"]
     });
 
@@ -14328,7 +14328,7 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(workflowActionMigrationInfo("meeting.create").migrationStatus, "frozen_compatibility");
     assert.equal(workflowActionMigrationInfo("meeting.create").replacement, "workflow.v2.plan.create + workflow.v2.task_group_package.record");
     assert.equal(workflowActionMigrationInfo("meeting.action_item").replacement, "workflow.v2.plan.create + workflow.v2.plan_nodes");
-    assert.equal(workflowActionMigrationInfo("cat_claw.minutes").replacement, "workflow.v2.cat_claw_audit.record");
+    assert.equal(workflowActionMigrationInfo("cat_claw.minutes").replacement, "workflow.v2.protocol_audit.record");
     let aliasBlocked = null;
     for (const frozenAction of ["workflow.advance", "workflow.supervise", "workflow.supervisor"]) {
       const blocked = await runAction(root, {
@@ -14710,8 +14710,8 @@ async function testScheduleApprovedTemplateDefaultPath() {
       templateId,
       version: 1,
       targetStatus: "default",
-      catBrainAuditId: "brain-schedule-template",
-      catClawAuditId: "claw-schedule-template",
+      governanceAuditId: "brain-schedule-template",
+      protocolAuditId: "claw-schedule-template",
       evidenceRefs: ["artifact://schedule-template/eval"]
     });
     const upserted = await runAction(root, {
@@ -14941,8 +14941,8 @@ async function testGenericOrchestrationAuthorizedTemplatePlan() {
       templateId,
       version: 1,
       targetStatus: "default",
-      catBrainAuditId: "brain-generic-template",
-      catClawAuditId: "claw-generic-template",
+      governanceAuditId: "brain-generic-template",
+      protocolAuditId: "claw-generic-template",
       evidenceRefs: ["artifact://generic-template/eval"]
     });
     const workflowId = "wf-generic-template-authorized";
@@ -15507,7 +15507,7 @@ async function testTelegramLiveExtractedActionContracts() {
     humanGateChannelId: "8390724843",
     mode: "silent",
     status: "active",
-    catClawAuditId: "audit-telegram-live-extracted-contract"
+    protocolAuditId: "audit-telegram-live-extracted-contract"
   });
   assert.equal(alias.meetingId, "meeting-live-alias");
   assert.equal(alias.chatId, "8390724843");
@@ -15521,7 +15521,7 @@ async function testTelegramLiveExtractedActionContracts() {
     humanGateChannelId: "-100888",
     mode: "transparent",
     status: "inactive",
-    catClawAuditId: "audit-telegram-live-extracted-contract"
+    protocolAuditId: "audit-telegram-live-extracted-contract"
   });
   assert.equal(overwritten.meetingId, "meeting-live-alias");
   assert.equal(overwritten.channelId, "-100999");
@@ -15540,7 +15540,7 @@ async function testTelegramLiveExtractedActionContracts() {
       humanGateChannelId: "-100456",
       mode: "transparent",
       status: "active",
-      catClawAuditId: "audit-telegram-live-extracted-contract"
+      protocolAuditId: "audit-telegram-live-extracted-contract"
     }
   });
   assert.equal(gatewayResult.ok, false);
@@ -15651,7 +15651,7 @@ VALUES
     outboxId: "outbox-extracted-contract-sent",
     idempotencyKey: "outbox-extracted-contract-replay",
     deliveryOperatorReason: "registry contract idempotent replay",
-    catClawAuditId: "audit-outbox-extracted-contract"
+    protocolAuditId: "audit-outbox-extracted-contract"
   });
   assert.equal(replay.schemaVersion, "telegram_outbox_delivery_result.v1");
   assert.equal(replay.action, "telegram.outbox.delivery");
@@ -15668,7 +15668,7 @@ VALUES
       outboxId: "outbox-extracted-contract-sent",
       idempotencyKey: "outbox-extracted-contract-gateway-replay",
       deliveryOperatorReason: "registry contract gateway idempotent replay",
-      catClawAuditId: "audit-outbox-extracted-contract"
+      protocolAuditId: "audit-outbox-extracted-contract"
     }
   });
   assert.equal(gatewayWriteAliasReplay.ok, true);
@@ -16658,7 +16658,7 @@ async function testCatClawExtractedActionContracts() {
     radarZone: "bright",
     retailHeatScore: 82,
     newsCatalystScore: 74,
-    summary: "Cat Claw audit missing three-face contract.",
+    summary: "Protocol audit missing three-face contract.",
     researchState: "active"
   });
   await runAction(root, {
@@ -16668,7 +16668,7 @@ async function testCatClawExtractedActionContracts() {
     gateId: "gate-cat-claw-extracted-contract",
     gateType: "research_review",
     status: "pending",
-    summary: "Cat Claw audit pending gate contract.",
+    summary: "Protocol audit pending gate contract.",
     humanGateRequired: true
   });
 
@@ -20351,7 +20351,7 @@ async function testTradeIntentFailClosed() {
     assurance: "mtls",
     clientCertFingerprint: "test-cert",
     humanGateId: "hg-fail-closed-policy-evidence",
-    catClawAuditId: "audit-fail-closed-policy-evidence",
+    protocolAuditId: "audit-fail-closed-policy-evidence",
     freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
   });
   assert.equal(intent.status, "rejected");
@@ -20379,7 +20379,7 @@ async function testTradeIntentChainAndReceiptGuardrails() {
   const root = await tempRoot("trade-chain");
   const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
   const riskDecisionPolicyEvidence = {
-    catClawAuditId: "audit-risk-decision-policy",
+    protocolAuditId: "audit-risk-decision-policy",
     freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
   };
   const proposalA = await runAction(root, {
@@ -20514,7 +20514,7 @@ LIMIT 1;`);
     ...riskDecisionPolicyEvidence
   });
   const tradeIntentPolicyEvidence = {
-    catClawAuditId: "audit-trade-chain",
+    protocolAuditId: "audit-trade-chain",
     freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
   };
   const receiptPolicyEvidence = {
@@ -21244,7 +21244,7 @@ async function testWorkflowTaskDraftPurePreview() {
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "cat_claw_secretary_present" && gate.status === "pass"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "approve_options_count_required" && gate.status === "pass"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "pause_terminate_controls_required" && gate.status === "pass"));
-  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "cat_claw_audit_before_human_gate" && gate.status === "pass"));
+  assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "protocol_audit_before_human_gate" && gate.status === "pass"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "plan_spec_v2_required_ids" && gate.status === "pass"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "plan_spec_v2_contract_shape" && gate.status === "pass"));
   assert.ok(draft.spec.qualityGates.some((gate) => gate.name === "node_acceptance_required" && gate.status === "pass"));
@@ -21950,16 +21950,16 @@ LIMIT 1;`)[0];
   });
   assert.equal(catClawGate.allowed, true);
   assert.equal(catClawGate.reason, "capability_allowed");
-  assert.equal(catClawGate.policyOutcome, "requires_cat_claw_audit");
+  assert.equal(catClawGate.policyOutcome, "requires_protocol_audit");
   assert.equal(catClawGate.actionable, false);
-  assert.equal(catClawGate.requirements.some((item) => item.type === "cat_claw_audit"), true);
+  assert.equal(catClawGate.requirements.some((item) => item.type === "protocol_audit"), true);
 
   const catClawGateWithAudit = await runAction(root, {
     action: "workflow.permission.check",
     targetAction: "human_gate.request",
     callerAgent: "cat_claw",
     callerRuntime: "openclaw",
-    catClawAuditId: "audit-permission-regression"
+    protocolAuditId: "audit-permission-regression"
   });
   assert.equal(catClawGateWithAudit.allowed, true);
   assert.equal(catClawGateWithAudit.policyOutcome, "allow");
@@ -21974,7 +21974,7 @@ LIMIT 1;`)[0];
   assert.equal(tradeIntentPolicy.allowed, true);
   assert.equal(tradeIntentPolicy.policyOutcome, "requires_human_gate");
   assert.equal(tradeIntentPolicy.requirements.some((item) => item.type === "human_gate"), true);
-  assert.equal(tradeIntentPolicy.requirements.some((item) => item.type === "cat_claw_audit"), true);
+  assert.equal(tradeIntentPolicy.requirements.some((item) => item.type === "protocol_audit"), true);
   assert.equal(tradeIntentPolicy.requirements.some((item) => item.type === "freshness_check"), true);
 
   const riskDecisionPolicy = await runAction(root, {
@@ -21984,8 +21984,8 @@ LIMIT 1;`)[0];
     workflowId: "workflow-permission-gate"
   });
   assert.equal(riskDecisionPolicy.allowed, true);
-  assert.equal(riskDecisionPolicy.policyOutcome, "requires_cat_claw_audit");
-  assert.equal(riskDecisionPolicy.requirements.some((item) => item.type === "cat_claw_audit"), true);
+  assert.equal(riskDecisionPolicy.policyOutcome, "requires_protocol_audit");
+  assert.equal(riskDecisionPolicy.requirements.some((item) => item.type === "protocol_audit"), true);
   assert.equal(riskDecisionPolicy.requirements.some((item) => item.type === "freshness_check"), true);
 
   const riskDecisionFreshnessPolicy = await runAction(root, {
@@ -21993,7 +21993,7 @@ LIMIT 1;`)[0];
     targetAction: "risk.decision",
     callerAgent: "local_codex",
     workflowId: "workflow-permission-gate",
-    catClawAuditId: "audit-permission-risk-decision"
+    protocolAuditId: "audit-permission-risk-decision"
   });
   assert.equal(riskDecisionFreshnessPolicy.allowed, true);
   assert.equal(riskDecisionFreshnessPolicy.policyOutcome, "requires_freshness_check");
@@ -22003,7 +22003,7 @@ LIMIT 1;`)[0];
     targetAction: "risk.decision",
     callerAgent: "local_codex",
     workflowId: "workflow-permission-gate",
-    catClawAuditId: "audit-permission-risk-decision",
+    protocolAuditId: "audit-permission-risk-decision",
     freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
   });
   assert.equal(riskDecisionAllowedPolicy.allowed, true);
@@ -22016,7 +22016,7 @@ LIMIT 1;`)[0];
     callerAgent: "local_codex",
     workflowId: "workflow-permission-gate",
     humanGateId: "hg-permission-regression",
-    catClawAuditId: "audit-permission-regression"
+    protocolAuditId: "audit-permission-regression"
   });
   assert.equal(tradeIntentFreshnessPolicy.allowed, true);
   assert.equal(tradeIntentFreshnessPolicy.policyOutcome, "requires_freshness_check");
@@ -22027,7 +22027,7 @@ LIMIT 1;`)[0];
     callerAgent: "local_codex",
     workflowId: "workflow-permission-gate",
     humanGateId: "hg-permission-regression",
-    catClawAuditId: "audit-permission-regression",
+    protocolAuditId: "audit-permission-regression",
     freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
   });
   assert.equal(tradeIntentAllowedPolicy.allowed, true);
@@ -22044,7 +22044,7 @@ LIMIT 1;`)[0];
   assert.equal(receiptPolicy.policyOutcome, "requires_human_gate");
   assert.equal(receiptPolicy.requirements.some((item) => item.type === "human_gate"), true);
   assert.equal(receiptPolicy.requirements.some((item) => item.type === "freshness_check"), true);
-  assert.equal(receiptPolicy.requirements.some((item) => item.type === "cat_claw_audit"), false);
+  assert.equal(receiptPolicy.requirements.some((item) => item.type === "protocol_audit"), false);
 
   const receiptAllowedPolicy = await runAction(root, {
     action: "workflow.permission.check",
@@ -22068,7 +22068,7 @@ LIMIT 1;`)[0];
       proposalId: "proposal-permission-hard",
       status: "approved"
     }),
-    /workflow policy blocked: action=risk\.decision policyOutcome=requires_cat_claw_audit/
+    /workflow policy blocked: action=risk\.decision policyOutcome=requires_protocol_audit/
   );
   await assertRejectsMessage(
     () => runAction(root, {
@@ -22080,7 +22080,7 @@ LIMIT 1;`)[0];
       proposalId: "proposal-permission-draft",
       status: "pending"
     }),
-    /workflow policy blocked: action=risk\.decision policyOutcome=requires_cat_claw_audit/
+    /workflow policy blocked: action=risk\.decision policyOutcome=requires_protocol_audit/
   );
   await assertRejectsMessage(
     () => runAction(root, {
@@ -22117,7 +22117,7 @@ VALUES ('side-effect-other-workflow-uncertain', 'workflow-permission-gate-other'
     callerAgent: "local_codex",
     workflowId: "workflow-permission-gate",
     humanGateId: "hg-permission-regression",
-    catClawAuditId: "audit-permission-regression",
+    protocolAuditId: "audit-permission-regression",
     freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
   });
   assert.equal(otherWorkflowSideEffectIgnored.policyOutcome, "allow");
@@ -22131,7 +22131,7 @@ VALUES ('side-effect-permission-uncertain', 'workflow-permission-gate', 'test', 
     callerAgent: "local_codex",
     workflowId: "workflow-permission-gate",
     humanGateId: "hg-permission-regression",
-    catClawAuditId: "audit-permission-regression",
+    protocolAuditId: "audit-permission-regression",
     freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
   });
   assert.equal(sideEffectBlockedPolicy.policyOutcome, "side_effect_uncertain");
@@ -22153,7 +22153,7 @@ VALUES ('side-effect-permission-uncertain', 'workflow-permission-gate', 'test', 
       traceId: "trace-permission-side-effect-intent",
       callerAgent: "local_codex",
       humanGateId: "hg-permission-regression",
-      catClawAuditId: "audit-permission-regression",
+      protocolAuditId: "audit-permission-regression",
       freshnessCheckedAt: "2026-05-31T00:00:00.000Z"
     }),
     /workflow policy blocked: action=trade\.intent policyOutcome=side_effect_uncertain/
@@ -24912,7 +24912,7 @@ return { catClawSecretaryHandoffModel, catClawSecretaryHandoffEvidenceText };`)(
   const handoff = handoffHelpers.catClawSecretaryHandoffModel({
     workflowId: "wf-handoff",
     summary: {
-      humanGateReadyForCatClawAudit: true,
+      humanGateReadyForProtocolAudit: true,
       humanGateReadyForSubmission: false,
       receiptPresent: 2,
       receiptMissing: 1,

@@ -188,7 +188,7 @@ function aggregateDecision(planDecisions = []) {
     "waiting_review",
     "dispatch_ready",
     WORKFLOW_V2_PROTOCOL_AUDIT_STATE,
-    "waiting_cat_claw_audit",
+    "waiting_protocol_audit",
     WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED,
     "cat_claw_summary_required",
     "waiting_dependencies"

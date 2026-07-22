@@ -193,7 +193,7 @@ async function workflowTemplatePreview(rootDir, input = {}) {
 function workflowTemplateDailyTradingCatalogSpecs() {
   const sharedPromotionPolicy = {
     autoPromote: false,
-    defaultPromotionRequires: ["humanGateId", "catBrainAuditId", "catClawAuditId", "evalEvidenceRefs", "rollbackPolicy"],
+    defaultPromotionRequires: ["humanGateId", "governanceAuditId", "protocolAuditId", "evalEvidenceRefs", "rollbackPolicy"],
     humanGateRequiredForTargets: ["default"],
     defaultTemplateSelectionEnabled: false
   };
@@ -803,11 +803,11 @@ WHERE template_id=${sqlValue(templateId)}
   };
   const highRisk = workflowTemplateHighRisk(spec, input) || targetStatus === "default" && ["high", "critical", "P0", "P1"].includes(String(family.risk_tier || ""));
   const requirements = [];
-  const hasCatBrain = permissionEvidencePresent(input, ["cat_brain_audit_id", "catBrainAuditId", "cat_brain_review_id", "catBrainReviewId"]);
-  const hasCatClaw = permissionEvidencePresent(input, ["cat_claw_audit_id", "catClawAuditId", "secretary_audit_id", "secretaryAuditId"]);
+  const hasCatBrain = permissionEvidencePresent(input, ["governance_audit_id", "governanceAuditId", "governance_audit_id", "governanceAuditId"]);
+  const hasCatClaw = permissionEvidencePresent(input, ["protocol_audit_id", "protocolAuditId", "secretary_audit_id", "secretaryAuditId"]);
   const hasHumanGate = permissionEvidencePresent(input, ["human_gate_id", "humanGateId", "human_gate_evidence", "humanGateEvidence", "flashcat_original_words", "flashcatOriginalWords"]);
-  if (["active", "default"].includes(targetStatus) && !hasCatBrain) requirements.push({ type: "cat_brain_review", reason: "Cat Brain review is required before active/default template promotion" });
-  if (["active", "default"].includes(targetStatus) && !hasCatClaw) requirements.push({ type: "cat_claw_audit", reason: "Cat Claw audit is required before active/default template promotion" });
+  if (["active", "default"].includes(targetStatus) && !hasCatBrain) requirements.push({ type: "governance_audit", reason: "Governance audit is required before active/default template promotion" });
+  if (["active", "default"].includes(targetStatus) && !hasCatClaw) requirements.push({ type: "protocol_audit", reason: "Protocol audit is required before active/default template promotion" });
   if (targetStatus === "default" && highRisk && !hasHumanGate) requirements.push({ type: "human_gate", reason: "High-risk default template promotion requires Human Gate evidence" });
   if (Number(stats.eval_count || 0) < 1 && ["active", "default"].includes(targetStatus)) requirements.push({ type: "eval_evidence", reason: "At least one eval record is required before active/default promotion" });
   const statsMetrics = parseJsonValue(stats.metrics_json, {});
@@ -852,8 +852,8 @@ SET family_status=${sqlValue(nextFamilyStatus)},
     active_version=${activeVersionSql},
     updated_at=${sqlValue(now)}
 WHERE template_id=${sqlValue(templateId)};
-INSERT INTO workflow_v2_template_events(event_id, template_id, version, event_type, previous_version, next_version, status, actor, human_gate_id, cat_brain_audit_id, cat_claw_audit_id, evidence_refs_json, payload_json, created_at)
-VALUES (${sqlValue(eventId)}, ${sqlValue(templateId)}, ${sqlValue(version)}, 'promoted', ${sqlValue(previousVersion)}, ${sqlValue(version)}, ${sqlValue(targetStatus)}, ${sqlValue(actor)}, ${sqlValue(firstText(input.humanGateId, input.human_gate_id))}, ${sqlValue(firstText(input.catBrainAuditId, input.cat_brain_audit_id, input.catBrainReviewId, input.cat_brain_review_id))}, ${sqlValue(firstText(input.catClawAuditId, input.cat_claw_audit_id, input.secretaryAuditId, input.secretary_audit_id))}, ${sqlValue(JSON.stringify(toList(input.evidenceRefs || input.evidence_refs)))}, ${sqlValue(JSON.stringify({ highRisk: preview.highRisk, requirementsSatisfied: true }))}, ${sqlValue(now)});`);
+INSERT INTO workflow_v2_template_events(event_id, template_id, version, event_type, previous_version, next_version, status, actor, human_gate_id, governance_audit_id, protocol_audit_id, evidence_refs_json, payload_json, created_at)
+VALUES (${sqlValue(eventId)}, ${sqlValue(templateId)}, ${sqlValue(version)}, 'promoted', ${sqlValue(previousVersion)}, ${sqlValue(version)}, ${sqlValue(targetStatus)}, ${sqlValue(actor)}, ${sqlValue(firstText(input.humanGateId, input.human_gate_id))}, ${sqlValue(firstText(input.governanceAuditId, input.governance_audit_id, input.governanceAuditId, input.governance_audit_id))}, ${sqlValue(firstText(input.protocolAuditId, input.protocol_audit_id, input.secretaryAuditId, input.secretary_audit_id))}, ${sqlValue(JSON.stringify(toList(input.evidenceRefs || input.evidence_refs)))}, ${sqlValue(JSON.stringify({ highRisk: preview.highRisk, requirementsSatisfied: true }))}, ${sqlValue(now)});`);
   await workflowTemplateStatsRefresh(rootDir, { ...input, templateId });
   return {
     operation: "workflow.template.promote.record",
@@ -879,8 +879,8 @@ async function workflowTemplateRollbackPreview(rootDir, input = {}) {
   const targetSpec = await workflowTemplateLoadSpecFromRow(paths, targetVersion);
   const previousVersion = Number(family.default_version || family.active_version || 0);
   const reason = firstText(input.rollbackReason, input.rollback_reason, input.reason, input.summary);
-  const hasCatBrain = permissionEvidencePresent(input, ["cat_brain_audit_id", "catBrainAuditId", "cat_brain_review_id", "catBrainReviewId"]);
-  const hasCatClaw = permissionEvidencePresent(input, ["cat_claw_audit_id", "catClawAuditId", "secretary_audit_id", "secretaryAuditId"]);
+  const hasCatBrain = permissionEvidencePresent(input, ["governance_audit_id", "governanceAuditId", "governance_audit_id", "governanceAuditId"]);
+  const hasCatClaw = permissionEvidencePresent(input, ["protocol_audit_id", "protocolAuditId", "secretary_audit_id", "secretaryAuditId"]);
   const hasHumanGate = permissionEvidencePresent(input, ["human_gate_id", "humanGateId", "human_gate_evidence", "humanGateEvidence", "flashcat_original_words", "flashcatOriginalWords"]);
   const approvedRows = await sqlite(paths.dbFile, `
 SELECT COUNT(*) AS count
@@ -896,8 +896,8 @@ WHERE template_id=${sqlValue(templateId)}
   const requirements = [];
   if (!reason) requirements.push({ type: "rollback_reason", reason: "rollback requires an explicit reason" });
   if (!approvedTarget) requirements.push({ type: "approved_target", reason: "rollback target must be a previously active/default template version" });
-  if (!hasCatBrain) requirements.push({ type: "cat_brain_review", reason: "Cat Brain review is required before template rollback" });
-  if (!hasCatClaw) requirements.push({ type: "cat_claw_audit", reason: "Cat Claw audit is required before template rollback" });
+  if (!hasCatBrain) requirements.push({ type: "governance_audit", reason: "Governance audit is required before template rollback" });
+  if (!hasCatClaw) requirements.push({ type: "protocol_audit", reason: "Protocol audit is required before template rollback" });
   if (highRisk && !hasHumanGate) requirements.push({ type: "human_gate", reason: "High-risk template rollback requires Human Gate evidence" });
   return {
     operation: "workflow.template.rollback.preview",
@@ -938,8 +938,8 @@ WHERE template_id=${sqlValue(templateId)} AND version=${sqlValue(previousVersion
 UPDATE workflow_v2_template_versions
 SET status='default', promotion_state='default'
 WHERE template_id=${sqlValue(templateId)} AND version=${sqlValue(rollbackVersion)};
-INSERT INTO workflow_v2_template_events(event_id, template_id, version, event_type, previous_version, next_version, status, actor, human_gate_id, cat_brain_audit_id, cat_claw_audit_id, evidence_refs_json, payload_json, created_at)
-VALUES (${sqlValue(eventId)}, ${sqlValue(templateId)}, ${sqlValue(rollbackVersion)}, 'rolled_back', ${sqlValue(previousVersion)}, ${sqlValue(rollbackVersion)}, 'default', ${sqlValue(actor)}, ${sqlValue(firstText(input.humanGateId, input.human_gate_id))}, ${sqlValue(firstText(input.catBrainAuditId, input.cat_brain_audit_id, input.catBrainReviewId, input.cat_brain_review_id))}, ${sqlValue(firstText(input.catClawAuditId, input.cat_claw_audit_id, input.secretaryAuditId, input.secretary_audit_id))}, ${sqlValue(JSON.stringify(toList(input.evidenceRefs || input.evidence_refs)))}, ${sqlValue(JSON.stringify({ artifactsDeleted: false, highRisk: preview.highRisk, rollbackReason: firstText(input.rollbackReason, input.rollback_reason, input.reason, input.summary) }))}, ${sqlValue(now)});`);
+INSERT INTO workflow_v2_template_events(event_id, template_id, version, event_type, previous_version, next_version, status, actor, human_gate_id, governance_audit_id, protocol_audit_id, evidence_refs_json, payload_json, created_at)
+VALUES (${sqlValue(eventId)}, ${sqlValue(templateId)}, ${sqlValue(rollbackVersion)}, 'rolled_back', ${sqlValue(previousVersion)}, ${sqlValue(rollbackVersion)}, 'default', ${sqlValue(actor)}, ${sqlValue(firstText(input.humanGateId, input.human_gate_id))}, ${sqlValue(firstText(input.governanceAuditId, input.governance_audit_id, input.governanceAuditId, input.governance_audit_id))}, ${sqlValue(firstText(input.protocolAuditId, input.protocol_audit_id, input.secretaryAuditId, input.secretary_audit_id))}, ${sqlValue(JSON.stringify(toList(input.evidenceRefs || input.evidence_refs)))}, ${sqlValue(JSON.stringify({ artifactsDeleted: false, highRisk: preview.highRisk, rollbackReason: firstText(input.rollbackReason, input.rollback_reason, input.reason, input.summary) }))}, ${sqlValue(now)});`);
   await workflowTemplateStatsRefresh(rootDir, { ...input, templateId });
   return {
     operation: "workflow.template.rollback.record",

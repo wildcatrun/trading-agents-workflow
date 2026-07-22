@@ -178,7 +178,7 @@ export function workflowV2TaskGroupPackageSummary(row = {}) {
   };
 }
 
-export function workflowV2CatBrainAuditSummary(row = {}) {
+export function workflowV2GovernanceAuditSummary(row = {}) {
   if (!row) return null;
   return {
     auditId: row.audit_id || "",
@@ -198,13 +198,13 @@ export function workflowV2CatBrainAuditSummary(row = {}) {
   };
 }
 
-export function workflowV2CatClawAuditSummary(row = {}) {
+export function workflowV2ProtocolAuditSummary(row = {}) {
   if (!row) return null;
   return {
     auditId: row.audit_id || "",
     workflowId: row.workflow_id || "",
     planId: row.plan_id || "",
-    catBrainAuditId: row.cat_brain_audit_id || "",
+    governanceAuditId: row.governance_audit_id || "",
     catClawAgent: row.cat_claw_agent || "",
     decision: row.decision || "",
     summary: row.summary || "",
@@ -224,7 +224,7 @@ export function workflowV2HumanGatePackageSummary(row = {}) {
     workflowId: row.workflow_id || "",
     planId: row.plan_id || "",
     sourceReviewId: row.source_review_id || "",
-    sourceCatClawAuditId: row.source_cat_claw_audit_id || "",
+    sourceProtocolAuditId: row.source_protocol_audit_id || "",
     catBrainAgent: row.cat_brain_agent || "",
     catClawAgent: row.cat_claw_agent || "",
     status: row.status || "",

@@ -3330,18 +3330,18 @@ function renderWorkflowV2(data = {}) {
       ], data.humanGatePackages || [], "No v2 Human Gate packages."),
       renderTable([
         { label: "Decision", render: (row) => chip(row.decision) },
-        { label: "Cat Brain Audit", render: (row) => h("div", {}, [h("strong", {}, row.auditId), h("p", { className: "muted" }, row.planId)]) },
+        { label: "Governance Audit", render: (row) => h("div", {}, [h("strong", {}, row.auditId), h("p", { className: "muted" }, row.planId)]) },
         { label: "Agent", key: "agent" },
         { label: "Summary", render: (row) => short(row.summary, 120) },
         { label: "Updated", render: (row) => formatDate(row.updatedAt) }
-      ], data.catBrainAudits || [], "No Cat Brain audits."),
+      ], data.governanceAudits || [], "No Governance audits."),
       renderTable([
         { label: "Decision", render: (row) => chip(row.decision) },
-        { label: "Cat Claw Audit", render: (row) => h("div", {}, [h("strong", {}, row.auditId), h("p", { className: "muted" }, row.catBrainAuditId || row.planId)]) },
+        { label: "Protocol Audit", render: (row) => h("div", {}, [h("strong", {}, row.auditId), h("p", { className: "muted" }, row.governanceAuditId || row.planId)]) },
         { label: "Agent", key: "agent" },
         { label: "Summary", render: (row) => short(row.summary, 120) },
         { label: "Updated", render: (row) => formatDate(row.updatedAt) }
-      ], data.catClawAudits || [], "No Cat Claw audits."),
+      ], data.protocolAudits || [], "No Protocol audits."),
       renderTable([
         { label: "Status", render: (row) => chip(row.status) },
         { label: "Package", render: (row) => h("div", {}, [h("strong", {}, row.packageId), h("p", { className: "muted" }, row.planId)]) },
@@ -3738,7 +3738,7 @@ function renderIncidentCloseout(data) {
       h("div", { className: "workflow-meta" }, [
         h("span", {}, `Dead-letter ${present(refs.deadLetter?.kind)}:${present(refs.deadLetter?.refId)}`),
         h("span", {}, `Human Gate ${present(refs.humanGateId)}`),
-        h("span", {}, `Cat Claw Audit ${present(refs.catClawAuditId)}`),
+        h("span", {}, `Protocol Audit ${present(refs.protocolAuditId)}`),
         h("span", {}, `Updated ${formatDate(incident.updatedAt)}`)
       ]),
       h("div", { className: "actions" }, [
@@ -3810,9 +3810,9 @@ function renderIncidentCloseoutPreview(response) {
   });
   const auditInput = h("input", {
     type: "text",
-    name: "catClawAuditId",
+    name: "protocolAuditId",
     autocomplete: "off",
-    placeholder: "Cat Claw audit / secretary audit id"
+    placeholder: "Protocol audit / secretary audit id"
   });
   const reasonInput = h("textarea", {
     name: "operatorReason",
@@ -3821,7 +3821,7 @@ function renderIncidentCloseoutPreview(response) {
   });
   const submitFields = {
     humanGateEvidence: humanGateEvidenceInput,
-    catClawAuditId: auditInput,
+    protocolAuditId: auditInput,
     operatorReason: reasonInput
   };
   setDetailBody(h("div", { className: "stack" }, [
@@ -3859,7 +3859,7 @@ function renderIncidentCloseoutPreview(response) {
         humanGateEvidenceInput
       ]),
       h("label", {}, [
-        h("span", {}, "Cat Claw Audit"),
+        h("span", {}, "Protocol Audit"),
         auditInput
       ]),
       h("label", { className: "wide" }, [
@@ -3941,7 +3941,7 @@ function renderHumanGateReadiness(data) {
         statCard("Sent Outbox", summary.sentOutboxCount || 0)
       ]),
       h("div", { className: "workflow-meta" }, [
-        h("span", {}, `Cat Claw audit: ${data.readyForCatClawAudit ? "ready" : "not ready"}`),
+        h("span", {}, `Protocol audit: ${data.readyForProtocolAudit ? "ready" : "not ready"}`),
         h("span", {}, `Human Gate submit: ${data.readyForHumanGateSubmission ? "ready" : "needs attention"}`),
         h("span", {}, `Latest gate ${present(summary.latestHumanGateId)}`),
         h("span", {}, formatDate(data.generatedAt))
@@ -4355,10 +4355,10 @@ async function loadIncidentEvidenceOptions(data) {
 
 async function executeDeadLetterIncident(sourceData, fields) {
   const humanGateId = fields.humanGateId.value.trim();
-  const catClawAuditId = fields.catClawAuditId.value.trim();
+  const protocolAuditId = fields.protocolAuditId.value.trim();
   const operatorReason = fields.operatorReason.value.trim();
-  if (!humanGateId || !catClawAuditId || !operatorReason) {
-    setActionStatus("Human Gate, Cat Claw audit, and reason are required", "warning");
+  if (!humanGateId || !protocolAuditId || !operatorReason) {
+    setActionStatus("Human Gate, Protocol audit, and reason are required", "warning");
     return;
   }
   setActionStatus("Creating linked incident...", "neutral");
@@ -4374,7 +4374,7 @@ async function executeDeadLetterIncident(sourceData, fields) {
           kind: sourceData.kind,
           refId: sourceData.refId,
           humanGateId,
-          catClawAuditId,
+          protocolAuditId,
           operatorReason
         }
       })
@@ -4438,10 +4438,10 @@ function recommendationText(option = {}) {
 function renderDeadLetterIncidentPreview(response, sourceData, evidenceOptions = null) {
   const result = response.result || {};
   const humanGateOptions = evidenceOptions?.humanGateOptions || [];
-  const catClawAuditOptions = evidenceOptions?.catClawAuditOptions || [];
+  const protocolAuditOptions = evidenceOptions?.protocolAuditOptions || [];
   const canCreateIncident = state.consoleView === "workflows" && state.config?.readOnlyMode === false;
   const humanGateInput = evidenceSelect("humanGateId", humanGateOptions, "Select Human Gate evidence", "humanGateId");
-  const auditInput = evidenceSelect("catClawAuditId", catClawAuditOptions, "Select Cat Claw audit evidence", "catClawAuditId");
+  const auditInput = evidenceSelect("protocolAuditId", protocolAuditOptions, "Select Protocol audit evidence", "protocolAuditId");
   const reasonInput = h("textarea", {
     name: "operatorReason",
     rows: 3,
@@ -4449,7 +4449,7 @@ function renderDeadLetterIncidentPreview(response, sourceData, evidenceOptions =
   });
   const fields = {
     humanGateId: humanGateInput,
-    catClawAuditId: auditInput,
+    protocolAuditId: auditInput,
     operatorReason: reasonInput
   };
   setDetailBody(h("div", { className: "stack" }, [
@@ -4468,7 +4468,7 @@ function renderDeadLetterIncidentPreview(response, sourceData, evidenceOptions =
         humanGateInput
       ]),
       h("label", {}, [
-        h("span", {}, "Cat Claw Audit"),
+        h("span", {}, "Protocol Audit"),
         auditInput
       ]),
       h("label", { className: "wide" }, [
@@ -4493,12 +4493,12 @@ function renderDeadLetterIncidentPreview(response, sourceData, evidenceOptions =
         { label: "Summary", render: (row) => short(row.summary, 120) }
       ], humanGateOptions, "No Human Gate candidates."),
       renderTable([
-        { label: "Cat Claw Audit", key: "id" },
+        { label: "Protocol Audit", key: "id" },
         { label: "Decision", key: "decision" },
         { label: "Source", key: "sourceAgent" },
         { label: "Reason", render: (row) => short(recommendationText(row), 140) },
         { label: "Summary", render: (row) => short(row.summary, 120) }
-      ], catClawAuditOptions, "No Cat Claw audit candidates.")
+      ], protocolAuditOptions, "No Protocol audit candidates.")
     ]) : emptyState("Evidence options could not be loaded; ids can still be entered manually.")),
     section("Raw Preview", h("details", { open: true }, [
       h("summary", {}, "JSON"),
@@ -4753,7 +4753,7 @@ function renderEvidenceWorkspace(data = {}) {
         ]),
         h("div", { className: "quick-stats compact-stats" }, [
           statCard("Missing", missing.length),
-          statCard("Cat Claw", summary.humanGateReadyForCatClawAudit ? "ready" : "not ready"),
+          statCard("Cat Claw", summary.humanGateReadyForProtocolAudit ? "ready" : "not ready"),
           statCard("Human Gate", summary.humanGateReadyForSubmission ? "ready" : "not ready"),
           statCard("Receipts", summary.receiptPresent || 0, `${summary.receiptMissing || 0} missing`)
         ])
@@ -5025,10 +5025,10 @@ function catClawSecretaryHandoffModel(data = {}, options = {}) {
       refs: secretaryCheck?.refs || []
     },
     {
-      key: "cat_claw_audit",
-      label: "Cat Claw audit readiness",
-      status: summary.humanGateReadyForCatClawAudit ? "pass" : "fail",
-      detail: summary.humanGateReadyForCatClawAudit ? "Evidence package is ready for Cat Claw audit." : "Cat Claw audit readiness is not yet satisfied.",
+      key: "protocol_audit",
+      label: "Protocol audit readiness",
+      status: summary.humanGateReadyForProtocolAudit ? "pass" : "fail",
+      detail: summary.humanGateReadyForProtocolAudit ? "Evidence package is ready for Protocol audit." : "Protocol audit readiness is not yet satisfied.",
       refs: [...(readinessCheckByKey(readiness, "cat_claw_secretary_path")?.refs || []), ...(readinessCheckByKey(readiness, "evidence_artifacts")?.refs || [])]
     },
     {
@@ -5142,7 +5142,7 @@ function renderEvidenceDesk(data) {
       h("div", { className: "quick-stats" }, [
         statCard("Status", data.status || "unknown", data.schemaVersion || ""),
         statCard("Missing", missing.length),
-        statCard("Cat Claw Audit", summary.humanGateReadyForCatClawAudit ? "ready" : "not ready"),
+        statCard("Protocol Audit", summary.humanGateReadyForProtocolAudit ? "ready" : "not ready"),
         statCard("Human Gate", summary.humanGateReadyForSubmission ? "ready" : "not ready"),
         statCard("Receipts", summary.receiptPresent || 0, `${summary.receiptMissing || 0} missing`),
         statCard("Verification", summary.verificationResults || 0),
@@ -6035,10 +6035,10 @@ async function previewIncidentCloseout(action, incidentId = "", extraPayload = {
 
 async function executeCloseoutHumanGateRequest(preview, fields) {
   const humanGateEvidence = fields.humanGateEvidence.value.trim();
-  const catClawAuditId = fields.catClawAuditId.value.trim();
+  const protocolAuditId = fields.protocolAuditId.value.trim();
   const operatorReason = fields.operatorReason.value.trim();
-  if (!humanGateEvidence || !catClawAuditId || !operatorReason) {
-    setActionStatus("Human Gate evidence, Cat Claw audit, and reason are required", "warning");
+  if (!humanGateEvidence || !protocolAuditId || !operatorReason) {
+    setActionStatus("Human Gate evidence, Protocol audit, and reason are required", "warning");
     return;
   }
   setActionStatus("Creating Human Gate request...", "neutral");
@@ -6054,7 +6054,7 @@ async function executeCloseoutHumanGateRequest(preview, fields) {
           incidentId: preview.incidentId || "",
           closeoutArtifactId: preview.closeoutArtifactId || "",
           humanGateEvidence,
-          catClawAuditId,
+          protocolAuditId,
           operatorReason
         }
       })

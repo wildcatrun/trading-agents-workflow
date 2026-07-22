@@ -859,8 +859,8 @@ CREATE TABLE workflow_v2_template_events (
   status TEXT NOT NULL DEFAULT '',
   actor TEXT NOT NULL DEFAULT '',
   human_gate_id TEXT NOT NULL DEFAULT '',
-  cat_brain_audit_id TEXT NOT NULL DEFAULT '',
-  cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  governance_audit_id TEXT NOT NULL DEFAULT '',
+  protocol_audit_id TEXT NOT NULL DEFAULT '',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
   payload_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL

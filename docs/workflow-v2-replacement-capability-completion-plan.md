@@ -271,7 +271,7 @@ Build intervention and evaluation as explicit state-machine operations:
   incident, and receipt state.
 - `plan_pause`, `plan_resume`, `plan_stop`, `plan_terminate`: authorized
   transitions with idempotency keys, reason, owner, rollback/checkpoint pointer,
-  Cat Claw audit, and Human Gate evidence where required.
+  Protocol audit, and Human Gate evidence where required.
 - `evaluation_snapshot`: migrated evaluator checks feeding v2/shared readiness,
   validation, and verification evidence.
 - `rerun_readiness`: read-only compatibility mapping for
@@ -914,7 +914,7 @@ Replacement evidence is the existing v2 stack, not new v2 functionality:
   for manager/owner review;
 - `workflow.v2.task_group_package.record` for group discussion package
   synthesis;
-- `workflow.v2.cat_brain_audit.record`, `workflow.v2.cat_claw_audit.record`,
+- `workflow.v2.governance_audit.record`, `workflow.v2.protocol_audit.record`,
   `workflow.v2.notification.preview`, and shared Human Gate/outbox surfaces for
   governance and formal delivery.
 
@@ -979,15 +979,31 @@ New writes now prefer neutral names:
 - `secretary_dispatch_queued` replaces legacy protocol object status
   `cat_claw_dispatch_queued`.
 
-Compatibility remains explicit:
+P64 still preserved old physical schema/action compatibility. P65 removes that
+compatibility shell.
 
-- action names such as `workflow.v2.cat_brain_audit.record` and
-  `workflow.v2.cat_claw_audit.record` remain as API compatibility aliases;
-- table and column names such as `workflow_v2_cat_claw_audits` and
-  `source_cat_claw_audit_id` remain physical schema compatibility names;
-- readers and validators accept both legacy and neutral state/status values;
-- future physical schema migration may add neutral columns/tables, but this
-  candidate patch does not mutate existing live databases.
+### P65 Progress
+
+P65 makes the role-neutral names canonical at the API and schema layer instead
+of keeping Cat Brain / Cat Claw audit names as aliases:
+
+- `workflow.v2.governance_audit.preview|record` replaces
+  `workflow.v2.cat_brain_audit.preview|record`;
+- `workflow.v2.governance_semantic_check.preview` replaces
+  `workflow.v2.cat_brain_semantic_check.preview`;
+- `workflow.v2.protocol_audit.preview|record` replaces
+  `workflow.v2.cat_claw_audit.preview|record`;
+- `workflow.v2.protocol_package_audit.preview` replaces
+  `workflow.v2.cat_claw_package_audit.preview`;
+- `workflow_v2_governance_audits` replaces `workflow_v2_cat_brain_audits`;
+- `workflow_v2_protocol_audits` replaces `workflow_v2_cat_claw_audits`;
+- `governance_audit_id`, `protocol_audit_id`, and
+  `source_protocol_audit_id` replace the old fixed-role audit id columns.
+
+This is intentionally breaking for old action names. Migration code only reads
+old table/column names to move existing rows into the new schema and map old
+`cat_claw_audited` rows to `protocol_audited`; it does not keep old action
+aliases as supported API.
 
 ### Exit Criteria
 

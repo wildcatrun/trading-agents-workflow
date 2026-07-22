@@ -366,7 +366,7 @@ export function createWorkflowTaskDraftActionHandlers(context = {}) {
             backoff: "manual_after_receipt_review"
           },
           policyGate: {
-            outcome: phase.phaseId === "human_gate_package" ? "requires_human_gate" : "requires_cat_claw_audit",
+            outcome: phase.phaseId === "human_gate_package" ? "requires_human_gate" : "requires_protocol_audit",
             riskTier: "unknown"
           },
           toolPolicy: {
@@ -454,20 +454,20 @@ export function createWorkflowTaskDraftActionHandlers(context = {}) {
           "Evidence and receipts are sufficient for each completed node.",
           `Human Gate packages preserve ${HUMAN_GATE_APPROVE_OPTION_MIN}-${HUMAN_GATE_APPROVE_OPTION_MAX} approvable options, Chinese-format body, pause, terminate, and rollback boundaries.`
         ],
-        minimumEvidence: ["runtime_receipt", "artifact_ref", "cat_claw_audit_before_human_gate"],
+        minimumEvidence: ["runtime_receipt", "artifact_ref", "protocol_audit_before_human_gate"],
         failureHandling: "route_by_failureRoutes",
         required: true,
         verifierAgents: [governance.chairAgent || "main", governance.secretaryAgent || "cat_claw"],
         receiptRequired: true,
         evidenceRequired: true,
-        catClawAuditBeforeHumanGate: Boolean(governance.humanGateRequired)
+        protocolAuditBeforeHumanGate: Boolean(governance.humanGateRequired)
       },
       humanGatePolicy,
       permissionPolicy: {
         defaultOutcome: "allow",
         gates: [],
         finalApprover: "flashcat",
-        catBrainReviewRequired: true,
+        governanceAuditRequired: true,
         catClawSubmitterRequired: Boolean(governance.humanGateRequired)
       },
       evidencePolicy: {
@@ -585,7 +585,7 @@ export function createWorkflowTaskDraftActionHandlers(context = {}) {
             {
               id: "secretary_audit",
               ownerAgent: secretaryAgent,
-              objective: "Cat Claw audits evidence completeness, receipt references, Chinese-format report quality, and button-first Human Gate structure."
+              objective: "Protocol audits evidence completeness, receipt references, Chinese-format report quality, and button-first Human Gate structure."
             },
             {
               id: "human_gate_package",
@@ -604,7 +604,7 @@ export function createWorkflowTaskDraftActionHandlers(context = {}) {
             {
               id: "secretary_audit",
               ownerAgent: secretaryAgent,
-              objective: "Cat Claw audits evidence completeness, receipt references, Chinese-format report quality, and button-first Human Gate structure."
+              objective: "Protocol audits evidence completeness, receipt references, Chinese-format report quality, and button-first Human Gate structure."
             },
             {
               id: "human_gate_package",
@@ -655,8 +655,8 @@ export function createWorkflowTaskDraftActionHandlers(context = {}) {
         ? draftGate("pause_terminate_controls_required", humanGateControls.has("pause_workflow") && humanGateControls.has("terminate_workflow"), "Human Gate package must include pause and terminate controls.")
         : { name: "pause_terminate_controls_required", status: "not_applicable", message: "Human Gate is not required for this draft." },
       requiresHumanGate
-        ? draftGate("cat_claw_audit_before_human_gate", phases.some((phase) => phase.id === "secretary_audit"), "Cat Claw audit phase is placed before Human Gate submission.")
-        : { name: "cat_claw_audit_before_human_gate", status: "not_applicable", message: "Human Gate is not required for this draft." }
+        ? draftGate("protocol_audit_before_human_gate", phases.some((phase) => phase.id === "secretary_audit"), "Protocol audit phase is placed before Human Gate submission.")
+        : { name: "protocol_audit_before_human_gate", status: "not_applicable", message: "Human Gate is not required for this draft." }
     ];
     const resumePolicy = {
       stableWorkflowId: true,
@@ -686,7 +686,7 @@ export function createWorkflowTaskDraftActionHandlers(context = {}) {
           optionsMaximum: HUMAN_GATE_APPROVE_OPTION_MAX,
           requiredControls: ["pause_workflow", "terminate_workflow"],
           catBrainOwnsPlanContent: true,
-          catClawAuditsAndSubmits: true
+          protocolAuditsAndSubmits: true
         }
       },
       participants: participantRecords,

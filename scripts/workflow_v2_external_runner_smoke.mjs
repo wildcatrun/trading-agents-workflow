@@ -256,7 +256,7 @@ LIMIT 1;`))[0];
     if (!expectMissingEnvGate) process.env[executeGateEnvKey] = "1";
     const authorization = {
       humanGateId: `${workflowId}.human-gate.synthetic-approval`,
-      catClawAuditId: `${workflowId}.cat-claw-audit.synthetic-approval`,
+      protocolAuditId: `${workflowId}.protocol-audit.synthetic-approval`,
       packageId: `${workflowId}.hgate.execute`,
       decision: "approve_single_synthetic_execute_smoke",
       flashcatOriginalWords: "批准一次 synthetic-only execute guard smoke；不挂载 secrets；network=none；不触达交易。",

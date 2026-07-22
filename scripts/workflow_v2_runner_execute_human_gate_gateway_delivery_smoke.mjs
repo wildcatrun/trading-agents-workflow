@@ -183,7 +183,7 @@ const humanGateId = `${workflowId}.human-gate`;
 const outboxId = `hgate-${humanGateId}`;
 const poisonFlowId = `${workflowId}.poison-flow`;
 const poisonOutboxId = `hgate-${humanGateId}.poison-message-flow`;
-const catClawAuditId = `${workflowId}.cat-claw-audit`;
+const protocolAuditId = `${workflowId}.protocol-audit`;
 const idempotencyKey = `${workflowId}:openclaw-gateway-delivery-smoke`;
 const createdAt = "2026-07-13T00:00:00.000Z";
 const text = [
@@ -247,7 +247,7 @@ const preview = await runAction(root, {
   action: "telegram.outbox.delivery.preview",
   outboxId,
   deliveryOperatorReason: "Controlled workflow v2 OpenClaw Gateway delivery smoke.",
-  catClawAuditId
+  protocolAuditId
 });
 assert.equal(preview.readOnly, true);
 assert.equal(preview.eligible, true);
@@ -272,7 +272,7 @@ if (executeDelivery) {
     outboxId,
     idempotencyKey,
     deliveryOperatorReason: "Controlled workflow v2 OpenClaw Gateway delivery smoke.",
-    catClawAuditId,
+    protocolAuditId,
     actor: "local_codex",
     sourceAgent: "local_codex",
     workflowId,

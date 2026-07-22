@@ -65,10 +65,10 @@ async function workflowV2SchemaSnapshot(dbFile) {
     workflow_v2_manager_reviews: ["review_id", "workflow_id", "plan_id", "decision", "blocker_json"],
     workflow_v2_owner_reviews: ["review_id", "workflow_id", "plan_id", "owner_agent", "decision", "manager_review_refs_json"],
     workflow_v2_task_group_packages: ["package_id", "workflow_id", "plan_id", "owner_review_id", "task_group_agents_json", "status"],
-    workflow_v2_cat_brain_audits: ["audit_id", "workflow_id", "plan_id", "task_group_package_id", "cat_brain_agent", "decision"],
-    workflow_v2_cat_claw_audits: ["audit_id", "workflow_id", "plan_id", "cat_brain_audit_id", "cat_claw_agent", "decision"],
+    workflow_v2_governance_audits: ["audit_id", "workflow_id", "plan_id", "task_group_package_id", "cat_brain_agent", "decision"],
+    workflow_v2_protocol_audits: ["audit_id", "workflow_id", "plan_id", "governance_audit_id", "cat_claw_agent", "decision"],
     workflow_v2_notifications: ["notification_id", "workflow_id", "payload_mode", "status"],
-    workflow_v2_human_gate_packages: ["package_id", "workflow_id", "plan_id", "source_cat_claw_audit_id", "options_json", "required_controls_json"],
+    workflow_v2_human_gate_packages: ["package_id", "workflow_id", "plan_id", "source_protocol_audit_id", "options_json", "required_controls_json"],
     workflow_v2_backend_preflights: ["preflight_id", "workflow_id", "backend_id", "status"]
   };
   const snapshot = {};
@@ -621,9 +621,9 @@ WHERE plan_row.plan_id IS NULL
    OR json_valid(p.artifact_refs_json)=0
    OR json_valid(p.evidence_refs_json)=0
    OR json_valid(p.payload_json)=0;`));
-  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "cat_brain_audits_match_accepted_source", ["workflow_v2_cat_brain_audits", "workflow_v2_task_group_packages", "workflow_v2_owner_reviews"], `
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "governance_audits_match_accepted_source", ["workflow_v2_governance_audits", "workflow_v2_task_group_packages", "workflow_v2_owner_reviews"], `
 SELECT COUNT(*) AS count
-FROM workflow_v2_cat_brain_audits a
+FROM workflow_v2_governance_audits a
 LEFT JOIN workflow_v2_task_group_packages p ON p.package_id=a.task_group_package_id AND COALESCE(a.task_group_package_id, '') != ''
 LEFT JOIN workflow_v2_owner_reviews r ON r.review_id=json_extract(CASE WHEN json_valid(a.payload_json) THEN a.payload_json ELSE '{}' END, '$.sourceOwnerReviewId')
 WHERE (
@@ -641,10 +641,10 @@ WHERE (
    OR json_valid(a.findings_json)=0
    OR json_valid(a.evidence_refs_json)=0
    OR json_valid(a.payload_json)=0;`));
-  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "cat_claw_audits_match_cat_brain_audits", ["workflow_v2_cat_claw_audits", "workflow_v2_cat_brain_audits"], `
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "protocol_audits_match_governance_audits", ["workflow_v2_protocol_audits", "workflow_v2_governance_audits"], `
 SELECT COUNT(*) AS count
-FROM workflow_v2_cat_claw_audits a
-LEFT JOIN workflow_v2_cat_brain_audits b ON b.audit_id=a.cat_brain_audit_id
+FROM workflow_v2_protocol_audits a
+LEFT JOIN workflow_v2_governance_audits b ON b.audit_id=a.governance_audit_id
 WHERE b.audit_id IS NULL
    OR b.workflow_id != a.workflow_id
    OR b.plan_id != a.plan_id
@@ -664,15 +664,15 @@ WHERE json_valid(options_json)=0
    OR json_valid(required_controls_json)=0
    OR instr(required_controls_json, 'pause')=0
    OR instr(required_controls_json, 'terminate')=0
-   OR status NOT IN ('draft','protocol_audited','cat_claw_audited');`));
-  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "human_gate_packages_cat_claw_source_ready", ["workflow_v2_human_gate_packages", "workflow_v2_cat_claw_audits"], `
+   OR status NOT IN ('draft','protocol_audited');`));
+  checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "human_gate_packages_cat_claw_source_ready", ["workflow_v2_human_gate_packages", "workflow_v2_protocol_audits"], `
 SELECT COUNT(*) AS count
 FROM workflow_v2_human_gate_packages p
-LEFT JOIN workflow_v2_cat_claw_audits a ON a.audit_id=COALESCE(NULLIF(p.source_cat_claw_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceCatClawAuditId'))
+LEFT JOIN workflow_v2_protocol_audits a ON a.audit_id=COALESCE(NULLIF(p.source_protocol_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceProtocolAuditId'))
 WHERE json_valid(p.payload_json)=0
-   OR (p.status IN ('protocol_audited','cat_claw_audited')
-      AND COALESCE(NULLIF(p.source_cat_claw_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceCatClawAuditId'), '') = '')
-   OR (COALESCE(NULLIF(p.source_cat_claw_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceCatClawAuditId'), '') != ''
+   OR (p.status IN ('protocol_audited')
+      AND COALESCE(NULLIF(p.source_protocol_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceProtocolAuditId'), '') = '')
+   OR (COALESCE(NULLIF(p.source_protocol_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceProtocolAuditId'), '') != ''
       AND (a.audit_id IS NULL OR a.workflow_id != p.workflow_id OR a.plan_id != p.plan_id OR a.decision != 'protocol_ready'));`));
   const failed = checks.filter((check) => check.status === "fail");
   const advisoryFindings = advisoryChecks.filter((check) => check.status === "advisory");

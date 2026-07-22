@@ -253,7 +253,7 @@ LIMIT 20;`, { json: true }) : [];
       eligible: eligibility.eligible,
       riskTier,
       humanGateRequired: true,
-      catClawAuditRequired: true,
+      protocolAuditRequired: true,
       checkedAt,
       workflow: {
         workflowId: workflow.workflow_id,
@@ -272,7 +272,7 @@ LIMIT 20;`, { json: true }) : [];
       wouldRequireEvidence: [
         "latest_checkpoint",
         "workflow_operations_record",
-        "cat_claw_audit",
+        "protocol_audit",
         "operator_reason",
         "rollback_or_resume_boundary"
       ],
@@ -351,7 +351,7 @@ WHERE workflow_id=${sqlValue(workflowId)};`);
         reason,
         rollbackBoundary,
         riskTier: preview.riskTier,
-        catClawAuditId: input.catClawAuditId || input.cat_claw_audit_id || "",
+        protocolAuditId: input.protocolAuditId || input.protocol_audit_id || "",
         permissionPolicyOutcome: permissionDecision?.policyOutcome || "",
         warnings: preview.warnings || [],
         wouldAffect: preview.wouldAffect || {}
@@ -368,7 +368,7 @@ WHERE workflow_id=${sqlValue(workflowId)};`);
       currentDecision,
       executedAt: now,
       humanGateId: String(input.humanGateId || input.human_gate_id || "").trim(),
-      catClawAuditId: String(input.catClawAuditId || input.cat_claw_audit_id || "").trim(),
+      protocolAuditId: String(input.protocolAuditId || input.protocol_audit_id || "").trim(),
       rollbackBoundary,
       riskTier: preview.riskTier,
       affected: {

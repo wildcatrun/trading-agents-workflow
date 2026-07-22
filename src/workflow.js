@@ -408,10 +408,10 @@ const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
   "workflow.v2.worker_backend.preflight",
   "workflow.v2.owner_review.preview",
   "workflow.v2.task_group_package.preview",
-  "workflow.v2.cat_brain_audit.preview",
-  "workflow.v2.cat_brain_semantic_check.preview",
-  "workflow.v2.cat_claw_audit.preview",
-  "workflow.v2.cat_claw_package_audit.preview",
+  "workflow.v2.governance_audit.preview",
+  "workflow.v2.governance_semantic_check.preview",
+  "workflow.v2.protocol_audit.preview",
+  "workflow.v2.protocol_package_audit.preview",
   "workflow.v2.human_gate_package.preview",
   "workflow.v2.human_gate_request.preview",
   "workflow.v2.control_loop.preview",
@@ -1248,15 +1248,115 @@ async function ensureLegacyWorkflowV2PlanColumnsForInit(dbFile) {
   ]);
 }
 
-async function ensureWorkflowV2HumanGatePackageStatusCheck(dbFile) {
+async function workflowV2TableExists(dbFile, tableName) {
+  return (await tableColumns(dbFile, tableName)).size > 0;
+}
+
+async function migrateWorkflowV2AuditStructuralTables(dbFile) {
+  if (await workflowV2TableExists(dbFile, "workflow_v2_cat_brain_audits")) {
+    await sqliteTransaction(dbFile, `
+INSERT OR IGNORE INTO workflow_v2_governance_audits (
+  audit_id,
+  workflow_id,
+  plan_id,
+  task_group_package_id,
+  cat_brain_agent,
+  decision,
+  scope,
+  summary,
+  findings_json,
+  evidence_refs_json,
+  payload_json,
+  created_by,
+  created_at,
+  updated_at
+)
+SELECT
+  audit_id,
+  workflow_id,
+  plan_id,
+  task_group_package_id,
+  cat_brain_agent,
+  decision,
+  scope,
+  summary,
+  findings_json,
+  evidence_refs_json,
+  payload_json,
+  created_by,
+  created_at,
+  updated_at
+FROM workflow_v2_cat_brain_audits;
+DROP TABLE workflow_v2_cat_brain_audits;`);
+  }
+
+  if (await workflowV2TableExists(dbFile, "workflow_v2_cat_claw_audits")) {
+    await sqliteTransaction(dbFile, `
+INSERT OR IGNORE INTO workflow_v2_protocol_audits (
+  audit_id,
+  workflow_id,
+  plan_id,
+  governance_audit_id,
+  cat_claw_agent,
+  decision,
+  summary,
+  checks_json,
+  evidence_refs_json,
+  payload_json,
+  created_by,
+  created_at,
+  updated_at
+)
+SELECT
+  audit_id,
+  workflow_id,
+  plan_id,
+  cat_brain_audit_id,
+  cat_claw_agent,
+  decision,
+  summary,
+  checks_json,
+  evidence_refs_json,
+  payload_json,
+  created_by,
+  created_at,
+  updated_at
+FROM workflow_v2_cat_claw_audits;
+DROP TABLE workflow_v2_cat_claw_audits;`);
+  }
+}
+
+async function migrateWorkflowV2TemplateEventAuditColumns(dbFile) {
+  const columns = await tableColumns(dbFile, "workflow_v2_template_events");
+  if (!columns.size) return;
+  if (columns.has("cat_brain_audit_id") && columns.has("governance_audit_id")) {
+    await sqlite(dbFile, "UPDATE workflow_v2_template_events SET governance_audit_id=cat_brain_audit_id WHERE governance_audit_id='' AND cat_brain_audit_id!='';");
+  }
+  if (columns.has("cat_claw_audit_id") && columns.has("protocol_audit_id")) {
+    await sqlite(dbFile, "UPDATE workflow_v2_template_events SET protocol_audit_id=cat_claw_audit_id WHERE protocol_audit_id='' AND cat_claw_audit_id!='';");
+  }
+}
+
+async function ensureWorkflowV2HumanGatePackageCanonicalSchema(dbFile) {
+  const columns = await tableColumns(dbFile, "workflow_v2_human_gate_packages");
+  if (!columns.size) return;
   const rows = await sqlite(dbFile, `
 SELECT sql
 FROM sqlite_master
 WHERE type='table' AND name='workflow_v2_human_gate_packages'
 LIMIT 1;`, { json: true });
   const createSql = String(rows[0]?.sql || "");
-  if (!createSql || createSql.includes("'protocol_audited'")) return;
-  const legacyTable = `workflow_v2_human_gate_packages_legacy_p64_${Date.now()}`;
+  const hasOldSourceColumn = columns.has("source_cat_claw_audit_id");
+  const canonicalStatusCheck = createSql.includes("CHECK (status IN ('draft', 'protocol_audited'))");
+  if (!createSql || (!hasOldSourceColumn && canonicalStatusCheck)) return;
+  const sourceProtocolExpr = columns.has("source_protocol_audit_id") && hasOldSourceColumn
+    ? "COALESCE(NULLIF(source_protocol_audit_id, ''), source_cat_claw_audit_id)"
+    : columns.has("source_protocol_audit_id")
+      ? "source_protocol_audit_id"
+      : hasOldSourceColumn
+        ? "source_cat_claw_audit_id"
+        : "''";
+  const legacyTable = `workflow_v2_human_gate_packages_p65_legacy_${Date.now()}`;
   await sqliteTransaction(dbFile, `
 ALTER TABLE workflow_v2_human_gate_packages RENAME TO ${legacyTable};
 CREATE TABLE workflow_v2_human_gate_packages (
@@ -1264,10 +1364,10 @@ CREATE TABLE workflow_v2_human_gate_packages (
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL DEFAULT '',
   source_review_id TEXT NOT NULL DEFAULT '',
-  source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  source_protocol_audit_id TEXT NOT NULL DEFAULT '',
   cat_brain_agent TEXT NOT NULL DEFAULT 'main',
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited', 'cat_claw_audited')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited')),
   options_json TEXT NOT NULL DEFAULT '[]',
   required_controls_json TEXT NOT NULL DEFAULT '[]',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
@@ -1281,7 +1381,7 @@ INSERT INTO workflow_v2_human_gate_packages (
   workflow_id,
   plan_id,
   source_review_id,
-  source_cat_claw_audit_id,
+  source_protocol_audit_id,
   cat_brain_agent,
   cat_claw_agent,
   status,
@@ -1298,10 +1398,10 @@ SELECT
   workflow_id,
   plan_id,
   source_review_id,
-  source_cat_claw_audit_id,
+  ${sourceProtocolExpr},
   cat_brain_agent,
   cat_claw_agent,
-  status,
+  CASE status WHEN 'cat_claw_audited' THEN 'protocol_audited' ELSE status END,
   options_json,
   required_controls_json,
   evidence_refs_json,
@@ -2507,7 +2607,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_task_group_packages (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_task_group_packages_workflow ON workflow_v2_task_group_packages(workflow_id, status, updated_at DESC);
-CREATE TABLE IF NOT EXISTS workflow_v2_cat_brain_audits (
+CREATE TABLE IF NOT EXISTS workflow_v2_governance_audits (
   audit_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL,
@@ -2523,12 +2623,12 @@ CREATE TABLE IF NOT EXISTS workflow_v2_cat_brain_audits (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_workflow_v2_cat_brain_audits_workflow ON workflow_v2_cat_brain_audits(workflow_id, decision, updated_at DESC);
-CREATE TABLE IF NOT EXISTS workflow_v2_cat_claw_audits (
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_governance_audits_workflow ON workflow_v2_governance_audits(workflow_id, decision, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_protocol_audits (
   audit_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL,
-  cat_brain_audit_id TEXT NOT NULL DEFAULT '',
+  governance_audit_id TEXT NOT NULL DEFAULT '',
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
   decision TEXT NOT NULL,
   summary TEXT NOT NULL DEFAULT '',
@@ -2539,7 +2639,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_cat_claw_audits (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_workflow_v2_cat_claw_audits_workflow ON workflow_v2_cat_claw_audits(workflow_id, decision, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_protocol_audits_workflow ON workflow_v2_protocol_audits(workflow_id, decision, updated_at DESC);
 CREATE TABLE IF NOT EXISTS workflow_v2_notifications (
   notification_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
@@ -2561,10 +2661,10 @@ CREATE TABLE IF NOT EXISTS workflow_v2_human_gate_packages (
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL DEFAULT '',
   source_review_id TEXT NOT NULL DEFAULT '',
-  source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  source_protocol_audit_id TEXT NOT NULL DEFAULT '',
   cat_brain_agent TEXT NOT NULL DEFAULT 'main',
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited', 'cat_claw_audited')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited')),
   options_json TEXT NOT NULL DEFAULT '[]',
   required_controls_json TEXT NOT NULL DEFAULT '[]',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
@@ -3457,7 +3557,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_task_group_packages (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS workflow_v2_cat_brain_audits (
+CREATE TABLE IF NOT EXISTS workflow_v2_governance_audits (
   audit_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL,
@@ -3473,11 +3573,11 @@ CREATE TABLE IF NOT EXISTS workflow_v2_cat_brain_audits (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS workflow_v2_cat_claw_audits (
+CREATE TABLE IF NOT EXISTS workflow_v2_protocol_audits (
   audit_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL,
-  cat_brain_audit_id TEXT NOT NULL DEFAULT '',
+  governance_audit_id TEXT NOT NULL DEFAULT '',
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
   decision TEXT NOT NULL,
   summary TEXT NOT NULL DEFAULT '',
@@ -3507,10 +3607,10 @@ CREATE TABLE IF NOT EXISTS workflow_v2_human_gate_packages (
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL DEFAULT '',
   source_review_id TEXT NOT NULL DEFAULT '',
-  source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  source_protocol_audit_id TEXT NOT NULL DEFAULT '',
   cat_brain_agent TEXT NOT NULL DEFAULT 'main',
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited', 'cat_claw_audited')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited')),
   options_json TEXT NOT NULL DEFAULT '[]',
   required_controls_json TEXT NOT NULL DEFAULT '[]',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
@@ -3597,12 +3697,13 @@ CREATE TABLE IF NOT EXISTS workflow_v2_template_events (
   status TEXT NOT NULL DEFAULT '',
   actor TEXT NOT NULL DEFAULT '',
   human_gate_id TEXT NOT NULL DEFAULT '',
-  cat_brain_audit_id TEXT NOT NULL DEFAULT '',
-  cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  governance_audit_id TEXT NOT NULL DEFAULT '',
+  protocol_audit_id TEXT NOT NULL DEFAULT '',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
   payload_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
 );`, { json: false });
+  await migrateWorkflowV2AuditStructuralTables(dbFile);
   await ensureColumns(dbFile, "workflow_v2_plans", [
     ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
     ["plan_revision", "INTEGER NOT NULL DEFAULT 1"],
@@ -3816,7 +3917,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_template_events (
     ["created_at", "TEXT NOT NULL DEFAULT ''"],
     ["updated_at", "TEXT NOT NULL DEFAULT ''"]
   ]);
-  await ensureColumns(dbFile, "workflow_v2_cat_brain_audits", [
+  await ensureColumns(dbFile, "workflow_v2_governance_audits", [
     ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
     ["plan_id", "TEXT NOT NULL DEFAULT ''"],
     ["task_group_package_id", "TEXT NOT NULL DEFAULT ''"],
@@ -3831,10 +3932,10 @@ CREATE TABLE IF NOT EXISTS workflow_v2_template_events (
     ["created_at", "TEXT NOT NULL DEFAULT ''"],
     ["updated_at", "TEXT NOT NULL DEFAULT ''"]
   ]);
-  await ensureColumns(dbFile, "workflow_v2_cat_claw_audits", [
+  await ensureColumns(dbFile, "workflow_v2_protocol_audits", [
     ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
     ["plan_id", "TEXT NOT NULL DEFAULT ''"],
-    ["cat_brain_audit_id", "TEXT NOT NULL DEFAULT ''"],
+    ["governance_audit_id", "TEXT NOT NULL DEFAULT ''"],
     ["cat_claw_agent", "TEXT NOT NULL DEFAULT 'cat_claw'"],
     ["decision", "TEXT NOT NULL DEFAULT ''"],
     ["summary", "TEXT NOT NULL DEFAULT ''"],
@@ -3862,7 +3963,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_template_events (
     ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
     ["plan_id", "TEXT NOT NULL DEFAULT ''"],
     ["source_review_id", "TEXT NOT NULL DEFAULT ''"],
-    ["source_cat_claw_audit_id", "TEXT NOT NULL DEFAULT ''"],
+    ["source_protocol_audit_id", "TEXT NOT NULL DEFAULT ''"],
     ["cat_brain_agent", "TEXT NOT NULL DEFAULT 'main'"],
     ["cat_claw_agent", "TEXT NOT NULL DEFAULT 'cat_claw'"],
     ["status", "TEXT NOT NULL DEFAULT 'draft'"],
@@ -3874,7 +3975,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_template_events (
     ["created_at", "TEXT NOT NULL DEFAULT ''"],
     ["updated_at", "TEXT NOT NULL DEFAULT ''"]
   ]);
-  await ensureWorkflowV2HumanGatePackageStatusCheck(dbFile);
+  await ensureWorkflowV2HumanGatePackageCanonicalSchema(dbFile);
   await ensureColumns(dbFile, "workflow_v2_backend_preflights", [
     ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
     ["backend_id", "TEXT NOT NULL DEFAULT ''"],
@@ -3945,12 +4046,13 @@ CREATE TABLE IF NOT EXISTS workflow_v2_template_events (
     ["status", "TEXT NOT NULL DEFAULT ''"],
     ["actor", "TEXT NOT NULL DEFAULT ''"],
     ["human_gate_id", "TEXT NOT NULL DEFAULT ''"],
-    ["cat_brain_audit_id", "TEXT NOT NULL DEFAULT ''"],
-    ["cat_claw_audit_id", "TEXT NOT NULL DEFAULT ''"],
+    ["governance_audit_id", "TEXT NOT NULL DEFAULT ''"],
+    ["protocol_audit_id", "TEXT NOT NULL DEFAULT ''"],
     ["evidence_refs_json", "TEXT NOT NULL DEFAULT '[]'"],
     ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
     ["created_at", "TEXT NOT NULL DEFAULT ''"]
   ]);
+  await migrateWorkflowV2TemplateEventAuditColumns(dbFile);
   await sqlite(dbFile, `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_v2_plans_workflow ON workflow_v2_plans(workflow_id, plan_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_plans_status ON workflow_v2_plans(status, updated_at DESC);
@@ -3982,8 +4084,8 @@ CREATE INDEX IF NOT EXISTS idx_workflow_v2_reviews_workflow ON workflow_v2_manag
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_reviews_worker ON workflow_v2_manager_reviews(worker_run_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_owner_reviews_workflow ON workflow_v2_owner_reviews(workflow_id, decision, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_task_group_packages_workflow ON workflow_v2_task_group_packages(workflow_id, status, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_workflow_v2_cat_brain_audits_workflow ON workflow_v2_cat_brain_audits(workflow_id, decision, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_workflow_v2_cat_claw_audits_workflow ON workflow_v2_cat_claw_audits(workflow_id, decision, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_governance_audits_workflow ON workflow_v2_governance_audits(workflow_id, decision, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_protocol_audits_workflow ON workflow_v2_protocol_audits(workflow_id, decision, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_notifications_workflow ON workflow_v2_notifications(workflow_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_notifications_info ON workflow_v2_notifications(info_id, inbox_item_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_hgate_workflow ON workflow_v2_human_gate_packages(workflow_id, status, updated_at DESC);
@@ -4677,11 +4779,11 @@ export const {
   workflowV2OwnerReviewRecord,
   workflowV2TaskGroupPackagePreview,
   workflowV2TaskGroupPackageRecord,
-  workflowV2CatBrainAuditPreview,
-  workflowV2CatBrainSemanticCheckPreview,
-  workflowV2CatBrainAuditRecord,
-  workflowV2CatClawAuditPreview,
-  workflowV2CatClawAuditRecord
+  workflowV2GovernanceAuditPreview,
+  workflowV2GovernanceSemanticCheckPreview,
+  workflowV2GovernanceAuditRecord,
+  workflowV2ProtocolAuditPreview,
+  workflowV2ProtocolAuditRecord
 } = WORKFLOW_V2_REVIEW_ACTION_HANDLERS;
 
 const WORKFLOW_V2_HUMAN_GATE_ACTION_HANDLERS = createWorkflowV2HumanGateActionHandlers({
@@ -4707,7 +4809,7 @@ const WORKFLOW_V2_HUMAN_GATE_ACTION_HANDLERS = createWorkflowV2HumanGateActionHa
 export const {
   workflowV2HumanGatePackagePreview,
   workflowV2HumanGatePackageRecord,
-  workflowV2CatClawPackageAuditPreview,
+  workflowV2ProtocolPackageAuditPreview,
   workflowV2HumanGateRequestPreview,
   workflowV2HumanGateRequest
 } = WORKFLOW_V2_HUMAN_GATE_ACTION_HANDLERS;
@@ -8985,12 +9087,12 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2OwnerReviewRecord,
   workflowV2TaskGroupPackagePreview,
   workflowV2TaskGroupPackageRecord,
-  workflowV2CatBrainAuditPreview,
-  workflowV2CatBrainSemanticCheckPreview,
-  workflowV2CatBrainAuditRecord,
-  workflowV2CatClawAuditPreview,
-  workflowV2CatClawAuditRecord,
-  workflowV2CatClawPackageAuditPreview,
+  workflowV2GovernanceAuditPreview,
+  workflowV2GovernanceSemanticCheckPreview,
+  workflowV2GovernanceAuditRecord,
+  workflowV2ProtocolAuditPreview,
+  workflowV2ProtocolAuditRecord,
+  workflowV2ProtocolPackageAuditPreview,
   workflowV2HumanGatePackagePreview,
   workflowV2HumanGatePackageRecord,
   workflowV2HumanGateRequestPreview,

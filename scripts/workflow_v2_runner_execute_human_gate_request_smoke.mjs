@@ -124,7 +124,7 @@ const workflowId = firstText(argValue("--workflow-id"), `wf-v2-runner-execute-hg
 const planId = firstText(argValue("--plan-id"), `${workflowId}.plan`);
 const outDir = path.resolve(firstText(argValue("--out"), path.join(root, "artifacts", "workflow-v2", "runner-execute-human-gate-request", runId)));
 const packageId = firstText(argValue("--package-id"), `${workflowId}.hgate.execute`);
-const catBrainAuditId = `${workflowId}.cat-brain-audit`;
+const governanceAuditId = `${workflowId}.governance-audit`;
 const previousRegistryWriteGate = process.env.TRADING_AGENTS_WORKFLOW_LOCAL_CODEX_REGISTRY_WRITE;
 
 await runAction(root, { action: "workflow.init" });
@@ -167,8 +167,8 @@ const plan = await runAction(root, {
   ],
   nodes: [
     {
-      nodeId: `${planId}.cat-claw-package`,
-      nodeType: "cat_claw_audit",
+      nodeId: `${planId}.protocol-package`,
+      nodeType: "protocol_audit",
       ownerAgent: "cat_claw",
       runtimeBackend: "local_deterministic"
     }
@@ -178,8 +178,8 @@ const plan = await runAction(root, {
 const dbFile = plan.dbFile;
 
 await sqlite(dbFile, `
-INSERT INTO workflow_v2_cat_brain_audits(audit_id, workflow_id, plan_id, task_group_package_id, cat_brain_agent, decision, scope, summary, findings_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
-VALUES (${sqlValue(catBrainAuditId)}, ${sqlValue(workflowId)}, ${sqlValue(planId)}, '', 'main', 'needs_human_gate', 'governance_semantic', 'Cat Brain audit confirms runner execute must stop at Human Gate authorization before any real wrapper execution.', '[]', ${sqlValue(JSON.stringify(["artifact://workflow-v2/runner-execute-guard", "artifact://workflow-v2/runner-execute-human-gate-package"]))}, ${sqlValue(JSON.stringify({ sourceKind: "runner_execute_authorization", nextWorkflowState: "waiting_cat_claw_audit" }))}, 'main', '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:00.000Z')
+INSERT INTO workflow_v2_governance_audits(audit_id, workflow_id, plan_id, task_group_package_id, cat_brain_agent, decision, scope, summary, findings_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(governanceAuditId)}, ${sqlValue(workflowId)}, ${sqlValue(planId)}, '', 'main', 'needs_human_gate', 'governance_semantic', 'Governance audit confirms runner execute must stop at Human Gate authorization before any real wrapper execution.', '[]', ${sqlValue(JSON.stringify(["artifact://workflow-v2/runner-execute-guard", "artifact://workflow-v2/runner-execute-human-gate-package"]))}, ${sqlValue(JSON.stringify({ sourceKind: "runner_execute_authorization", nextWorkflowState: "waiting_protocol_audit" }))}, 'main', '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:00.000Z')
 ON CONFLICT(audit_id) DO UPDATE SET
   decision=excluded.decision,
   summary=excluded.summary,
@@ -187,11 +187,11 @@ ON CONFLICT(audit_id) DO UPDATE SET
   payload_json=excluded.payload_json,
   updated_at=excluded.updated_at;`);
 
-const catClawAudit = await runAction(root, {
-  action: "workflow.v2.cat_claw_audit.record",
+const protocolAudit = await runAction(root, {
+  action: "workflow.v2.protocol_audit.record",
   workflowId,
   planId,
-  catBrainAuditId,
+  governanceAuditId,
   callerAgent: "cat_claw",
   decision: "protocol_ready",
   summary: "猫爪复核通过：真实 worker wrapper execute 只能通过正式 Human Gate 授权，当前请求只创建 pending Human Gate，不执行 runtime。",
@@ -207,15 +207,15 @@ const catClawAudit = await runAction(root, {
     "doc://docs/workflow-v2-worker-runtime-backends.md"
   ]
 });
-assert.equal(catClawAudit.catClawAudit.decision, "protocol_ready");
+assert.equal(protocolAudit.protocolAudit.decision, "protocol_ready");
 
 const hgatePackage = await runAction(root, {
   action: "workflow.v2.human_gate_package.record",
   workflowId,
   planId,
   packageId,
-  sourceCatClawAuditId: catClawAudit.catClawAudit.auditId,
-  status: "cat_claw_audited",
+  sourceProtocolAuditId: protocolAudit.protocolAudit.auditId,
+  status: "protocol_audited",
   createdBy: "cat_claw",
   options: authorizationOptions({ workflowId, planId }),
   evidenceRefs: [
@@ -241,7 +241,7 @@ const hgatePackage = await runAction(root, {
   }
 });
 assert.equal(hgatePackage.valid, true);
-assert.equal(hgatePackage.humanGatePackage.status, "cat_claw_audited");
+assert.equal(hgatePackage.humanGatePackage.status, "protocol_audited");
 assert.equal(hgatePackage.humanGatePackage.options.length, 2);
 
 const previewCountsBefore = {
@@ -336,7 +336,7 @@ assert.equal(planState.workflowState, "waiting_human");
 const sanitizedRequest = {
   humanGateId: requestResult.humanGateId,
   packageId: requestResult.packageId,
-  sourceCatClawAuditId: requestResult.sourceCatClawAuditId,
+  sourceProtocolAuditId: requestResult.sourceProtocolAuditId,
   submissionKind: requestResult.submissionKind,
   interactionType: requestResult.interactionType,
   stageKey: requestResult.stageKey,
@@ -359,8 +359,8 @@ const summary = {
   workflowId,
   planId,
   packageId,
-  catBrainAuditId,
-  catClawAuditId: catClawAudit.catClawAudit.auditId,
+  governanceAuditId,
+  protocolAuditId: protocolAudit.protocolAudit.auditId,
   requestPreview: {
     eligible: requestPreview.eligible,
     writeReady: requestPreview.writeReady,

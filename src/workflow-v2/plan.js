@@ -773,7 +773,7 @@ export function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
       acceptanceCriteria: workflowV2JsonArray(node.payload?.acceptanceCriteria ?? node.payload?.acceptance_criteria, plan.acceptanceCriteria || []),
       receiptRequired: true,
       humanGateRequired: node.nodeType === "human_gate",
-      verifier: node.nodeType === WORKFLOW_V2_PROTOCOL_AUDIT_NODE || node.nodeType === "cat_claw_audit"
+      verifier: node.nodeType === WORKFLOW_V2_PROTOCOL_AUDIT_NODE || node.nodeType === "protocol_audit"
         ? { agentId: catClawAgent, mode: "protocol_audit" }
         : node.nodeType === WORKFLOW_V2_GOVERNANCE_SYNTHESIS_NODE || node.nodeType === "cat_brain_synthesis"
           ? { agentId: catBrainAgent, mode: "governance_audit" }
@@ -812,8 +812,8 @@ export function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
       verifierAgent: catBrainAgent,
       ownerReviewRequired: true,
       managerReviewRequiredForManagerWorkerPaths: true,
-      catBrainAuditBeforeHumanGate: true,
-      catClawAuditBeforeHumanGate: true
+      governanceAuditBeforeHumanGate: true,
+      protocolAuditBeforeHumanGate: true
     },
     humanGatePolicy: workflowV2JsonObject(plan.humanGatePolicy, {}),
     permissionPolicy: {

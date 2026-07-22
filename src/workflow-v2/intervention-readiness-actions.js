@@ -109,7 +109,7 @@ function buildBlockers(kind, plan, facts = {}) {
   if ((kind === "stop_plan" || kind === "terminate_plan") && !facts.latestCheckpoint) {
     blockers.push({ code: "checkpoint_required", detail: "stop/terminate readiness requires a latest checkpoint or rollback boundary" });
   }
-  if (facts.draftHumanGatePackages > 0) warnings.push({ code: "draft_human_gate_packages", detail: `${facts.draftHumanGatePackages} v2 Human Gate packages still require Cat Claw audit` });
+  if (facts.draftHumanGatePackages > 0) warnings.push({ code: "draft_human_gate_packages", detail: `${facts.draftHumanGatePackages} v2 Human Gate packages still require Protocol audit` });
   if (facts.reviewWorkers > 0) warnings.push({ code: "review_workers", detail: `${facts.reviewWorkers} v2 worker runs are waiting for review or handoff` });
   return { blockers, warnings };
 }
@@ -191,7 +191,7 @@ LIMIT 20;`, { json: true });
         eligible: false,
         riskTier: riskTier(kind, blockers),
         humanGateRequired: true,
-        catClawAuditRequired: true,
+        protocolAuditRequired: true,
         generatedAt,
         scope: { workflowId, planId },
         plan: null,
@@ -246,7 +246,7 @@ LIMIT 20;`, { json: true });
       workflowId ? latestCheckpoint(paths.dbFile, workflowId) : null,
       firstRows(paths.dbFile, "workflow_v2_worker_runs", `${scope ? `${scope} AND ` : ""}status IN (${statusList(ACTIVE_WORKER_STATUSES)})`, "updated_at"),
       firstRows(paths.dbFile, "workflow_v2_worker_adapter_jobs", `${scope ? `${scope} AND ` : ""}status IN (${statusList(ACTIVE_ADAPTER_JOB_STATUSES)})`, "updated_at"),
-      firstRows(paths.dbFile, "workflow_v2_human_gate_packages", `${scope ? `${scope} AND ` : ""}status IN ('draft','protocol_audited','cat_claw_audited')`, "updated_at")
+      firstRows(paths.dbFile, "workflow_v2_human_gate_packages", `${scope ? `${scope} AND ` : ""}status IN ('draft','protocol_audited')`, "updated_at")
     ]);
     const pendingHumanGates = workflowId ? await pendingHumanGateCount(paths, workflowId) : 0;
     const facts = {
@@ -272,7 +272,7 @@ LIMIT 20;`, { json: true });
       eligible,
       riskTier: riskTier(kind, blockers),
       humanGateRequired: true,
-      catClawAuditRequired: true,
+      protocolAuditRequired: true,
       generatedAt,
       scope: { workflowId, planId },
       plan,
@@ -296,7 +296,7 @@ LIMIT 20;`, { json: true });
       warnings,
       requiredEvidence: [
         "operator_reason",
-        "cat_claw_audit",
+        "protocol_audit",
         "human_gate_evidence",
         "checkpoint_or_rollback_boundary",
         "runtime_drain_or_cancellation_receipts",

@@ -313,7 +313,7 @@ function parseWorkflowV2AuditRow(row = {}, type = "cat_brain") {
     workflowId: redactText(row.workflow_id || ""),
     planId: redactText(row.plan_id || ""),
     taskGroupPackageId: redactText(row.task_group_package_id || ""),
-    catBrainAuditId: redactText(row.cat_brain_audit_id || ""),
+    governanceAuditId: redactText(row.governance_audit_id || ""),
     agent: redactText(type === "cat_claw" ? row.cat_claw_agent || "" : row.cat_brain_agent || ""),
     decision: row.decision || "",
     scope: row.scope || "",
@@ -334,7 +334,7 @@ function parseWorkflowV2HumanGatePackageRow(row = {}) {
     workflowId: redactText(row.workflow_id || ""),
     planId: redactText(row.plan_id || ""),
     sourceReviewId: redactText(row.source_review_id || ""),
-    sourceCatClawAuditId: redactText(row.source_cat_claw_audit_id || ""),
+    sourceProtocolAuditId: redactText(row.source_protocol_audit_id || ""),
     catBrainAgent: redactText(row.cat_brain_agent || ""),
     catClawAgent: redactText(row.cat_claw_agent || ""),
     status: row.status || "",
@@ -1444,8 +1444,8 @@ LIMIT ${limit};`);
       managerReviews: "workflow_v2_manager_reviews",
       ownerReviews: "workflow_v2_owner_reviews",
       taskGroupPackages: "workflow_v2_task_group_packages",
-      catBrainAudits: "workflow_v2_cat_brain_audits",
-      catClawAudits: "workflow_v2_cat_claw_audits",
+      governanceAudits: "workflow_v2_governance_audits",
+      protocolAudits: "workflow_v2_protocol_audits",
       humanGatePackages: "workflow_v2_human_gate_packages"
     };
     const tableAvailability = {};
@@ -1470,8 +1470,8 @@ LIMIT ${limit};`);
         managerReviewCount: 0,
         ownerReviewCount: 0,
         taskGroupPackageCount: 0,
-        catBrainAuditCount: 0,
-        catClawAuditCount: 0,
+        governanceAuditCount: 0,
+        protocolAuditCount: 0,
         humanGatePackageCount: 0,
         missingTables,
         queryErrors: []
@@ -1484,8 +1484,8 @@ LIMIT ${limit};`);
       managerReviews: [],
       ownerReviews: [],
       taskGroupPackages: [],
-      catBrainAudits: [],
-      catClawAudits: [],
+      governanceAudits: [],
+      protocolAudits: [],
       humanGatePackages: []
     };
     if (!tableAvailability.plans) return emptyPayload;
@@ -1551,15 +1551,15 @@ FROM workflow_v2_task_group_packages
 WHERE ${workflowWhere}
 ORDER BY updated_at DESC
 LIMIT ${sqlValue(limit)};`, parseWorkflowV2TaskGroupPackageRow);
-    const catBrainAudits = await readRows("catBrainAudits", `
+    const governanceAudits = await readRows("governanceAudits", `
 SELECT *
-FROM workflow_v2_cat_brain_audits
+FROM workflow_v2_governance_audits
 WHERE ${workflowWhere}
 ORDER BY updated_at DESC
 LIMIT ${sqlValue(limit)};`, (row) => parseWorkflowV2AuditRow(row, "cat_brain"));
-    const catClawAudits = await readRows("catClawAudits", `
+    const protocolAudits = await readRows("protocolAudits", `
 SELECT *
-FROM workflow_v2_cat_claw_audits
+FROM workflow_v2_protocol_audits
 WHERE ${workflowWhere}
 ORDER BY updated_at DESC
 LIMIT ${sqlValue(limit)};`, (row) => parseWorkflowV2AuditRow(row, "cat_claw"));
@@ -1579,8 +1579,8 @@ LIMIT ${sqlValue(limit)};`, parseWorkflowV2HumanGatePackageRow);
       managerReviews,
       ownerReviews,
       taskGroupPackages,
-      catBrainAudits,
-      catClawAudits,
+      governanceAudits,
+      protocolAudits,
       humanGatePackages
     ].some((rows) => rows.length > 0);
     if (id && !hasV2Rows) {
@@ -1602,8 +1602,8 @@ LIMIT ${sqlValue(limit)};`, parseWorkflowV2HumanGatePackageRow);
       managerReviewCount: managerReviews.length,
       ownerReviewCount: ownerReviews.length,
       taskGroupPackageCount: taskGroupPackages.length,
-      catBrainAuditCount: catBrainAudits.length,
-      catClawAuditCount: catClawAudits.length,
+      governanceAuditCount: governanceAudits.length,
+      protocolAuditCount: protocolAudits.length,
       humanGatePackageCount: humanGatePackages.length,
       fixedTemplatePlanCount: plans.filter((plan) => plan.fixedTemplatePlan).length,
       templateBoundPlanCount: plans.filter((plan) => Boolean(plan.templateBinding?.present)).length,
@@ -1636,8 +1636,8 @@ LIMIT ${sqlValue(limit)};`, parseWorkflowV2HumanGatePackageRow);
         managerReviews,
         ownerReviews,
         taskGroupPackages,
-        catBrainAudits,
-        catClawAudits,
+        governanceAudits,
+        protocolAudits,
         humanGatePackages
       ]),
       missingTables,
@@ -1659,8 +1659,8 @@ LIMIT ${sqlValue(limit)};`, parseWorkflowV2HumanGatePackageRow);
       managerReviews,
       ownerReviews,
       taskGroupPackages,
-      catBrainAudits,
-      catClawAudits,
+      governanceAudits,
+      protocolAudits,
       humanGatePackages
     };
   }
@@ -3021,7 +3021,7 @@ LIMIT 50;`) : [];
       schemaVersion: "human_gate_readiness.v1",
       generatedAt: new Date().toISOString(),
       status,
-      readyForCatClawAudit: failed === 0,
+      readyForProtocolAudit: failed === 0,
       readyForHumanGateSubmission: failed === 0,
       summary: {
         passed,
@@ -5630,7 +5630,7 @@ LIMIT ${limit};`);
     ]);
     const missing = [];
     const readinessSummary = readiness.summary || {};
-    if (!readiness.readyForCatClawAudit) missing.push("cat_claw_audit_readiness");
+    if (!readiness.readyForProtocolAudit) missing.push("protocol_audit_readiness");
     if (!readiness.readyForHumanGateSubmission) missing.push("human_gate_submission_readiness");
     if (!readinessSummary.checkpointCount) missing.push("checkpoint");
     if (!readinessSummary.artifactCount) missing.push("artifact");
@@ -5647,7 +5647,7 @@ LIMIT ${limit};`);
       status: missing.length ? "needs_attention" : "ready",
       summary: {
         missingEvidence: missing,
-        humanGateReadyForCatClawAudit: Boolean(readiness.readyForCatClawAudit),
+        humanGateReadyForProtocolAudit: Boolean(readiness.readyForProtocolAudit),
         humanGateReadyForSubmission: Boolean(readiness.readyForHumanGateSubmission),
         receiptCount: receipts.summary?.total || 0,
         receiptPresent: receipts.summary?.present || 0,
@@ -5707,10 +5707,10 @@ LIMIT ${limit};`);
         refId: String(query.refId || query.ref_id || "")
       },
       humanGateOptions: [],
-      catClawAuditOptions: [],
+      protocolAuditOptions: [],
       counts: {
         humanGateOptions: 0,
-        catClawAuditOptions: 0
+        protocolAuditOptions: 0
       }
     };
     if (!String(workflowId || "").trim()) return empty;
@@ -5805,7 +5805,7 @@ LIMIT ${limit};`);
       });
     }
 
-    const catClawOptions = [];
+    const protocolOptions = [];
     for (const result of verification.results || []) {
       const actors = [result.sourceAgent, result.createdBy, result.verifierAgent, result.refuterAgent].map((value) => String(value || "").toLowerCase());
       const resultType = String(result.resultType || "").toLowerCase();
@@ -5826,7 +5826,7 @@ LIMIT ${limit};`);
       if (matchedRefs.length) {
         addEvidenceReason(reasons, "references_dead_letter", "references current dead-letter evidence", "Verification refs or payload references the selected dead-letter row or a related dispatch/runtime/outbox id.", matchedRefs);
       }
-      catClawOptions.push({
+      protocolOptions.push({
         id: result.verificationId,
         source: "workflow_verification_results",
         resultType: result.resultType || "",
@@ -5843,14 +5843,14 @@ LIMIT ${limit};`);
       });
     }
     humanGateOptions.sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)) || String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
-    catClawOptions.sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)) || String(b.createdAt).localeCompare(String(a.createdAt)));
+    protocolOptions.sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)) || String(b.createdAt).localeCompare(String(a.createdAt)));
     return {
       ...empty,
       humanGateOptions,
-      catClawAuditOptions: catClawOptions,
+      protocolAuditOptions: protocolOptions,
       counts: {
         humanGateOptions: humanGateOptions.length,
-        catClawAuditOptions: catClawOptions.length
+        protocolAuditOptions: protocolOptions.length
       }
     };
   }
@@ -5914,7 +5914,7 @@ LIMIT 80;`);
       selectedPayload.flashcat_original_words
     ]);
     const humanGateId = humanGateEvidenceRefs[0] || "";
-    const catClawAuditId = String(selectedPayload.catClawAuditId || selectedPayload.cat_claw_audit_id || selectedPayload.secretaryAuditId || selectedPayload.secretary_audit_id || selectedPayload.catClawAudit || selectedPayload.cat_claw_audit || "").trim();
+    const protocolAuditId = String(selectedPayload.protocolAuditId || selectedPayload.protocol_audit_id || selectedPayload.secretaryAuditId || selectedPayload.secretary_audit_id || selectedPayload.protocolAudit || selectedPayload.protocol_audit || "").trim();
     const operatorReason = String(selectedPayload.operatorReason || selectedPayload.operator_reason || selectedPayload.closeoutEvidence?.operatorReason || selectedPayload.closeoutEvidence?.operator_reason || "").trim();
     const hasDeadLetterInput = Boolean(deadLetter.kind && deadLetter.refId);
     const legacyIncident = !hasDeadLetterInput;
@@ -5973,14 +5973,14 @@ LIMIT 120;`) : [];
         const ref = String(event.refId || "");
         return ref === selectedIncident.incidentId
           || ref === humanGateId
-          || ref === catClawAuditId
+          || ref === protocolAuditId
           || ref === deadLetter.refId
           || String(event.payload?.humanGateId || "") === humanGateId
           || String(event.payload?.incidentId || "") === selectedIncident.incidentId;
       })
     ].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
 
-    const evidenceCatClawIds = new Set((evidenceOptions?.catClawAuditOptions || []).map((row) => row.id));
+    const evidenceProtocolIds = new Set((evidenceOptions?.protocolAuditOptions || []).map((row) => row.id));
     const evidenceHumanGateIds = new Set((evidenceOptions?.humanGateOptions || []).map((row) => row.id));
     const checkpointRows = checkpoints.checkpoints || [];
     const receiptSummary = receipts.summary || {};
@@ -6001,7 +6001,7 @@ LIMIT 120;`) : [];
         legacyIncident ? "Legacy incident has no dead-letter link" : "Dead-letter evidence is current",
         legacyIncident || Boolean(deadLetterEvidence?.found && deadLetterEvidence?.incidentCandidate),
         legacyIncident
-          ? "Legacy incident payload has no deadLetter reference; use incident fields, timeline, receipts, and Cat Claw audit for closeout evidence."
+          ? "Legacy incident payload has no deadLetter reference; use incident fields, timeline, receipts, and Protocol audit for closeout evidence."
           : deadLetterEvidence?.found ? `${deadLetter.kind}/${deadLetter.refId} is still a current candidate.` : "Dead-letter row no longer matches a current predicate or is missing.",
         [deadLetter.refId],
         legacyIncident ? "warning" : "required"
@@ -6014,11 +6014,11 @@ LIMIT 120;`) : [];
         [...humanGateEvidenceRefs, ...evidenceHumanGateIds]
       ),
       closeoutCheck(
-        "cat_claw_audit",
-        "Cat Claw audit linked",
-        Boolean(catClawAuditId || evidenceCatClawIds.size),
-        catClawAuditId ? `Linked Cat Claw/secretary audit: ${catClawAuditId}.` : `${evidenceCatClawIds.size} Cat Claw/secretary audit candidate(s) available.`,
-        [catClawAuditId, ...evidenceCatClawIds]
+        "protocol_audit",
+        "Protocol audit linked",
+        Boolean(protocolAuditId || evidenceProtocolIds.size),
+        protocolAuditId ? `Linked Protocol audit: ${protocolAuditId}.` : `${evidenceProtocolIds.size} Protocol audit candidate(s) available.`,
+        [protocolAuditId, ...evidenceProtocolIds]
       ),
       closeoutCheck(
         "operator_reason",
@@ -6082,7 +6082,7 @@ LIMIT 120;`) : [];
         deadLetter,
         humanGateId,
         humanGateEvidenceRefs,
-        catClawAuditId,
+        protocolAuditId,
         workflowEventIds: workflowEvents.map((row) => row.event_id),
         checkpointIds: checkpointRows.map((row) => row.checkpointId || row.checkpoint_id).filter(Boolean),
         receiptSummary
@@ -6794,8 +6794,8 @@ LIMIT ${sqlValue(eventLimit)};`);
         status: row.status || "",
         actor: redactText(row.actor || ""),
         humanGateId: redactText(row.human_gate_id || ""),
-        catBrainAuditId: redactText(row.cat_brain_audit_id || ""),
-        catClawAuditId: redactText(row.cat_claw_audit_id || ""),
+        governanceAuditId: redactText(row.governance_audit_id || ""),
+        protocolAuditId: redactText(row.protocol_audit_id || ""),
         evidenceRefs: redactConsoleValue(parseJson(row.evidence_refs_json, [])),
         payload: redactConsoleValue(parseJson(row.payload_json, {})),
         createdAt: row.created_at || ""

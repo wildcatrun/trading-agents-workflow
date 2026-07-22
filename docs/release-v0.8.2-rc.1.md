@@ -25,8 +25,8 @@ inside the same package, not separate package releases.
 ## Included Workflow v2 Scope
 
 - Unified P0-P7 development flow documentation.
-- Cat Brain semantic-check preview.
-- Cat Claw package-audit preview.
+- Governance semantic-check preview.
+- Protocol package-audit preview.
 - Adapter runner wrapper-contract preview.
 - Adapter runner drain-readiness preview.
 - Adapter runner service-plan preview and guarded one-shot service runner.
@@ -53,7 +53,7 @@ escape hatches:
   behavior.
 - Retired v1 meeting-room discussion write surfaces by default because existing
   v2 plan, info stack, manager/owner review, task-group package, Cat Brain
-  audit, Cat Claw audit, notification preview, and shared Human Gate/outbox
+  audit, Protocol audit, notification preview, and shared Human Gate/outbox
   surfaces already cover the same multi-agent discussion/evidence class. No v2
   feature was added for this retirement.
 - Added configurable governance role bindings so the structural Cat Brain and
@@ -63,8 +63,13 @@ escape hatches:
 - Renamed new v2 structural state/node/status writes to role-neutral names
   (`governance_synthesis`, `protocol_audit`, `waiting_governance_review`,
   `waiting_protocol_audit`, `protocol_audited`,
-  `secretary_closeout_required`, `secretary_dispatch_queued`) while preserving
-  legacy action/table/column aliases for existing records.
+  `secretary_closeout_required`, `secretary_dispatch_queued`).
+- Renamed v2 governance/protocol audit action and schema surfaces to neutral
+  canonical names (`workflow.v2.governance_audit.*`,
+  `workflow.v2.protocol_audit.*`, `workflow_v2_governance_audits`,
+  `workflow_v2_protocol_audits`, `source_protocol_audit_id`) without retaining
+  old Cat Brain / Cat Claw action aliases; migration code only reads old
+  table/column names to move existing rows.
 - Preserved `meeting.dispatch` as the public compatibility shell during the
   observation window; `dispatch.package.create` still delegates through the
   compatibility writer until parity evidence supports removal.

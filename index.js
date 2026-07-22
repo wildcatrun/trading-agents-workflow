@@ -2151,7 +2151,7 @@ function registerCli(api) {
       .requiredOption("--risk <riskDecisionId>", "Risk decision id")
       .requiredOption("--pre-order-risk-audit <preOrderRiskAuditId>", "Cat Tail pre-order risk audit id")
       .requiredOption("--human-gate <humanGateId>", "Human Gate id")
-      .requiredOption("--cat-claw-audit <catClawAuditId>", "Cat Claw secretary audit evidence id")
+      .requiredOption("--protocol-audit <protocolAuditId>", "Protocol audit evidence id")
       .requiredOption("--freshness-checked-at <iso>", "Freshness check timestamp or evidence time")
       .option("--intent-id <intentId>", "Intent id")
       .requiredOption("--workflow-id <workflowId>", "Workflow id bound to this executable intent")
@@ -2189,7 +2189,7 @@ function registerCli(api) {
           riskDecisionId: options.risk,
           preOrderRiskAuditId: options.preOrderRiskAudit,
           humanGateId: options.humanGate,
-          catClawAuditId: options.catClawAudit,
+          protocolAuditId: options.protocolAudit,
           freshnessCheckedAt: options.freshnessCheckedAt,
           intentId: options.intentId,
           workflowId: options.workflowId,

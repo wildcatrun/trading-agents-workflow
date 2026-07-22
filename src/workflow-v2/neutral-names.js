@@ -5,10 +5,10 @@ export const WORKFLOW_V2_GOVERNANCE_REVIEW_STATE = "waiting_governance_review";
 export const WORKFLOW_V2_LEGACY_GOVERNANCE_REVIEW_STATE = "waiting_cat_brain_check";
 
 export const WORKFLOW_V2_PROTOCOL_AUDIT_STATE = "waiting_protocol_audit";
-export const WORKFLOW_V2_LEGACY_PROTOCOL_AUDIT_STATE = "waiting_cat_claw_audit";
+export const WORKFLOW_V2_LEGACY_PROTOCOL_AUDIT_STATE = "waiting_protocol_audit";
 
 export const WORKFLOW_V2_PROTOCOL_AUDITED_PACKAGE_STATUS = "protocol_audited";
-export const WORKFLOW_V2_LEGACY_PROTOCOL_AUDITED_PACKAGE_STATUS = "cat_claw_audited";
+export const WORKFLOW_V2_LEGACY_PROTOCOL_AUDITED_PACKAGE_STATUS = "protocol_audited";
 
 export const WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED = "secretary_closeout_required";
 export const WORKFLOW_V2_LEGACY_SECRETARY_CLOSEOUT_REQUIRED = "cat_claw_summary_required";

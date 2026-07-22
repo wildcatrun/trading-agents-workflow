@@ -134,7 +134,7 @@ const workflowId = firstText(argValue("--workflow-id"), `wf-v2-runner-execute-hg
 const outDir = path.resolve(firstText(argValue("--out"), path.join(root, "artifacts", "workflow-v2", "runner-execute-human-gate-delivery-guard", runId)));
 const humanGateId = `${workflowId}.human-gate`;
 const outboxId = `hgate-${humanGateId}`;
-const catClawAuditId = `${workflowId}.cat-claw-audit`;
+const protocolAuditId = `${workflowId}.protocol-audit`;
 const createdAt = "2026-07-13T00:00:00.000Z";
 const targetRef = "8390724843";
 const basePayload = {
@@ -162,7 +162,7 @@ const previewReady = await runAction(root, {
   action: "telegram.outbox.delivery.preview",
   outboxId,
   deliveryOperatorReason: "Smoke guard preview only.",
-  catClawAuditId
+  protocolAuditId
 });
 assert.equal(previewReady.readOnly, true);
 assert.equal(previewReady.eligible, true);
@@ -174,22 +174,22 @@ assert.equal((await outboxStatus(dbFile, outboxId)).status, "queued");
 const missingIdempotency = await expectDeliveryBlocked(root, {
   outboxId,
   deliveryOperatorReason: "Smoke guard must block before delivery.",
-  catClawAuditId
+  protocolAuditId
 }, ["idempotencyKey is required"]);
 assert.equal((await outboxStatus(dbFile, outboxId)).status, "queued");
 
 const missingOperatorReason = await expectDeliveryBlocked(root, {
   outboxId,
   idempotencyKey: `${workflowId}:missing-operator-reason`,
-  catClawAuditId
+  protocolAuditId
 }, ["delivery_operator_reason_required"]);
 assert.equal((await outboxStatus(dbFile, outboxId)).status, "queued");
 
-const missingCatClawAudit = await expectDeliveryBlocked(root, {
+const missingProtocolAudit = await expectDeliveryBlocked(root, {
   outboxId,
-  idempotencyKey: `${workflowId}:missing-cat-claw-audit`,
-  deliveryOperatorReason: "Smoke guard must require Cat Claw audit evidence."
-}, ["requires_cat_claw_audit"]);
+  idempotencyKey: `${workflowId}:missing-protocol-audit`,
+  deliveryOperatorReason: "Smoke guard must require Protocol audit evidence."
+}, ["requires_protocol_audit"]);
 assert.equal((await outboxStatus(dbFile, outboxId)).status, "queued");
 
 await updateOutbox(dbFile, outboxId, { targetRef: "", payload: { ...basePayload, targetRef: "" } });
@@ -197,7 +197,7 @@ const missingTarget = await expectDeliveryBlocked(root, {
   outboxId,
   idempotencyKey: `${workflowId}:missing-target`,
   deliveryOperatorReason: "Smoke guard must require bound Telegram target.",
-  catClawAuditId
+  protocolAuditId
 }, ["target_missing", "governed_target_required"]);
 const missingTargetRow = await outboxStatus(dbFile, outboxId);
 assert.equal(missingTargetRow.status, "queued");
@@ -208,7 +208,7 @@ const incompleteButtons = await expectDeliveryBlocked(root, {
   outboxId,
   idempotencyKey: `${workflowId}:incomplete-buttons`,
   deliveryOperatorReason: "Smoke guard must require two approve options plus controls.",
-  catClawAuditId
+  protocolAuditId
 }, ["human_gate_buttons_incomplete"]);
 assert.equal((await outboxStatus(dbFile, outboxId)).status, "queued");
 
@@ -231,7 +231,7 @@ const sentReplay = await runAction(root, {
   outboxId,
   idempotencyKey: `${workflowId}:sent-replay`,
   deliveryOperatorReason: "Smoke guard sent replay must not resend Telegram.",
-  catClawAuditId
+  protocolAuditId
 });
 assert.equal(sentReplay.idempotentReplay, true);
 assert.equal(sentReplay.didSendTelegram, false);
@@ -264,7 +264,7 @@ const summary = {
   blockedCases: {
     missingIdempotency,
     missingOperatorReason,
-    missingCatClawAudit,
+    missingProtocolAudit,
     missingTarget,
     incompleteButtons
   },

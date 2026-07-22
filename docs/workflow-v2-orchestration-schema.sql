@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_plans (
       'waiting_governance_review',
       'waiting_protocol_audit',
       'waiting_cat_brain_check',
-      'waiting_cat_claw_audit',
+      'waiting_protocol_audit',
       'human_gate_request_due',
       'waiting_human',
       'blocked',
@@ -229,7 +229,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_plan_nodes (
       'manager_review',
       'group_discussion',
       'cat_brain_check',
-      'cat_claw_audit',
+      'protocol_audit',
       'human_gate',
       'checkpoint',
       'closeout'
@@ -994,7 +994,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_task_group_packages (
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_task_group_packages_workflow
   ON workflow_v2_task_group_packages(workflow_id, status);
 
-CREATE TABLE IF NOT EXISTS workflow_v2_cat_brain_audits (
+CREATE TABLE IF NOT EXISTS workflow_v2_governance_audits (
   audit_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL,
@@ -1026,14 +1026,14 @@ CREATE TABLE IF NOT EXISTS workflow_v2_cat_brain_audits (
   FOREIGN KEY (cat_brain_agent_key) REFERENCES runtime_agents(agent_key)
 );
 
-CREATE INDEX IF NOT EXISTS idx_workflow_v2_cat_brain_audits_workflow
-  ON workflow_v2_cat_brain_audits(workflow_id, audit_status);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_governance_audits_workflow
+  ON workflow_v2_governance_audits(workflow_id, audit_status);
 
-CREATE TABLE IF NOT EXISTS workflow_v2_cat_claw_audits (
+CREATE TABLE IF NOT EXISTS workflow_v2_protocol_audits (
   audit_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL,
-  cat_brain_audit_id TEXT NOT NULL,
+  governance_audit_id TEXT NOT NULL,
   cat_claw_agent_key TEXT NOT NULL,
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
   audit_status TEXT NOT NULL CHECK (
@@ -1047,12 +1047,12 @@ CREATE TABLE IF NOT EXISTS workflow_v2_cat_claw_audits (
   updated_at TEXT NOT NULL,
   FOREIGN KEY (workflow_id) REFERENCES workflow_runs(workflow_id),
   FOREIGN KEY (plan_id) REFERENCES workflow_v2_plans(plan_id),
-  FOREIGN KEY (cat_brain_audit_id) REFERENCES workflow_v2_cat_brain_audits(audit_id),
+  FOREIGN KEY (governance_audit_id) REFERENCES workflow_v2_governance_audits(audit_id),
   FOREIGN KEY (cat_claw_agent_key) REFERENCES runtime_agents(agent_key)
 );
 
-CREATE INDEX IF NOT EXISTS idx_workflow_v2_cat_claw_audits_workflow
-  ON workflow_v2_cat_claw_audits(workflow_id, audit_status);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_protocol_audits_workflow
+  ON workflow_v2_protocol_audits(workflow_id, audit_status);
 
 CREATE TABLE IF NOT EXISTS workflow_v2_group_discussions (
   discussion_id TEXT PRIMARY KEY,
@@ -1081,10 +1081,10 @@ CREATE TABLE IF NOT EXISTS workflow_v2_human_gate_packages (
   workflow_id TEXT NOT NULL,
   plan_id TEXT NOT NULL DEFAULT '',
   source_review_id TEXT NOT NULL DEFAULT '',
-  source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  source_protocol_audit_id TEXT NOT NULL DEFAULT '',
   cat_brain_agent TEXT NOT NULL DEFAULT 'main',
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited', 'cat_claw_audited')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited')),
   options_json TEXT NOT NULL DEFAULT '[]',
   required_controls_json TEXT NOT NULL DEFAULT '[]',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
@@ -1101,17 +1101,17 @@ CREATE TRIGGER IF NOT EXISTS trg_workflow_v2_human_gate_packages_audited_insert
 BEFORE INSERT ON workflow_v2_human_gate_packages
 BEGIN
   SELECT CASE
-    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
+    WHEN NEW.status IN ('protocol_audited')
       AND COALESCE(json_array_length(NEW.options_json), 0) < 2
     THEN RAISE(ABORT, 'audited Human Gate packages require at least two options')
   END;
   SELECT CASE
-    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
+    WHEN NEW.status IN ('protocol_audited')
       AND COALESCE(json_array_length(NEW.options_json), 0) > 5
     THEN RAISE(ABORT, 'audited Human Gate packages allow at most five options')
   END;
   SELECT CASE
-    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
+    WHEN NEW.status IN ('protocol_audited')
       AND (instr(NEW.required_controls_json, 'pause') = 0 OR instr(NEW.required_controls_json, 'terminate') = 0)
     THEN RAISE(ABORT, 'audited Human Gate packages require pause and terminate controls')
   END;
@@ -1121,17 +1121,17 @@ CREATE TRIGGER IF NOT EXISTS trg_workflow_v2_human_gate_packages_audited_update
 BEFORE UPDATE OF status, options_json, required_controls_json ON workflow_v2_human_gate_packages
 BEGIN
   SELECT CASE
-    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
+    WHEN NEW.status IN ('protocol_audited')
       AND COALESCE(json_array_length(NEW.options_json), 0) < 2
     THEN RAISE(ABORT, 'audited Human Gate packages require at least two options')
   END;
   SELECT CASE
-    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
+    WHEN NEW.status IN ('protocol_audited')
       AND COALESCE(json_array_length(NEW.options_json), 0) > 5
     THEN RAISE(ABORT, 'audited Human Gate packages allow at most five options')
   END;
   SELECT CASE
-    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
+    WHEN NEW.status IN ('protocol_audited')
       AND (instr(NEW.required_controls_json, 'pause') = 0 OR instr(NEW.required_controls_json, 'terminate') = 0)
     THEN RAISE(ABORT, 'audited Human Gate packages require pause and terminate controls')
   END;
@@ -1144,8 +1144,8 @@ END;
 --    through dispatch_id, runtime_run_id, and session_run_id during migration.
 -- 4. workflow_v2_artifacts can bridge to existing artifact_index rows by path
 --    or artifact id conventions.
--- 5. workflow_v2_owner_reviews, task_group_packages, cat_brain_audits, and
---    cat_claw_audits are internal high-speed agent review records, not Human
+-- 5. workflow_v2_owner_reviews, task_group_packages, governance_audits, and
+--    protocol_audits are internal high-speed agent review records, not Human
 --    Gate waits. The normal Human Gate source should be a protocol-ready Cat
 --    Claw audit; source_review_id remains only for compatibility and migration.
 -- 6. workflow_v2_human_gate_packages records the local Cat Brain/Cat Claw
@@ -1171,8 +1171,8 @@ END;
 --    runtime-significant: it must contain objective, outputFormat, toolBoundary,
 --    acceptanceCriteria, and stopCondition/stopConditions.
 -- 8. Human Gate package rows in the current local runtime slice only use
---    'draft', 'protocol_audited', and legacy 'cat_claw_audited'. Application-level validation must still
---    require a protocol-ready Cat Claw audit from the same workflow and plan.
+--    'draft', 'protocol_audited', and legacy 'protocol_audited'. Application-level validation must still
+--    require a protocol-ready Protocol audit from the same workflow and plan.
 --    The schema draft also checks that audited packages carry two to five
 --    options and pause/terminate controls; runtime code must still perform
 --    structured JSON validation instead of relying only on substring checks.

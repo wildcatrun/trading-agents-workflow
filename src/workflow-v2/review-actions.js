@@ -16,13 +16,13 @@ import {
   workflowGovernanceRole
 } from "../workflow/governance-roles.js";
 import {
-  WORKFLOW_V2_CAT_BRAIN_AUDIT_DECISIONS,
-  WORKFLOW_V2_CAT_CLAW_AUDIT_DECISIONS,
+  WORKFLOW_V2_GOVERNANCE_AUDIT_DECISIONS,
+  WORKFLOW_V2_PROTOCOL_AUDIT_DECISIONS,
   WORKFLOW_V2_REVIEW_DECISIONS,
   WORKFLOW_V2_TASK_GROUP_PACKAGE_STATUSES
 } from "./constants.js";
 import {
-  workflowV2CatBrainAuditSummary,
+  workflowV2GovernanceAuditSummary,
   workflowV2JsonArray,
   workflowV2JsonObject,
   workflowV2ManagerReviewSummary,
@@ -322,11 +322,11 @@ LIMIT 1;`, { json: true });
   return row;
 }
 
-async function workflowV2CatBrainAuditRow(paths, workflowId, planId, auditId) {
+async function workflowV2GovernanceAuditRow(paths, workflowId, planId, auditId) {
   if (!auditId || !fileExistsSync(paths.dbFile)) return null;
   const rows = await sqlite(paths.dbFile, `
 SELECT *
-FROM workflow_v2_cat_brain_audits
+FROM workflow_v2_governance_audits
 WHERE audit_id=${sqlValue(auditId)}
 LIMIT 1;`, { json: true });
   const row = rows[0] || null;
@@ -689,43 +689,43 @@ ON CONFLICT(package_id) DO UPDATE SET
   return { ...preview, operation: "workflow.v2.task_group_package.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
 }
 
-async function workflowV2CatBrainAuditPreview(rootDir, input = {}) {
+async function workflowV2GovernanceAuditPreview(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
   const errors = [];
   const workflowId = firstText(input.workflowId, input.workflow_id);
   const planId = firstText(input.planId, input.plan_id);
   const taskGroupPackageId = firstText(input.taskGroupPackageId, input.task_group_package_id, input.packageId, input.package_id);
   const ownerReviewId = firstText(input.ownerReviewId, input.owner_review_id, input.sourceReviewId, input.source_review_id);
-  if (!workflowId) errors.push(workflowV2ValidationError("workflow_id_required", "Cat Brain audit requires workflowId"));
-  if (!planId) errors.push(workflowV2ValidationError("plan_id_required", "Cat Brain audit requires planId"));
+  if (!workflowId) errors.push(workflowV2ValidationError("workflow_id_required", "Governance audit requires workflowId"));
+  if (!planId) errors.push(workflowV2ValidationError("plan_id_required", "Governance audit requires planId"));
   if (!taskGroupPackageId && !ownerReviewId) {
-    errors.push(workflowV2ValidationError("cat_brain_audit_source_required", "Cat Brain audit requires taskGroupPackageId or an accepted ownerReviewId/sourceReviewId"));
+    errors.push(workflowV2ValidationError("governance_audit_source_required", "Governance audit requires taskGroupPackageId or an accepted ownerReviewId/sourceReviewId"));
   }
   const planRow = await workflowV2LoadPlanRow(paths, workflowId, planId);
-  if (workflowId && planId && !planRow) errors.push(workflowV2ValidationError("plan_not_found", "Cat Brain audit requires an existing v2 plan", { workflowId, planId }));
+  if (workflowId && planId && !planRow) errors.push(workflowV2ValidationError("plan_not_found", "Governance audit requires an existing v2 plan", { workflowId, planId }));
   const taskGroupPackageRow = taskGroupPackageId ? await workflowV2TaskGroupPackageRow(paths, workflowId, planId, taskGroupPackageId) : null;
   const ownerReviewRow = !taskGroupPackageId && ownerReviewId ? await workflowV2OwnerReviewRow(paths, workflowId, planId, ownerReviewId) : null;
   if (taskGroupPackageId && !taskGroupPackageRow) {
-    errors.push(workflowV2ValidationError("task_group_package_not_found", "Cat Brain audit requires a task group package for the same workflow and plan", { taskGroupPackageId }));
+    errors.push(workflowV2ValidationError("task_group_package_not_found", "Governance audit requires a task group package for the same workflow and plan", { taskGroupPackageId }));
   } else if (taskGroupPackageRow && taskGroupPackageRow.status !== "ready") {
-    errors.push(workflowV2ValidationError("task_group_package_not_ready", "Cat Brain audit requires a ready task group package", { taskGroupPackageId, status: taskGroupPackageRow.status }));
+    errors.push(workflowV2ValidationError("task_group_package_not_ready", "Governance audit requires a ready task group package", { taskGroupPackageId, status: taskGroupPackageRow.status }));
   }
   if (!taskGroupPackageId && ownerReviewId && !ownerReviewRow) {
-    errors.push(workflowV2ValidationError("owner_review_not_found", "Cat Brain owner-direct audit requires an owner review for the same workflow and plan", { ownerReviewId }));
+    errors.push(workflowV2ValidationError("owner_review_not_found", "Governance owner-direct audit requires an owner review for the same workflow and plan", { ownerReviewId }));
   } else if (ownerReviewRow && ownerReviewRow.decision !== "accepted") {
-    errors.push(workflowV2ValidationError("owner_review_not_accepted", "Cat Brain owner-direct audit requires an accepted owner review", { ownerReviewId, decision: ownerReviewRow.decision }));
+    errors.push(workflowV2ValidationError("owner_review_not_accepted", "Governance owner-direct audit requires an accepted owner review", { ownerReviewId, decision: ownerReviewRow.decision }));
   }
   if (String(input.decision || "").trim().toLowerCase() === "blocked") {
-    errors.push(workflowV2ValidationError("blocked_decision_not_allowed", "Cat Brain audit decision blocked is not allowed; use revision_required, rejected, or needs_human_gate"));
+    errors.push(workflowV2ValidationError("blocked_decision_not_allowed", "Governance audit decision blocked is not allowed; use revision_required, rejected, or needs_human_gate"));
   }
   const catBrainRole = workflowGovernanceRole(input, "catBrain");
   const expectedCatBrainAgent = normalizeOptionalAgentId(catBrainRole.agentId) || "main";
   const catBrainAgent = normalizeOptionalAgentId(firstText(input.catBrainAgent, input.cat_brain_agent, expectedCatBrainAgent)) || expectedCatBrainAgent;
   const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.createdBy, input.created_by, catBrainAgent)) || catBrainAgent;
   if (catBrainAgent !== expectedCatBrainAgent || callerAgent !== expectedCatBrainAgent) {
-    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "Cat Brain governance audit must be recorded by the configured catBrain governance role", { catBrainAgent, callerAgent, expectedCatBrainAgent }));
+    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "Governance audit must be recorded by the configured governance role", { catBrainAgent, callerAgent, expectedCatBrainAgent }));
   }
-  const decision = workflowV2NormalizeEnum(input.decision, WORKFLOW_V2_CAT_BRAIN_AUDIT_DECISIONS, "approved");
+  const decision = workflowV2NormalizeEnum(input.decision, WORKFLOW_V2_GOVERNANCE_AUDIT_DECISIONS, "approved");
   const pkg = workflowV2TaskGroupPackageSummary(taskGroupPackageRow);
   const ownerReview = workflowV2OwnerReviewSummary(ownerReviewRow);
   const evidenceRefs = workflowV2UniqueTextList(input.evidenceRefs ?? input.evidence_refs, pkg?.evidenceRefs || [
@@ -733,7 +733,7 @@ async function workflowV2CatBrainAuditPreview(rootDir, input = {}) {
     ...(ownerReview?.artifactRefs || [])
   ]);
   const audit = {
-    auditId: firstText(input.auditId, input.audit_id) || safeId("v2-cat-brain-audit"),
+    auditId: firstText(input.auditId, input.audit_id) || safeId("v2-governance-audit"),
     workflowId,
     planId,
     taskGroupPackageId: taskGroupPackageId || "",
@@ -752,12 +752,12 @@ async function workflowV2CatBrainAuditPreview(rootDir, input = {}) {
     }
   };
   return {
-    operation: "workflow.v2.cat_brain_audit.preview",
+    operation: "workflow.v2.governance_audit.preview",
     dryRun: true,
     previewOnly: true,
     valid: errors.length === 0,
     errors,
-    catBrainAudit: audit,
+    governanceAudit: audit,
     taskGroupPackage: pkg,
     ownerReview,
     plan: workflowV2PlanSummary(planRow),
@@ -797,7 +797,7 @@ LIMIT 1;`, { json: true });
   return rows;
 }
 
-async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
+async function workflowV2GovernanceSemanticCheckPreview(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
   const catBrainRole = workflowGovernanceRole(input, "catBrain");
   const expectedCatBrainAgent = normalizeOptionalAgentId(catBrainRole.agentId) || "main";
@@ -807,15 +807,15 @@ async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
   const ownerReviewIdInput = firstText(input.ownerReviewId, input.owner_review_id, input.sourceReviewId, input.source_review_id);
   const hasMixedSelectors = Boolean(taskGroupPackageId && ownerReviewIdInput);
   const checks = [];
-  if (!workflowId) checks.push(workflowV2SemanticCheckFail("workflow_id_present", "Cat Brain semantic check requires workflowId"));
-  if (!planId) checks.push(workflowV2SemanticCheckFail("plan_id_present", "Cat Brain semantic check requires planId"));
+  if (!workflowId) checks.push(workflowV2SemanticCheckFail("workflow_id_present", "Governance semantic check requires workflowId"));
+  if (!planId) checks.push(workflowV2SemanticCheckFail("plan_id_present", "Governance semantic check requires planId"));
   if (hasMixedSelectors) {
-    checks.push(workflowV2SemanticCheckFail("exact_selector_present", "Cat Brain semantic check requires exactly one selector: taskGroupPackageId or ownerReviewId", {
+    checks.push(workflowV2SemanticCheckFail("exact_selector_present", "Governance semantic check requires exactly one selector: taskGroupPackageId or ownerReviewId", {
       taskGroupPackageId,
       ownerReviewId: ownerReviewIdInput
     }));
   } else if (!taskGroupPackageId && !ownerReviewIdInput) {
-    checks.push(workflowV2SemanticCheckFail("exact_selector_present", "Cat Brain semantic check requires exact taskGroupPackageId or ownerReviewId"));
+    checks.push(workflowV2SemanticCheckFail("exact_selector_present", "Governance semantic check requires exact taskGroupPackageId or ownerReviewId"));
   } else {
     checks.push(workflowV2SemanticCheckPass("exact_selector_present", "semantic check selector is exact", {
       sourceKind: taskGroupPackageId ? "task_group_package" : "owner_review"
@@ -826,7 +826,7 @@ async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
   if (workflowId && planId && planRow) {
     checks.push(workflowV2SemanticCheckPass("plan_present", "v2 plan exists", { workflowState: planRow.workflow_state || "" }));
   } else if (workflowId && planId) {
-    checks.push(workflowV2SemanticCheckFail("plan_present", "Cat Brain semantic check requires an existing v2 plan"));
+    checks.push(workflowV2SemanticCheckFail("plan_present", "Governance semantic check requires an existing v2 plan"));
   }
 
   const taskGroupPackageRow = taskGroupPackageId ? await workflowV2TaskGroupPackageRow(paths, workflowId, planId, taskGroupPackageId) : null;
@@ -900,7 +900,7 @@ async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
   ]);
   checks.push(rollbackRefs.length
     ? workflowV2SemanticCheckPass("rollback_anchors_present", "rollback anchors are present", { count: rollbackRefs.length })
-    : workflowV2SemanticCheckFail("rollback_anchors_present", "Cat Brain semantic check requires rollback anchors"));
+    : workflowV2SemanticCheckFail("rollback_anchors_present", "Governance semantic check requires rollback anchors"));
 
   const blockingReviews = managerRows.filter((row) => workflowV2ObjectHasKeys(workflowV2JsonObject(row.blocker_json, {}))).map((row) => row.review_id);
   checks.push(!blockingReviews.length
@@ -913,13 +913,13 @@ async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
   );
   checks.push(!unresolvedEvidenceGaps.length
     ? workflowV2SemanticCheckPass("unresolved_evidence_gaps_absent", "no unresolved evidence gaps declared")
-    : workflowV2SemanticCheckFail("unresolved_evidence_gaps_absent", "Cat Brain semantic check must surface unresolved evidence gaps", { unresolvedEvidenceGaps }));
+    : workflowV2SemanticCheckFail("unresolved_evidence_gaps_absent", "Governance semantic check must surface unresolved evidence gaps", { unresolvedEvidenceGaps }));
 
   const violations = checks.filter((check) => check.status !== "pass");
   return {
-    schemaVersion: "workflow_v2_cat_brain_semantic_check_preview.v1",
-    action: "workflow.v2.cat_brain_semantic_check.preview",
-    operation: "workflow.v2.cat_brain_semantic_check.preview",
+    schemaVersion: "workflow_v2_governance_semantic_check_preview.v1",
+    action: "workflow.v2.governance_semantic_check.preview",
+    operation: "workflow.v2.governance_semantic_check.preview",
     dryRun: true,
     previewOnly: true,
     readOnly: true,
@@ -927,7 +927,7 @@ async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
     checks,
     violations,
     wouldCreate: {
-      catBrainAudits: 0,
+      governanceAudits: 0,
       workflowStateMutations: 0,
       runtimeDispatches: 0,
       humanGateBatches: 0,
@@ -941,7 +941,7 @@ async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
       catBrainAgent: expectedCatBrainAgent,
       evidenceRefs,
       rollbackRefs,
-      nextAllowedAction: violations.length === 0 ? "workflow.v2.cat_brain_audit.record" : "repair_evidence_before_cat_brain_audit"
+      nextAllowedAction: violations.length === 0 ? "workflow.v2.governance_audit.record" : "repair_evidence_before_governance_audit"
     },
     taskGroupPackage: pkg,
     ownerReview,
@@ -951,14 +951,14 @@ async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
   };
 }
 
-async function workflowV2CatBrainAuditRecord(rootDir, input = {}) {
-  const preview = await workflowV2CatBrainAuditPreview(rootDir, input);
-  if (!preview.valid) throw new Error(`workflow v2 Cat Brain audit is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+async function workflowV2GovernanceAuditRecord(rootDir, input = {}) {
+  const preview = await workflowV2GovernanceAuditPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 Governance audit is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
   const paths = await ensureWorkflowLayout(rootDir, input);
   const now = nowIso();
-  const audit = preview.catBrainAudit;
+  const audit = preview.governanceAudit;
   await sqlite(paths.dbFile, `
-INSERT INTO workflow_v2_cat_brain_audits(audit_id, workflow_id, plan_id, task_group_package_id, cat_brain_agent, decision, scope, summary, findings_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+INSERT INTO workflow_v2_governance_audits(audit_id, workflow_id, plan_id, task_group_package_id, cat_brain_agent, decision, scope, summary, findings_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
 VALUES (${sqlValue(audit.auditId)}, ${sqlValue(audit.workflowId)}, ${sqlValue(audit.planId)}, ${sqlValue(audit.taskGroupPackageId)}, ${sqlValue(audit.catBrainAgent)}, ${sqlValue(audit.decision)}, ${sqlValue(audit.scope)}, ${sqlValue(audit.summary)}, ${sqlValue(JSON.stringify(audit.findings))}, ${sqlValue(JSON.stringify(audit.evidenceRefs))}, ${sqlValue(JSON.stringify(audit.payload))}, ${sqlValue(audit.callerAgent)}, ${sqlValue(now)}, ${sqlValue(now)})
 ON CONFLICT(audit_id) DO UPDATE SET
   workflow_id=excluded.workflow_id,
@@ -974,47 +974,47 @@ ON CONFLICT(audit_id) DO UPDATE SET
   created_by=excluded.created_by,
   updated_at=excluded.updated_at;`);
   await workflowV2PatchPlanWorkflowState(paths, audit.workflowId, audit.planId, audit.payload.nextWorkflowState, now);
-  return { ...preview, operation: "workflow.v2.cat_brain_audit.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
+  return { ...preview, operation: "workflow.v2.governance_audit.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
 }
 
-async function workflowV2CatClawAuditPreview(rootDir, input = {}) {
+async function workflowV2ProtocolAuditPreview(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
   const errors = [];
   const workflowId = firstText(input.workflowId, input.workflow_id);
   const planId = firstText(input.planId, input.plan_id);
-  const catBrainAuditId = firstText(input.catBrainAuditId, input.cat_brain_audit_id, input.auditSourceId, input.audit_source_id);
-  if (!workflowId) errors.push(workflowV2ValidationError("workflow_id_required", "Cat Claw audit requires workflowId"));
-  if (!planId) errors.push(workflowV2ValidationError("plan_id_required", "Cat Claw audit requires planId"));
-  if (!catBrainAuditId) errors.push(workflowV2ValidationError("cat_brain_audit_id_required", "Cat Claw audit requires catBrainAuditId"));
+  const governanceAuditId = firstText(input.governanceAuditId, input.governance_audit_id, input.auditSourceId, input.audit_source_id);
+  if (!workflowId) errors.push(workflowV2ValidationError("workflow_id_required", "Protocol audit requires workflowId"));
+  if (!planId) errors.push(workflowV2ValidationError("plan_id_required", "Protocol audit requires planId"));
+  if (!governanceAuditId) errors.push(workflowV2ValidationError("governance_audit_id_required", "Protocol audit requires governanceAuditId"));
   const planRow = await workflowV2LoadPlanRow(paths, workflowId, planId);
-  if (workflowId && planId && !planRow) errors.push(workflowV2ValidationError("plan_not_found", "Cat Claw audit requires an existing v2 plan", { workflowId, planId }));
-  const brainAuditRow = await workflowV2CatBrainAuditRow(paths, workflowId, planId, catBrainAuditId);
+  if (workflowId && planId && !planRow) errors.push(workflowV2ValidationError("plan_not_found", "Protocol audit requires an existing v2 plan", { workflowId, planId }));
+  const brainAuditRow = await workflowV2GovernanceAuditRow(paths, workflowId, planId, governanceAuditId);
   if (!brainAuditRow) {
-    errors.push(workflowV2ValidationError("cat_brain_audit_not_found", "Cat Claw audit requires Cat Brain audit evidence for the same workflow and plan", { catBrainAuditId }));
+    errors.push(workflowV2ValidationError("governance_audit_not_found", "Protocol audit requires Governance audit evidence for the same workflow and plan", { governanceAuditId }));
   } else if (!["approved", "needs_human_gate"].includes(brainAuditRow.decision)) {
-    errors.push(workflowV2ValidationError("cat_brain_audit_not_approved", "Cat Claw audit requires Cat Brain approved or needs_human_gate decision", { catBrainAuditId, decision: brainAuditRow.decision }));
+    errors.push(workflowV2ValidationError("governance_audit_not_approved", "Protocol audit requires Governance audit approved or needs_human_gate decision", { governanceAuditId, decision: brainAuditRow.decision }));
   }
   if (String(input.decision || "").trim().toLowerCase() === "blocked") {
-    errors.push(workflowV2ValidationError("blocked_decision_not_allowed", "Cat Claw audit decision blocked is not allowed; use protocol_revision_required or rejected"));
+    errors.push(workflowV2ValidationError("blocked_decision_not_allowed", "Protocol audit decision blocked is not allowed; use protocol_revision_required or rejected"));
   }
   const catClawRole = workflowGovernanceRole(input, "catClaw");
   const expectedCatClawAgent = normalizeOptionalAgentId(catClawRole.agentId) || "cat_claw";
   const catClawAgent = normalizeOptionalAgentId(firstText(input.catClawAgent, input.cat_claw_agent, expectedCatClawAgent)) || expectedCatClawAgent;
   const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.createdBy, input.created_by, catClawAgent)) || catClawAgent;
   if (catClawAgent !== expectedCatClawAgent || callerAgent !== expectedCatClawAgent) {
-    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "Cat Claw protocol audit must be recorded by the configured catClaw secretary role", { catClawAgent, callerAgent, expectedCatClawAgent }));
+    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "Protocol audit must be recorded by the configured secretary role", { catClawAgent, callerAgent, expectedCatClawAgent }));
   }
-  const decision = workflowV2NormalizeEnum(input.decision, WORKFLOW_V2_CAT_CLAW_AUDIT_DECISIONS, "protocol_ready");
-  const brainAudit = workflowV2CatBrainAuditSummary(brainAuditRow);
+  const decision = workflowV2NormalizeEnum(input.decision, WORKFLOW_V2_PROTOCOL_AUDIT_DECISIONS, "protocol_ready");
+  const brainAudit = workflowV2GovernanceAuditSummary(brainAuditRow);
   const evidenceRefs = workflowV2UniqueTextList(input.evidenceRefs ?? input.evidence_refs, brainAudit?.evidenceRefs || []);
   if (decision === "protocol_ready" && !evidenceRefs.length) {
-    errors.push(workflowV2ValidationError("evidence_refs_required", "Cat Claw protocol_ready audit requires evidenceRefs"));
+    errors.push(workflowV2ValidationError("evidence_refs_required", "Protocol-ready audit requires evidenceRefs"));
   }
   const audit = {
-    auditId: firstText(input.auditId, input.audit_id) || safeId("v2-cat-claw-audit"),
+    auditId: firstText(input.auditId, input.audit_id) || safeId("v2-protocol-audit"),
     workflowId,
     planId,
-    catBrainAuditId,
+    governanceAuditId,
     catClawAgent,
     callerAgent,
     decision,
@@ -1027,32 +1027,32 @@ async function workflowV2CatClawAuditPreview(rootDir, input = {}) {
     }
   };
   return {
-    operation: "workflow.v2.cat_claw_audit.preview",
+    operation: "workflow.v2.protocol_audit.preview",
     dryRun: true,
     previewOnly: true,
     valid: errors.length === 0,
     errors,
-    catClawAudit: audit,
-    catBrainAudit: brainAudit,
+    protocolAudit: audit,
+    governanceAudit: brainAudit,
     plan: workflowV2PlanSummary(planRow),
     dbFile: paths.dbFile,
     writes: []
   };
 }
 
-async function workflowV2CatClawAuditRecord(rootDir, input = {}) {
-  const preview = await workflowV2CatClawAuditPreview(rootDir, input);
-  if (!preview.valid) throw new Error(`workflow v2 Cat Claw audit is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
+async function workflowV2ProtocolAuditRecord(rootDir, input = {}) {
+  const preview = await workflowV2ProtocolAuditPreview(rootDir, input);
+  if (!preview.valid) throw new Error(`workflow v2 Protocol audit is invalid: ${preview.errors.map((item) => item.code).join(",")}`);
   const paths = await ensureWorkflowLayout(rootDir, input);
   const now = nowIso();
-  const audit = preview.catClawAudit;
+  const audit = preview.protocolAudit;
   await sqlite(paths.dbFile, `
-INSERT INTO workflow_v2_cat_claw_audits(audit_id, workflow_id, plan_id, cat_brain_audit_id, cat_claw_agent, decision, summary, checks_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
-VALUES (${sqlValue(audit.auditId)}, ${sqlValue(audit.workflowId)}, ${sqlValue(audit.planId)}, ${sqlValue(audit.catBrainAuditId)}, ${sqlValue(audit.catClawAgent)}, ${sqlValue(audit.decision)}, ${sqlValue(audit.summary)}, ${sqlValue(JSON.stringify(audit.checks))}, ${sqlValue(JSON.stringify(audit.evidenceRefs))}, ${sqlValue(JSON.stringify(audit.payload))}, ${sqlValue(audit.callerAgent)}, ${sqlValue(now)}, ${sqlValue(now)})
+INSERT INTO workflow_v2_protocol_audits(audit_id, workflow_id, plan_id, governance_audit_id, cat_claw_agent, decision, summary, checks_json, evidence_refs_json, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(audit.auditId)}, ${sqlValue(audit.workflowId)}, ${sqlValue(audit.planId)}, ${sqlValue(audit.governanceAuditId)}, ${sqlValue(audit.catClawAgent)}, ${sqlValue(audit.decision)}, ${sqlValue(audit.summary)}, ${sqlValue(JSON.stringify(audit.checks))}, ${sqlValue(JSON.stringify(audit.evidenceRefs))}, ${sqlValue(JSON.stringify(audit.payload))}, ${sqlValue(audit.callerAgent)}, ${sqlValue(now)}, ${sqlValue(now)})
 ON CONFLICT(audit_id) DO UPDATE SET
   workflow_id=excluded.workflow_id,
   plan_id=excluded.plan_id,
-  cat_brain_audit_id=excluded.cat_brain_audit_id,
+  governance_audit_id=excluded.governance_audit_id,
   cat_claw_agent=excluded.cat_claw_agent,
   decision=excluded.decision,
   summary=excluded.summary,
@@ -1062,7 +1062,7 @@ ON CONFLICT(audit_id) DO UPDATE SET
   created_by=excluded.created_by,
   updated_at=excluded.updated_at;`);
   await workflowV2PatchPlanWorkflowState(paths, audit.workflowId, audit.planId, audit.payload.nextWorkflowState, now);
-  return { ...preview, operation: "workflow.v2.cat_claw_audit.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
+  return { ...preview, operation: "workflow.v2.protocol_audit.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
 }
 
   return {
@@ -1071,10 +1071,10 @@ ON CONFLICT(audit_id) DO UPDATE SET
     workflowV2OwnerReviewRecord,
     workflowV2TaskGroupPackagePreview,
     workflowV2TaskGroupPackageRecord,
-    workflowV2CatBrainAuditPreview,
-    workflowV2CatBrainSemanticCheckPreview,
-    workflowV2CatBrainAuditRecord,
-    workflowV2CatClawAuditPreview,
-    workflowV2CatClawAuditRecord
+    workflowV2GovernanceAuditPreview,
+    workflowV2GovernanceSemanticCheckPreview,
+    workflowV2GovernanceAuditRecord,
+    workflowV2ProtocolAuditPreview,
+    workflowV2ProtocolAuditRecord
   };
 }

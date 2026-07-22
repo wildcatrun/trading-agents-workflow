@@ -250,15 +250,15 @@ WHERE workflow_id=${sqlValue(workflowId)}
     ])) {
       addRequirement("human_gate", "human gate evidence or Flashcat original words are required before this action", ["humanGateId", "riskDecisionId", "flashcatOriginalWords"]);
     }
-    if (rule.requiresCatClawAudit && !permissionEvidencePresent(input, [
-      "cat_claw_audit_id",
-      "catClawAuditId",
-      "cat_claw_audit",
-      "catClawAudit",
+    if (rule.requiresProtocolAudit && !permissionEvidencePresent(input, [
+      "protocol_audit_id",
+      "protocolAuditId",
+      "protocol_audit",
+      "protocolAudit",
       "secretary_audit_id",
       "secretaryAuditId"
     ])) {
-      addRequirement("cat_claw_audit", "Cat Claw secretary audit evidence is required before this action", ["catClawAuditId", "secretaryAuditId"]);
+      addRequirement("protocol_audit", "Protocol audit evidence is required before this action", ["protocolAuditId", "secretaryAuditId"]);
     }
     if (rule.requiresFreshnessCheck && !permissionEvidencePresent(input, [
       "freshness_checked_at",
@@ -274,10 +274,10 @@ WHERE workflow_id=${sqlValue(workflowId)}
     if (sideEffectUncertainCount > 0 && ["high", "critical"].includes(String(rule.risk || "").toLowerCase())) {
       addRequirement("side_effect_uncertain", `${sideEffectUncertainCount} uncertain side-effect record(s) must be resolved before high-risk action`, ["side_effect_ledger"]);
     }
-    const outcomeOrder = ["side_effect_uncertain", "human_gate", "cat_claw_audit", "freshness_check"];
+    const outcomeOrder = ["side_effect_uncertain", "human_gate", "protocol_audit", "freshness_check"];
     const first = outcomeOrder.find((type) => requirements.some((item) => item.type === type));
     const policyOutcome = first === "human_gate" ? "requires_human_gate"
-      : first === "cat_claw_audit" ? "requires_cat_claw_audit"
+      : first === "protocol_audit" ? "requires_protocol_audit"
         : first === "freshness_check" ? "requires_freshness_check"
           : first === "side_effect_uncertain" ? "side_effect_uncertain"
             : "allow";

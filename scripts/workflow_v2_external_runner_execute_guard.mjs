@@ -185,7 +185,7 @@ function executeAuthorizationSummary(auth = {}, context = {}) {
   const errors = [];
   if (auth.__parseError) errors.push(auth.__parseError);
   const humanGateId = firstText(auth.humanGateId, auth.human_gate_id, auth.humanGate?.id);
-  const catClawAuditId = firstText(auth.catClawAuditId, auth.cat_claw_audit_id, auth.secretaryAuditId, auth.secretary_audit_id);
+  const protocolAuditId = firstText(auth.protocolAuditId, auth.protocol_audit_id, auth.secretaryAuditId, auth.secretary_audit_id);
   const packageId = firstText(auth.packageId, auth.package_id, auth.humanGatePackageId, auth.human_gate_package_id);
   const decision = firstText(auth.decision, auth.selectedOption, auth.selected_option, auth.optionId, auth.option_id);
   const flashcatOriginalWords = firstText(auth.flashcatOriginalWords, auth.flashcat_original_words, auth.operatorOriginalWords, auth.operator_original_words);
@@ -197,7 +197,7 @@ function executeAuthorizationSummary(auth = {}, context = {}) {
   const adapterJobId = firstText(auth.adapterJobId, auth.adapter_job_id);
   const workerRunId = firstText(auth.workerRunId, auth.worker_run_id);
   if (!humanGateId) errors.push("human_gate_id_required");
-  if (!catClawAuditId) errors.push("cat_claw_audit_id_required");
+  if (!protocolAuditId) errors.push("protocol_audit_id_required");
   if (!packageId) errors.push("human_gate_package_id_required");
   if (decision !== "approve_single_synthetic_execute_smoke") errors.push("approved_synthetic_execute_option_required");
   if (!flashcatOriginalWords) errors.push("flashcat_original_words_required");
@@ -227,7 +227,7 @@ function executeAuthorizationSummary(auth = {}, context = {}) {
     parseError: auth.__parseError || "",
     evidence: {
       humanGateId,
-      catClawAuditId,
+      protocolAuditId,
       packageId,
       decision,
       flashcatOriginalWordsPresent: Boolean(flashcatOriginalWords),

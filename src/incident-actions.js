@@ -223,7 +223,7 @@ ON CONFLICT(incident_id) DO UPDATE SET
       incidentId,
       riskTier: "P2-medium",
       humanGateRequired: true,
-      catClawAuditRequired: true,
+      protocolAuditRequired: true,
       deadLetterEvidence: evidence,
       incidentCandidate: candidate,
       wouldWriteIncident: candidate ? {
@@ -232,7 +232,7 @@ ON CONFLICT(incident_id) DO UPDATE SET
         mode: deadLetterIncidentMode(candidate),
         affectedPlanes: candidate.affectedPlanes || [],
         summary: deadLetterIncidentSummary(candidate, input),
-        payloadKeys: ["deadLetter", "incidentCandidate", "evidenceRefs", "humanGateId", "catClawAuditId", "operatorReason"]
+        payloadKeys: ["deadLetter", "incidentCandidate", "evidenceRefs", "humanGateId", "protocolAuditId", "operatorReason"]
       } : null,
       wouldCreateHumanGateRequest: false,
       wouldRetryOrRepair: false,
@@ -248,7 +248,7 @@ ON CONFLICT(incident_id) DO UPDATE SET
       },
       requiredEvidence: [
         "humanGateId or Flashcat original words",
-        "catClawAuditId or secretaryAuditId",
+        "protocolAuditId or secretaryAuditId",
         "operatorReason",
         "current workflow_dead_letter_evidence.v1 match"
       ],
@@ -273,7 +273,7 @@ ON CONFLICT(incident_id) DO UPDATE SET
     const redactedReason = redactSensitiveTextForPersistence(reason);
     const candidate = preview.incidentCandidate;
     const humanGateId = String(input.humanGateId || input.human_gate_id || "").trim();
-    const catClawAuditId = String(input.catClawAuditId || input.cat_claw_audit_id || input.secretaryAuditId || input.secretary_audit_id || "").trim();
+    const protocolAuditId = String(input.protocolAuditId || input.protocol_audit_id || input.secretaryAuditId || input.secretary_audit_id || "").trim();
     const record = await incidentState(rootDir, {
       ...input,
       workflowRootDir: paths.root,
@@ -304,7 +304,7 @@ ON CONFLICT(incident_id) DO UPDATE SET
         deadLetterEvidence: preview.deadLetterEvidence,
         evidenceRefs: candidate.evidenceRefs || [],
         humanGateId,
-        catClawAuditId,
+        protocolAuditId,
         operatorReason: redactedReason,
         permissionPolicyOutcome: permissionDecision?.policyOutcome || "",
         createdByAction: "workflow.incident.from_dead_letter"
@@ -343,7 +343,7 @@ function closeoutEvidenceRefs(closeout = {}) {
     refs.incidentId ? `incident:${refs.incidentId}` : "",
     refs.deadLetter?.kind && refs.deadLetter?.refId ? `dead-letter:${refs.deadLetter.kind}:${refs.deadLetter.refId}` : "",
     refs.humanGateId ? `human-gate:${refs.humanGateId}` : "",
-    refs.catClawAuditId ? `cat-claw-audit:${refs.catClawAuditId}` : "",
+    refs.protocolAuditId ? `protocol-audit:${refs.protocolAuditId}` : "",
     ...(refs.workflowEventIds || []).slice(0, 8).map((id) => `workflow-event:${id}`),
     ...(refs.checkpointIds || []).slice(0, 5).map((id) => `checkpoint:${id}`)
   ].filter(Boolean);
@@ -467,7 +467,7 @@ function closeoutReportDraft(closeout = {}, packageKind = "cat_claw_report") {
       "如 evidenceGaps 为空，才可进入正式 Human Gate 投递；本预览不创建请求、不发送 Telegram。",
       "若闪电猫选择退回或暂停，保留 workflow id、incident id、checkpoint/resume 证据。"
     ] : [
-      "猫爪复核 checklist、timeline、Human Gate evidence、Cat Claw audit 和 rollback boundary。",
+      "猫爪复核 checklist、timeline、Human Gate evidence、Protocol audit 和 rollback boundary。",
       "如 evidenceGaps 非空，打回猫之脑补证；如仅有 warning，决定是否说明后提交。",
       "通过后再准备 Human Gate package；本预览不派发猫爪、不写 artifact。"
     ]
@@ -548,7 +548,7 @@ function closeoutWorklistRecommendation(closeout = {}) {
   const failed = (closeout.checklist || []).filter((row) => row.status === "fail" && row.severity !== "warning");
   const missing = failed.map((row) => row.key).filter(Boolean);
   if (!closeout.selectedIncident) return "inspect_incident_linkage";
-  if (missing.some((key) => ["human_gate_evidence", "cat_claw_audit", "operator_reason", "rollback_boundary"].includes(key))) {
+  if (missing.some((key) => ["human_gate_evidence", "protocol_audit", "operator_reason", "rollback_boundary"].includes(key))) {
     return "workflow.incident.closeout.evidence.preview";
   }
   if (missing.length) return "workflow.incident.closeout.cat_claw_report.preview";
@@ -828,11 +828,11 @@ function closeoutEvidenceInput(input = {}) {
     humanGateId: firstText(input.humanGateId, input.human_gate_id),
     riskDecisionId: firstText(input.riskDecisionId, input.risk_decision_id),
     flashcatOriginalWords: firstText(input.flashcatOriginalWords, input.flashcat_original_words),
-    catClawAuditId: firstText(
-      input.catClawAuditId,
-      input.cat_claw_audit_id,
-      input.catClawAudit,
-      input.cat_claw_audit,
+    protocolAuditId: firstText(
+      input.protocolAuditId,
+      input.protocol_audit_id,
+      input.protocolAudit,
+      input.protocol_audit,
       input.secretaryAuditId,
       input.secretary_audit_id
     ),
@@ -846,7 +846,7 @@ function closeoutEvidenceViolations(evidence = {}) {
   const violations = [];
   if (!evidence.operatorReason) violations.push({ code: "operator_reason_required", detail: "operatorReason is required before recording closeout evidence." });
   if (!evidence.rollbackBoundary) violations.push({ code: "rollback_boundary_required", detail: "rollbackBoundary or rollbackOptions is required before recording closeout evidence." });
-  if (!evidence.catClawAuditId) violations.push({ code: "cat_claw_audit_required", detail: "Cat Claw audit or secretary audit evidence is required before recording closeout evidence." });
+  if (!evidence.protocolAuditId) violations.push({ code: "protocol_audit_required", detail: "Protocol audit or secretary audit evidence is required before recording closeout evidence." });
   if (!evidence.humanGateEvidence) violations.push({ code: "human_gate_evidence_required", detail: "Human Gate evidence, risk decision, or Flashcat original words are required before recording closeout evidence." });
   return violations;
 }
@@ -886,7 +886,7 @@ async function workflowIncidentCloseoutEvidencePreview(rootDir, input = {}) {
     wouldUpdate: {
       incidentStates: violations.length === 0 ? 1 : 0,
       workflowEvents: violations.length === 0 ? 1 : 0,
-      payloadFields: ["closeoutEvidence", "operatorReason", "catClawAuditId", "humanGateEvidence", "incidentCandidate.rollbackBoundary"],
+      payloadFields: ["closeoutEvidence", "operatorReason", "protocolAuditId", "humanGateEvidence", "incidentCandidate.rollbackBoundary"],
       status: false,
       resolvedAt: false,
       humanGateRequests: 0,
@@ -900,7 +900,7 @@ async function workflowIncidentCloseoutEvidencePreview(rootDir, input = {}) {
       humanGateId: evidence.humanGateId,
       riskDecisionId: evidence.riskDecisionId,
       flashcatOriginalWords: evidence.flashcatOriginalWords,
-      catClawAuditId: evidence.catClawAuditId,
+      protocolAuditId: evidence.protocolAuditId,
       operatorReason: evidence.operatorReason,
       rollbackBoundary: evidence.rollbackBoundary,
       evidenceSummary: evidence.evidenceSummary
@@ -945,7 +945,7 @@ LIMIT 1;`, { json: true });
     humanGateId: evidence.humanGateId,
     riskDecisionId: evidence.riskDecisionId,
     flashcatOriginalWords: evidence.flashcatOriginalWords,
-    catClawAuditId: evidence.catClawAuditId,
+    protocolAuditId: evidence.protocolAuditId,
     operatorReason: evidence.operatorReason,
     rollbackBoundary: evidence.rollbackBoundary,
     evidenceSummary: evidence.evidenceSummary,
@@ -958,7 +958,7 @@ LIMIT 1;`, { json: true });
     closeoutEvidence,
     closeoutEvidenceHistory: [...existingEvidence, closeoutEvidence].slice(-20),
     operatorReason: evidence.operatorReason,
-    catClawAuditId: evidence.catClawAuditId,
+    protocolAuditId: evidence.protocolAuditId,
     humanGateEvidence: evidence.humanGateEvidence,
     humanGateId: evidence.humanGateId || currentPayload.humanGateId || "",
     riskDecisionId: evidence.riskDecisionId || currentPayload.riskDecisionId || "",
@@ -988,7 +988,7 @@ WHERE incident_id=${sqlValue(preview.incidentId)};`);
     sourceAgent: createdBy,
     nextState: "evidence_recorded",
     payload: {
-      catClawAuditId: evidence.catClawAuditId,
+      protocolAuditId: evidence.protocolAuditId,
       humanGateEvidence: evidence.humanGateEvidence,
       writeBoundary: "incident_closeout_evidence_only"
     },
@@ -1093,18 +1093,18 @@ async function workflowIncidentCloseoutArtifactPreview(rootDir, input = {}) {
     "flashcat_original_words",
     "flashcatOriginalWords"
   ]);
-  const hasCatClawAudit = permissionEvidencePresent(input, [
-    "cat_claw_audit_id",
-    "catClawAuditId",
-    "cat_claw_audit",
-    "catClawAudit",
+  const hasProtocolAudit = permissionEvidencePresent(input, [
+    "protocol_audit_id",
+    "protocolAuditId",
+    "protocol_audit",
+    "protocolAudit",
     "secretary_audit_id",
     "secretaryAuditId"
   ]);
   const writeViolations = [];
   if (!operatorReason) writeViolations.push({ code: "operator_reason_required", detail: "operatorReason is required before persisting a closeout artifact" });
   if (!hasHumanGateEvidence) writeViolations.push({ code: "human_gate_evidence_required", detail: "Human Gate evidence or Flashcat original words are required by policy" });
-  if (!hasCatClawAudit) writeViolations.push({ code: "cat_claw_audit_required", detail: "Cat Claw audit or secretary audit evidence is required by policy" });
+  if (!hasProtocolAudit) writeViolations.push({ code: "protocol_audit_required", detail: "Protocol audit or secretary audit evidence is required by policy" });
   const artifactId = String(input.artifactId || input.artifact_id || safeId("incident.closeout")).trim();
   return {
     schemaVersion: "workflow_incident_closeout_artifact_preview.v1",
@@ -1168,7 +1168,7 @@ async function workflowIncidentCloseoutArtifact(rootDir, input = {}, permissionD
     persistedAt: createdAt,
     createdBy,
     humanGateId: input.humanGateId || input.human_gate_id || "",
-    catClawAuditId: input.catClawAuditId || input.cat_claw_audit_id || input.secretaryAuditId || input.secretary_audit_id || "",
+    protocolAuditId: input.protocolAuditId || input.protocol_audit_id || input.secretaryAuditId || input.secretary_audit_id || "",
     operatorReason: redactSensitiveTextForPersistence(operatorReason),
     permissionPolicyOutcome: permissionDecision?.policyOutcome || "",
     writeBoundary: "closeout_artifact_only",
@@ -1339,11 +1339,11 @@ function closeoutHumanGateWriteEvidence(input = {}) {
       input.flashcatOriginalWords,
       input.flashcat_original_words
     ),
-    catClawAuditId: firstText(
-      input.catClawAuditId,
-      input.cat_claw_audit_id,
-      input.catClawAudit,
-      input.cat_claw_audit,
+    protocolAuditId: firstText(
+      input.protocolAuditId,
+      input.protocol_audit_id,
+      input.protocolAudit,
+      input.protocol_audit,
       input.secretaryAuditId,
       input.secretary_audit_id
     ),
@@ -1380,7 +1380,7 @@ function closeoutHumanGateRequestInput(record = {}, artifact = {}, input = {}) {
       closeoutIncidentId: incidentId,
       closeoutPackageKind: record.packageKind || "",
       humanGateEvidence: evidence.humanGateEvidence,
-      catClawAuditId: evidence.catClawAuditId,
+      protocolAuditId: evidence.protocolAuditId,
       operatorReason: redactSensitiveTextForPersistence(evidence.operatorReason),
       writeBoundary: "human_gate_request_only"
     }
@@ -1440,7 +1440,7 @@ async function workflowIncidentCloseoutHumanGateRequestPreview(rootDir, input = 
   const writeViolations = [];
   if (!writeEvidence.operatorReason) writeViolations.push({ code: "operator_reason_required", detail: "operatorReason is required before creating the formal Human Gate request." });
   if (!writeEvidence.humanGateEvidence) writeViolations.push({ code: "human_gate_evidence_required", detail: "Existing Human Gate evidence, risk decision, or Flashcat original words are required by policy." });
-  if (!writeEvidence.catClawAuditId) writeViolations.push({ code: "cat_claw_audit_required", detail: "Cat Claw audit or secretary audit evidence is required by policy." });
+  if (!writeEvidence.protocolAuditId) writeViolations.push({ code: "protocol_audit_required", detail: "Protocol audit or secretary audit evidence is required by policy." });
   const planButtons = humanGatePlanOptionButtons(buttons);
   const controlRoles = new Set(buttons.filter((button) => humanGateButtonIsControl(button)).map((button) => humanGateButtonRole(button)));
   const eligible = violations.length === 0;

@@ -102,7 +102,7 @@ LIMIT 1;`, { json: true });
   replayValueConflict("workflowId", request.workflowId, workflowId);
   replayValueConflict("planId", request.planId, planId);
   replayValueConflict("humanGateId", request.humanGateId, eventRow.human_gate_id || payload.humanGateId);
-  replayValueConflict("catClawAuditId", request.catClawAuditId, payload.catClawAuditId);
+  replayValueConflict("protocolAuditId", request.protocolAuditId, payload.protocolAuditId);
   replayValueConflict("rollbackBoundary", request.rollbackBoundary, eventRow.artifact_ref || payload.rollbackBoundary);
   const planRows = workflowId && planId ? await sqlite(paths.dbFile, `
 SELECT *
@@ -119,7 +119,7 @@ LIMIT 1;`, { json: true }) : [];
     status: "replayed",
     idempotencyKey,
     humanGateId: eventRow.human_gate_id || payload.humanGateId || "",
-    catClawAuditId: payload.catClawAuditId || "",
+    protocolAuditId: payload.protocolAuditId || "",
     rollbackBoundary: eventRow.artifact_ref || payload.rollbackBoundary || "",
     previousPlanStatus: payload.previousPlanStatus || "",
     previousWorkflowState: eventRow.previous_state || payload.previousWorkflowState || "",
@@ -161,7 +161,7 @@ export function createWorkflowV2InterventionActionHandlers(context = {}) {
     const operatorReason = firstText(input.operatorReason, input.operator_reason, input.reason, input.summary);
     if (!operatorReason) throw new Error("operatorReason is required for workflow v2 intervention execution");
     const humanGateId = requireEvidence(input, "humanGateId", "human_gate_id", "humanGateId");
-    const catClawAuditId = requireEvidence(input, "catClawAuditId", "cat_claw_audit_id", "catClawAuditId");
+    const protocolAuditId = requireEvidence(input, "protocolAuditId", "protocol_audit_id", "protocolAuditId");
     const idempotencyKey = requireEvidence(input, "idempotencyKey", "idempotency_key", "idempotencyKey");
     const rollbackBoundary = firstText(
       input.rollbackBoundary,
@@ -178,7 +178,7 @@ export function createWorkflowV2InterventionActionHandlers(context = {}) {
       workflowId,
       planId,
       humanGateId,
-      catClawAuditId,
+      protocolAuditId,
       rollbackBoundary
     });
     if (replay) return replay;
@@ -217,7 +217,7 @@ LIMIT 1;`, { json: true });
       nextPlanStatus: next.status,
       nextWorkflowState: next.workflowState,
       humanGateId,
-      catClawAuditId,
+      protocolAuditId,
       idempotencyKey,
       rollbackBoundary: rollbackBoundary || readiness.latestCheckpoint?.path || "",
       latestCheckpoint: readiness.latestCheckpoint?.path || "",
@@ -235,7 +235,7 @@ LIMIT 1;`, { json: true });
       nextPlanStatus: record.nextPlanStatus,
       nextWorkflowState: record.nextWorkflowState,
       humanGateId,
-      catClawAuditId,
+      protocolAuditId,
       rollbackBoundary: record.rollbackBoundary,
       riskTier: readiness.riskTier,
       blockersChecked: (readiness.blockers || []).length,
@@ -271,7 +271,7 @@ LIMIT 1;`, { json: true });
       nextPlanStatus: record.nextPlanStatus,
       nextWorkflowState: record.nextWorkflowState,
       humanGateId,
-      catClawAuditId,
+      protocolAuditId,
       idempotencyKey,
       rollbackBoundary: record.rollbackBoundary,
       riskTier: readiness.riskTier,

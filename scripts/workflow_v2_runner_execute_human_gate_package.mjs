@@ -58,7 +58,7 @@ function buildAuthorizationPackage({ runId, workflowId, planId, packageId }) {
   ];
   const hardGates = [
     { key: "human_gate", status: "required", text: "必须由闪电猫通过正式 Human Gate 选择方案；聊天自然语言不得替代按钮选择。" },
-    { key: "cat_claw_audit", status: "required", text: "正式提交前必须由猫爪复核证据包、按钮、回滚、中文说明和 token 绑定。" },
+    { key: "protocol_audit", status: "required", text: "正式提交前必须由猫爪复核证据包、按钮、回滚、中文说明和 token 绑定。" },
     { key: "runtime_scope", status: "required", text: "首轮真实执行只能是单 worker、synthetic-only、非交易、非生产任务。" },
     { key: "docker_host", status: "required", text: "必须确认 Docker host 是 wsl-agents/local-workstation 受控测试面，不是 OpenClaw Gateway 或生产服务器。" },
     { key: "image_digest", status: "required", text: "必须记录 worker image tag/digest，并证明镜像不含 OAuth、API key、broker key 或私钥。" },
