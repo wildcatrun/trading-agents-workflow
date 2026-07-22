@@ -51,6 +51,20 @@ escape hatches:
   and the mutating `workflow.supervisor` alias from the default full-tool action
   enum while preserving read-only preview and explicitly gated escape-hatch
   behavior.
+- Retired v1 meeting-room discussion write surfaces by default because existing
+  v2 plan, info stack, manager/owner review, task-group package, Cat Brain
+  audit, Cat Claw audit, notification preview, and shared Human Gate/outbox
+  surfaces already cover the same multi-agent discussion/evidence class. No v2
+  feature was added for this retirement.
+- Added configurable governance role bindings so the structural Cat Brain and
+  Cat Claw roles can be backed by configured cat members or independent runtime
+  agents instead of being fixed to `main` and `cat_claw` in v2 package/supervisor
+  code.
+- Renamed new v2 structural state/node/status writes to role-neutral names
+  (`governance_synthesis`, `protocol_audit`, `waiting_governance_review`,
+  `waiting_protocol_audit`, `protocol_audited`,
+  `secretary_closeout_required`, `secretary_dispatch_queued`) while preserving
+  legacy action/table/column aliases for existing records.
 - Preserved `meeting.dispatch` as the public compatibility shell during the
   observation window; `dispatch.package.create` still delegates through the
   compatibility writer until parity evidence supports removal.

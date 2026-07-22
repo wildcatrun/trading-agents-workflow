@@ -664,13 +664,13 @@ WHERE json_valid(options_json)=0
    OR json_valid(required_controls_json)=0
    OR instr(required_controls_json, 'pause')=0
    OR instr(required_controls_json, 'terminate')=0
-   OR status NOT IN ('draft','cat_claw_audited');`));
+   OR status NOT IN ('draft','protocol_audited','cat_claw_audited');`));
   checks.push(await workflowV2MismatchCheck(paths.dbFile, schema, "human_gate_packages_cat_claw_source_ready", ["workflow_v2_human_gate_packages", "workflow_v2_cat_claw_audits"], `
 SELECT COUNT(*) AS count
 FROM workflow_v2_human_gate_packages p
 LEFT JOIN workflow_v2_cat_claw_audits a ON a.audit_id=COALESCE(NULLIF(p.source_cat_claw_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceCatClawAuditId'))
 WHERE json_valid(p.payload_json)=0
-   OR (p.status='cat_claw_audited'
+   OR (p.status IN ('protocol_audited','cat_claw_audited')
       AND COALESCE(NULLIF(p.source_cat_claw_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceCatClawAuditId'), '') = '')
    OR (COALESCE(NULLIF(p.source_cat_claw_audit_id, ''), json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.sourceCatClawAuditId'), '') != ''
       AND (a.audit_id IS NULL OR a.workflow_id != p.workflow_id OR a.plan_id != p.plan_id OR a.decision != 'protocol_ready'));`));

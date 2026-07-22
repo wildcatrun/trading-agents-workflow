@@ -2,6 +2,9 @@ import {
   workflowPaths
 } from "../workflow/paths.js";
 import {
+  workflowGovernanceRole
+} from "../workflow/governance-roles.js";
+import {
   firstText,
   redactSensitiveForPersistence,
   safeId
@@ -29,6 +32,12 @@ import {
   workflowV2CatClawAuditRowById,
   workflowV2HumanGatePackageRow
 } from "./human-gate-state.js";
+import {
+  WORKFLOW_V2_LEGACY_PROTOCOL_AUDITED_PACKAGE_STATUS,
+  WORKFLOW_V2_PROTOCOL_AUDITED_PACKAGE_STATUS,
+  WORKFLOW_V2_PROTOCOL_AUDIT_STATE,
+  workflowV2IsProtocolAuditedPackageStatus
+} from "./neutral-names.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -99,6 +108,8 @@ function workflowV2PackageSensitiveRedactionChanged(value) {
 async function workflowV2CatClawPackageAuditPreview(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
   const generatedAt = nowIso();
+  const catBrainRole = workflowGovernanceRole(input, "catBrain");
+  const catClawRole = workflowGovernanceRole(input, "catClaw");
   const warnings = [];
   const inlinePackage = workflowV2JsonObject(input.humanGatePackage ?? input.human_gate_package ?? input.package, {});
   const hasInlinePackage = Object.keys(inlinePackage).length > 0;
@@ -113,9 +124,9 @@ async function workflowV2CatClawPackageAuditPreview(rootDir, input = {}) {
           packageId: firstText(input.packageId, input.package_id, input.humanGatePackageId, input.human_gate_package_id),
           workflowId: firstText(input.workflowId, input.workflow_id),
           planId: firstText(input.planId, input.plan_id),
-          sourceCatClawAuditId: firstText(input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id),
-          catBrainAgent: firstText(input.catBrainAgent, input.cat_brain_agent, "main"),
-          catClawAgent: firstText(input.catClawAgent, input.cat_claw_agent, "cat_claw"),
+          sourceCatClawAuditId: firstText(input.sourceSecretaryAuditId, input.source_secretary_audit_id, input.secretaryAuditId, input.secretary_audit_id, input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id),
+          catBrainAgent: firstText(input.catBrainAgent, input.cat_brain_agent, catBrainRole.agentId),
+          catClawAgent: firstText(input.catClawAgent, input.cat_claw_agent, catClawRole.agentId),
           status: firstText(input.status, "draft"),
           options: workflowV2JsonArray(input.options, []),
           requiredControls: workflowV2JsonArray(input.requiredControls ?? input.required_controls, []),
@@ -202,7 +213,9 @@ async function workflowV2HumanGatePackagePreview(rootDir, input = {}) {
   const errors = [];
   const workflowId = firstText(input.workflowId, input.workflow_id);
   if (!workflowId) errors.push(workflowV2ValidationError("workflow_id_required", "Human Gate package requires workflowId"));
-  const sourceCatClawAuditId = firstText(input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id);
+  const sourceCatClawAuditId = firstText(input.sourceSecretaryAuditId, input.source_secretary_audit_id, input.secretaryAuditId, input.secretary_audit_id, input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id);
+  const catBrainRole = workflowGovernanceRole(input, "catBrain");
+  const catClawRole = workflowGovernanceRole(input, "catClaw");
   let packagePlanId = firstText(input.planId, input.plan_id);
   let sourceCatClawAudit = null;
   let sourcePlanId = "";
@@ -254,16 +267,16 @@ async function workflowV2HumanGatePackagePreview(rootDir, input = {}) {
     errors.push(workflowV2ValidationError("human_gate_option_details_required", "Human Gate package options require optionId, title, body, summary, prompt, and rollback", { incompleteOptionIds }));
   }
   const rawStatus = firstText(input.status);
-  const defaultStatus = sourceCatClawAuditId ? "cat_claw_audited" : "draft";
+  const defaultStatus = sourceCatClawAuditId ? WORKFLOW_V2_PROTOCOL_AUDITED_PACKAGE_STATUS : "draft";
   const normalizedStatus = workflowV2NormalizeEnum(rawStatus, WORKFLOW_V2_HUMAN_GATE_PACKAGE_STATUSES, defaultStatus);
   if (rawStatus) {
     const rawNormalized = rawStatus.trim().toLowerCase().replace(/-/g, "_");
     if (!WORKFLOW_V2_HUMAN_GATE_PACKAGE_STATUSES.has(rawNormalized)) {
-      errors.push(workflowV2ValidationError("human_gate_package_status_invalid", "Human Gate package status is limited to draft or cat_claw_audited in the local v2 control-plane slice", { status: rawStatus }));
+      errors.push(workflowV2ValidationError("human_gate_package_status_invalid", "Human Gate package status is limited to draft or protocol_audited in the local v2 control-plane slice; cat_claw_audited remains a legacy alias", { status: rawStatus }));
     }
   }
-  if (normalizedStatus === "cat_claw_audited" && !sourceCatClawAuditId) {
-    errors.push(workflowV2ValidationError("source_cat_claw_audit_required", "cat_claw_audited Human Gate package requires sourceCatClawAuditId"));
+  if (workflowV2IsProtocolAuditedPackageStatus(normalizedStatus) && !sourceCatClawAuditId) {
+    errors.push(workflowV2ValidationError("source_cat_claw_audit_required", "protocol_audited Human Gate package requires sourceCatClawAuditId/sourceSecretaryAuditId"));
   }
   const packagePreview = {
     packageId: firstText(input.packageId, input.package_id) || safeId("v2-hgate"),
@@ -271,8 +284,8 @@ async function workflowV2HumanGatePackagePreview(rootDir, input = {}) {
     planId: packagePlanId,
     sourceReviewId: firstText(input.sourceReviewId, input.source_review_id),
     sourceCatClawAuditId,
-    catBrainAgent: normalizeOptionalAgentId(firstText(input.catBrainAgent, input.cat_brain_agent, "main")) || "main",
-    catClawAgent: normalizeOptionalAgentId(firstText(input.catClawAgent, input.cat_claw_agent, "cat_claw")) || "cat_claw",
+    catBrainAgent: normalizeOptionalAgentId(firstText(input.catBrainAgent, input.cat_brain_agent, catBrainRole.agentId)) || catBrainRole.agentId,
+    catClawAgent: normalizeOptionalAgentId(firstText(input.catClawAgent, input.cat_claw_agent, catClawRole.agentId)) || catClawRole.agentId,
     status: normalizedStatus,
     options,
     requiredControls: ["pause", "terminate"],
@@ -324,12 +337,17 @@ ON CONFLICT(package_id) DO UPDATE SET
   payload_json=excluded.payload_json,
   updated_at=excluded.updated_at;`);
   if (pkg.planId) {
-    await workflowV2PatchPlanWorkflowState(paths, pkg.workflowId, pkg.planId, pkg.status === "cat_claw_audited" ? "human_gate_request_due" : "waiting_cat_claw_audit", now);
+    await workflowV2PatchPlanWorkflowState(paths, pkg.workflowId, pkg.planId, workflowV2IsProtocolAuditedPackageStatus(pkg.status) ? "human_gate_request_due" : WORKFLOW_V2_PROTOCOL_AUDIT_STATE, now);
   }
   return { ...preview, operation: "workflow.v2.human_gate_package.record", dryRun: false, previewOnly: false, dbFile: paths.dbFile };
 }
 
 function workflowV2HumanGateRequestInputFromPackage(pkg = {}, input = {}) {
+  const catBrainRole = workflowGovernanceRole(input, "catBrain");
+  const catClawRole = workflowGovernanceRole(input, "catClaw");
+  const catBrainAgent = firstText(pkg.catBrainAgent, pkg.cat_brain_agent, input.catBrainAgent, input.cat_brain_agent, catBrainRole.agentId);
+  const catClawAgent = firstText(pkg.catClawAgent, pkg.cat_claw_agent, input.catClawAgent, input.cat_claw_agent, input.actor, input.callerAgent, input.caller_agent, catClawRole.agentId);
+  const deliveryAccount = firstText(input.account, input.accountId, input.account_id, input.telegramAccount, input.telegram_account, input.deliveryAccount, input.delivery_account, catClawRole.deliveryAccount, catClawAgent);
   const packagePayload = workflowV2JsonObject(pkg.payload, {});
   const submissionKind = workflowV2NormalizeEnum(
     input.submissionKind ?? input.submission_kind ?? packagePayload.submissionKind ?? packagePayload.submission_kind,
@@ -397,7 +415,7 @@ function workflowV2HumanGateRequestInputFromPackage(pkg = {}, input = {}) {
   });
   const evidenceText = evidenceRefs.length ? `证据/回执：${evidenceRefs.slice(0, 8).join("；")}` : "证据/回执：已记录在 v2 Human Gate package payload 中。";
   const defaultText = [
-    `猫爪正式汇报：workflow ${pkg.workflowId} 的 v2 plan ${pkg.planId} 已完成 task owner 汇总、task group 产出、猫之脑治理审计和猫爪协议审计。`,
+    `秘书角色正式汇报：workflow ${pkg.workflowId} 的 v2 plan ${pkg.planId} 已完成 task owner 汇总、task group 产出、治理审计（${catBrainAgent}）和协议审计（${catClawAgent}）。`,
     `提交类型：${submissionKind}；交互类型：${interactionType}。Human Gate 在这里是受治理的人类交互边界，不只是 approval 开关。`,
     "请闪电猫选择一个可批准方案，并在按钮表单中填写闪电猫原话/审核意见。按钮选择和原话绑定后，Human Gate 才正式完成并恢复 workflow。",
     evidenceText
@@ -417,9 +435,11 @@ function workflowV2HumanGateRequestInputFromPackage(pkg = {}, input = {}) {
     artifactRef,
     buttons: optionButtons,
     addDefaultControls: true,
-    from: "cat_claw",
-    sourceAgent: "cat_claw",
-    actor: firstText(input.actor, input.callerAgent, input.caller_agent, input.createdBy, input.created_by, "cat_claw"),
+    from: catClawAgent,
+    sourceAgent: catClawAgent,
+    actor: firstText(input.actor, input.callerAgent, input.caller_agent, input.createdBy, input.created_by, catClawAgent),
+    account: deliveryAccount,
+    deliveryAccount,
     autoDeliver: false,
     auto_deliver: false,
     deliver: false,
@@ -436,8 +456,8 @@ function workflowV2HumanGateRequestInputFromPackage(pkg = {}, input = {}) {
       resumeContract,
       sourceReviewId: pkg.sourceReviewId,
       sourceCatClawAuditId: pkg.sourceCatClawAuditId,
-      catBrainAgent: pkg.catBrainAgent,
-      catClawAgent: pkg.catClawAgent,
+      catBrainAgent,
+      catClawAgent,
       evidenceRefs,
       requiredControls: pkg.requiredControls,
       controls: packagePayload.controls || [],
@@ -456,7 +476,7 @@ async function workflowV2HumanGateRequestPreview(rootDir, input = {}) {
   const requestedWorkflowId = firstText(input.workflowId, input.workflow_id);
   const requestedPlanId = firstText(input.planId, input.plan_id);
   const packageSelectorId = firstText(input.packageId, input.package_id, input.humanGatePackageId, input.human_gate_package_id);
-  const sourceAuditSelectorId = firstText(input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id);
+  const sourceAuditSelectorId = firstText(input.sourceSecretaryAuditId, input.source_secretary_audit_id, input.secretaryAuditId, input.secretary_audit_id, input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id);
   const hasSelector = Boolean(packageSelectorId);
   if (!packageSelectorId) {
     violations.push(workflowV2ValidationError("human_gate_package_selector_required", "v2 Human Gate request preview requires an exact packageId selector"));
@@ -475,8 +495,8 @@ async function workflowV2HumanGateRequestPreview(rootDir, input = {}) {
   if (pkg && sourceAuditSelectorId && pkg.sourceCatClawAuditId !== sourceAuditSelectorId) {
     violations.push(workflowV2ValidationError("source_cat_claw_audit_mismatch", "v2 Human Gate package sourceCatClawAuditId does not match request", { expectedSourceCatClawAuditId: sourceAuditSelectorId, actualSourceCatClawAuditId: pkg.sourceCatClawAuditId }));
   }
-  if (pkg && pkg.status !== "cat_claw_audited") {
-    violations.push(workflowV2ValidationError("human_gate_package_not_cat_claw_audited", "Formal Human Gate request requires a cat_claw_audited v2 package", { packageId: pkg.packageId, status: pkg.status }));
+  if (pkg && !workflowV2IsProtocolAuditedPackageStatus(pkg.status)) {
+    violations.push(workflowV2ValidationError("human_gate_package_not_protocol_audited", "Formal Human Gate request requires a protocol_audited v2 package; cat_claw_audited remains a legacy alias", { packageId: pkg.packageId, status: pkg.status, legacyAlias: WORKFLOW_V2_LEGACY_PROTOCOL_AUDITED_PACKAGE_STATUS }));
   }
   if (pkg && !pkg.sourceCatClawAuditId) {
     violations.push(workflowV2ValidationError("source_cat_claw_audit_required", "Formal Human Gate request requires sourceCatClawAuditId on the v2 package", { packageId: pkg.packageId }));
@@ -503,9 +523,11 @@ async function workflowV2HumanGateRequestPreview(rootDir, input = {}) {
       sourceCatClawAudit = workflowV2CatClawAuditSummary(sourceRow);
     }
   }
-  const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.actor, input.createdBy, input.created_by, "cat_claw")) || "cat_claw";
-  if (callerAgent !== "cat_claw") {
-    writeViolations.push(workflowV2ValidationError("caller_agent_not_authorized", "Formal v2 Human Gate request must be submitted by cat_claw", { callerAgent }));
+  const catClawRole = workflowGovernanceRole(input, "catClaw");
+  const expectedCatClawAgent = normalizeOptionalAgentId(firstText(pkg?.catClawAgent, pkg?.cat_claw_agent, catClawRole.agentId)) || "cat_claw";
+  const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.actor, input.createdBy, input.created_by, expectedCatClawAgent)) || expectedCatClawAgent;
+  if (callerAgent !== expectedCatClawAgent) {
+    writeViolations.push(workflowV2ValidationError("caller_agent_not_authorized", "Formal v2 Human Gate request must be submitted by the configured catClaw secretary role", { callerAgent, expectedCatClawAgent }));
   }
   const requestInput = pkg ? workflowV2HumanGateRequestInputFromPackage(pkg, { ...input, actor: callerAgent, callerAgent }) : null;
   const buttons = requestInput ? humanGateButtonOptions(requestInput) : [];
@@ -610,7 +632,7 @@ async function workflowV2HumanGateRequest(rootDir, input = {}, permissionDecisio
   }
   const requestInput = {
     ...preview.requestInput,
-    actor: input.actor || permissionDecision?.caller?.agentId || preview.requestInput.actor || "cat_claw"
+    actor: input.actor || permissionDecision?.caller?.agentId || preview.requestInput.actor
   };
   const result = await humanGateRequest(rootDir, requestInput);
   const linkedAt = nowIso();

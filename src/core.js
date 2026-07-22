@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { runWorkflowAction, workflowStatus } from "./workflow.js";
-import { WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN } from "./workflow/action-policy.js";
+import {
+  WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN,
+  WORKFLOW_LEGACY_MEETING_DISCUSSION_ACTIONS,
+  workflowActionBlockedResult,
+  workflowLegacyActionOverrideEnabled
+} from "./workflow/action-policy.js";
 
 export const PLUGIN_ID = "trading-agents-workflow";
 export const SCHEMA_VERSION = 8;
@@ -1226,6 +1231,16 @@ export async function listMeetings(rootDir) {
 
 export async function runAction(rootDir, input = {}) {
   const action = String(input.action || "status");
+  if (WORKFLOW_LEGACY_MEETING_DISCUSSION_ACTIONS.has(action)
+    && !workflowLegacyActionOverrideEnabled(input, action)) {
+    return workflowActionBlockedResult(
+      action,
+      action,
+      "legacy_meeting_discussion_disabled",
+      "legacy v1 meeting discussion actions are retired by default; use workflow v2 plan/review/task-group package evidence for new multi-agent discussion",
+      "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1"
+    );
+  }
   if (
     action.startsWith("workflow.") ||
     action.startsWith("trading_workflow.") ||

@@ -267,7 +267,11 @@ tool name to `tools.alsoAllow` while keeping the plugin id in `plugins.allow`:
       "trading-agents-workflow": {
         "enabled": true,
         "config": {
-          "rootDir": "/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow"
+          "rootDir": "/home/flashcat/multi-agent-hedge-fund-framework/trading-agents-workflow",
+          "governanceRoles": {
+            "catBrain": { "agentId": "main", "runtime": "openclaw" },
+            "catClaw": { "agentId": "cat_claw", "runtime": "openclaw", "deliveryAccount": "cat_claw" }
+          }
         }
       }
     },
@@ -281,6 +285,15 @@ tool name to `tools.alsoAllow` while keeping the plugin id in `plugins.allow`:
   }
 }
 ```
+
+`governanceRoles` binds structural workflow roles to concrete agents. The role
+names are stable, but their implementations are configurable: `catBrain` is the
+governance auditor / incident commander role, and `catClaw` is the secretary
+auditor / Human Gate package reporter role. The defaults are `main` and
+`cat_claw` for the current OpenClaw deployment. A reviewed deployment may bind
+either role to another cat member or an independent runtime agent such as Codex
+or Claude Code, as long as that agent is registered in `runtime_agents` and has
+the required permissions.
 
 After changing plugin source, plugin load paths, or tool policy, validate config
 and reload or restart the actual Gateway process. A route-shell smoke test should
@@ -387,7 +400,7 @@ Use `workflow.advance` after a discussion, dispatch batch, receipt collection cy
 - `needs_planning`: no actionable task exists yet.
 - `dispatch_ready`: pending tasks are unblocked and can be dispatched.
 - `receipts_collecting`: work is in progress or finished tasks still need receipts/artifacts.
-- `cat_claw_summary_required`: all required work is done and `cat_claw` should package the conclusion or next Human Gate.
+- `secretary_closeout_required`: all required work is done and the configured secretary/Human Gate reporter role should package the conclusion or next Human Gate. Legacy records may still show `cat_claw_summary_required`.
 - `human_gate_pending`: a confirmation gate blocks continuation.
 - `blocked`: no task can advance without intervention.
 - `completed`: the run meets its stated acceptance or explicit completion condition.
@@ -435,10 +448,10 @@ Pending Human Gate requests are also re-ensured mechanically. If a pending Human
 
 The queue reserves a `flash` priority above `steer` for future trading-execution workflows. This is only a scheduling inlet for later real-trading rules; it does not execute trades, bypass risk controls, or weaken Human Gate. Flash-lane work must still use structured workflow state, idempotency, expiry, receipts, and button-first Human Gate.
 
-Cat Claw `cat_claw` is an OpenClaw secretary/Human Gate agent, not a Hermers profile. The control loop may drain migrated professional agents through `platform=hermers` plus `workflow_ingress_adapter=acp`, ensure that already-pending Human Gate records have buttons and outbox delivery, and deliver queued Human Gate requests. It must not create or execute Cat Claw long semantic closeout reports unless `autoReport=true` is explicitly set for a reviewed recovery run. Cat Claw closeout reports use `reportRuntime=openclaw` and `reportAgent=cat_claw`. Do not dispatch Cat Claw to Hermers unless a real Hermers profile has been created and registered.
+The default Cat Claw role binding is `openclaw:cat_claw`, an OpenClaw secretary/Human Gate agent, not a Hermers profile. The control loop may drain migrated professional agents through `platform=hermers` plus `workflow_ingress_adapter=acp`, ensure that already-pending Human Gate records have buttons and outbox delivery, and deliver queued Human Gate requests. It must not create or execute long semantic closeout reports unless `autoReport=true` is explicitly set for a reviewed recovery run. Closeout reports use `reportRuntime`/`reportAgent` or the configured `governanceRoles.catClaw` binding. Do not dispatch the secretary/Human Gate reporter role to Hermers unless a real Hermers profile has been created and registered.
 
-- Cat-brain `main` 30min heartbeat checks institutional compliance and evidence completeness.
-- Cat Claw `cat_claw` 30min heartbeat audits whether Human Gate delivery, buttons, callback, and resume closed correctly.
+- The configured Cat Brain role checks institutional compliance and evidence completeness.
+- The configured Cat Claw / secretary role audits whether Human Gate delivery, buttons, callback, and resume closed correctly.
 - The 30s loop is the timely queue driver for structured workflow state; 30min heartbeat is not the primary Human Gate trigger.
 
 CLI example:

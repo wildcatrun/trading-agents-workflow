@@ -13,6 +13,9 @@ import {
   sqliteChangeCount
 } from "../workflow/sqlite.js";
 import {
+  workflowGovernanceRole
+} from "../workflow/governance-roles.js";
+import {
   WORKFLOW_V2_CAT_BRAIN_AUDIT_DECISIONS,
   WORKFLOW_V2_CAT_CLAW_AUDIT_DECISIONS,
   WORKFLOW_V2_REVIEW_DECISIONS,
@@ -34,6 +37,10 @@ import {
 import {
   workflowV2RestoreWorkerRunRow
 } from "./worker-state.js";
+import {
+  WORKFLOW_V2_GOVERNANCE_REVIEW_STATE,
+  WORKFLOW_V2_PROTOCOL_AUDIT_STATE
+} from "./neutral-names.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -518,8 +525,8 @@ async function workflowV2OwnerReviewPreview(rootDir, input = {}) {
   }
   const taskGroupRequired = boolOption(input.taskGroupRequired ?? input.task_group_required, managerReviewSet.rows.length > 1);
   const nextWorkflowState = decision === "accepted"
-    ? taskGroupRequired ? "waiting_group_discussion" : "waiting_cat_brain_check"
-    : decision === "needs_human_gate" ? "waiting_cat_brain_check" : "waiting_manager";
+    ? taskGroupRequired ? "waiting_group_discussion" : WORKFLOW_V2_GOVERNANCE_REVIEW_STATE
+    : decision === "needs_human_gate" ? WORKFLOW_V2_GOVERNANCE_REVIEW_STATE : "waiting_manager";
   const review = {
     reviewId: firstText(input.reviewId, input.review_id) || safeId("v2-owner-review"),
     workflowId,
@@ -637,7 +644,7 @@ async function workflowV2TaskGroupPackagePreview(rootDir, input = {}) {
     payload: {
       ...workflowV2JsonObject(input.payload, {}),
       taskGroupRequired: boolOption(input.taskGroupRequired ?? input.task_group_required, taskGroupAgents.length > 1),
-      nextWorkflowState: status === "ready" ? "waiting_cat_brain_check" : "waiting_group_discussion"
+      nextWorkflowState: status === "ready" ? WORKFLOW_V2_GOVERNANCE_REVIEW_STATE : "waiting_group_discussion"
     }
   };
   return {
@@ -711,10 +718,12 @@ async function workflowV2CatBrainAuditPreview(rootDir, input = {}) {
   if (String(input.decision || "").trim().toLowerCase() === "blocked") {
     errors.push(workflowV2ValidationError("blocked_decision_not_allowed", "Cat Brain audit decision blocked is not allowed; use revision_required, rejected, or needs_human_gate"));
   }
-  const catBrainAgent = normalizeOptionalAgentId(firstText(input.catBrainAgent, input.cat_brain_agent, "main")) || "main";
+  const catBrainRole = workflowGovernanceRole(input, "catBrain");
+  const expectedCatBrainAgent = normalizeOptionalAgentId(catBrainRole.agentId) || "main";
+  const catBrainAgent = normalizeOptionalAgentId(firstText(input.catBrainAgent, input.cat_brain_agent, expectedCatBrainAgent)) || expectedCatBrainAgent;
   const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.createdBy, input.created_by, catBrainAgent)) || catBrainAgent;
-  if (catBrainAgent !== "main" || callerAgent !== "main") {
-    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "Cat Brain governance audit must be recorded by main", { catBrainAgent, callerAgent }));
+  if (catBrainAgent !== expectedCatBrainAgent || callerAgent !== expectedCatBrainAgent) {
+    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "Cat Brain governance audit must be recorded by the configured catBrain governance role", { catBrainAgent, callerAgent, expectedCatBrainAgent }));
   }
   const decision = workflowV2NormalizeEnum(input.decision, WORKFLOW_V2_CAT_BRAIN_AUDIT_DECISIONS, "approved");
   const pkg = workflowV2TaskGroupPackageSummary(taskGroupPackageRow);
@@ -739,7 +748,7 @@ async function workflowV2CatBrainAuditPreview(rootDir, input = {}) {
       ...workflowV2JsonObject(input.payload, {}),
       sourceKind: taskGroupPackageId ? "task_group_package" : "owner_review",
       sourceOwnerReviewId: ownerReviewId || "",
-      nextWorkflowState: ["approved", "needs_human_gate"].includes(decision) ? "waiting_cat_claw_audit" : "waiting_group_discussion"
+      nextWorkflowState: ["approved", "needs_human_gate"].includes(decision) ? WORKFLOW_V2_PROTOCOL_AUDIT_STATE : "waiting_group_discussion"
     }
   };
   return {
@@ -790,6 +799,8 @@ LIMIT 1;`, { json: true });
 
 async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
+  const catBrainRole = workflowGovernanceRole(input, "catBrain");
+  const expectedCatBrainAgent = normalizeOptionalAgentId(catBrainRole.agentId) || "main";
   const workflowId = firstText(input.workflowId, input.workflow_id);
   const planId = firstText(input.planId, input.plan_id);
   const taskGroupPackageId = firstText(input.taskGroupPackageId, input.task_group_package_id, input.packageId, input.package_id);
@@ -927,7 +938,7 @@ async function workflowV2CatBrainSemanticCheckPreview(rootDir, input = {}) {
       planId,
       sourceKind: taskGroupPackageId ? "task_group_package" : "owner_review",
       sourceId: taskGroupPackageId || ownerReviewIdInput || "",
-      catBrainAgent: "main",
+      catBrainAgent: expectedCatBrainAgent,
       evidenceRefs,
       rollbackRefs,
       nextAllowedAction: violations.length === 0 ? "workflow.v2.cat_brain_audit.record" : "repair_evidence_before_cat_brain_audit"
@@ -986,10 +997,12 @@ async function workflowV2CatClawAuditPreview(rootDir, input = {}) {
   if (String(input.decision || "").trim().toLowerCase() === "blocked") {
     errors.push(workflowV2ValidationError("blocked_decision_not_allowed", "Cat Claw audit decision blocked is not allowed; use protocol_revision_required or rejected"));
   }
-  const catClawAgent = normalizeOptionalAgentId(firstText(input.catClawAgent, input.cat_claw_agent, "cat_claw")) || "cat_claw";
+  const catClawRole = workflowGovernanceRole(input, "catClaw");
+  const expectedCatClawAgent = normalizeOptionalAgentId(catClawRole.agentId) || "cat_claw";
+  const catClawAgent = normalizeOptionalAgentId(firstText(input.catClawAgent, input.cat_claw_agent, expectedCatClawAgent)) || expectedCatClawAgent;
   const callerAgent = normalizeOptionalAgentId(firstText(input.callerAgent, input.caller_agent, input.createdBy, input.created_by, catClawAgent)) || catClawAgent;
-  if (catClawAgent !== "cat_claw" || callerAgent !== "cat_claw") {
-    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "Cat Claw protocol audit must be recorded by cat_claw", { catClawAgent, callerAgent }));
+  if (catClawAgent !== expectedCatClawAgent || callerAgent !== expectedCatClawAgent) {
+    errors.push(workflowV2ValidationError("caller_agent_not_authorized", "Cat Claw protocol audit must be recorded by the configured catClaw secretary role", { catClawAgent, callerAgent, expectedCatClawAgent }));
   }
   const decision = workflowV2NormalizeEnum(input.decision, WORKFLOW_V2_CAT_CLAW_AUDIT_DECISIONS, "protocol_ready");
   const brainAudit = workflowV2CatBrainAuditSummary(brainAuditRow);
@@ -1010,7 +1023,7 @@ async function workflowV2CatClawAuditPreview(rootDir, input = {}) {
     evidenceRefs,
     payload: {
       ...workflowV2JsonObject(input.payload, {}),
-      nextWorkflowState: decision === "protocol_ready" ? "human_gate_request_due" : "waiting_cat_brain_check"
+      nextWorkflowState: decision === "protocol_ready" ? "human_gate_request_due" : WORKFLOW_V2_GOVERNANCE_REVIEW_STATE
     }
   };
   return {

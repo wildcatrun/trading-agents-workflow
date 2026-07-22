@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { LEGACY_ROOT, runAction } from "./src/core.js";
 import { controlLoopWorkerKillAfterMs } from "./src/control-loop-budget.js";
 import { registerWorkflowCheckpointCliCommand } from "./src/workflow/checkpoint-cli-command.js";
+import { workflowGovernanceRoles } from "./src/workflow/governance-roles.js";
 
 const PLUGIN_ID = "trading-agents-workflow";
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -118,13 +119,22 @@ function configuredAgentSet(api, key, fallback = []) {
   return new Set(configList(accessConfig[key] ?? pluginConfig(api)[key], fallback).map(normalizeAgentId));
 }
 
+function configuredGovernanceRoles(api) {
+  return workflowGovernanceRoles(pluginConfig(api));
+}
+
+function configuredGovernanceRoleInput(api) {
+  return { governanceRoles: configuredGovernanceRoles(api) };
+}
+
 function workflowToolMode(api, toolContext = {}) {
   const agentId = normalizeAgentId(toolContext.agentId);
   const disabledAgents = configuredAgentSet(api, "disabledAgents", []);
   if (disabledAgents.has(agentId)) return "disabled";
-  const fullAgents = configuredAgentSet(api, "fullAgents", ["main"]);
+  const roles = configuredGovernanceRoles(api);
+  const fullAgents = configuredAgentSet(api, "fullAgents", [roles.catBrain.agentId]);
   if (fullAgents.has(agentId)) return "full";
-  const governanceAgents = configuredAgentSet(api, "governanceAgents", ["cat_claw"]);
+  const governanceAgents = configuredAgentSet(api, "governanceAgents", [roles.catClaw.agentId]);
   if (governanceAgents.has(agentId)) return "governance";
   return "message_only";
 }
@@ -176,6 +186,11 @@ function withWorkflowToolCaller(params = {}, toolContext = {}, mode = "") {
   });
 }
 
+function withConfiguredGovernanceRoles(api, params = {}) {
+  if (params.governanceRoles || params.governance_roles || params.roleBindings || params.role_bindings) return params;
+  return { ...configuredGovernanceRoleInput(api), ...params };
+}
+
 function openClawCommandArgs(args) {
   const openClawIndex = args.findIndex((arg) => /(^|[/\\])openclaw(\.mjs)?$/.test(arg));
   if (openClawIndex >= 0) return args.slice(openClawIndex + 1);
@@ -204,24 +219,7 @@ const toolParameters = {
       enum: [
         "init",
         "status",
-        "meeting.create",
-        "meeting.append",
-        "meeting.command",
-        "meeting.summary",
-        "meeting.close",
-        "meeting.handoff",
-        "meeting.artifact",
-        "meeting.state",
-        "meeting.action_item",
-        "meeting.decision",
-        "meeting.minutes",
-        "meeting.notify",
-        "meeting.index",
         "meeting.validate",
-        "cat_claw.observe",
-        "cat_claw.minutes",
-        "cat_claw.digest",
-        "cat_claw.notify",
         "cat_claw.audit",
         "workflow.init",
         "workflow.status",
@@ -2473,8 +2471,8 @@ function controlLoopConfig(api) {
     owner: String(configured.owner || "openclaw-plugin").trim() || "openclaw-plugin",
     workerMode: String(configured.workerMode || "process").trim() || "process",
     runtimes: String(configured.runtimes || "hermers").trim() || "hermers",
-    reportRuntime: String(configured.reportRuntime || "openclaw").trim() || "openclaw",
-    reportAgent: String(configured.reportAgent || "cat_claw").trim() || "cat_claw",
+    reportRuntime: String(configured.reportRuntime || configuredGovernanceRoles(api).catClaw.runtime || "openclaw").trim() || "openclaw",
+    reportAgent: String(configured.reportAgent || configuredGovernanceRoles(api).catClaw.agentId || "cat_claw").trim() || "cat_claw",
     drain: configured.drain !== false,
     autoDispatch: configured.autoDispatch !== false,
     drainQueued: configured.drainQueued !== false,
@@ -3029,6 +3027,29 @@ export default definePluginEntry({
           runtimes: { type: "string" },
           reportRuntime: { type: "string" },
           reportAgent: { type: "string" },
+          governanceRoles: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              catBrain: {
+                type: "object",
+                additionalProperties: true,
+                properties: {
+                  agentId: { type: "string" },
+                  runtime: { type: "string" }
+                }
+              },
+              catClaw: {
+                type: "object",
+                additionalProperties: true,
+                properties: {
+                  agentId: { type: "string" },
+                  runtime: { type: "string" },
+                  deliveryAccount: { type: "string" }
+                }
+              }
+            }
+          },
           drain: { type: "boolean" },
           autoDispatch: { type: "boolean" },
           drainQueued: { type: "boolean" },
@@ -3057,7 +3078,7 @@ export default definePluginEntry({
         parameters: governanceToolParameters,
         execute: async (_id, params) => {
           const root = requireRoot(api);
-          const guarded = guardGovernanceWorkflowAction(withWorkflowToolCaller(params || {}, toolContext, mode));
+          const guarded = guardGovernanceWorkflowAction(withWorkflowToolCaller(withConfiguredGovernanceRoles(api, params || {}), toolContext, mode));
           return jsonText(await runAction(root, guardWorkflowRootOverride(guarded, root)));
         }
       };
@@ -3069,7 +3090,7 @@ export default definePluginEntry({
           parameters: toolParameters,
           execute: async (_id, params) => {
             const root = requireRoot(api);
-            return jsonText(await runAction(root, guardWorkflowRootOverride(withWorkflowToolCaller(params || {}, toolContext, mode), root)));
+            return jsonText(await runAction(root, guardWorkflowRootOverride(withWorkflowToolCaller(withConfiguredGovernanceRoles(api, params || {}), toolContext, mode), root)));
           }
         },
         messageFlowTool

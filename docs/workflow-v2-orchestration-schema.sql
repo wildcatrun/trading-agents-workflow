@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS workflow_v2_plans (
       'waiting_review',
       'waiting_manager',
       'waiting_group_discussion',
+      'waiting_governance_review',
+      'waiting_protocol_audit',
       'waiting_cat_brain_check',
       'waiting_cat_claw_audit',
       'human_gate_request_due',
@@ -1082,7 +1084,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_human_gate_packages (
   source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
   cat_brain_agent TEXT NOT NULL DEFAULT 'main',
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'cat_claw_audited')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited', 'cat_claw_audited')),
   options_json TEXT NOT NULL DEFAULT '[]',
   required_controls_json TEXT NOT NULL DEFAULT '[]',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
@@ -1099,17 +1101,17 @@ CREATE TRIGGER IF NOT EXISTS trg_workflow_v2_human_gate_packages_audited_insert
 BEFORE INSERT ON workflow_v2_human_gate_packages
 BEGIN
   SELECT CASE
-    WHEN NEW.status = 'cat_claw_audited'
+    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
       AND COALESCE(json_array_length(NEW.options_json), 0) < 2
     THEN RAISE(ABORT, 'audited Human Gate packages require at least two options')
   END;
   SELECT CASE
-    WHEN NEW.status = 'cat_claw_audited'
+    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
       AND COALESCE(json_array_length(NEW.options_json), 0) > 5
     THEN RAISE(ABORT, 'audited Human Gate packages allow at most five options')
   END;
   SELECT CASE
-    WHEN NEW.status = 'cat_claw_audited'
+    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
       AND (instr(NEW.required_controls_json, 'pause') = 0 OR instr(NEW.required_controls_json, 'terminate') = 0)
     THEN RAISE(ABORT, 'audited Human Gate packages require pause and terminate controls')
   END;
@@ -1119,17 +1121,17 @@ CREATE TRIGGER IF NOT EXISTS trg_workflow_v2_human_gate_packages_audited_update
 BEFORE UPDATE OF status, options_json, required_controls_json ON workflow_v2_human_gate_packages
 BEGIN
   SELECT CASE
-    WHEN NEW.status = 'cat_claw_audited'
+    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
       AND COALESCE(json_array_length(NEW.options_json), 0) < 2
     THEN RAISE(ABORT, 'audited Human Gate packages require at least two options')
   END;
   SELECT CASE
-    WHEN NEW.status = 'cat_claw_audited'
+    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
       AND COALESCE(json_array_length(NEW.options_json), 0) > 5
     THEN RAISE(ABORT, 'audited Human Gate packages allow at most five options')
   END;
   SELECT CASE
-    WHEN NEW.status = 'cat_claw_audited'
+    WHEN NEW.status IN ('protocol_audited', 'cat_claw_audited')
       AND (instr(NEW.required_controls_json, 'pause') = 0 OR instr(NEW.required_controls_json, 'terminate') = 0)
     THEN RAISE(ABORT, 'audited Human Gate packages require pause and terminate controls')
   END;
@@ -1169,7 +1171,7 @@ END;
 --    runtime-significant: it must contain objective, outputFormat, toolBoundary,
 --    acceptanceCriteria, and stopCondition/stopConditions.
 -- 8. Human Gate package rows in the current local runtime slice only use
---    'draft' and 'cat_claw_audited'. Application-level validation must still
+--    'draft', 'protocol_audited', and legacy 'cat_claw_audited'. Application-level validation must still
 --    require a protocol-ready Cat Claw audit from the same workflow and plan.
 --    The schema draft also checks that audited packages carry two to five
 --    options and pause/terminate controls; runtime code must still perform

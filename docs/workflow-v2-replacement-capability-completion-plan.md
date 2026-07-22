@@ -889,6 +889,106 @@ This closes a visibility gap: frozen legacy mutating actions are still retained
 for controlled compatibility, but they are no longer presented as normal
 default tool choices.
 
+### P62 Progress
+
+P62 retires the v1 meeting-room discussion write surfaces by default because v2
+already has the same class of multi-agent discussion/evidence capability.
+
+Frozen by default:
+
+- `meeting.create`, `meeting.append`, `meeting.command`, `meeting.summary`,
+  `meeting.close`, `meeting.handoff`, `meeting.artifact`, `meeting.state`,
+  `meeting.action_item`, `meeting.decision`, `meeting.minutes`,
+  `meeting.notify`, and `meeting.index`;
+- Cat Claw meeting-era secretary aliases `cat_claw.observe`,
+  `cat_claw.minutes`, `cat_claw.digest`, and `cat_claw.notify`;
+- legacy command aliases such as `create_meeting`, `append_meeting`,
+  `append_note`, `record_command`, `summarize_meeting`, `close_meeting`,
+  `handoff_meeting`, and `write_artifact`.
+
+Replacement evidence is the existing v2 stack, not new v2 functionality:
+
+- `workflow.v2.plan.create` and v2 plan nodes for work decomposition;
+- `workflow.v2.info_stack.record` for durable content/artifact references;
+- `workflow.v2.manager_review.record` and `workflow.v2.owner_review.record`
+  for manager/owner review;
+- `workflow.v2.task_group_package.record` for group discussion package
+  synthesis;
+- `workflow.v2.cat_brain_audit.record`, `workflow.v2.cat_claw_audit.record`,
+  `workflow.v2.notification.preview`, and shared Human Gate/outbox surfaces for
+  governance and formal delivery.
+
+This batch deliberately does not freeze `meeting.dispatch`, `meeting.ingest`,
+`meeting.resume`, `meeting.disperse`, or `meeting.runtime_participant`, because
+those are still shared dispatch/receipt/runtime-adapter substrate or require a
+separate parity audit. `meeting.show`, `meeting.list`, and `meeting.validate`
+remain archive/read diagnostics.
+
+The short-term archive compatibility path is the same strict escape hatch used
+for other frozen legacy actions:
+`TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1`.
+
+### P63 Progress
+
+P63 removes a hardcoded governance-agent assumption from the v2 package and
+supervisor surfaces.
+
+The code now treats Cat Brain and Cat Claw as structural workflow roles rather
+than fixed agent ids:
+
+- `catBrain` means the governance auditor / incident commander role;
+- `catClaw` means the secretary auditor / Human Gate package reporter role;
+- default bindings remain `main` and `cat_claw` for the current OpenClaw
+  deployment;
+- action input or plugin config may bind those roles to another cat member or
+  an independent runtime agent such as a Codex or Claude Code worker, provided
+  that runtime/agent is registered and has the required permissions.
+
+Supported binding shape:
+
+```json
+{
+  "governanceRoles": {
+    "catBrain": { "agentId": "cat_heart", "runtime": "hermers" },
+    "catClaw": { "agentId": "local_codex", "runtime": "codex", "deliveryAccount": "local_codex" }
+  }
+}
+```
+
+This does not change database field names, action names, or Human Gate evidence
+requirements. It only decouples role ownership from the default `main` /
+`cat_claw` implementation.
+
+### P64 Progress
+
+P64 removes Cat Brain / Cat Claw names from new v2 structural state and node
+writes where those names were only role labels, not actual implementation
+targets.
+
+New writes now prefer neutral names:
+
+- `governance_synthesis` replaces legacy node type `cat_brain_synthesis`;
+- `protocol_audit` replaces legacy node type `cat_claw_audit`;
+- `waiting_governance_review` replaces legacy state
+  `waiting_cat_brain_check`;
+- `waiting_protocol_audit` replaces legacy state `waiting_cat_claw_audit`;
+- `protocol_audited` replaces legacy Human Gate package status
+  `cat_claw_audited` for newly created package rows;
+- `secretary_closeout_required` replaces legacy readiness decision
+  `cat_claw_summary_required`;
+- `secretary_dispatch_queued` replaces legacy protocol object status
+  `cat_claw_dispatch_queued`.
+
+Compatibility remains explicit:
+
+- action names such as `workflow.v2.cat_brain_audit.record` and
+  `workflow.v2.cat_claw_audit.record` remain as API compatibility aliases;
+- table and column names such as `workflow_v2_cat_claw_audits` and
+  `source_cat_claw_audit_id` remain physical schema compatibility names;
+- readers and validators accept both legacy and neutral state/status values;
+- future physical schema migration may add neutral columns/tables, but this
+  candidate patch does not mutate existing live databases.
+
 ### Exit Criteria
 
 - Generic dispatches still create auditable rows/artifacts and receipt events.

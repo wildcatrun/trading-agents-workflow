@@ -415,7 +415,7 @@ assert.equal(queuedOutbox.targetKind, "private");
 assert.equal(queuedOutbox.targetRef, "8390724843");
 assert.equal(queuedOutbox.messageType, "human_gate_request");
 assert.equal(queuedOutbox.status, "queued");
-assert.equal(queuedOutbox.text.includes("猫爪正式汇报"), true);
+assert.equal(queuedOutbox.text.includes("秘书角色正式汇报"), true);
 const queuedPayload = JSON.parse(queuedOutbox.payloadJson);
 assert.equal(queuedPayload.humanGateId, requestResult.humanGateId);
 assert.equal(queuedPayload.workflowId, workflowId);

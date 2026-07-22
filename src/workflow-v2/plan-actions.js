@@ -13,6 +13,9 @@ import {
   sqlite
 } from "../workflow/sqlite.js";
 import {
+  workflowGovernanceRole
+} from "../workflow/governance-roles.js";
+import {
   WORKFLOW_V2_MAX_CONCURRENT_WORKERS,
   WORKFLOW_V2_NODE_STATUSES,
   WORKFLOW_V2_PLAN_STATUSES,
@@ -164,6 +167,8 @@ export function createWorkflowV2PlanActionHandlers(context = {}) {
 async function workflowV2PlanPreview(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
   const errors = [];
+  const catBrainRole = workflowGovernanceRole(input, "catBrain");
+  const catClawRole = workflowGovernanceRole(input, "catClaw");
   const objective = firstText(input.objective, input.summary, input.prompt, input.text);
   if (!objective) errors.push(workflowV2ValidationError("objective_required", "workflow v2 plan preview requires objective/summary/prompt"));
   const workflowId = firstText(input.workflowId, input.workflow_id) || safeId("workflow-v2");
@@ -184,7 +189,7 @@ async function workflowV2PlanPreview(rootDir, input = {}) {
     status: workflowV2NormalizeEnum(input.status, WORKFLOW_V2_PLAN_STATUSES, "draft"),
     workflowState: workflowV2NormalizeEnum(input.workflowState || input.workflow_state, WORKFLOW_V2_WORKFLOW_STATES, "draft"),
     taskOwnerAgent,
-    plannerAgent: normalizeOptionalAgentId(firstText(input.plannerAgent, input.planner_agent, "main")) || "main",
+    plannerAgent: normalizeOptionalAgentId(firstText(input.plannerAgent, input.planner_agent, catBrainRole.agentId)) || catBrainRole.agentId,
     objective,
     participantManagers,
     acceptanceCriteria,
@@ -196,7 +201,7 @@ async function workflowV2PlanPreview(rootDir, input = {}) {
     constraints: workflowV2JsonObject(input.constraints, {}),
     humanGatePolicy: {
       required: boolOption(input.humanGateRequired ?? input.human_gate_required, true),
-      ownerAgent: "cat_claw",
+      ownerAgent: normalizeOptionalAgentId(firstText(input.humanGateOwnerAgent, input.human_gate_owner_agent, input.catClawAgent, input.cat_claw_agent, catClawRole.agentId)) || catClawRole.agentId,
       minApproveOptions: HUMAN_GATE_APPROVE_OPTION_MIN,
       maxApproveOptions: HUMAN_GATE_APPROVE_OPTION_MAX,
       controls: ["pause", "terminate"],

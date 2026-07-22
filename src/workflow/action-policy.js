@@ -7,6 +7,36 @@ export const WORKFLOW_LEGACY_MUTATING_ACTIONS = new Set([
   "workflow.supervise"
 ]);
 
+export const WORKFLOW_LEGACY_MEETING_DISCUSSION_ACTIONS = new Set([
+  "meeting.create",
+  "create_meeting",
+  "open_meeting",
+  "meeting.append",
+  "append_meeting",
+  "append_note",
+  "meeting.command",
+  "record_command",
+  "meeting.summary",
+  "summarize_meeting",
+  "meeting.close",
+  "close_meeting",
+  "meeting.handoff",
+  "handoff_meeting",
+  "meeting.artifact",
+  "write_artifact",
+  "meeting.state",
+  "meeting.action_item",
+  "meeting.action-item",
+  "meeting.decision",
+  "meeting.minutes",
+  "meeting.notify",
+  "meeting.index",
+  "cat_claw.observe",
+  "cat_claw.minutes",
+  "cat_claw.digest",
+  "cat_claw.notify"
+]);
+
 export const WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT = Object.freeze({
   policy: "frozen_short_term_compatibility",
   frozenSinceRelease: "v0.8.2-rc.1",
@@ -106,6 +136,84 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
     replacement: "dispatch.package.preview + dispatch.package.create",
     recommendation: "use canonical generic dispatch package actions for new callers; keep meeting.dispatch as a compatibility shim during the observation window"
   }],
+  ["meeting.create", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.plan.create + workflow.v2.task_group_package.record",
+    recommendation: "do not start new v1 meeting rooms; use v2 plan/review/task-group package flow for multi-agent discussion evidence"
+  }],
+  ["meeting.append", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.info_stack.record + workflow.v2.manager_review.record",
+    recommendation: "do not append free-form v1 meeting turns; persist v2 discussion evidence as info items and manager/owner reviews"
+  }],
+  ["meeting.command", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.plan.create + workflow.v2.next_actions.preview",
+    recommendation: "do not drive v2 from meeting commands; use audited v2 plan state and next-actions surfaces"
+  }],
+  ["meeting.summary", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.owner_review.record + workflow.v2.task_group_package.record",
+    recommendation: "do not summarize new work into v1 meeting files; use owner review and task-group package records"
+  }],
+  ["meeting.close", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.cat_claw_audit.record + workflow.v2.human_gate_package.record",
+    recommendation: "do not close new work through v1 meetings; use Cat Claw audit and Human Gate package closeout"
+  }],
+  ["meeting.handoff", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.worker_handoff.record + workflow.v2.info_stack.record",
+    recommendation: "use v2 worker handoff/info-stack records instead of meeting handoff notes"
+  }],
+  ["meeting.artifact", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.info_stack.record",
+    recommendation: "record new artifacts through v2 information stack references, not v1 meeting artifacts"
+  }],
+  ["meeting.state", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.plan.create + workflow.v2.worker_result.submit + workflow.v2.owner_review.record",
+    recommendation: "use v2 plan/node/worker/review state instead of v1 meeting state"
+  }],
+  ["meeting.action_item", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.plan.create + workflow.v2.plan_nodes",
+    recommendation: "do not create new v1 meeting action items; use v2 plan nodes for new work"
+  }],
+  ["meeting.decision", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.owner_review.record + workflow.v2.cat_brain_audit.record + Human Gate decision records",
+    recommendation: "record new decisions through v2 review/audit/Human Gate records, not v1 meeting decisions"
+  }],
+  ["meeting.minutes", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.task_group_package.record + workflow.v2.cat_claw_audit.record",
+    recommendation: "Cat Claw should package v2 evidence rather than write new v1 meeting minutes"
+  }],
+  ["meeting.notify", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.notification.preview + Human Gate/outbox delivery surfaces",
+    recommendation: "use governed v2 notification/Human Gate/outbox surfaces instead of v1 meeting notify"
+  }],
+  ["meeting.index", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.evaluation_snapshot.preview + console read model",
+    recommendation: "do not refresh v1 meeting indexes for new work; use v2 read models and evaluation previews"
+  }],
   ["meeting.resume", {
     decisionClass: "optional_or_template_later",
     migrationStatus: "legacy_active",
@@ -120,6 +228,30 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
     decisionClass: "optional_or_template_later",
     migrationStatus: "legacy_active",
     recommendation: "keep until meeting template/runtime-adapter requirements are explicit"
+  }],
+  ["cat_claw.observe", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.cat_claw_audit.preview + workflow.v2.task_group_package.preview",
+    recommendation: "Cat Claw should audit v2 evidence packages instead of observing v1 meeting rooms"
+  }],
+  ["cat_claw.minutes", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.cat_claw_audit.record",
+    recommendation: "Cat Claw should record v2 package audit evidence instead of v1 meeting minutes"
+  }],
+  ["cat_claw.digest", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.task_group_package.preview + workflow.v2.cat_claw_audit.preview",
+    recommendation: "use v2 package previews and Cat Claw audit previews instead of v1 meeting digest"
+  }],
+  ["cat_claw.notify", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.notification.preview + Human Gate/outbox delivery surfaces",
+    recommendation: "use governed v2 notification/Human Gate/outbox surfaces instead of v1 Cat Claw notify"
   }]
 ]);
 

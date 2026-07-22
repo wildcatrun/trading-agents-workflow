@@ -7,6 +7,9 @@ import {
   sqlite,
   tableColumns
 } from "../workflow/sqlite.js";
+import {
+  workflowV2IsProtocolAuditState
+} from "./neutral-names.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -57,7 +60,7 @@ function evaluationDecision(snapshot = {}) {
     + Number(verificationCounts.uncertain || 0);
   if (!v2.planFound) return "needs_evidence";
   if (Number(counts.sideEffectUncertain || 0) > 0) return "side_effect_uncertain";
-  if (["waiting_cat_claw_audit", "human_gate_request_due", "waiting_human"].includes(workflowState)) return "needs_human_gate";
+  if (workflowV2IsProtocolAuditState(workflowState) || ["human_gate_request_due", "waiting_human"].includes(workflowState)) return "needs_human_gate";
   if (Number(workersByStatus.needs_human_gate || 0) > 0) return "needs_human_gate";
   if (Number(counts.pendingHumanGates || 0) > 0 || Number(verificationCounts.needs_human_gate || 0) > 0) return "needs_human_gate";
   if (Number(counts.activeIncidents || 0) > 0 || Number(verificationCounts.blocked || 0) > 0) return "blocked";

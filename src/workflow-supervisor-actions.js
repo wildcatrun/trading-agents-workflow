@@ -3,6 +3,9 @@ import {
   sqlValue,
   sqlite
 } from "./workflow/sqlite.js";
+import {
+  workflowV2IsSecretaryCloseoutRequired
+} from "./workflow-v2/neutral-names.js";
 
 export const WORKFLOW_SUPERVISOR_ACTION_HANDLER_NAMES = {
   "workflow.supervise": "workflowSupervisor",
@@ -145,7 +148,7 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
     let catClawReport = null;
     let catClawReportDrain = null;
     let catClawReportDrainDeferred = null;
-    if (autoReport && ["cat_claw_summary_required", "blocked", "human_gate_pending"].includes(finalAdvance.decision)) {
+    if (autoReport && (workflowV2IsSecretaryCloseoutRequired(finalAdvance.decision) || ["blocked", "human_gate_pending"].includes(finalAdvance.decision))) {
       const workflowRows = await sqlite(paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`, { json: true });
       const workflow = workflowRows[0] || { workflow_id: workflowId };
       const reportStateKey = [finalAdvance.decision, workflow.status || "", workflow.current_phase || ""].filter(Boolean).join(":") || "latest";
@@ -226,7 +229,7 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
     const wouldDrainRuntimes = drain && advance.wouldDispatch.length
       ? [...new Set(advance.wouldDispatch.map((item) => item.runtime).filter(Boolean))]
       : [];
-    const wouldReport = autoReport && ["cat_claw_summary_required", "blocked", "human_gate_pending"].includes(advance.decision);
+    const wouldReport = autoReport && (workflowV2IsSecretaryCloseoutRequired(advance.decision) || ["blocked", "human_gate_pending"].includes(advance.decision));
     return {
       workflowId,
       meetingId,

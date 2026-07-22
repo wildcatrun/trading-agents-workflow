@@ -1248,6 +1248,71 @@ async function ensureLegacyWorkflowV2PlanColumnsForInit(dbFile) {
   ]);
 }
 
+async function ensureWorkflowV2HumanGatePackageStatusCheck(dbFile) {
+  const rows = await sqlite(dbFile, `
+SELECT sql
+FROM sqlite_master
+WHERE type='table' AND name='workflow_v2_human_gate_packages'
+LIMIT 1;`, { json: true });
+  const createSql = String(rows[0]?.sql || "");
+  if (!createSql || createSql.includes("'protocol_audited'")) return;
+  const legacyTable = `workflow_v2_human_gate_packages_legacy_p64_${Date.now()}`;
+  await sqliteTransaction(dbFile, `
+ALTER TABLE workflow_v2_human_gate_packages RENAME TO ${legacyTable};
+CREATE TABLE workflow_v2_human_gate_packages (
+  package_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  source_review_id TEXT NOT NULL DEFAULT '',
+  source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  cat_brain_agent TEXT NOT NULL DEFAULT 'main',
+  cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited', 'cat_claw_audited')),
+  options_json TEXT NOT NULL DEFAULT '[]',
+  required_controls_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO workflow_v2_human_gate_packages (
+  package_id,
+  workflow_id,
+  plan_id,
+  source_review_id,
+  source_cat_claw_audit_id,
+  cat_brain_agent,
+  cat_claw_agent,
+  status,
+  options_json,
+  required_controls_json,
+  evidence_refs_json,
+  payload_json,
+  created_by,
+  created_at,
+  updated_at
+)
+SELECT
+  package_id,
+  workflow_id,
+  plan_id,
+  source_review_id,
+  source_cat_claw_audit_id,
+  cat_brain_agent,
+  cat_claw_agent,
+  status,
+  options_json,
+  required_controls_json,
+  evidence_refs_json,
+  payload_json,
+  created_by,
+  created_at,
+  updated_at
+FROM ${legacyTable};
+DROP TABLE ${legacyTable};`);
+}
+
 async function ensureWorkflowLayout(rootDir, input = {}) {
   const paths = workflowPaths(rootDir, input);
   await Promise.all([
@@ -2499,7 +2564,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_human_gate_packages (
   source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
   cat_brain_agent TEXT NOT NULL DEFAULT 'main',
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'cat_claw_audited')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited', 'cat_claw_audited')),
   options_json TEXT NOT NULL DEFAULT '[]',
   required_controls_json TEXT NOT NULL DEFAULT '[]',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
@@ -3445,7 +3510,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_human_gate_packages (
   source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
   cat_brain_agent TEXT NOT NULL DEFAULT 'main',
   cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'cat_claw_audited')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'protocol_audited', 'cat_claw_audited')),
   options_json TEXT NOT NULL DEFAULT '[]',
   required_controls_json TEXT NOT NULL DEFAULT '[]',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
@@ -3809,6 +3874,7 @@ CREATE TABLE IF NOT EXISTS workflow_v2_template_events (
     ["created_at", "TEXT NOT NULL DEFAULT ''"],
     ["updated_at", "TEXT NOT NULL DEFAULT ''"]
   ]);
+  await ensureWorkflowV2HumanGatePackageStatusCheck(dbFile);
   await ensureColumns(dbFile, "workflow_v2_backend_preflights", [
     ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
     ["backend_id", "TEXT NOT NULL DEFAULT ''"],

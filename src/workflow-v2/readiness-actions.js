@@ -17,6 +17,12 @@ import {
   workflowV2JsonObject,
   workflowV2WorkerRunSummary
 } from "./helpers.js";
+import {
+  WORKFLOW_V2_PROTOCOL_AUDIT_STATE,
+  WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED,
+  workflowV2IsProtocolAuditedPackageStatus,
+  workflowV2IsSecretaryCloseoutRequired
+} from "./neutral-names.js";
 
 const ACTIVE_WORKER_STATUSES = new Set(["queued", "retry_scheduled", "running"]);
 const REVIEW_WORKER_STATUSES = new Set(["submitted_for_review", "revise_required", "handoff_required", "needs_human_gate"]);
@@ -121,7 +127,7 @@ function nextDecisionForPlan(plan = {}, scoped = {}) {
   const blockingWorkers = workers.filter((row) => BLOCKING_WORKER_STATUSES.has(row.status || ""));
   const activeAdapterJobs = adapterJobs.filter((row) => ACTIVE_ADAPTER_JOB_STATUSES.has(row.status || ""));
   const blockingAdapterJobs = adapterJobs.filter((row) => BLOCKING_ADAPTER_JOB_STATUSES.has(row.status || ""));
-  const auditedHumanGatePackages = humanGatePackages.filter((row) => row.status === "cat_claw_audited");
+  const auditedHumanGatePackages = humanGatePackages.filter((row) => workflowV2IsProtocolAuditedPackageStatus(row.status || ""));
   const draftHumanGatePackages = humanGatePackages.filter((row) => row.status === "draft");
   const blockedNodes = nodes.filter((node) => BLOCKING_NODE_STATUSES.has(node.status || ""));
   const allNodesTerminal = nodes.length > 0 && nodes.every((node) => TERMINAL_NODE_STATUSES.has(node.status || ""));
@@ -147,14 +153,14 @@ function nextDecisionForPlan(plan = {}, scoped = {}) {
     decision = "dispatch_ready";
     reasons.push("dependency_ready_v2_plan_nodes");
   } else if (allNodesCompleted || plan.status === "completed" || plan.workflow_state === "completed") {
-    decision = "cat_claw_summary_required";
+    decision = WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED;
     reasons.push("v2_plan_complete_closeout_required");
   } else if (allNodesTerminal) {
     decision = "blocked";
     reasons.push("terminal_non_completed_nodes_present");
   } else if (draftHumanGatePackages.length) {
-    decision = "waiting_cat_claw_audit";
-    reasons.push("human_gate_package_draft_requires_cat_claw_audit");
+    decision = WORKFLOW_V2_PROTOCOL_AUDIT_STATE;
+    reasons.push("human_gate_package_draft_requires_protocol_audit");
   } else {
     reasons.push(nodes.length ? "no_dependency_ready_nodes" : "plan_has_no_nodes");
   }
@@ -181,7 +187,9 @@ function aggregateDecision(planDecisions = []) {
     "receipts_collecting",
     "waiting_review",
     "dispatch_ready",
+    WORKFLOW_V2_PROTOCOL_AUDIT_STATE,
     "waiting_cat_claw_audit",
+    WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED,
     "cat_claw_summary_required",
     "waiting_dependencies"
   ];
@@ -222,6 +230,7 @@ export function createWorkflowV2ReadinessActionHandlers(context = {}) {
           spawnWorkers: false,
           drainAdapterJobs: false,
           requestHumanGate: false,
+          secretaryCloseout: false,
           catClawCloseout: false
         },
         dbFile: paths.dbFile
@@ -251,6 +260,7 @@ LIMIT ${limit};`, { json: true });
           spawnWorkers: false,
           drainAdapterJobs: false,
           requestHumanGate: false,
+          secretaryCloseout: false,
           catClawCloseout: false
         },
         dbFile: paths.dbFile
@@ -294,7 +304,8 @@ LIMIT ${limit};`, { json: true });
           spawnWorkers: decision.decision === "dispatch_ready" && decision.readyNodes.length > 0,
           drainAdapterJobs: decision.activeAdapterJobs.length > 0,
           requestHumanGate: decision.auditedHumanGatePackages.length > 0,
-          catClawCloseout: decision.decision === "cat_claw_summary_required"
+          secretaryCloseout: workflowV2IsSecretaryCloseoutRequired(decision.decision),
+          catClawCloseout: workflowV2IsSecretaryCloseoutRequired(decision.decision)
         }
       };
       if (includeDetails) {
@@ -335,6 +346,7 @@ LIMIT ${limit};`, { json: true });
         spawnWorkers: planDecisions.some((item) => item.would.spawnWorkers),
         drainAdapterJobs: planDecisions.some((item) => item.would.drainAdapterJobs),
         requestHumanGate: planDecisions.some((item) => item.would.requestHumanGate),
+        secretaryCloseout: planDecisions.some((item) => item.would.secretaryCloseout),
         catClawCloseout: planDecisions.some((item) => item.would.catClawCloseout)
       },
       limitations: [

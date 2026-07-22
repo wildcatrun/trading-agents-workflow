@@ -32,7 +32,7 @@ LIMIT 1;`, { json: true });
   }
   const workflowId = firstText(input.workflowId, input.workflow_id);
   const planId = firstText(input.planId, input.plan_id);
-  const sourceCatClawAuditId = firstText(input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id);
+  const sourceCatClawAuditId = firstText(input.sourceSecretaryAuditId, input.source_secretary_audit_id, input.secretaryAuditId, input.secretary_audit_id, input.sourceCatClawAuditId, input.source_cat_claw_audit_id, input.catClawAuditId, input.cat_claw_audit_id);
   const filters = [];
   if (workflowId) filters.push(`workflow_id=${sqlValue(workflowId)}`);
   if (planId) filters.push(`plan_id=${sqlValue(planId)}`);

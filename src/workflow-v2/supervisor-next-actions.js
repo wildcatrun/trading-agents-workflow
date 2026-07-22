@@ -12,9 +12,18 @@ import {
   sqlite
 } from "../workflow/sqlite.js";
 import {
+  workflowGovernanceRole
+} from "../workflow/governance-roles.js";
+import {
   workflowV2JsonArray,
   workflowV2JsonObject
 } from "./helpers.js";
+import {
+  WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED,
+  WORKFLOW_V2_SECRETARY_DISPATCH_QUEUED,
+  workflowV2IsProtocolAuditState,
+  workflowV2IsSecretaryCloseoutRequired
+} from "./neutral-names.js";
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -35,10 +44,8 @@ function candidate(id, type, followUpAction, reason, input = {}, details = {}) {
   };
 }
 
-const CHECKPOINT_PREVIEW_PLAN_DECISIONS = new Set(["blocked", "human_gate_pending", "cat_claw_summary_required"]);
+const CHECKPOINT_PREVIEW_PLAN_DECISIONS = new Set(["blocked", "human_gate_pending", WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED, "cat_claw_summary_required"]);
 const REPORT_PLAN_DECISIONS = new Set(["blocked", "human_gate_pending"]);
-const SUPERVISOR_CLOSEOUT_REPORT_RUNTIME = "openclaw";
-const SUPERVISOR_CLOSEOUT_REPORT_AGENT = "cat_claw";
 
 function planNeedsCheckpointPreview(plan = {}) {
   return CHECKPOINT_PREVIEW_PLAN_DECISIONS.has(String(plan.decision || ""));
@@ -116,13 +123,13 @@ function candidatesForPlan(plan = {}, limit = 20) {
       { status: "input_required" }
     ));
   }
-  if (plan.decision === "waiting_cat_claw_audit") {
+  if (workflowV2IsProtocolAuditState(plan.decision)) {
     for (const pkg of (plan.draftHumanGatePackages || []).slice(0, limit)) {
       result.push(candidate(
-        `cat_claw_package_audit:${pkg.packageId || result.length + 1}`,
-        "cat_claw_package_audit_preview",
+        `protocol_package_audit:${pkg.packageId || result.length + 1}`,
+        "protocol_package_audit_preview",
         "workflow.v2.cat_claw_package_audit.preview",
-        "draft_human_gate_package_requires_cat_claw_audit",
+        "draft_human_gate_package_requires_protocol_audit",
         {
           workflowId,
           planId,
@@ -131,12 +138,12 @@ function candidatesForPlan(plan = {}, limit = 20) {
         { status: pkg.packageId ? "ready" : "input_required" }
       ));
     }
-    if (!result.some((item) => item.candidateType === "cat_claw_package_audit_preview")) {
+    if (!result.some((item) => item.candidateType === "protocol_package_audit_preview")) {
       result.push(candidate(
-        `cat_claw_package_audit:${planId}`,
-        "cat_claw_package_audit_preview",
+        `protocol_package_audit:${planId}`,
+        "protocol_package_audit_preview",
         "workflow.v2.cat_claw_package_audit.preview",
-        "draft_human_gate_package_requires_cat_claw_audit",
+        "draft_human_gate_package_requires_protocol_audit",
         { workflowId, planId },
         { status: "input_required" }
       ));
@@ -152,10 +159,10 @@ function candidatesForPlan(plan = {}, limit = 20) {
       { status: "preview_available", executorStatus: "v2_checkpoint_writer_available", writeAction: "workflow.supervisor.checkpoint", note: "workflow.supervisor.checkpoint can write a v2 checkpoint boundary after separate authorization" }
     ));
     result.push(candidate(
-      `cat_claw_report:${planId}`,
-      "cat_claw_report_required",
+      `secretary_report:${planId}`,
+      "secretary_report_required",
       "workflow.supervisor.report.preview",
-      "human_gate_pending_v2_plan_requires_cat_claw_report_evidence",
+      "human_gate_pending_v2_plan_requires_secretary_report_evidence",
       { workflowId, planId },
       { status: "preview_available", executorStatus: "checkpoint_gated_executor_available", note: "workflow.supervisor.report requires an existing checkpoint boundary before it writes report evidence and queues Cat Claw dispatch" }
     ));
@@ -164,7 +171,7 @@ function candidatesForPlan(plan = {}, limit = 20) {
         `human_gate_request:${pkg.packageId || result.length + 1}`,
         "human_gate_request_preview",
         "workflow.v2.human_gate_request.preview",
-        "cat_claw_audited_human_gate_package_can_be_requested",
+        "protocol_audited_human_gate_package_can_be_requested",
         {
           workflowId,
           planId,
@@ -179,7 +186,7 @@ function candidatesForPlan(plan = {}, limit = 20) {
       `checkpoint:${planId}`,
       "workflow_checkpoint_preview",
       "workflow.supervisor.checkpoint.preview",
-      "blocked_v2_plan_requires_checkpoint_boundary_before_cat_claw_report",
+      "blocked_v2_plan_requires_checkpoint_boundary_before_secretary_report",
       { workflowId, planId },
       { status: "preview_available", executorStatus: "v2_checkpoint_writer_available", writeAction: "workflow.supervisor.checkpoint", note: "workflow.supervisor.checkpoint can write a v2 checkpoint boundary after separate authorization" }
     ));
@@ -192,15 +199,15 @@ function candidatesForPlan(plan = {}, limit = 20) {
       { status: "blocked" }
     ));
     result.push(candidate(
-      `cat_claw_report:${planId}`,
-      "cat_claw_report_required",
+      `secretary_report:${planId}`,
+      "secretary_report_required",
       "workflow.supervisor.report.preview",
-      "blocked_v2_plan_requires_cat_claw_report_evidence",
+      "blocked_v2_plan_requires_secretary_report_evidence",
       { workflowId, planId },
       { status: "preview_available", executorStatus: "checkpoint_gated_executor_available", note: "workflow.supervisor.report requires an existing checkpoint boundary before it writes report evidence and queues Cat Claw dispatch" }
     ));
   }
-  if (plan.decision === "cat_claw_summary_required") {
+  if (workflowV2IsSecretaryCloseoutRequired(plan.decision)) {
     result.push(candidate(
       `checkpoint:${planId}`,
       "workflow_checkpoint_preview",
@@ -210,10 +217,10 @@ function candidatesForPlan(plan = {}, limit = 20) {
       { status: "preview_available", executorStatus: "v2_checkpoint_writer_available", writeAction: "workflow.supervisor.checkpoint", note: "workflow.supervisor.checkpoint can write a v2 checkpoint boundary after separate authorization" }
     ));
     result.push(candidate(
-      `cat_claw_closeout:${planId}`,
-      "cat_claw_closeout_required",
+      `secretary_closeout:${planId}`,
+      "secretary_closeout_required",
       "workflow.supervisor.closeout.preview",
-      "completed_v2_plan_requires_cat_claw_closeout_evidence",
+      "completed_v2_plan_requires_secretary_closeout_evidence",
       { workflowId, planId },
       { status: "preview_available", executorStatus: "checkpoint_gated_executor_available", note: "workflow.supervisor.closeout requires an existing checkpoint boundary before it writes closeout evidence and queues Cat Claw dispatch" }
     ));
@@ -421,7 +428,7 @@ function closeoutIdForPlan(workflowId, planId) {
 }
 
 function closeoutDispatchIdempotencyKey(closeoutId) {
-  return `workflow.supervisor.closeout:${closeoutId}:cat_claw_report`;
+  return `workflow.supervisor.closeout:${closeoutId}:secretary_report`;
 }
 
 function evidenceRefsForPlan(plan = {}, options = {}) {
@@ -443,7 +450,7 @@ function reportIdForPlan(workflowId, planId, decision) {
 }
 
 function reportDispatchIdempotencyKey(reportId) {
-  return `workflow.supervisor.report:${reportId}:cat_claw_report`;
+  return `workflow.supervisor.report:${reportId}:secretary_report`;
 }
 
 function reportDispatchTypeForDecision(decision = "") {
@@ -505,19 +512,25 @@ LIMIT ${sqlValue(pairs.length * limit)};`, { json: true });
 function closeoutCandidateForPlan(plan = {}, checkpoints = [], closeouts = [], input = {}) {
   const workflowId = plan.workflowId || "";
   const planId = plan.planId || "";
-  const matchingCheckpoints = supervisorCheckpointsForPlan(checkpoints, plan, "cat_claw_summary_required");
-  const latestCheckpoint = matchingCheckpoints[0] || null;
+  const catBrainRole = workflowGovernanceRole(input, "catBrain");
+  const catClawRole = workflowGovernanceRole(input, "catClaw");
+  const reportRuntime = firstText(input.reportRuntime, input.report_runtime, catClawRole.runtime);
+  const reportAgent = firstText(input.reportAgent, input.report_agent, input.catClawAgent, input.cat_claw_agent, catClawRole.agentId);
+  const matchingCheckpoints = supervisorCheckpointsForPlan(checkpoints, plan, WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED);
+  const legacyMatchingCheckpoints = supervisorCheckpointsForPlan(checkpoints, plan, "cat_claw_summary_required");
+  const checkpointMatches = matchingCheckpoints.length ? matchingCheckpoints : legacyMatchingCheckpoints;
+  const latestCheckpoint = checkpointMatches[0] || null;
   const latestCloseout = closeouts[0] || null;
   const closeoutId = closeoutIdForPlan(workflowId, planId);
-  const ready = plan.decision === "cat_claw_summary_required" && Boolean(latestCheckpoint) && !latestCloseout;
+  const ready = workflowV2IsSecretaryCloseoutRequired(plan.decision) && Boolean(latestCheckpoint) && !latestCloseout;
   return {
-    candidateId: `cat_claw_closeout:${planId || workflowId || "unknown"}`,
-    candidateType: "cat_claw_closeout",
+    candidateId: `secretary_closeout:${planId || workflowId || "unknown"}`,
+    candidateType: "secretary_closeout",
     status: latestCloseout
       ? "existing_closeout_available"
       : ready
         ? "ready_for_closeout"
-        : plan.decision === "cat_claw_summary_required"
+        : workflowV2IsSecretaryCloseoutRequired(plan.decision)
           ? "checkpoint_required"
           : "not_ready",
     executorStatus: latestCloseout
@@ -527,9 +540,9 @@ function closeoutCandidateForPlan(plan = {}, checkpoints = [], closeouts = [], i
         : "precondition_failed",
     reason: latestCloseout
       ? "v2_plan_closeout_already_recorded"
-      : plan.decision === "cat_claw_summary_required"
+      : workflowV2IsSecretaryCloseoutRequired(plan.decision)
         ? latestCheckpoint
-          ? "completed_v2_plan_can_dispatch_cat_claw_closeout"
+          ? "completed_v2_plan_can_dispatch_secretary_closeout"
           : "completed_v2_plan_requires_checkpoint_before_closeout"
         : "v2_plan_not_ready_for_closeout",
     previewOnly: true,
@@ -543,8 +556,8 @@ function closeoutCandidateForPlan(plan = {}, checkpoints = [], closeouts = [], i
       workflowId,
       planId,
       closeoutId,
-      catBrainAgent: "main",
-      catClawAgent: SUPERVISOR_CLOSEOUT_REPORT_AGENT,
+      catBrainAgent: firstText(input.catBrainAgent, input.cat_brain_agent, catBrainRole.agentId),
+      catClawAgent: reportAgent,
       readinessDecision: plan.decision || ""
     },
     evidenceRefs: evidenceRefsForPlan(plan),
@@ -560,10 +573,10 @@ function closeoutCandidateForPlan(plan = {}, checkpoints = [], closeouts = [], i
     closeoutPreview: {
       wouldWriteCloseoutArtifactNow: ready,
       wouldRecordCloseoutNow: ready,
-      wouldDispatchCatClawNow: ready,
+      wouldDispatchSecretaryNow: ready,
       wouldRequestHumanGateNow: false,
-      reportTarget: `${SUPERVISOR_CLOSEOUT_REPORT_RUNTIME}:${SUPERVISOR_CLOSEOUT_REPORT_AGENT}`,
-      requiredDecision: "cat_claw_summary_required",
+      reportTarget: `${reportRuntime}:${reportAgent}`,
+      requiredDecision: WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED,
       closeoutId,
       dispatchIdempotencyKey: closeoutDispatchIdempotencyKey(closeoutId)
     },
@@ -580,6 +593,10 @@ function closeoutCandidateForPlan(plan = {}, checkpoints = [], closeouts = [], i
 function reportCandidateForPlan(plan = {}, checkpoints = [], reports = [], input = {}) {
   const workflowId = plan.workflowId || "";
   const planId = plan.planId || "";
+  const catBrainRole = workflowGovernanceRole(input, "catBrain");
+  const catClawRole = workflowGovernanceRole(input, "catClaw");
+  const reportRuntime = firstText(input.reportRuntime, input.report_runtime, catClawRole.runtime);
+  const reportAgent = firstText(input.reportAgent, input.report_agent, input.catClawAgent, input.cat_claw_agent, catClawRole.agentId);
   const decision = plan.decision || "";
   const matchingCheckpoints = supervisorCheckpointsForPlan(checkpoints, plan, decision);
   const latestCheckpoint = matchingCheckpoints[0] || null;
@@ -587,8 +604,8 @@ function reportCandidateForPlan(plan = {}, checkpoints = [], reports = [], input
   const reportId = reportIdForPlan(workflowId, planId, decision);
   const ready = REPORT_PLAN_DECISIONS.has(decision) && Boolean(latestCheckpoint) && !latestReport;
   return {
-    candidateId: `cat_claw_report:${planId || workflowId || "unknown"}`,
-    candidateType: "cat_claw_report",
+    candidateId: `secretary_report:${planId || workflowId || "unknown"}`,
+    candidateType: "secretary_report",
     status: latestReport
       ? "existing_report_available"
       : ready
@@ -605,7 +622,7 @@ function reportCandidateForPlan(plan = {}, checkpoints = [], reports = [], input
       ? "v2_plan_supervisor_report_already_recorded"
       : REPORT_PLAN_DECISIONS.has(decision)
         ? latestCheckpoint
-          ? `${decision}_v2_plan_can_dispatch_cat_claw_report`
+          ? `${decision}_v2_plan_can_dispatch_secretary_report`
           : `${decision}_v2_plan_requires_checkpoint_before_report`
         : "v2_plan_not_ready_for_supervisor_report",
     previewOnly: true,
@@ -619,8 +636,8 @@ function reportCandidateForPlan(plan = {}, checkpoints = [], reports = [], input
       workflowId,
       planId,
       reportId,
-      catBrainAgent: "main",
-      catClawAgent: SUPERVISOR_CLOSEOUT_REPORT_AGENT,
+      catBrainAgent: firstText(input.catBrainAgent, input.cat_brain_agent, catBrainRole.agentId),
+      catClawAgent: reportAgent,
       readinessDecision: decision
     },
     evidenceRefs: evidenceRefsForPlan(plan, { includeDraftHumanGatePackages: true }),
@@ -636,9 +653,9 @@ function reportCandidateForPlan(plan = {}, checkpoints = [], reports = [], input
     reportPreview: {
       wouldWriteReportArtifactNow: ready,
       wouldRecordReportNow: ready,
-      wouldDispatchCatClawNow: ready,
+      wouldDispatchSecretaryNow: ready,
       wouldRequestHumanGateNow: false,
-      reportTarget: `${SUPERVISOR_CLOSEOUT_REPORT_RUNTIME}:${SUPERVISOR_CLOSEOUT_REPORT_AGENT}`,
+      reportTarget: `${reportRuntime}:${reportAgent}`,
       requiredDecisions: [...REPORT_PLAN_DECISIONS],
       readinessDecision: decision,
       dispatchType: reportDispatchTypeForDecision(decision),
@@ -712,11 +729,11 @@ export function createWorkflowSupervisorNextActionsHandlers(context = {}) {
       limit
     });
     const plans = readiness.plans || [];
-    const closeoutPlans = plans.filter((plan) => plan.decision === "cat_claw_summary_required");
+    const closeoutPlans = plans.filter((plan) => workflowV2IsSecretaryCloseoutRequired(plan.decision));
     const checkpointsByWorkflow = await checkpointRowsByWorkflow(readiness.dbFile, closeoutPlans.map((plan) => plan.workflowId), limit);
     const closeoutsByPlan = await closeoutRowsByPlan(readiness.dbFile, closeoutPlans, limit);
     const closeoutCandidates = plans
-      .filter((plan) => plan.decision === "cat_claw_summary_required")
+      .filter((plan) => workflowV2IsSecretaryCloseoutRequired(plan.decision))
       .map((plan) => closeoutCandidateForPlan(
         plan,
         checkpointsByWorkflow.get(plan.workflowId) || [],
@@ -733,7 +750,7 @@ export function createWorkflowSupervisorNextActionsHandlers(context = {}) {
       generatedAt: readiness.generatedAt || firstText(input.generatedAt, input.generated_at, input.now),
       decision: readiness.decision,
       nextDecision: readiness.nextDecision || readiness.decision,
-      reasons: closeoutCandidates.length ? ["cat_claw_closeout_preview_available"] : ["no_v2_plan_ready_for_closeout"],
+      reasons: closeoutCandidates.length ? ["secretary_closeout_preview_available"] : ["no_v2_plan_ready_for_closeout"],
       closeoutCandidateCount: closeoutCandidates.length,
       closeoutCandidates,
       would: {
@@ -749,7 +766,7 @@ export function createWorkflowSupervisorNextActionsHandlers(context = {}) {
         "preview_only_no_state_mutation",
         "does_not_write_workflow_checkpoint",
         "does_not_write_closeout_artifact_or_record",
-        "does_not_dispatch_cat_claw_report",
+        "does_not_dispatch_secretary_report",
         "workflow.supervisor.closeout execution requires an existing checkpoint boundary and separate write authorization"
       ],
       dbFile: readiness.dbFile
@@ -842,7 +859,8 @@ export function createWorkflowSupervisorNextActionsHandlers(context = {}) {
       throw new Error(`workflow archive checkpoint is not write-ready: ${candidate.status}`);
     }
     const createdAt = firstText(input.createdAt, input.created_at, input.selectedAt, input.selected_at, input.feedbackReceivedAt, input.feedback_received_at) || nowIso();
-    const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "cat_claw");
+    const catClawRole = workflowGovernanceRole(input, "catClaw");
+    const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, catClawRole.agentId);
     const readinessPlan = (preview.readiness?.plans || []).find((plan) => plan.workflowId === candidate.workflowId && plan.planId === candidate.planId) || {};
     const nextActions = workflowV2JsonArray(input.nextActions || input.next_actions, candidate.checkpointPreview.nextActions || []);
     const artifactRefs = [
@@ -917,7 +935,7 @@ export function createWorkflowSupervisorNextActionsHandlers(context = {}) {
         writesCheckpoint: true,
         writesCheckpointArtifact: true,
         updatesArtifactIndex: true,
-        dispatchesCatClaw: false,
+        dispatchesSecretary: false,
         requestsHumanGate: false,
         sendsTelegram: false,
         drainsRuntime: false,
@@ -1049,22 +1067,24 @@ ON CONFLICT(artifact_id) DO UPDATE SET workflow_id=excluded.workflow_id, kind=ex
       if (planId && item.planId !== planId) return false;
       return true;
     });
-    if (!candidate) throw new Error("workflow supervisor closeout is not available: no cat_claw_summary_required v2 plan candidate");
+    if (!candidate) throw new Error("workflow supervisor closeout is not available: no secretary_closeout_required v2 plan candidate");
     if (candidate.executorStatus !== "ready") {
       throw new Error(`workflow supervisor closeout is not write-ready: ${candidate.status}`);
     }
     const createdAt = nowIso();
     const closeoutId = candidate.input.closeoutId;
     const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "workflow_supervisor");
-    const reportAgent = SUPERVISOR_CLOSEOUT_REPORT_AGENT;
-    const reportRuntime = SUPERVISOR_CLOSEOUT_REPORT_RUNTIME;
+    const catClawRole = workflowGovernanceRole(input, "catClaw");
+    const reportAgent = firstText(input.reportAgent, input.report_agent, input.catClawAgent, input.cat_claw_agent, candidate.input.catClawAgent, catClawRole.agentId);
+    const reportRuntime = firstText(input.reportRuntime, input.report_runtime, catClawRole.runtime);
+    const reportTarget = `${reportRuntime}:${reportAgent}`;
     const latestCheckpointId = candidate.checkpointPreview.latestCheckpointId || "";
     const closeoutPayload = redactSensitiveForPersistence({
       schemaVersion: "workflow_supervisor_closeout_record.v1",
       closeoutId,
       workflowId: candidate.workflowId,
       planId: candidate.planId,
-      status: "cat_claw_dispatch_queued",
+      status: WORKFLOW_V2_SECRETARY_DISPATCH_QUEUED,
       createdAt,
       createdBy,
       catBrainAgent: candidate.input.catBrainAgent,
@@ -1073,12 +1093,12 @@ ON CONFLICT(artifact_id) DO UPDATE SET workflow_id=excluded.workflow_id, kind=ex
       readinessDecision: candidate.input.readinessDecision,
       checkpointId: latestCheckpointId,
       evidenceRefs: candidate.evidenceRefs,
-      summary: firstText(input.summary, input.text, `Completed v2 plan ${candidate.planId} requires Cat Claw closeout report.`),
-      writeBoundary: "closeout_artifact_record_and_cat_claw_dispatch_only",
+      summary: firstText(input.summary, input.text, `Completed v2 plan ${candidate.planId} requires secretary closeout report.`),
+      writeBoundary: "closeout_artifact_record_and_secretary_dispatch_only",
       sideEffects: {
         writesCloseoutArtifact: true,
         writesProtocolObject: true,
-        dispatchesCatClaw: true,
+        dispatchesSecretary: true,
         writesCheckpoint: false,
         requestsHumanGate: false,
         sendsTelegram: false,
@@ -1094,7 +1114,7 @@ VALUES (${sqlValue(closeoutId)}, ${sqlValue(candidate.workflowId)}, 'workflow_v2
 ON CONFLICT(artifact_id) DO UPDATE SET workflow_id=excluded.workflow_id, kind=excluded.kind, path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
     await sqlite(paths.dbFile, `
 INSERT INTO protocol_objects(object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
-VALUES (${sqlValue(closeoutId)}, 'workflow_v2_closeout_record', 'cat_claw_dispatch_queued', 'workflow', ${sqlValue(createdBy)}, ${sqlValue(candidate.planId)}, ${sqlValue(relativePath)}, ${sqlValue(JSON.stringify(closeoutPayload))}, ${sqlValue(hash)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+VALUES (${sqlValue(closeoutId)}, 'workflow_v2_closeout_record', ${sqlValue(WORKFLOW_V2_SECRETARY_DISPATCH_QUEUED)}, 'workflow', ${sqlValue(createdBy)}, ${sqlValue(candidate.planId)}, ${sqlValue(relativePath)}, ${sqlValue(JSON.stringify(closeoutPayload))}, ${sqlValue(hash)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
 ON CONFLICT(object_id) DO UPDATE SET
   status=excluded.status,
   source_system=excluded.source_system,
@@ -1106,7 +1126,7 @@ ON CONFLICT(object_id) DO UPDATE SET
   updated_at=excluded.updated_at;`);
     await appendWorkflowEvent(paths, {
       eventType: "workflow.supervisor.closeout.recorded",
-      status: "cat_claw_dispatch_queued",
+      status: WORKFLOW_V2_SECRETARY_DISPATCH_QUEUED,
       workflowId: candidate.workflowId,
       traceId: `${candidate.workflowId}:closeout:${closeoutId}`,
       actor: createdBy,
@@ -1128,7 +1148,7 @@ ON CONFLICT(object_id) DO UPDATE SET
       workflowRootDir: paths.root,
       meetingId: firstText(input.meetingId, input.meeting_id, candidate.workflowId),
       workflowId: candidate.workflowId,
-      traceId: `${candidate.workflowId}:cat_claw_closeout:${textHash(closeoutId).slice(0, 16)}`,
+      traceId: `${candidate.workflowId}:secretary_closeout:${textHash(closeoutId).slice(0, 16)}`,
       idempotencyKey: closeoutDispatchIdempotencyKey(closeoutId),
       runtime: reportRuntime,
       agentId: reportAgent,
@@ -1136,7 +1156,7 @@ ON CONFLICT(object_id) DO UPDATE SET
       priority: firstText(input.priority, "high"),
       createdBy,
       prompt: [
-        "你是猫爪 cat_claw，是 workflow 秘书和向闪电猫汇报的入口。",
+        `你是 workflow 秘书角色绑定 agent ${reportAgent}，当前 runtime 是 ${reportRuntime}。`,
         "请基于 closeout artifact 与 checkpoint evidence，整理本 v2 plan 的正式收口报告。",
         "不要自行创建 Human Gate；如需要闪电猫确认，只输出 Human Gate 候选项和证据引用，交由受治理 Human Gate 流程处理。",
         "",
@@ -1154,7 +1174,7 @@ ON CONFLICT(object_id) DO UPDATE SET
         planId: candidate.planId,
         checkpointId: latestCheckpointId,
         closeoutArtifactRef: relativePath,
-        reportTarget: "openclaw:cat_claw",
+        reportTarget,
         noDirectHumanGate: true,
         noDirectTelegram: true
       }
@@ -1165,10 +1185,11 @@ ON CONFLICT(object_id) DO UPDATE SET
       workflowId: candidate.workflowId,
       planId: candidate.planId,
       closeoutId,
-      status: "cat_claw_dispatch_queued",
-      writeBoundary: "closeout_artifact_record_and_cat_claw_dispatch_only",
+      status: WORKFLOW_V2_SECRETARY_DISPATCH_QUEUED,
+      writeBoundary: "closeout_artifact_record_and_secretary_dispatch_only",
       didWriteCloseoutArtifact: true,
       didRecordCloseout: true,
+      didDispatchSecretary: Boolean(dispatch?.dispatchId),
       didDispatchCatClaw: Boolean(dispatch?.dispatchId),
       didWriteCheckpoint: false,
       didRequestHumanGate: false,
@@ -1213,7 +1234,7 @@ ON CONFLICT(object_id) DO UPDATE SET
       generatedAt: readiness.generatedAt || firstText(input.generatedAt, input.generated_at, input.now),
       decision: readiness.decision,
       nextDecision: readiness.nextDecision || readiness.decision,
-      reasons: reportCandidates.length ? ["cat_claw_report_preview_available"] : ["no_v2_plan_ready_for_cat_claw_report"],
+      reasons: reportCandidates.length ? ["secretary_report_preview_available"] : ["no_v2_plan_ready_for_secretary_report"],
       reportCandidateCount: reportCandidates.length,
       reportCandidates,
       would: {
@@ -1231,7 +1252,7 @@ ON CONFLICT(object_id) DO UPDATE SET
         "preview_only_no_state_mutation",
         "does_not_write_workflow_checkpoint",
         "does_not_write_report_artifact_or_record",
-        "does_not_dispatch_cat_claw_report",
+        "does_not_dispatch_secretary_report",
         "does_not_request_human_gate",
         "workflow.supervisor.report execution requires an existing checkpoint boundary and separate write authorization"
       ],
@@ -1266,9 +1287,10 @@ LIMIT 1;`, { json: true });
         reportId,
         status: "already_recorded",
         readinessDecision: candidate.input.readinessDecision,
-        writeBoundary: "report_artifact_record_and_cat_claw_dispatch_only",
+        writeBoundary: "report_artifact_record_and_secretary_dispatch_only",
         didWriteReportArtifact: false,
         didRecordReport: false,
+        didDispatchSecretary: false,
         didDispatchCatClaw: false,
         didWriteCheckpoint: false,
         didRequestHumanGate: false,
@@ -1298,8 +1320,10 @@ LIMIT 1;`, { json: true });
     const createdAt = nowIso();
     const reportId = candidate.input.reportId;
     const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "workflow_supervisor");
-    const reportAgent = SUPERVISOR_CLOSEOUT_REPORT_AGENT;
-    const reportRuntime = SUPERVISOR_CLOSEOUT_REPORT_RUNTIME;
+    const catClawRole = workflowGovernanceRole(input, "catClaw");
+    const reportAgent = firstText(input.reportAgent, input.report_agent, input.catClawAgent, input.cat_claw_agent, candidate.input.catClawAgent, catClawRole.agentId);
+    const reportRuntime = firstText(input.reportRuntime, input.report_runtime, catClawRole.runtime);
+    const reportTarget = `${reportRuntime}:${reportAgent}`;
     const latestCheckpointId = candidate.checkpointPreview.latestCheckpointId || "";
     const readinessDecision = candidate.input.readinessDecision;
     const dispatchType = reportDispatchTypeForDecision(readinessDecision);
@@ -1308,7 +1332,7 @@ LIMIT 1;`, { json: true });
       reportId,
       workflowId: candidate.workflowId,
       planId: candidate.planId,
-      status: "cat_claw_dispatch_queued",
+      status: WORKFLOW_V2_SECRETARY_DISPATCH_QUEUED,
       createdAt,
       createdBy,
       catBrainAgent: candidate.input.catBrainAgent,
@@ -1318,12 +1342,12 @@ LIMIT 1;`, { json: true });
       dispatchType,
       checkpointId: latestCheckpointId,
       evidenceRefs: candidate.evidenceRefs,
-      summary: firstText(input.summary, input.text, `${readinessDecision} v2 plan ${candidate.planId} requires Cat Claw report.`),
-      writeBoundary: "report_artifact_record_and_cat_claw_dispatch_only",
+      summary: firstText(input.summary, input.text, `${readinessDecision} v2 plan ${candidate.planId} requires secretary report.`),
+      writeBoundary: "report_artifact_record_and_secretary_dispatch_only",
       sideEffects: {
         writesReportArtifact: true,
         writesProtocolObject: true,
-        dispatchesCatClaw: true,
+        dispatchesSecretary: true,
         writesCheckpoint: false,
         requestsHumanGate: false,
         sendsTelegram: false,
@@ -1341,7 +1365,7 @@ VALUES (${sqlValue(reportId)}, ${sqlValue(candidate.workflowId)}, 'workflow_supe
 ON CONFLICT(artifact_id) DO UPDATE SET workflow_id=excluded.workflow_id, kind=excluded.kind, path=excluded.path, summary=excluded.summary, created_by=excluded.created_by, created_at=excluded.created_at;`);
     await sqlite(paths.dbFile, `
 INSERT INTO protocol_objects(object_id, object_type, status, source_system, source_agent, parent_object_id, path, payload_json, hash, created_at, updated_at)
-VALUES (${sqlValue(reportId)}, 'workflow_supervisor_report_record', 'cat_claw_dispatch_queued', 'workflow', ${sqlValue(createdBy)}, ${sqlValue(candidate.planId)}, ${sqlValue(relativePath)}, ${sqlValue(JSON.stringify(reportPayload))}, ${sqlValue(hash)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
+VALUES (${sqlValue(reportId)}, 'workflow_supervisor_report_record', ${sqlValue(WORKFLOW_V2_SECRETARY_DISPATCH_QUEUED)}, 'workflow', ${sqlValue(createdBy)}, ${sqlValue(candidate.planId)}, ${sqlValue(relativePath)}, ${sqlValue(JSON.stringify(reportPayload))}, ${sqlValue(hash)}, ${sqlValue(createdAt)}, ${sqlValue(createdAt)})
 ON CONFLICT(object_id) DO UPDATE SET
   status=excluded.status,
   source_system=excluded.source_system,
@@ -1353,7 +1377,7 @@ ON CONFLICT(object_id) DO UPDATE SET
   updated_at=excluded.updated_at;`);
     await appendWorkflowEvent(paths, {
       eventType: "workflow.supervisor.report.recorded",
-      status: "cat_claw_dispatch_queued",
+      status: WORKFLOW_V2_SECRETARY_DISPATCH_QUEUED,
       workflowId: candidate.workflowId,
       traceId: `${candidate.workflowId}:report:${reportId}`,
       actor: createdBy,
@@ -1377,7 +1401,7 @@ ON CONFLICT(object_id) DO UPDATE SET
       workflowRootDir: paths.root,
       meetingId: firstText(input.meetingId, input.meeting_id, candidate.workflowId),
       workflowId: candidate.workflowId,
-      traceId: `${candidate.workflowId}:cat_claw_report:${textHash(reportId).slice(0, 16)}`,
+      traceId: `${candidate.workflowId}:secretary_report:${textHash(reportId).slice(0, 16)}`,
       idempotencyKey: reportDispatchIdempotencyKey(reportId),
       runtime: reportRuntime,
       agentId: reportAgent,
@@ -1385,7 +1409,7 @@ ON CONFLICT(object_id) DO UPDATE SET
       priority: firstText(input.priority, "high"),
       createdBy,
       prompt: [
-        "你是猫爪 cat_claw，是 workflow 秘书、Human Gate 入口和向闪电猫汇报的收口 agent。",
+        `你是 workflow 秘书/Human Gate 汇报角色绑定 agent ${reportAgent}，当前 runtime 是 ${reportRuntime}。`,
         "请基于 report artifact 与 checkpoint evidence，整理本 v2 plan 的正式异常/待确认报告。",
         "不要自行绕过 workflow 创建 Human Gate；如需要闪电猫确认，只输出候选项、证据引用和建议下一步，交由受治理 Human Gate 流程处理。",
         "",
@@ -1405,7 +1429,7 @@ ON CONFLICT(object_id) DO UPDATE SET
         readinessDecision,
         checkpointId: latestCheckpointId,
         reportArtifactRef: relativePath,
-        reportTarget: "openclaw:cat_claw",
+        reportTarget,
         noDirectHumanGate: true,
         noDirectTelegram: true
       }
@@ -1416,11 +1440,12 @@ ON CONFLICT(object_id) DO UPDATE SET
       workflowId: candidate.workflowId,
       planId: candidate.planId,
       reportId,
-      status: "cat_claw_dispatch_queued",
+      status: WORKFLOW_V2_SECRETARY_DISPATCH_QUEUED,
       readinessDecision,
-      writeBoundary: "report_artifact_record_and_cat_claw_dispatch_only",
+      writeBoundary: "report_artifact_record_and_secretary_dispatch_only",
       didWriteReportArtifact: true,
       didRecordReport: true,
+      didDispatchSecretary: Boolean(dispatch?.dispatchId),
       didDispatchCatClaw: Boolean(dispatch?.dispatchId),
       didWriteCheckpoint: false,
       didRequestHumanGate: false,
@@ -1561,7 +1586,7 @@ ON CONFLICT(object_id) DO UPDATE SET
         writesCheckpoint: true,
         writesCheckpointArtifact: true,
         updatesArtifactIndex: true,
-        dispatchesCatClaw: false,
+        dispatchesSecretary: false,
         requestsHumanGate: false,
         sendsTelegram: false,
         drainsRuntime: false,

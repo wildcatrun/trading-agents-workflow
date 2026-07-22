@@ -21,6 +21,7 @@ import {
   WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS,
   WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN,
   WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
+  WORKFLOW_LEGACY_MEETING_DISCUSSION_ACTIONS,
   WORKFLOW_PERMISSION_KNOWN_ACTIONS,
   WORKFLOW_PERMISSION_READ_ACTIONS,
   WORKFLOW_POLICY_HARD_GATE_ACTIONS,
@@ -62,6 +63,9 @@ import {
   workflowV2CleanupInfoStackItem,
   workflowV2InfoStackExistingItem
 } from "../src/workflow-v2/info-stack-state.js";
+import {
+  workflowGovernanceRoles
+} from "../src/workflow/governance-roles.js";
 import {
   workflowV2CatClawAuditRowById,
   workflowV2HumanGatePackageRow
@@ -3371,7 +3375,7 @@ async function testWorkflowSupervisorExtractedActionContracts() {
     reportRuntime: "openclaw",
     reportAgent: "cat_claw"
   });
-  assert.equal(reportPreview.advance.decision, "cat_claw_summary_required");
+  assert.equal(reportPreview.advance.decision, "secretary_closeout_required");
   assert.equal(reportPreview.wouldCheckpoint, true);
   assert.deepEqual(reportPreview.wouldCatClawReport, {
     runtime: "openclaw",
@@ -3392,7 +3396,7 @@ async function testWorkflowSupervisorExtractedActionContracts() {
     reportAgent: "cat_claw",
     timeoutSeconds: 60
   });
-  assert.equal(reportSupervised.finalAdvance.decision, "cat_claw_summary_required");
+  assert.equal(reportSupervised.finalAdvance.decision, "secretary_closeout_required");
   assert.equal(Boolean(reportSupervised.catClawReport?.dispatchId), true);
   assert.equal(reportSupervised.catClawReportDrain, null);
   assert.equal(reportSupervised.catClawReportDrainDeferred.action, "runtime.bridge.drain");
@@ -5592,7 +5596,7 @@ VALUES ('package-v2-readiness-draft', '${draftHgateFixture.workflowId}', 'plan-v
     workflowId: draftHgateFixture.workflowId,
     planId: "plan-v2-kernel"
   });
-  assert.equal(draftHumanGate.decision, "waiting_cat_claw_audit");
+  assert.equal(draftHumanGate.decision, "waiting_protocol_audit");
 
   const blockedFixture = await setupWorkflowV2KernelPlanFixture("workflow-v2-readiness-blocked");
   sqliteExec(blockedFixture.dbFile, `UPDATE workflow_v2_plans SET workflow_state='blocked' WHERE workflow_id='${blockedFixture.workflowId}';`);
@@ -5612,7 +5616,7 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     workflowId: closeoutFixture.workflowId,
     planId: "plan-v2-kernel"
   });
-  assert.equal(closeout.decision, "cat_claw_summary_required");
+  assert.equal(closeout.decision, "secretary_closeout_required");
   assert.equal(closeout.would.catClawCloseout, true);
 }
 
@@ -5963,7 +5967,7 @@ VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-
   assert.equal(humanGate.decision, "human_gate_pending");
   assert.equal(humanGate.candidates[0].candidateType, "workflow_checkpoint_preview");
   assert.equal(humanGate.candidates[0].followUpAction, "workflow.supervisor.checkpoint.preview");
-  assert.equal(humanGate.candidates[1].candidateType, "cat_claw_report_required");
+  assert.equal(humanGate.candidates[1].candidateType, "secretary_report_required");
   assert.equal(humanGate.candidates[1].followUpAction, "workflow.supervisor.report.preview");
   assert.equal(humanGate.candidates[2].followUpAction, "workflow.v2.human_gate_request.preview");
   assert.equal(humanGate.candidates[2].input.packageId, "package-supervisor-next-hgate");
@@ -6030,7 +6034,7 @@ VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-
   assert.equal(humanGateReportReadyPreview.reportCandidates[0].status, "ready_for_report");
   assert.equal(humanGateReportReadyPreview.reportCandidates[0].executorStatus, "ready");
   assert.equal(humanGateReportReadyPreview.reportCandidates[0].checkpointPreview.latestCheckpointId, humanGateCheckpoint.checkpointId);
-  assert.equal(humanGateReportReadyPreview.reportCandidates[0].reportPreview.wouldDispatchCatClawNow, true);
+  assert.equal(humanGateReportReadyPreview.reportCandidates[0].reportPreview.wouldDispatchSecretaryNow, true);
   assert.equal(humanGateReportReadyPreview.reportCandidates[0].reportPreview.reportTarget, "openclaw:cat_claw");
   assert.notEqual(humanGateReportReadyPreview.reportCandidates[0].input.reportId, "workflow_supervisor_report.tampered");
   const hgateReportCountsBefore = {
@@ -6057,7 +6061,7 @@ VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-
     reportId: "workflow_supervisor_report.tampered"
   });
   assert.equal(humanGateReport.schemaVersion, "workflow_supervisor_report_result.v1");
-  assert.equal(humanGateReport.writeBoundary, "report_artifact_record_and_cat_claw_dispatch_only");
+  assert.equal(humanGateReport.writeBoundary, "report_artifact_record_and_secretary_dispatch_only");
   assert.equal(humanGateReport.readinessDecision, "human_gate_pending");
   assert.equal(humanGateReport.reportId, humanGateReportReadyPreview.reportCandidates[0].input.reportId);
   assert.notEqual(humanGateReport.reportId, "workflow_supervisor_report.tampered");
@@ -6073,7 +6077,7 @@ VALUES ('package-supervisor-next-hgate', '${hgateFixture.workflowId}', 'plan-v2-
   assert.equal(humanGateReport.dispatch.runtime, "openclaw");
   assert.equal(humanGateReport.dispatch.agentId, "cat_claw");
   assert.equal(sqliteCount(hgateFixture.dbFile, "artifact_index", `artifact_id='${humanGateReport.reportId}' AND kind='workflow_supervisor_report'`), 1);
-  assert.equal(sqliteCount(hgateFixture.dbFile, "protocol_objects", `object_id='${humanGateReport.reportId}' AND object_type='workflow_supervisor_report_record' AND status='cat_claw_dispatch_queued'`), 1);
+  assert.equal(sqliteCount(hgateFixture.dbFile, "protocol_objects", `object_id='${humanGateReport.reportId}' AND object_type='workflow_supervisor_report_record' AND status='secretary_dispatch_queued'`), 1);
   assert.equal(sqliteCount(hgateFixture.dbFile, "mixed_meeting_dispatches", `dispatch_id='${humanGateReport.dispatch.dispatchId}' AND dispatch_type='human_gate_report' AND agent_id='cat_claw'`), 1);
   assert.equal(sqliteCount(hgateFixture.dbFile, "protocol_objects", "object_type='human_gate_record'"), hgateReportCountsBefore.humanGateRecords);
   assert.equal(sqliteCount(hgateFixture.dbFile, "telegram_outbox"), hgateReportCountsBefore.outbox);
@@ -6121,7 +6125,7 @@ VALUES ('package-supervisor-next-draft', '${draftFixture.workflowId}', 'plan-v2-
     workflowId: draftFixture.workflowId,
     planId: "plan-v2-kernel"
   });
-  assert.equal(draft.decision, "waiting_cat_claw_audit");
+  assert.equal(draft.decision, "waiting_protocol_audit");
   assert.equal(draft.candidates[0].followUpAction, "workflow.v2.cat_claw_package_audit.preview");
   assert.equal(draft.candidates[0].input.packageId, "package-supervisor-next-draft");
 
@@ -6136,7 +6140,7 @@ VALUES ('package-supervisor-next-draft', '${draftFixture.workflowId}', 'plan-v2-
   assert.equal(blocked.candidates[0].candidateType, "workflow_checkpoint_preview");
   assert.equal(blocked.candidates[0].followUpAction, "workflow.supervisor.checkpoint.preview");
   assert.equal(blocked.candidates[1].candidateType, "operator_blocker_review");
-  assert.equal(blocked.candidates[2].candidateType, "cat_claw_report_required");
+  assert.equal(blocked.candidates[2].candidateType, "secretary_report_required");
   assert.equal(blocked.candidates[2].followUpAction, "workflow.supervisor.report.preview");
   const blockedCheckpointPreview = await runAction(blockedFixture.root, {
     action: "workflow.supervisor.checkpoint.preview",
@@ -6236,13 +6240,13 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
     workflowId: closeoutFixture.workflowId,
     planId: "plan-v2-kernel"
   });
-  assert.equal(closeout.decision, "cat_claw_summary_required");
+  assert.equal(closeout.decision, "secretary_closeout_required");
   assert.equal(closeout.candidates[0].candidateType, "workflow_checkpoint_preview");
   assert.equal(closeout.candidates[0].followUpAction, "workflow.supervisor.checkpoint.preview");
   assert.equal(closeout.candidates[0].status, "preview_available");
   assert.equal(closeout.candidates[0].executorStatus, "v2_checkpoint_writer_available");
   assert.equal(closeout.candidates[0].writeAction, "workflow.supervisor.checkpoint");
-  assert.equal(closeout.candidates[1].candidateType, "cat_claw_closeout_required");
+  assert.equal(closeout.candidates[1].candidateType, "secretary_closeout_required");
   assert.equal(closeout.candidates[1].followUpAction, "workflow.supervisor.closeout.preview");
   assert.equal(closeout.candidates[1].status, "preview_available");
   assert.equal(closeout.candidates[1].executorStatus, "checkpoint_gated_executor_available");
@@ -6420,14 +6424,14 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(closeoutPreview.previewOnly, true);
   assert.equal(closeoutPreview.status, "ready");
   assert.equal(closeoutPreview.closeoutCandidateCount, 1);
-  assert.equal(closeoutPreview.closeoutCandidates[0].candidateType, "cat_claw_closeout");
+  assert.equal(closeoutPreview.closeoutCandidates[0].candidateType, "secretary_closeout");
   assert.equal(closeoutPreview.closeoutCandidates[0].previewOnly, true);
   assert.equal(closeoutPreview.closeoutCandidates[0].mutatesNow, false);
   assert.equal(closeoutPreview.closeoutCandidates[0].followUpAction, "workflow.supervisor.closeout");
   assert.equal(closeoutPreview.closeoutCandidates[0].status, "checkpoint_required");
   assert.equal(closeoutPreview.closeoutCandidates[0].executorStatus, "precondition_failed");
   assert.equal(closeoutPreview.closeoutCandidates[0].checkpointPreview.wouldWriteCheckpointNow, false);
-  assert.equal(closeoutPreview.closeoutCandidates[0].closeoutPreview.wouldDispatchCatClawNow, false);
+  assert.equal(closeoutPreview.closeoutCandidates[0].closeoutPreview.wouldDispatchSecretaryNow, false);
   assert.equal(closeoutPreview.would.mutate, false);
   assert.equal(closeoutPreview.would.dispatch, false);
   assert.equal(closeoutPreview.would.writeCheckpoint, false);
@@ -6659,9 +6663,9 @@ UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHER
   assert.equal(checkpointExecution.didUpdateV2NodeState, false);
   assert.notEqual(checkpointExecution.checkpointId, "workflow_supervisor_checkpoint.tampered");
   assert.equal(checkpointExecution.resumePayload.planId, "plan-v2-kernel");
-  assert.equal(checkpointExecution.resumePayload.readinessDecision, "cat_claw_summary_required");
+  assert.equal(checkpointExecution.resumePayload.readinessDecision, "secretary_closeout_required");
   assert.equal(checkpointExecution.resumePayload.nextActions.includes("workflow.supervisor.closeout"), true);
-  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints", `checkpoint_id='${checkpointExecution.checkpointId}' AND workflow_id='${closeoutFixture.workflowId}' AND decision='cat_claw_summary_required'`), 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_checkpoints", `checkpoint_id='${checkpointExecution.checkpointId}' AND workflow_id='${closeoutFixture.workflowId}' AND decision='secretary_closeout_required'`), 1);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index", `artifact_id='${checkpointExecution.checkpointId}' AND kind='workflow_checkpoint'`), 1);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "workflow_events", `event_type='workflow.supervisor.checkpoint.recorded' AND workflow_id='${closeoutFixture.workflowId}'`), checkpointCountsBefore.supervisorCheckpointEvents + 1);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches"), checkpointCountsBefore.dispatches);
@@ -6700,7 +6704,7 @@ VALUES ('workflow_supervisor_checkpoint.wrongplan', '${closeoutFixture.workflowI
   assert.equal(closeoutReadyPreview.closeoutCandidates[0].status, "ready_for_closeout");
   assert.equal(closeoutReadyPreview.closeoutCandidates[0].executorStatus, "ready");
   assert.equal(closeoutReadyPreview.closeoutCandidates[0].checkpointPreview.latestCheckpointId, checkpointExecution.checkpointId);
-  assert.equal(closeoutReadyPreview.closeoutCandidates[0].closeoutPreview.wouldDispatchCatClawNow, true);
+  assert.equal(closeoutReadyPreview.closeoutCandidates[0].closeoutPreview.wouldDispatchSecretaryNow, true);
   assert.equal(closeoutReadyPreview.closeoutCandidates[0].closeoutPreview.reportTarget, "openclaw:cat_claw");
   assert.notEqual(closeoutReadyPreview.closeoutCandidates[0].input.closeoutId, "workflow_v2_closeout.tampered");
   await runAction(closeoutFixture.root, {
@@ -6736,7 +6740,7 @@ VALUES ('workflow_supervisor_checkpoint.wrongplan', '${closeoutFixture.workflowI
     createdBy: "local_codex"
   });
   assert.equal(closeoutExecution.schemaVersion, "workflow_supervisor_closeout_result.v1");
-  assert.equal(closeoutExecution.writeBoundary, "closeout_artifact_record_and_cat_claw_dispatch_only");
+  assert.equal(closeoutExecution.writeBoundary, "closeout_artifact_record_and_secretary_dispatch_only");
   assert.equal(closeoutExecution.closeoutId, closeoutReadyPreview.closeoutCandidates[0].input.closeoutId);
   assert.notEqual(closeoutExecution.closeoutId, "workflow_v2_closeout.tampered");
   assert.equal(closeoutExecution.didWriteCloseoutArtifact, true);
@@ -6751,7 +6755,7 @@ VALUES ('workflow_supervisor_checkpoint.wrongplan', '${closeoutFixture.workflowI
   assert.equal(closeoutExecution.dispatch.runtime, "openclaw");
   assert.equal(closeoutExecution.dispatch.messageFlowId || "", "");
   assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index", `artifact_id='${closeoutExecution.closeoutId}' AND kind='workflow_v2_closeout'`), 1);
-  assert.equal(sqliteCount(closeoutFixture.dbFile, "protocol_objects", `object_id='${closeoutExecution.closeoutId}' AND object_type='workflow_v2_closeout_record' AND status='cat_claw_dispatch_queued'`), 1);
+  assert.equal(sqliteCount(closeoutFixture.dbFile, "protocol_objects", `object_id='${closeoutExecution.closeoutId}' AND object_type='workflow_v2_closeout_record' AND status='secretary_dispatch_queued'`), 1);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "mixed_meeting_dispatches", `dispatch_id='${closeoutExecution.dispatch.dispatchId}' AND dispatch_type='workflow_secretary_closeout_report' AND agent_id='cat_claw'`), 1);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "telegram_outbox"), executableCountsBefore.outbox);
   assert.equal(sqliteCount(closeoutFixture.dbFile, "artifact_index"), executableCountsBefore.artifactIndex + 1);
@@ -7451,6 +7455,135 @@ function workflowV2KernelHumanGateOptions() {
       rollback: "补证仍不完整时，保持 workflow 在 review 状态并记录 blocker。"
     }
   ];
+}
+
+async function testWorkflowGovernanceRoleBindings() {
+  const roleBindings = {
+    catBrain: { agentId: "cat_heart", runtime: "hermers" },
+    catClaw: { agentId: "local_codex", runtime: "codex", deliveryAccount: "local_codex" }
+  };
+  const roles = workflowGovernanceRoles({ governanceRoles: roleBindings });
+  assert.equal(roles.catBrain.agentId, "cat_heart");
+  assert.equal(roles.catBrain.runtime, "hermers");
+  assert.equal(roles.catClaw.agentId, "local_codex");
+  assert.equal(roles.catClaw.runtime, "codex");
+  assert.equal(roles.catClaw.deliveryAccount, "local_codex");
+
+  const root = await tempRoot("workflow-governance-role-bindings");
+  const hgatePreview = await runAction(root, {
+    action: "workflow.v2.human_gate_package.preview",
+    workflowId: "wf-role-bindings",
+    planId: "plan-role-bindings",
+    packageId: "hgate-role-bindings",
+    governanceRoles: roleBindings,
+    options: workflowV2KernelHumanGateOptions(),
+    evidenceRefs: ["artifact://role-binding-evidence"]
+  });
+  assert.equal(hgatePreview.humanGatePackage.catBrainAgent, "cat_heart");
+  assert.equal(hgatePreview.humanGatePackage.catClawAgent, "local_codex");
+
+  const fixture = await setupWorkflowV2KernelPlanFixture("workflow-governance-role-bindings-closeout");
+  const neutralNodes = sqliteJson(fixture.dbFile, "SELECT node_type AS nodeType FROM workflow_v2_plan_nodes WHERE plan_id='plan-v2-kernel' ORDER BY node_id;").map((row) => row.nodeType);
+  assert.equal(neutralNodes.includes("governance_synthesis"), true);
+  assert.equal(neutralNodes.includes("protocol_audit"), true);
+  assert.equal(neutralNodes.includes("cat_brain_synthesis"), false);
+  assert.equal(neutralNodes.includes("cat_claw_audit"), false);
+  sqliteExec(fixture.dbFile, `
+UPDATE workflow_v2_plan_nodes SET status='completed' WHERE workflow_id='${fixture.workflowId}';
+UPDATE workflow_v2_plans SET status='completed', workflow_state='completed' WHERE workflow_id='${fixture.workflowId}';`);
+  const closeoutPreview = await runAction(fixture.root, {
+    action: "workflow.supervisor.closeout.preview",
+    workflowId: fixture.workflowId,
+    planId: "plan-v2-kernel",
+    governanceRoles: roleBindings
+  });
+  const closeoutCandidate = closeoutPreview.closeoutCandidates[0];
+  assert.equal(closeoutCandidate.input.catBrainAgent, "cat_heart");
+  assert.equal(closeoutCandidate.input.catClawAgent, "local_codex");
+  assert.equal(closeoutCandidate.candidateType, "secretary_closeout");
+  assert.equal(closeoutCandidate.input.readinessDecision, "secretary_closeout_required");
+  assert.equal(closeoutCandidate.closeoutPreview.reportTarget, "codex:local_codex");
+  assert.equal(closeoutCandidate.closeoutPreview.requiredDecision, "secretary_closeout_required");
+
+  const governanceFixture = await setupWorkflowV2GovernanceFixture("workflow-governance-role-bindings-audit");
+  const roleBoundCatBrainAudit = await runAction(governanceFixture.root, {
+    action: "workflow.v2.cat_brain_audit.record",
+    workflowId: governanceFixture.workflowId,
+    planId: "plan-v2-kernel",
+    taskGroupPackageId: governanceFixture.taskGroupPackage.taskGroupPackage.packageId,
+    callerAgent: "cat_heart",
+    governanceRoles: roleBindings,
+    decision: "approved",
+    summary: "Role-bound governance audit.",
+    evidenceRefs: ["artifact://role-bound-governance"]
+  });
+  assert.equal(roleBoundCatBrainAudit.valid, true);
+  assert.equal(roleBoundCatBrainAudit.catBrainAudit.catBrainAgent, "cat_heart");
+  assert.equal(roleBoundCatBrainAudit.catBrainAudit.callerAgent, "cat_heart");
+  const roleBoundCatClawAudit = await runAction(governanceFixture.root, {
+    action: "workflow.v2.cat_claw_audit.record",
+    workflowId: governanceFixture.workflowId,
+    planId: "plan-v2-kernel",
+    catBrainAuditId: roleBoundCatBrainAudit.catBrainAudit.auditId,
+    callerAgent: "local_codex",
+    governanceRoles: roleBindings,
+    decision: "protocol_ready",
+    summary: "Role-bound protocol audit.",
+    evidenceRefs: ["artifact://role-bound-governance"]
+  });
+  assert.equal(roleBoundCatClawAudit.valid, true);
+  assert.equal(roleBoundCatClawAudit.catClawAudit.catClawAgent, "local_codex");
+  assert.equal(roleBoundCatClawAudit.catClawAudit.callerAgent, "local_codex");
+  const roleBoundHumanGatePackage = await runAction(governanceFixture.root, {
+    action: "workflow.v2.human_gate_package.record",
+    workflowId: governanceFixture.workflowId,
+    sourceCatClawAuditId: roleBoundCatClawAudit.catClawAudit.auditId,
+    createdBy: "local_codex",
+    governanceRoles: roleBindings,
+    options: workflowV2KernelHumanGateOptions()
+  });
+  assert.equal(roleBoundHumanGatePackage.humanGatePackage.status, "protocol_audited");
+  const roleBoundHumanGateRequestPreview = await runAction(governanceFixture.root, {
+    action: "workflow.v2.human_gate_request.preview",
+    packageId: roleBoundHumanGatePackage.humanGatePackage.packageId,
+    callerAgent: "local_codex",
+    governanceRoles: roleBindings
+  });
+  assert.equal(roleBoundHumanGateRequestPreview.writeReady, true);
+  assert.equal(roleBoundHumanGateRequestPreview.requestInput.from, "local_codex");
+  assert.equal(roleBoundHumanGateRequestPreview.requestInput.sourceAgent, "local_codex");
+  assert.equal(roleBoundHumanGateRequestPreview.requestInput.account, "local_codex");
+
+  const migrationRoot = await tempRoot("workflow-neutral-package-status-migration");
+  const migrationDbFile = path.join(migrationRoot, "tracking.db");
+  sqliteExec(migrationDbFile, `
+CREATE TABLE workflow_v2_human_gate_packages (
+  package_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  source_review_id TEXT NOT NULL DEFAULT '',
+  source_cat_claw_audit_id TEXT NOT NULL DEFAULT '',
+  cat_brain_agent TEXT NOT NULL DEFAULT 'main',
+  cat_claw_agent TEXT NOT NULL DEFAULT 'cat_claw',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'cat_claw_audited')),
+  options_json TEXT NOT NULL DEFAULT '[]',
+  required_controls_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, status, options_json, required_controls_json, evidence_refs_json, created_by, created_at, updated_at)
+VALUES ('legacy-package-status-check', 'wf-legacy-status-check', 'plan-legacy-status-check', 'cat_claw_audited', '[]', '[]', '[]', 'cat_claw', '2026-07-22T00:00:00.000Z', '2026-07-22T00:00:00.000Z');`);
+  await runAction(migrationRoot, { action: "workflow.status" });
+  const migratedTableSql = sqliteJson(migrationDbFile, "SELECT sql FROM sqlite_master WHERE type='table' AND name='workflow_v2_human_gate_packages' LIMIT 1;")[0].sql;
+  assert.equal(migratedTableSql.includes("'protocol_audited'"), true);
+  assert.equal(sqliteCount(migrationDbFile, "workflow_v2_human_gate_packages", "package_id='legacy-package-status-check' AND status='cat_claw_audited'"), 1);
+  sqliteExec(migrationDbFile, `
+INSERT INTO workflow_v2_human_gate_packages(package_id, workflow_id, plan_id, status, options_json, required_controls_json, evidence_refs_json, created_by, created_at, updated_at)
+VALUES ('neutral-package-status-check', 'wf-legacy-status-check', 'plan-legacy-status-check', 'protocol_audited', '[]', '[]', '[]', 'local_codex', '2026-07-22T00:01:00.000Z', '2026-07-22T00:01:00.000Z');`);
+  assert.equal(sqliteCount(migrationDbFile, "workflow_v2_human_gate_packages", "package_id='neutral-package-status-check' AND status='protocol_audited'"), 1);
 }
 
 async function testWorkflowV2PlanStateHelpers() {
@@ -9865,7 +9998,7 @@ async function testWorkflowV2GovernanceHumanGateBridgeFocused() {
     options: workflowV2KernelHumanGateOptions()
   });
   assert.equal(humanGatePackage.valid, true);
-  assert.equal(humanGatePackage.humanGatePackage.status, "cat_claw_audited");
+  assert.equal(humanGatePackage.humanGatePackage.status, "protocol_audited");
   assert.equal(humanGatePackage.humanGatePackage.options.length, 2);
   const packageAuditCountsBefore = {
     packages: sqliteCount(dbFile, "workflow_v2_human_gate_packages"),
@@ -10862,7 +10995,7 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
   assert.equal(taskGroupPackage.taskGroupPackage.status, "ready");
   assert.deepEqual(taskGroupPackage.taskGroupPackage.taskGroupAgents, ["cat_heart", "cat_body"]);
   planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
-  assert.equal(planState.workflowState, "waiting_cat_brain_check");
+  assert.equal(planState.workflowState, "waiting_governance_review");
 
   await assertRejectsMessage(
     () => runAction(root, {
@@ -10889,7 +11022,7 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
   assert.equal(catBrainAudit.valid, true);
   assert.equal(catBrainAudit.catBrainAudit.decision, "approved");
   planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
-  assert.equal(planState.workflowState, "waiting_cat_claw_audit");
+  assert.equal(planState.workflowState, "waiting_protocol_audit");
 
   await assertRejectsMessage(
     () => runAction(root, {
@@ -11054,7 +11187,7 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
     artifactRefs: ["artifact://workflow-v2/owner-direct.json"],
     receiptRefs: ["receipt://workflow-v2/owner-direct"]
   });
-  assert.equal(directOwnerReview.ownerReview.nextWorkflowState, "waiting_cat_brain_check");
+  assert.equal(directOwnerReview.ownerReview.nextWorkflowState, "waiting_governance_review");
   const directCatBrainAudit = await runAction(root, {
     action: "workflow.v2.cat_brain_audit.record",
     workflowId,
@@ -11068,7 +11201,7 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`)[0];
   assert.equal(directCatBrainAudit.taskGroupPackage, null);
   assert.equal(directCatBrainAudit.ownerReview.reviewId, directOwnerReview.ownerReview.reviewId);
   planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-owner-direct' LIMIT 1;")[0];
-  assert.equal(planState.workflowState, "waiting_cat_claw_audit");
+  assert.equal(planState.workflowState, "waiting_protocol_audit");
 
   await runAction(root, {
     action: "workflow.v2.info_stack.record",
@@ -11132,12 +11265,12 @@ WHERE worker_run_id='${worker.workerRun.workerRunId}';`);
   });
   assert.equal(humanGatePackage.valid, true);
   assert.equal(humanGatePackage.humanGatePackage.sourceCatClawAuditId, catClawAudit.catClawAudit.auditId);
-  assert.equal(humanGatePackage.humanGatePackage.status, "cat_claw_audited");
+  assert.equal(humanGatePackage.humanGatePackage.status, "protocol_audited");
   assert.equal(humanGatePackage.humanGatePackage.options.length >= 2, true);
   assert.equal(humanGatePackage.humanGatePackage.options.length <= 5, true);
   assert.equal(humanGatePackage.humanGatePackage.options.every((option) => option.optionId && option.title && option.body && option.summary && option.prompt && option.rollback), true);
   assert.equal(sqliteCount(dbFile, "workflow_v2_human_gate_packages"), 1);
-  assert.equal(sqliteCount(dbFile, "workflow_v2_human_gate_packages", `plan_id='plan-v2-kernel' AND source_cat_claw_audit_id='${catClawAudit.catClawAudit.auditId}' AND status='cat_claw_audited'`), 1);
+  assert.equal(sqliteCount(dbFile, "workflow_v2_human_gate_packages", `plan_id='plan-v2-kernel' AND source_cat_claw_audit_id='${catClawAudit.catClawAudit.auditId}' AND status='protocol_audited'`), 1);
   planState = sqliteJson(dbFile, "SELECT workflow_state AS workflowState FROM workflow_v2_plans WHERE plan_id='plan-v2-kernel' LIMIT 1;")[0];
   assert.equal(planState.workflowState, "human_gate_request_due");
 
@@ -14191,6 +14324,11 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(workflowActionMigrationInfo("workflow.supervise").decisionClass, "compat_shell_only");
     assert.equal(workflowActionMigrationInfo("workflow.supervise").migrationStatus, "frozen_compatibility");
     assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.supervise"].mutating, true);
+    assert.equal(workflowActionMigrationInfo("meeting.create").decisionClass, "compat_shell_only");
+    assert.equal(workflowActionMigrationInfo("meeting.create").migrationStatus, "frozen_compatibility");
+    assert.equal(workflowActionMigrationInfo("meeting.create").replacement, "workflow.v2.plan.create + workflow.v2.task_group_package.record");
+    assert.equal(workflowActionMigrationInfo("meeting.action_item").replacement, "workflow.v2.plan.create + workflow.v2.plan_nodes");
+    assert.equal(workflowActionMigrationInfo("cat_claw.minutes").replacement, "workflow.v2.cat_claw_audit.record");
     let aliasBlocked = null;
     for (const frozenAction of ["workflow.advance", "workflow.supervise", "workflow.supervisor"]) {
       const blocked = await runAction(root, {
@@ -14205,6 +14343,26 @@ async function testWorkflowConvergenceDefaultGates() {
     }
     assert.equal(aliasBlocked.action, "workflow.supervise");
     assert.equal(aliasBlocked.requestedAction, "workflow.supervisor");
+    for (const frozenMeetingAction of ["meeting.create", "meeting.append", "meeting.action_item", "meeting.minutes", "cat_claw.minutes"]) {
+      const blocked = await runAction(root, {
+        action: frozenMeetingAction,
+        meetingId: "wf-convergence-v1-meeting-retired",
+        text: "legacy meeting discussion should be blocked by default",
+        summary: "legacy meeting discussion should be blocked by default"
+      });
+      assert.equal(blocked.status, "blocked");
+      assert.equal(blocked.allowed, false);
+      assert.equal(blocked.reason, "legacy_meeting_discussion_disabled");
+      assert.equal(blocked.enableEnv, "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1");
+    }
+    const indexSource = await fs.readFile(path.resolve("index.js"), "utf8");
+    const toolEnumBody = indexSource.match(/enum:\s*\[([\s\S]*?)\]\s*\n\s*}/)?.[1] || "";
+    for (const hiddenMeetingAction of WORKFLOW_LEGACY_MEETING_DISCUSSION_ACTIONS) {
+      assert.equal(toolEnumBody.includes(JSON.stringify(hiddenMeetingAction)), false, `${hiddenMeetingAction} should be hidden from the default full-tool action enum`);
+    }
+    for (const retainedMeetingAction of ["meeting.validate", "meeting.runtime_participant", "meeting.dispatch", "meeting.ingest", "meeting.resume", "meeting.disperse", "meeting.show", "meeting.list"]) {
+      assert.equal(toolEnumBody.includes(JSON.stringify(retainedMeetingAction)), true, `${retainedMeetingAction} should remain visible because it is read/archive or shared substrate`);
+    }
     assert.equal(workflowActionMigrationInfo("workflow.pause").decisionClass, "must_migrate");
     assert.equal(workflowActionMigrationInfo("workflow.swarm.plan"), null);
     assert.equal(workflowActionMigrationInfo("route_shell.ingest"), null);
@@ -14230,6 +14388,7 @@ async function testWorkflowConvergenceDefaultGates() {
       workflowId: "wf-convergence-gate"
     });
     assert.equal(legacyRead.count, 0);
+    process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS = "1";
     await runAction(root, {
       action: "meeting.create",
       meetingId: "meeting-convergence-action-item",
@@ -14259,6 +14418,7 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(updatedMirroredMeetingItem.workflow_tasks.length, 1);
     assert.equal(updatedMirroredMeetingItem.workflow_tasks[0].operation, "update");
     assert.equal(sqliteCount(path.join(root, "tracking.db"), "workflow_tasks", "task_id='task-convergence-meeting-action-item'"), 1);
+    delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS;
     for (const retiredAction of ["route_shell.ingest", "route-shell.ingest", "route_shell.route"]) {
       await assertRejectsMessage(
         () => runAction(root, {
@@ -14441,6 +14601,13 @@ ORDER BY created_at;`);
     });
     assert.equal(strictLegacySupervisor.status, "blocked");
     assert.equal(strictLegacySupervisor.reason, "legacy_action_disabled");
+    const strictLegacyMeeting = await runAction(root, {
+      action: "meeting.create",
+      meetingId: "wf-convergence-strict-bool-meeting",
+      title: "non-explicit legacy env should not reopen v1 meeting"
+    });
+    assert.equal(strictLegacyMeeting.status, "blocked");
+    assert.equal(strictLegacyMeeting.reason, "legacy_meeting_discussion_disabled");
     const strictGeneric = await runAction(root, {
       action: "workflow.v2.worker_spawn.create",
       workflowId: "wf-convergence-strict-bool",
@@ -14468,6 +14635,13 @@ ORDER BY created_at;`);
     );
 
     process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS = "1";
+    const explicitLegacyMeeting = await runAction(root, {
+      action: "meeting.create",
+      meetingId: "wf-convergence-explicit-legacy-meeting",
+      title: "explicit legacy meeting compatibility",
+      objective: "explicit legacy env keeps archived compatibility available"
+    });
+    assert.equal(explicitLegacyMeeting.meeting_id, "wf-convergence-explicit-legacy-meeting");
     await assertRejectsMessage(
       () => runAction(root, {
         action: "workflow.advance",
@@ -23398,7 +23572,7 @@ VALUES ('dispatch-token-leakabc', '${workflowId}', '${workflowId}-api-key-leakab
   assert.equal(legacyTaskEvidenceGap?.missingEvidence.includes("receipt_or_artifact"), true);
   const v2PlanEvidenceGap = evidenceGapCards.find((card) => card.originSource === "workflow_v2_plans" && card.originSourceId === "plan-console-v2");
   assert.equal(v2PlanEvidenceGap?.sourceClass, "v2");
-  assert.equal(v2PlanEvidenceGap?.missingEvidence.includes("cat_claw_closeout"), true);
+  assert.equal(v2PlanEvidenceGap?.missingEvidence.includes("secretary_closeout"), true);
   assert.equal(messageFlowEvidenceGap?.previewActions.includes("workflow.supervisor.next_actions.preview"), true);
   assert.equal(messageFlowEvidenceGap?.previewActions.includes("workflow.supervise.preview"), false);
   const evidenceGapNextActions = kanbanPreviewActionModel(messageFlowEvidenceGap, "workflow.supervisor.next_actions.preview");
@@ -25666,6 +25840,7 @@ try {
     ["workflow v2 Human Gate state helpers", testWorkflowV2HumanGateStateHelpers],
     ["workflow v2 review state helpers", testWorkflowV2ReviewStateHelpers],
     ["workflow v2 info stack state helpers", testWorkflowV2InfoStackStateHelpers],
+    ["workflow governance role bindings", testWorkflowGovernanceRoleBindings],
     ["workflow v2 plan advisory and canonical artifact", testWorkflowV2PlanAdvisoryAndCanonicalArtifact],
     ["workflow v2 fixed template plan gate", testWorkflowV2FixedTemplatePlanGate],
     ["workflow template self-evolution", testWorkflowTemplateSelfEvolution],

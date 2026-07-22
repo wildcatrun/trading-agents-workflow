@@ -20,6 +20,13 @@ import {
 import {
   boolOption
 } from "../workflow/json.js";
+import {
+  workflowGovernanceRole
+} from "../workflow/governance-roles.js";
+import {
+  WORKFLOW_V2_GOVERNANCE_SYNTHESIS_NODE,
+  WORKFLOW_V2_PROTOCOL_AUDIT_NODE
+} from "./neutral-names.js";
 
 function firstText(...values) {
   for (const value of values) {
@@ -642,6 +649,12 @@ export function workflowV2DefaultPlanNodes(plan = {}, input = {}) {
   const workflowId = plan.workflowId;
   const planId = plan.planId;
   const taskOwnerAgent = plan.taskOwnerAgent || "cat_heart";
+  const catBrainRole = workflowGovernanceRole(input, "catBrain");
+  const catClawRole = workflowGovernanceRole(input, "catClaw");
+  const catBrainAgent = firstText(plan.plannerAgent, catBrainRole.agentId);
+  const catClawAgent = firstText(plan.humanGatePolicy?.ownerAgent, catClawRole.agentId);
+  const catBrainRuntime = firstText(catBrainRole.runtime, "openclaw");
+  const catClawRuntime = firstText(catClawRole.runtime, "openclaw");
   const addNode = (nodeType, ownerAgent, extra = {}) => {
     const nodeId = String(extra.nodeId || `${planId}.${nodeType}.${nodes.length + 1}`).replace(/[^a-zA-Z0-9._:-]+/g, "_");
     nodes.push({
@@ -681,17 +694,21 @@ export function workflowV2DefaultPlanNodes(plan = {}, input = {}) {
       }
     });
   }
-  addNode("cat_brain_synthesis", "main", { dependsOn: nodes.filter((node) => node.nodeType === "manager_review").map((node) => node.nodeId), runtimeBackend: "hermers" });
-  addNode("cat_claw_audit", "cat_claw", { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: "openclaw_review_only" });
-  addNode("human_gate", "cat_claw", { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: "openclaw_review_only" });
+  addNode(WORKFLOW_V2_GOVERNANCE_SYNTHESIS_NODE, catBrainAgent, { dependsOn: nodes.filter((node) => node.nodeType === "manager_review").map((node) => node.nodeId), runtimeBackend: catBrainRuntime });
+  addNode(WORKFLOW_V2_PROTOCOL_AUDIT_NODE, catClawAgent, { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: catClawRuntime });
+  addNode("human_gate", catClawAgent, { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: catClawRuntime });
   addNode("closeout", taskOwnerAgent, { dependsOn: [nodes[nodes.length - 1]?.nodeId].filter(Boolean), runtimeBackend: "hermers" });
   return nodes;
 }
 
 export function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
+  const catBrainRole = workflowGovernanceRole(input, "catBrain");
+  const catClawRole = workflowGovernanceRole(input, "catClaw");
+  const catBrainAgent = firstText(plan.plannerAgent, catBrainRole.agentId);
+  const catClawAgent = firstText(plan.humanGatePolicy?.ownerAgent, catClawRole.agentId);
   const createdAt = firstText(input.createdAt, input.created_at, nowIso());
   const updatedAt = firstText(input.updatedAt, input.updated_at, createdAt);
-  const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, plan.plannerAgent, "main");
+  const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, catBrainAgent);
   const planRevision = workflowV2NonNegativeInt(plan.planRevision ?? input.planRevision ?? input.plan_revision, 1) || 1;
   const workflowId = plan.workflowId || firstText(input.workflowId, input.workflow_id);
   const planId = plan.planId || firstText(input.planId, input.plan_id) || `${workflowId}.plan`;
@@ -729,8 +746,8 @@ export function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
     },
     participants: participantAgents.map((agentId) => ({
       agentId,
-      role: agentId === plan.taskOwnerAgent ? "task_owner" : agentId === plan.plannerAgent ? "governor" : "manager",
-      runtime: agentId === "main" || agentId === "cat_claw" ? "openclaw" : "hermers",
+      role: agentId === plan.taskOwnerAgent ? "task_owner" : agentId === catBrainAgent ? "governor" : "manager",
+      runtime: agentId === catBrainAgent ? catBrainRole.runtime : agentId === catClawAgent ? catClawRole.runtime : "hermers",
       source: "runtime_agents"
     })),
     phaseGraph: nodes.map((node, index) => ({
@@ -756,10 +773,10 @@ export function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
       acceptanceCriteria: workflowV2JsonArray(node.payload?.acceptanceCriteria ?? node.payload?.acceptance_criteria, plan.acceptanceCriteria || []),
       receiptRequired: true,
       humanGateRequired: node.nodeType === "human_gate",
-      verifier: node.nodeType === "cat_claw_audit"
-        ? { agentId: "cat_claw", mode: "protocol_audit" }
-        : node.nodeType === "cat_brain_synthesis"
-          ? { agentId: "main", mode: "governance_audit" }
+      verifier: node.nodeType === WORKFLOW_V2_PROTOCOL_AUDIT_NODE || node.nodeType === "cat_claw_audit"
+        ? { agentId: catClawAgent, mode: "protocol_audit" }
+        : node.nodeType === WORKFLOW_V2_GOVERNANCE_SYNTHESIS_NODE || node.nodeType === "cat_brain_synthesis"
+          ? { agentId: catBrainAgent, mode: "governance_audit" }
           : { agentId: plan.taskOwnerAgent, mode: "owner_or_manager_review" },
       payload: workflowV2JsonObject(node.payload, {})
     })),
@@ -792,7 +809,7 @@ export function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
     },
     verification: {
       mode: "owner_manager_cat_brain_cat_claw",
-      verifierAgent: plan.plannerAgent || "main",
+      verifierAgent: catBrainAgent,
       ownerReviewRequired: true,
       managerReviewRequiredForManagerWorkerPaths: true,
       catBrainAuditBeforeHumanGate: true,
@@ -802,8 +819,8 @@ export function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
     permissionPolicy: {
       defaultOutcome: "deny_without_registered_runtime_agent",
       ownerAgent: plan.taskOwnerAgent,
-      catBrainAgent: plan.plannerAgent || "main",
-      catClawAgent: "cat_claw"
+      catBrainAgent,
+      catClawAgent
     },
     evidencePolicy: {
       artifactRefs: [],
@@ -820,8 +837,8 @@ export function workflowV2PlanSpecArtifact(plan = {}, nodes = [], input = {}) {
     failureRoutes: [
       { routeId: "worker_review_failed", match: { state: "waiting_review" }, action: "return_to_manager_or_respawn_worker", ownerAgent: plan.taskOwnerAgent },
       { routeId: "manager_artifact_rejected", match: { state: "waiting_manager" }, action: "return_to_manager_revision", ownerAgent: plan.taskOwnerAgent },
-      { routeId: "human_gate_request_due", match: { state: "human_gate_request_due" }, action: "cat_claw_submit_human_gate_request", ownerAgent: "cat_claw" },
-      { routeId: "human_gate_waiting", match: { state: "waiting_human" }, action: "await_flashcat_human_gate_response", ownerAgent: "cat_claw" }
+      { routeId: "human_gate_request_due", match: { state: "human_gate_request_due" }, action: "cat_claw_submit_human_gate_request", ownerAgent: catClawAgent },
+      { routeId: "human_gate_waiting", match: { state: "waiting_human" }, action: "await_flashcat_human_gate_response", ownerAgent: catClawAgent }
     ],
     artifacts: {
       canonicalPlan: {

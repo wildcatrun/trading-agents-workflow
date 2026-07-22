@@ -246,7 +246,7 @@ LIMIT 20;`, { json: true });
       workflowId ? latestCheckpoint(paths.dbFile, workflowId) : null,
       firstRows(paths.dbFile, "workflow_v2_worker_runs", `${scope ? `${scope} AND ` : ""}status IN (${statusList(ACTIVE_WORKER_STATUSES)})`, "updated_at"),
       firstRows(paths.dbFile, "workflow_v2_worker_adapter_jobs", `${scope ? `${scope} AND ` : ""}status IN (${statusList(ACTIVE_ADAPTER_JOB_STATUSES)})`, "updated_at"),
-      firstRows(paths.dbFile, "workflow_v2_human_gate_packages", `${scope ? `${scope} AND ` : ""}status IN ('draft','cat_claw_audited')`, "updated_at")
+      firstRows(paths.dbFile, "workflow_v2_human_gate_packages", `${scope ? `${scope} AND ` : ""}status IN ('draft','protocol_audited','cat_claw_audited')`, "updated_at")
     ]);
     const pendingHumanGates = workflowId ? await pendingHumanGateCount(paths, workflowId) : 0;
     const facts = {
