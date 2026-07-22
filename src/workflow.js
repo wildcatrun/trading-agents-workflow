@@ -45,6 +45,7 @@ import { createWorkflowV2PlanActionHandlers } from "./workflow-v2/plan-actions.j
 import { createWorkflowV2ReadinessActionHandlers } from "./workflow-v2/readiness-actions.js";
 import { createWorkflowV2InterventionReadinessActionHandlers } from "./workflow-v2/intervention-readiness-actions.js";
 import { createWorkflowV2InterventionActionHandlers } from "./workflow-v2/intervention-actions.js";
+import { createWorkflowV2EvaluationActionHandlers } from "./workflow-v2/evaluation-actions.js";
 import { createWorkflowSupervisorNextActionsHandlers } from "./workflow-v2/supervisor-next-actions.js";
 import { createWorkflowTemplateActionHandlers } from "./workflow-v2/template-actions.js";
 import { createWorkflowV2ValidateActionHandlers } from "./workflow-v2/validate-actions.js";
@@ -386,6 +387,10 @@ const HUMAN_GATE_ZH_TEXT = new Map([
 
 const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
   "workflow.task.draft",
+  "dispatch.package.callsites.preview",
+  "dispatch.package.parity.preview",
+  "dispatch.package.schema.preview",
+  "dispatch.package.topology.preview",
   "dispatch.package.preview",
   "workflow.v2.plan.preview",
   "workflow.supervisor.readiness.preview",
@@ -421,6 +426,9 @@ const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
   "workflow.v2.adapter_runner.drain_readiness.preview",
   "workflow.v2.worker_result.submit.preview",
   "workflow.v2.worker_result.fail.preview",
+  "workflow.v2.evaluation_snapshot.preview",
+  "workflow.v2.evaluation_compatibility.preview",
+  "workflow.v2.evaluation_migration.preview",
   "workflow.v2.validate",
   "workflow.template.preview",
   "workflow.template.daily_trading_catalog.preview",
@@ -4144,6 +4152,7 @@ const MESSAGE_FLOW_RUNTIME_HELPERS = createMessageFlowRuntimeHelpers({
   cleanFileSegment,
   deliverTelegramOutboxRow: (...args) => deliverTelegramOutboxRow(...args),
   enqueueTelegramOutbox: (...args) => TELEGRAM_OUTBOX_ACTION_HANDLERS.enqueueTelegramOutbox(...args),
+  dispatchPackageCreate: dispatchPackageCreateBridge,
   meetingDispatch: (...args) => meetingDispatch(...args),
   normalizeAgentId,
   normalizeReturnPolicy,
@@ -4202,6 +4211,7 @@ export const CONTROL_LOOP_JOB_ACTION_HANDLERS = createControlLoopJobActionHandle
 export const CONTROL_LOOP_JOB_ACTION_REGISTRY = createControlLoopJobActionRegistry(CONTROL_LOOP_JOB_ACTION_HANDLERS);
 
 export const {
+  workflowControlLoopLanesPreview,
   workflowControlLoopJobRequeuePreview,
   workflowControlLoopJobRequeue
 } = CONTROL_LOOP_JOB_ACTION_HANDLERS;
@@ -4407,9 +4417,14 @@ export async function workflowSupervisorReadinessPreview(rootDir, input = {}) {
   };
 }
 
+function dispatchPackageCreateBridge(...args) {
+  return dispatchPackageCreate(...args);
+}
+
 const WORKFLOW_SUPERVISOR_NEXT_ACTIONS_HANDLERS = createWorkflowSupervisorNextActionsHandlers({
   appendWorkflowEvent,
   ensureWorkflowLayout,
+  dispatchPackageCreate: dispatchPackageCreateBridge,
   meetingDispatch: (...args) => meetingDispatch(...args),
   nowIso,
   writeJsonArtifact,
@@ -4641,6 +4656,20 @@ const WORKFLOW_V2_VALIDATE_ACTION_HANDLERS = createWorkflowV2ValidateActionHandl
 export const {
   workflowV2Validate
 } = WORKFLOW_V2_VALIDATE_ACTION_HANDLERS;
+
+const WORKFLOW_V2_EVALUATION_ACTION_HANDLERS = createWorkflowV2EvaluationActionHandlers({
+  ensureWorkflowLayout,
+  nowIso,
+  pendingHumanGateCount,
+  workflowPayloadSqlWhere,
+  workflowV2Validate
+});
+
+export const {
+  workflowV2EvaluationSnapshotPreview,
+  workflowV2EvaluationCompatibilityPreview,
+  workflowV2EvaluationMigrationPreview
+} = WORKFLOW_V2_EVALUATION_ACTION_HANDLERS;
 
 async function readProtocolObject(paths, objectId) {
   if (!objectId) return null;
@@ -5357,7 +5386,7 @@ async function dispatchHumanGatePlanRevision(rootDir, paths, row, workflowId, me
   await sqlite(paths.dbFile, `
 INSERT INTO meeting_control_events(event_id, meeting_id, event_type, status, summary, payload_json, created_by, created_at)
 VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId || workflowId || row.object_id)}, 'human_gate_audit_failed', 'blocked', ${sqlValue("Human Gate evidence package lacks required complete approve options")}, ${sqlValue(JSON.stringify({ humanGateId: row.object_id, workflowId, audit }))}, 'cat_claw', ${sqlValue(createdAt)});`);
-  const dispatch = await meetingDispatch(rootDir, {
+  const dispatch = await dispatchPackageCreateBridge(rootDir, {
     workflowRootDir: paths.root,
     meetingId: meetingId || workflowId || row.object_id,
     workflowId,
@@ -5393,7 +5422,7 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId || workflowId || row.object_i
 
 async function safeMeetingDispatchWithRetry(rootDir, paths, dispatchInput = {}, context = {}) {
   try {
-    return await meetingDispatch(rootDir, {
+    return await dispatchPackageCreateBridge(rootDir, {
       ...dispatchInput,
       workflowRootDir: paths.root
     });
@@ -8371,6 +8400,7 @@ export const {
 } = PERMISSION_ACTION_HANDLERS;
 
 const SCHEDULE_ACTION_HANDLERS_INTERNAL = createScheduleActionHandlers({
+  dispatchPackageCreate: dispatchPackageCreateBridge,
   enqueueControlLoopJob,
   ensureWorkflowLayout,
   meetingDispatch: (...args) => meetingDispatch(...args),
@@ -8537,6 +8567,10 @@ export const MEETING_DISPATCH_ACTION_HANDLERS = createMeetingDispatchActionHandl
 export const MEETING_DISPATCH_ACTION_REGISTRY = createMeetingDispatchActionRegistry(MEETING_DISPATCH_ACTION_HANDLERS);
 
 export const {
+  dispatchPackageCallsitesPreview,
+  dispatchPackageParityPreview,
+  dispatchPackageSchemaPreview,
+  dispatchPackageTopologyPreview,
   dispatchPackagePreview,
   dispatchPackageCreate,
   meetingDispatch
@@ -8544,6 +8578,7 @@ export const {
 
 export const MEETING_CONTROL_ACTION_HANDLERS = createMeetingControlActionHandlers({
   appendTranscript,
+  dispatchPackageCreate: dispatchPackageCreateBridge,
   ensureWorkflowLayout,
   meetingDispatch,
   normalizeMeetingRef,
@@ -8612,6 +8647,7 @@ export const MESSAGE_FLOW_ACTION_HANDLERS = createMessageFlowActionHandlers({
   appendMessageFlowEvent,
   cleanFileSegment,
   createMessageFlow,
+  dispatchPackageCreate: dispatchPackageCreateBridge,
   ensureWorkflowLayout,
   incidentState,
   meetingDispatch,
@@ -8739,6 +8775,7 @@ export const {
 export const CONTROL_LOOP_TICK_ACTION_HANDLERS = createControlLoopTickActionHandlers({
   acquireControlLoopLease,
   appendJsonl,
+  dispatchPackageCreate: dispatchPackageCreateBridge,
   ensurePendingHumanGateRequests,
   ensureWorkflowLayout,
   enqueueControlLoopJob,
@@ -8894,6 +8931,9 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2HumanGateRequest,
   workflowV2InterventionReadinessPreview,
   workflowV2InterventionExecute,
+  workflowV2EvaluationSnapshotPreview,
+  workflowV2EvaluationCompatibilityPreview,
+  workflowV2EvaluationMigrationPreview,
   workflowV2Validate,
   workflowTemplatePreview,
   workflowTemplateDailyTradingCatalogPreview,

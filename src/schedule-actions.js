@@ -391,6 +391,7 @@ WHERE schedule_id=${sqlValue(schedule.schedule_id)}
 
 async function runScheduledDispatchJobCore(rootDir, paths, job, input = {}, context = {}) {
   const meetingDispatch = context.meetingDispatch;
+  const dispatchPackageCreate = typeof context.dispatchPackageCreate === "function" ? context.dispatchPackageCreate : meetingDispatch;
   const enqueueControlLoopJob = context.enqueueControlLoopJob;
   if (typeof meetingDispatch !== "function") throw new Error("schedule action dependency missing: meetingDispatch");
   if (typeof enqueueControlLoopJob !== "function") throw new Error("schedule action dependency missing: enqueueControlLoopJob");
@@ -417,7 +418,7 @@ async function runScheduledDispatchJobCore(rootDir, paths, job, input = {}, cont
   const deliveryTarget = firstText(schedulePayload.chatId, schedulePayload.chat_id, schedulePayload.conversationId, schedulePayload.conversation_id, delivery.to, delivery.chatId, delivery.chat_id);
   const wantsTelegramReply = deliveryMode === "announce" && (deliveryChannel === "telegram" || deliveryTarget);
   try {
-    const dispatch = await meetingDispatch(rootDir, {
+    const dispatch = await dispatchPackageCreate(rootDir, {
       ...input,
       workflowRootDir: paths.root,
       meetingId,
@@ -519,9 +520,10 @@ export function createScheduleActionHandlers(context = {}) {
   const enqueueControlLoopJob = requireContextFunction(context, "enqueueControlLoopJob");
   const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const meetingDispatch = requireContextFunction(context, "meetingDispatch");
+  const dispatchPackageCreate = typeof context.dispatchPackageCreate === "function" ? context.dispatchPackageCreate : meetingDispatch;
   const normalizeAgentId = requireContextFunction(context, "normalizeAgentId");
   const normalizeRuntime = requireContextFunction(context, "normalizeRuntime");
-  const scheduleCoreContext = { enqueueControlLoopJob, meetingDispatch };
+  const scheduleCoreContext = { dispatchPackageCreate, enqueueControlLoopJob, meetingDispatch };
 
   async function workflowScheduleUpsert(rootDir, input = {}) {
     const paths = await ensureWorkflowLayout(rootDir, input);

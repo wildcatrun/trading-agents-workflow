@@ -131,6 +131,7 @@ export function createControlLoopTickActionHandlers(context = {}) {
   const humanGateInbox = requireContextFunction(context, "humanGateInbox");
   const maybeRunWorkflowRetention = requireContextFunction(context, "maybeRunWorkflowRetention");
   const meetingDispatch = requireContextFunction(context, "meetingDispatch");
+  const dispatchPackageCreate = typeof context.dispatchPackageCreate === "function" ? context.dispatchPackageCreate : meetingDispatch;
   const messageFlowReconcile = requireContextFunction(context, "messageFlowReconcile");
   const normalizeAgentId = requireContextFunction(context, "normalizeAgentId");
   const normalizeKnownRuntime = requireContextFunction(context, "normalizeKnownRuntime");
@@ -591,7 +592,7 @@ LIMIT 1;`, { json: true });
       if (!dispatchInput || typeof dispatchInput !== "object" || Array.isArray(dispatchInput)) {
         throw new Error("meeting_dispatch_retry payload.dispatchInput is required");
       }
-      return meetingDispatch(rootDir, {
+      return dispatchPackageCreate(rootDir, {
         ...dispatchInput,
         workflowRootDir: paths.root
       });

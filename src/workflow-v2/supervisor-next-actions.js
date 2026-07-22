@@ -659,6 +659,7 @@ export function createWorkflowSupervisorNextActionsHandlers(context = {}) {
   const appendWorkflowEvent = requireContextFunction(context, "appendWorkflowEvent");
   const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const meetingDispatch = requireContextFunction(context, "meetingDispatch");
+  const dispatchPackageCreate = typeof context.dispatchPackageCreate === "function" ? context.dispatchPackageCreate : meetingDispatch;
   const workflowV2ReadinessPreview = requireContextFunction(context, "workflowV2ReadinessPreview");
   const nowIso = requireContextFunction(context, "nowIso");
   const writeJsonArtifact = requireContextFunction(context, "writeJsonArtifact");
@@ -1122,7 +1123,7 @@ ON CONFLICT(object_id) DO UPDATE SET
       },
       createdAt
     });
-    const dispatch = await meetingDispatch(rootDir, {
+    const dispatch = await dispatchPackageCreate(rootDir, {
       ...input,
       workflowRootDir: paths.root,
       meetingId: firstText(input.meetingId, input.meeting_id, candidate.workflowId),
@@ -1371,7 +1372,7 @@ ON CONFLICT(object_id) DO UPDATE SET
       },
       createdAt
     });
-    const dispatch = await meetingDispatch(rootDir, {
+    const dispatch = await dispatchPackageCreate(rootDir, {
       ...input,
       workflowRootDir: paths.root,
       meetingId: firstText(input.meetingId, input.meeting_id, candidate.workflowId),

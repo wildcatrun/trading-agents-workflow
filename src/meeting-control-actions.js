@@ -34,6 +34,7 @@ export function createMeetingControlActionHandlers(context = {}) {
   const appendTranscript = requireContextFunction(context, "appendTranscript");
   const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const meetingDispatch = requireContextFunction(context, "meetingDispatch");
+  const dispatchPackageCreate = typeof context.dispatchPackageCreate === "function" ? context.dispatchPackageCreate : meetingDispatch;
   const normalizeMeetingRef = requireContextFunction(context, "normalizeMeetingRef");
   const nowIso = requireContextFunction(context, "nowIso");
   const safeId = requireContextFunction(context, "safeId");
@@ -73,7 +74,7 @@ VALUES (${sqlValue(eventId)}, ${sqlValue(meetingId)}, 'disperse', 'queued', ${sq
         payload: input.payload
       };
       if (runtimePart) dispatchInput.runtime = runtimePart;
-      dispatches.push(await meetingDispatch(rootDir, dispatchInput));
+      dispatches.push(await dispatchPackageCreate(rootDir, dispatchInput));
     }
     return { meetingId, eventId, status: "queued", dispatches, dbFile: paths.dbFile };
   }

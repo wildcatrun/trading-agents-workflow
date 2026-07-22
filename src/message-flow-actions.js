@@ -76,6 +76,9 @@ export function createMessageFlowRuntimeHelpers(context = {}) {
   const deliverTelegramOutboxRow = contextFunction(context, "deliverTelegramOutboxRow");
   const enqueueTelegramOutbox = contextFunction(context, "enqueueTelegramOutbox");
   const meetingDispatch = contextFunction(context, "meetingDispatch");
+  const dispatchPackageCreate = typeof context?.dispatchPackageCreate === "function"
+    ? context.dispatchPackageCreate
+    : meetingDispatch;
   const normalizeAgentId = contextFunction(context, "normalizeAgentId");
   const normalizeRuntime = contextFunction(context, "normalizeRuntime");
   const nowIso = contextFunction(context, "nowIso");
@@ -685,7 +688,7 @@ LIMIT 1;`, { json: true });
     };
     let dispatch;
     try {
-      dispatch = await meetingDispatch(paths.root, {
+      dispatch = await dispatchPackageCreate(paths.root, {
         meetingId: row.meeting_id,
         workflowId: row.workflow_id || payload.workflowId || payload.workflow_id || flow.workflow_id || row.meeting_id,
         traceId: row.trace_id || payload.traceId || payload.trace_id || flow.trace_id || safeId("trace"),
@@ -729,6 +732,8 @@ LIMIT 1;`, { json: true });
     return {
       status: dispatch.status,
       dispatchId: dispatch.dispatchId,
+      operation: dispatch.operation || "meeting.dispatch",
+      compatibilityOperation: dispatch.compatibilityOperation || "",
       runtime: dispatch.runtime,
       agentId: dispatch.agentId,
       deduped: Boolean(dispatch.deduped),
@@ -800,7 +805,14 @@ LIMIT 1;`, { json: true });
         receivedAt: flow.updated_at || nowIso()
       }, input);
       assertSemanticContinuationQueued(continuation);
-      results.push({ flowId: flow.flow_id, status: "queued", ackDispatchId, semanticDispatchId: continuation.dispatchId });
+      results.push({
+        flowId: flow.flow_id,
+        status: "queued",
+        ackDispatchId,
+        semanticDispatchId: continuation.dispatchId,
+        operation: continuation.operation || "",
+        compatibilityOperation: continuation.compatibilityOperation || ""
+      });
     }
     return results;
   }
@@ -861,6 +873,7 @@ export function createMessageFlowActionHandlers(context = {}) {
   const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const incidentState = requireContextFunction(context, "incidentState");
   const meetingDispatch = requireContextFunction(context, "meetingDispatch");
+  const dispatchPackageCreate = typeof context.dispatchPackageCreate === "function" ? context.dispatchPackageCreate : meetingDispatch;
   const meetingIngest = requireContextFunction(context, "meetingIngest");
   const messageFlowAckTimeoutSeconds = requireContextFunction(context, "messageFlowAckTimeoutSeconds");
   const messageFlowIdFromParts = requireContextFunction(context, "messageFlowIdFromParts");
@@ -1000,7 +1013,7 @@ LIMIT ${limit};`, { json: true });
           key: targetKey
         }
       };
-      const dispatch = await meetingDispatch(rootDir, {
+      const dispatch = await dispatchPackageCreate(rootDir, {
         meetingId,
         workflowId,
         traceId,
@@ -1071,6 +1084,8 @@ LIMIT ${limit};`, { json: true });
         imIdentity: dispatch.imIdentity || flow?.im_identity || "",
         executionIdentity: dispatch.executionIdentity || flow?.execution_identity || "",
         dispatchId: dispatch.dispatchId,
+        dispatchOperation: dispatch.operation || "meeting.dispatch",
+        compatibilityOperation: dispatch.compatibilityOperation || "",
         dispatchStatus: dispatch.status,
         messageFlowId: flowId,
         messageFlowStatus: flow?.status || "",

@@ -338,6 +338,97 @@ creating or claiming work. This still does not freeze legacy intervention entry
 points; evaluator parity and an observation window remain required before any
 freeze decision.
 
+### P42 Progress
+
+P42 adds the first v2 evaluator parity surface:
+`workflow.v2.evaluation_snapshot.preview`.
+
+This action is read-only from the workflow operator perspective: it produces a
+v2 evaluation decision snapshot from `workflow_v2_plans`, plan nodes, worker
+runs, adapter jobs, Human Gate packages, verification rows, runtime receipts,
+artifacts, side effects, incidents, and `workflow.v2.validate` summary output.
+It does not write `workflow_verification_results`, does not mutate
+`workflow_runs`, does not dispatch, does not send Telegram, and does not alter
+Human Gate or side-effect state.
+
+The legacy `workflow.evaluate` action remains available as a compatibility
+writer during the evidence window. New v2/operator read paths should use
+`workflow.v2.evaluation_snapshot.preview` for evaluator-style decisions and
+`workflow.v2.validate` for consistency checks.
+
+### P43 Progress
+
+P43 adds the read-only evaluator compatibility audit:
+`workflow.v2.evaluation_compatibility.preview`.
+
+This action compares the latest legacy `workflow.evaluate` evaluator row with
+the v2 `workflow.v2.evaluation_snapshot.preview` decision for the same
+workflow and v2 plan. It intentionally rejects `phaseKey` until v2 has true
+phase/node-scoped evaluator parity. It does not call the legacy evaluator writer, does
+not create `workflow_verification_results`, does not mutate legacy
+`workflow_runs` / `workflow_tasks`, and does not dispatch, deliver outbox,
+touch Human Gate state, or alter side-effect state.
+
+The output is an observation-window signal only:
+
+- `needs_observation`: no legacy evaluator row exists yet for comparison;
+- `matched`: latest legacy evaluator decision equals the v2 snapshot decision;
+- `mismatch`: legacy/v2 decisions differ and the delta must be explained before
+  any freeze decision.
+
+`freezeCandidate` remains `false` in this preview. `freezeReviewCandidate=true`
+only means the current workflow-level evidence is worth reviewing later for a
+`workflow.evaluate` freeze. It is not an automatic freeze, not a deployment
+decision, not proof that all callers have migrated, and not a substitute for
+release-smoke observation evidence.
+
+### P44 Progress
+
+P44 adds the read-only evaluator migration inventory:
+`workflow.v2.evaluation_migration.preview`.
+
+This action is the freeze-preparation checklist for legacy `workflow.evaluate`,
+not a freeze executor. It inventories the known legacy evaluator entry points
+(`workflow.evaluate`, `workflow.evaluator.run`, `workflow.evaluation.run`, and
+`workflow.goal.evaluate`), records their v2 replacement surfaces, and summarizes
+observed legacy evaluator rows from `workflow_verification_results` by decision,
+source attribution, and latest row metadata. Source attribution is not treated
+as complete caller migration proof; caller migration still requires separate
+tool-schema/client usage evidence. It does not read or return raw evaluator
+payloads, summaries, findings, recommendations, artifact refs, or receipt refs.
+
+The output always keeps `freezeCandidate=false` and reports
+`freezeReadiness.status=not_ready` while the legacy writer is still registered,
+caller migration is not proven, the compatibility observation window is open,
+or release-smoke observation evidence is missing. This gives operators a stable
+checklist for later freezing `workflow.evaluate` without implying that current
+evidence is sufficient to retire the legacy writer.
+
+### P45 Progress
+
+P45 extends `workflow.v2.evaluation_migration.preview` with caller-operation
+evidence from the existing `workflow_operations` audit table.
+
+This is the first real caller migration signal for the evaluator migration
+window. The preview now distinguishes:
+
+- internal registry retention of legacy `workflow.evaluate`;
+- full tool / governance tool schema exposure of legacy and v2 evaluator
+  actions;
+- source attribution in `workflow_verification_results`;
+- audited caller-operation evidence in `workflow_operations`.
+
+`callerOperationEvidence.callerMigrationProof=true` only when the scoped
+`workflow_operations` evidence contains completed v2 evaluator snapshot or
+compatibility preview calls and no legacy evaluator action calls. The migration
+inventory action itself is not proof-eligible, and failed/rejected v2 calls do
+not count as migration proof. This is still bounded evidence: it proves calls
+that passed through the console/action-gateway audit surface, not every possible
+internal direct registry invocation. Operation summaries are limit-capped
+samples, not uncapped global totals. If the table is missing or a legacy
+evaluator action is observed, `caller_migration_not_proven` remains a freeze
+blocker.
+
 ### Exit Criteria
 
 - No intervention can pretend a workflow is paused/stopped while active
@@ -384,6 +475,48 @@ Split ownership without deleting the substrate:
 6. Run an observation window with legacy supervise disabled and shared lanes
    active.
 7. Retire only unused aliases/legacy lane code after audited caller checks.
+
+### P46 Progress
+
+P46 adds the first shared scheduler/maintenance lane inventory surface:
+`workflow.control_loop.lanes.preview`.
+
+This is a read-only shared-control-plane preview, not a v2-only replacement and
+not a tick executor. It inventories current `control_loop_jobs` lane ownership,
+job-type mapping, status counts, active/retry/terminal-attention counts, latest
+job samples, unclassified job types, and freeze blockers. It deliberately keeps
+shared lanes such as `scheduled_dispatch`, `runtime_drain`,
+`stale_dispatch_reconcile`, `message_flow_reconcile`,
+`human_gate_request_ensure`, `human_gate_inbox`, and
+`telegram_outbox_deliver` marked as shared substrate rather than v1 freeze
+candidates. Only the `workflow_supervise` legacy lane is identified as a future
+freeze candidate, and only after observation-window and caller-audit evidence.
+
+Aliases `workflow.maintenance.lanes.preview` and
+`workflow.scheduler.lanes.preview` canonicalize to the shared control-loop
+preview. The action does not seed, claim, run, requeue, dispatch, deliver,
+resume Human Gate, or mutate side effects.
+
+### P47 Progress
+
+P47 converts the scheduler dispatch integration proof from raw schedule
+admission to approved schedule admission.
+
+The regression now proves three scheduler boundaries in one control-loop path:
+
+- raw `workflow.schedule.upsert` fails closed by default and creates no
+  `workflow_schedules` row;
+- an approved active/default workflow-template schedule can be admitted, seeded
+  as `scheduled_dispatch`, dispatched through the existing dispatch substrate,
+  and followed by a bounded `runtime_drain` job;
+- a Human-Gate-approved workflow-v2 plan schedule can be admitted, seeded,
+  dispatched, and followed by a bounded `runtime_drain` job.
+
+This does not rename the scheduler into a v2-only lane and does not change
+`workflow.control_loop.tick` semantics. It records that the shared scheduler
+lane can carry approved-template and approved-Human-Gate work while keeping raw
+production schedules fail-closed unless the explicit legacy diagnostics
+environment override is set.
 
 ### Exit Criteria
 
@@ -453,6 +586,309 @@ P36 does not freeze `meeting.dispatch`, `meeting.ingest`, `meeting.resume`,
 Those remain active/shared until call-site migration, live observation, and
 runtime bridge parity evidence are complete.
 
+### P48 Progress
+
+P48 adds the first read-only dispatch bridge topology surface:
+`dispatch.package.topology.preview`.
+
+The preview inventories the current `mixed_meeting_dispatches` producer and
+consumer topology without mutating workflow state. It records:
+
+- canonical bridge surfaces: `dispatch.package.preview` and
+  `dispatch.package.create`;
+- compatibility writer surface: `meeting.dispatch`;
+- active shared producers such as approved schedule dispatch,
+  `message_flow.send`, v2 supervisor package/report paths, and meeting
+  compatibility fan-out;
+- default-disabled legacy compatibility producers such as `workflow.advance`
+  and `workflow.supervise`;
+- active consumers such as `runtime.bridge.drain`, control-loop
+  `runtime_drain`, stale dispatch reconcile, Human Gate resume, status/read
+  models, Console views, and v2 readiness previews;
+- live counts by dispatch status, runtime, dispatch type, message-flow linkage,
+  runtime-drain jobs, and terminal attention rows.
+
+This is inventory evidence only. It does not rename or freeze
+`mixed_meeting_dispatches`, does not alter `meeting.dispatch`, does not change
+runtime adapter drain behavior, and does not claim the bridge is ready for
+retirement. Freeze readiness remains blocked until call sites migrate to the
+canonical bridge, runtime bridge/message-flow parity is proven, release smoke
+observation passes, and audited absence of unaudited `meeting.dispatch` callers
+is recorded.
+
+### P49 Progress
+
+P49 adds the read-only dispatch package schema and compatibility mapping
+surface: `dispatch.package.schema.preview`.
+
+The preview defines the canonical `dispatch.package` input/output contract and
+maps it onto the current compatibility substrate:
+
+- input aliases such as `meetingId` / `meeting_id`, `workflowId` /
+  `workflow_id`, `traceId` / `trace_id`, `idempotencyKey` /
+  `idempotency_key`, `dispatchType` / `dispatch_type`, and `agentId` /
+  `agent_id` / `target`;
+- output fields returned by `dispatch.package.create`, including
+  `dispatchId`, resolved `runtime`, `platform`, `workflowIngressAdapter`,
+  `messageFlowId`, `returnPolicy`, `relativePath`, and idempotency
+  `deduped` state;
+- compatibility persistence targets:
+  `mixed_meeting_dispatches`, `dispatches/<status>/<dispatchId>.json`,
+  `message_flows`, `workflow_events`, and `runtime_agents`;
+- lifecycle mapping for `queued`, `sent`, `acked`, `failed`, and `cancelled`;
+- validation rules for `runtime_agents` target resolution, route-shell
+  fail-closed behavior, idempotency, message-flow validation, max-attempt
+  bounding, and pure preview no-layout behavior.
+
+This action is pure read-only and does not initialize workflow layout, write
+dispatch rows, create artifacts, create `message_flows`, append events, drain
+runtimes, retry jobs, or alter `meeting.dispatch`. It also keeps
+`freezeCandidate=false`: the canonical create path still delegates to
+`meeting.dispatch`, and `mixed_meeting_dispatches` remains the runtime bridge
+ledger until call-site migration and parity observation are complete.
+
+### P50 Progress
+
+P50 adds the read-only dispatch package parity checklist:
+`dispatch.package.parity.preview`.
+
+The preview records the parity matrix required before any meeting-era dispatch
+name can be frozen:
+
+- idempotency through the existing `mixed_meeting_dispatches.idempotency_key`
+  ledger;
+- runtime target validation through `runtime_agents` and
+  `resolveRegisteredDispatchTarget`;
+- message-flow linkage plus `dispatch.created` workflow event evidence;
+- receipt visibility through runtime events, runtime drain jobs, and terminal
+  dispatch states;
+- invalid runtime fail-closed evidence for retired `openclaw_route_shell`;
+- retry and terminal-failure ownership by `meeting_dispatch_retry`,
+  `runtime_drain`, and dispatch reconcile substrate.
+
+The action is pure read-only. It does not create test dispatches, does not call
+`dispatch.package.create`, does not call `meeting.dispatch`, does not enqueue
+retry/drain jobs, does not append runtime events, and does not mark any parity
+item as a freeze approval. Even when all scoped evidence rows are observed,
+`freezeCandidate` remains `false` because canonical create still delegates to
+`meeting.dispatch` and call-site migration is not complete.
+
+### P51 Progress
+
+P51 adds the read-only dispatch call-site migration inventory:
+`dispatch.package.callsites.preview`.
+
+The preview separates call sites into explicit migration dispositions instead
+of treating every `meetingDispatch` use as something to migrate:
+
+- canonical surface retained: `dispatch.package.create`;
+- public compatibility shell retained until observation:
+  `meeting.dispatch`;
+- already retargeted: approved schedule dispatch, v2 supervisor
+  package/report dispatch, Human Gate evidence revision dispatch, Human Gate
+  feedback/resume callback dispatch, Human Gate pre-order risk audit dispatch,
+  Human Gate archive closeout dispatch to `main` / `cat_claw`, and
+  `meeting_dispatch_retry`, `message_flow.send`, and message-flow semantic
+  continuation, and `meeting.disperse` compatibility fan-out dispatch creation;
+- migration candidates after parity evidence: none in ordinary dispatch package
+  creation;
+- deferred shared recovery paths: none in ordinary dispatch package creation;
+- meeting compatibility paths retained as compatibility actions even when their
+  internal dispatch writer is canonicalized;
+- default-disabled legacy executors not migrated into the new bridge:
+  `workflow.advance` and `workflow.supervise`.
+
+The preview may read `workflow_operations` to show scoped legacy
+`meeting.dispatch` and canonical `dispatch.package.create` operation evidence,
+with requester fields redacted. If `workflow_operations` exists with a legacy or
+partial schema, the preview degrades evidence instead of failing the action:
+missing optional columns are reported, and a missing `action` column marks the
+operation evidence unreadable. It does not scan source dynamically, does not call
+either dispatch writer, does not enqueue jobs, and does not mutate state. Freeze
+remains blocked while the public `meeting.dispatch` compatibility shell is
+still registered, legacy operations are observed, the observation window is
+missing, and canonical create still delegates to `meeting.dispatch`. Remaining
+direct `meetingDispatch` references outside the canonical bridge are limited to
+default-disabled legacy exceptions (`workflow.advance` / `workflow.supervise`)
+that are not migration candidates.
+
+### P52 Progress
+
+P52 retargets the v2 supervisor report/closeout dispatch writers from direct
+`meetingDispatch` calls to the canonical `dispatch.package.create` bridge while
+keeping the existing compatibility writer and ledger intact.
+
+Scope is intentionally narrow:
+
+- `workflow.supervisor.report` dispatches the cat_claw report package through
+  `dispatch.package.create`;
+- `workflow.supervisor.closeout` dispatches the cat_claw closeout package
+  through `dispatch.package.create`;
+- the canonical bridge still writes the same `mixed_meeting_dispatches`,
+  `message_flows`, dispatch artifact, and `dispatch.created` event evidence;
+- no scheduler, message_flow, Human Gate callback, retry job, or runtime drain
+  behavior is changed in this batch.
+
+The result object now carries `operation: "dispatch.package.create"` and
+`compatibilityOperation: "meeting.dispatch"` on successful and deduplicated
+canonical dispatch creation, making retargeted callers auditable without
+changing the persisted dispatch substrate.
+
+### P53 Progress
+
+P53 retargets approved scheduled dispatch execution from direct
+`meetingDispatch` to `dispatch.package.create`.
+
+Scope remains limited to the schedule dispatch writer:
+
+- `scheduled_dispatch` control-loop jobs still come from the existing scheduler
+  and preserve the same `scheduled_runs`, `workflow_schedules`, `control_loop_jobs`,
+  `runtime_drain`, and dispatch ledger behavior;
+- the dispatched run evidence now records a canonical
+  `dispatch.package.create` result in `scheduled_runs.result_json`;
+- raw/unapproved schedule gating, runtime drain, retry, and other control-loop
+  maintenance lanes are unchanged.
+
+### P54 Progress
+
+P54 retargets Human Gate policy-audit revision dispatch from direct
+`meetingDispatch` to `dispatch.package.create`.
+
+Scope remains limited to the cat_claw audit-failure repair path:
+
+- `meeting_control_events` still records the Human Gate audit failure before
+  dispatch;
+- the revision dispatch to `openclaw:main` now goes through the canonical bridge;
+- existing Human Gate option validation, outbox cancellation, button
+  supersession, retry, callback, archive closeout, and Telegram delivery
+  behavior are unchanged.
+
+### P55 Progress
+
+P55 retargets the Human Gate safe dispatch wrapper and retry job to the
+canonical bridge.
+
+Scope is limited to dispatch creation ownership:
+
+- `safeMeetingDispatchWithRetry` now calls `dispatch.package.create`, so
+  Human Gate feedback/resume, pre-order risk audit, and archive closeout
+  dispatches carry canonical operation evidence while preserving their existing
+  prompt/payload/idempotency contracts;
+- `meeting_dispatch_retry` now replays the same persisted dispatch input through
+  `dispatch.package.create`, so retry follows the writer used by the original
+  safe dispatch attempt;
+- retry job naming, retry ledger rows, redaction, outbox behavior, archive
+  checkpointing, callback state, and runtime drain behavior are unchanged;
+- `message_flow.send`, message-flow semantic continuation, `meeting.disperse`,
+  and default-disabled legacy executors are still not migrated in this batch.
+
+### P56 Progress
+
+P56 retargets ordinary `workflow.message_flow.send` dispatch creation to the
+canonical bridge without changing message_flow semantics.
+
+Scope is limited to the message_flow sender dispatch writer:
+
+- `workflow.message_flow.send` still performs the same ingress recording,
+  target normalization, `message_flows` linkage, ack contract construction,
+  source metadata validation, and delivery-policy defaults;
+- each target dispatch now calls `dispatch.package.create` and returns
+  per-dispatch `dispatchOperation` / `compatibilityOperation` markers for
+  auditability;
+- message-flow semantic continuation remains on the old direct writer until a
+  separate ack recovery / receipt parity batch proves it safe;
+- `meeting.disperse`, public `meeting.dispatch`, and default-disabled
+  `workflow.advance` / `workflow.supervise` compatibility paths remain outside
+  this batch.
+
+### P57 Progress
+
+P57 retargets message-flow semantic continuation dispatch creation to the
+canonical bridge after ack/recovery parity coverage.
+
+Scope is limited to the ack continuation writer:
+
+- semantic continuation still requires first-turn ACK evidence and still skips
+  if the source dispatch is already a semantic continuation;
+- generated semantic dispatches keep the same deterministic idempotency key,
+  `message_flow_semantic` dispatch type, silent return/delivery policy, ack
+  contract suppression, timeout clamping, source metadata, and message_flow id;
+- both immediate ACK continuation and stale `message_flow.reconcile` recovery
+  now return canonical operation markers;
+- forced enqueue failure, runtime drain, delivery reconcile, Telegram, Gateway,
+  `meeting.disperse`, and default-disabled legacy executors remain unchanged.
+
+### P58 Progress
+
+P58 retargets `meeting.disperse` fan-out dispatch creation to the canonical
+bridge while keeping `meeting.disperse` itself as a meeting-era compatibility
+action.
+
+Scope is limited to the fan-out writer:
+
+- `meeting_control_events` still records the same `disperse` event before any
+  target dispatch is created;
+- target parsing, unqualified target registry resolution, prompt, priority,
+  `execute_meeting_conclusion` dispatch type, creator, and payload semantics are
+  unchanged;
+- each target dispatch now carries `dispatch.package.create` operation evidence;
+- this does not make `meeting.disperse` a v2 kernel action and does not change
+  `meeting.dispatch`, `workflow.advance`, `workflow.supervise`, runtime drain,
+  Telegram, Gateway, or trading behavior.
+
+### P59 Progress
+
+P59 closes the dispatch call-site migration inventory.
+
+The callsite preview now reports explicit `freezeBlockingCallSiteIds`,
+`retargetedCallSites`, and `frozenLegacyExceptionIds` so operators can
+distinguish three different states:
+
+- migrated producers that now call `dispatch.package.create`;
+- the public `meeting.dispatch` compatibility shell, which remains the only
+  freeze-blocking callsite until the observation/removal window is complete;
+- default-disabled legacy exceptions (`workflow.advance` and
+  `workflow.supervise`) that must not be migrated into v2 merely to preserve old
+  semantics.
+
+This batch does not remove `meeting.dispatch`, does not enable legacy actions,
+and does not change runtime drain, Telegram, Gateway, or trading behavior.
+
+### P60 Progress
+
+P60 aligns the dispatch package parity and topology previews with the P59
+call-site closeout.
+
+The parity/topology readiness text no longer reports generic call-site
+migration as unfinished after the audited P51-P58 retargeting work. Remaining
+blockers are now expressed as observation/removal requirements:
+
+- public `meeting.dispatch` compatibility shell still registered;
+- `dispatch.package.create` still delegates to the compatibility writer;
+- default-disabled legacy exceptions remain outside the canonical bridge by
+  design;
+- release-smoke and runtime/message_flow parity must remain stable through the
+  observation window.
+
+This is a read-only metadata/contract correction only; no writer, runtime drain,
+Telegram, Gateway, or trading behavior changes in this batch.
+
+### P61 Progress
+
+P61 aligns the default full-tool action schema with the legacy mutating action
+freeze.
+
+The OpenClaw plugin tool parameter enum no longer advertises
+`workflow.advance`, `workflow.supervise`, or the mutating
+`workflow.supervisor` alias as default callable actions. Their read-only
+preview actions remain visible for legacy diagnostics. Core `runAction` and CLI
+escape-hatch behavior are unchanged and still blocked by default unless
+`TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1` is explicitly set.
+
+This closes a visibility gap: frozen legacy mutating actions are still retained
+for controlled compatibility, but they are no longer presented as normal
+default tool choices.
+
 ### Exit Criteria
 
 - Generic dispatches still create auditable rows/artifacts and receipt events.
@@ -484,6 +920,60 @@ affect operator comprehension or future domain templates.
 3. Move legacy history surfaces behind compatibility labels.
 4. Create a separate research/data workflow-template audit before touching
    `research.*`, `instrument.*`, `radar.*`, `thesis.*`, or `gate.review`.
+
+### P38 Progress
+
+- Console Kanban read-model cards expose `sourceClass` and `sourceClassLabel`
+  without changing workflow execution, dispatch, preview, scheduler, or
+  domain-template behavior.
+- `workflow_v2_plans` cards are labeled `v2 active`; `workflow_tasks` cards are
+  labeled `v1 archived/compat`; runtime, dispatch, message flow, outbox,
+  Human Gate, incidents, side effects, and control-loop cards remain
+  `shared_substrate`.
+- Synthetic evidence-gap cards inherit the origin card source class, so missing
+  evidence remains tied to its v2/v1/shared substrate source instead of forming
+  a separate semantic workflow layer.
+- P38 does not migrate research/data actions and does not add domain-specific
+  workflow semantics to the shared read model.
+
+### P39 Progress
+
+- The historical `workflow.task.launch.list` read action and Console
+  `/api/task-launches` endpoint keep legacy `workflow_task_launch_package`
+  records as `v1 archived/compat` read-only evidence.
+- The same read surfaces now expose v2 package evidence from
+  `workflow_v2_task_group_packages` and `workflow_v2_human_gate_packages` as
+  `v2 active`, with v2 packages ordered before legacy launch-package archives.
+- This is a read-model replacement surface only; it does not restore
+  `workflow.task.launch.prepare/review/approve`, does not materialize v1 tasks,
+  and does not change Human Gate, dispatch, scheduler, or domain-template
+  behavior.
+
+### P40 Progress
+
+- Console global search results expose `sourceClass` and `sourceClassLabel`
+  using the same `v2 active`, `v1 archived/compat`, and `shared substrate`
+  vocabulary as Kanban cards.
+- Global search now indexes `workflow_v2_plans` directly, so operators can open
+  active v2 plans without relying on legacy `workflow_runs` or
+  `workflow_tasks` search hits.
+- Legacy task/run/package hits remain searchable as compatibility evidence, but
+  are explicitly labeled as archived/compat where the source is v1 history.
+- This is a search/read-model presentation change only; it does not change
+  workflow routing, dispatch, preview actions, scheduler behavior, or
+  domain-template semantics.
+
+### P41 Progress
+
+- Workflow list/detail rows expose v2 lineage when a `workflow_runs` row has
+  matching `workflow_v2_plans`, including `sourceClass`, `sourceClassLabel`,
+  `counts.v2Plans`, and the latest v2 plan id/state.
+- The Console workflow queue and detail header show whether the selected
+  workflow is v2-backed or only legacy compatibility history, without changing
+  selection, routing, tab loading, or workflow status semantics.
+- This keeps `workflow_runs` readable as the historical list anchor while
+  preventing operators from mistaking a v2-backed workflow for pure v1 task/run
+  state.
 
 ### Exit Criteria
 

@@ -1552,6 +1552,7 @@ function inspectKanbanCard(card = {}) {
       section("Card", renderKeyValues([
         { label: "Column", value: card.column || "-" },
         { label: "Status", value: card.status || "-" },
+        { label: "Source Class", value: card.sourceClassLabel || card.sourceClass || "-" },
         { label: "Workflow", value: card.workflowId || "-" },
         { label: "Agent", value: card.agentId || "-" },
         { label: "Runtime", value: card.runtime || "-" },
@@ -1697,7 +1698,8 @@ function renderWorkflowList() {
     }, [
       h("div", { className: "workflow-title" }, [
         h("strong", {}, item.workflowId),
-        chip(item.status)
+        chip(item.status),
+        item.sourceClassLabel ? chip(item.sourceClassLabel, item.sourceClass === "v2" ? "ok" : item.sourceClass === "v1" ? "warning" : "neutral") : null
       ]),
       h("p", { className: "workflow-summary" }, short(item.summary || item.objective || item.workflowType, 150)),
       h("div", { className: "workflow-meta" }, [
@@ -1707,6 +1709,7 @@ function renderWorkflowList() {
       ]),
       h("div", { className: "mini-counts" }, [
         h("span", {}, `tasks ${counts.tasks || 0}`),
+        h("span", {}, `v2 ${counts.v2Plans || 0}`),
         h("span", {}, `blocked ${counts.blocked || 0}`),
         h("span", {}, `human ${counts.pendingHumanGates || 0}`),
         h("span", {}, `dispatch ${counts.queuedDispatches || 0}/${counts.failedDispatches || 0}`)
@@ -1727,7 +1730,9 @@ function renderDetailHeader() {
   const counts = countsFor(item);
   summary.append(
     statCard("Status", item.status, item.ownerAgent || ""),
+    statCard("Source", item.sourceClassLabel || item.sourceClass || "-", item.latestV2Plan?.planId || ""),
     statCard("Tasks", counts.tasks || 0, `${counts.inProgress || 0} running`),
+    statCard("V2 Plans", counts.v2Plans || 0, item.latestV2Plan?.workflowState || ""),
     statCard("Blocked", counts.blocked || 0),
     statCard("Human Gate", counts.pendingHumanGates || 0),
     statCard("Dispatch Failed", counts.failedDispatches || 0),
@@ -2887,7 +2892,8 @@ function renderKanbanCard(card) {
   return h("article", { className: `kanban-card ${toneFor(card.status || card.column)}` }, [
     h("div", { className: "workflow-title" }, [
       h("strong", {}, short(card.title || card.sourceId, 70)),
-      chip(card.status || card.source)
+      chip(card.status || card.source),
+      card.sourceClassLabel ? chip(card.sourceClassLabel, card.sourceClass === "v2" ? "ok" : card.sourceClass === "v1" ? "warning" : "neutral") : null
     ]),
     card.summary ? h("p", { className: "workflow-summary" }, short(card.summary, 120)) : null,
     h("div", { className: "workflow-meta" }, [
@@ -3002,7 +3008,8 @@ function renderSearchResult(result) {
       h("div", {}, [
         h("div", { className: "workflow-title" }, [
           h("strong", {}, short(result.title || result.id, 120)),
-          chip(result.kind, "neutral")
+          chip(result.kind, "neutral"),
+          result.sourceClassLabel ? chip(result.sourceClassLabel, result.sourceClass === "v2" ? "ok" : result.sourceClass === "v1" ? "warning" : "neutral") : null
         ]),
         h("p", { className: "workflow-summary" }, short(result.summary || result.id, 240))
       ]),

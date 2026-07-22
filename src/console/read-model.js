@@ -27,8 +27,18 @@ function workflowViewWhere(view) {
 }
 
 function parseWorkflowRow(row) {
+  const v2PlanCount = toInt(row.v2_plan_count);
+  const sourceClass = v2PlanCount > 0 ? "v2" : "v1";
   return {
     workflowId: row.workflow_id,
+    sourceClass,
+    sourceClassLabel: kanbanSourceClassLabel(sourceClass),
+    latestV2Plan: row.latest_v2_plan_id ? {
+      planId: row.latest_v2_plan_id,
+      status: row.latest_v2_plan_status || "",
+      workflowState: row.latest_v2_plan_state || "",
+      updatedAt: row.latest_v2_plan_updated_at || ""
+    } : null,
     workflowType: row.workflow_type,
     status: row.status,
     ownerAgent: row.owner_agent,
@@ -54,7 +64,9 @@ function parseWorkflowRow(row) {
       queuedOutbox: toInt(row.queued_outbox),
       failedOutbox: toInt(row.failed_outbox),
       openIncidents: toInt(row.open_incidents),
-      sideEffectUncertain: toInt(row.side_effect_uncertain)
+      sideEffectUncertain: toInt(row.side_effect_uncertain),
+      v2Plans: v2PlanCount,
+      v2HumanGatePackages: toInt(row.v2_human_gate_package_count)
     },
     latestCheckpoint: row.latest_checkpoint_id ? {
       checkpointId: row.latest_checkpoint_id,
@@ -409,6 +421,14 @@ function searchResult(kind, id, row = {}, values = {}, query = "") {
   const status = values.status || row.status || "";
   const title = redactSearchText(values.title || id);
   const summary = redactSearchText(compactText(values.summary || "", 260));
+  const sourceRefs = (values.sourceRefs || [])
+    .filter((ref) => ref?.id)
+    .map((ref) => ({ ...ref, id: redactSearchText(ref.id) }));
+  const sourceClass = kanbanSourceClass(values.source || sourceRefs[0]?.source || "", {
+    ...values,
+    objectType: values.objectType || row.object_type || "",
+    sourceClass: values.sourceClass || ""
+  });
   const target = values.target || (workflowId ? {
     consoleView: "workflows",
     workflowId,
@@ -429,9 +449,9 @@ function searchResult(kind, id, row = {}, values = {}, query = "") {
     agentId: redactSearchText(values.agentId || row.agent_id || row.owner_agent || ""),
     lastEventAt: redactSearchText(values.lastEventAt || row.updated_at || row.created_at || row.started_at || ""),
     target: redactConsoleValue(target),
-    sourceRefs: (values.sourceRefs || [])
-      .filter((ref) => ref?.id)
-      .map((ref) => ({ ...ref, id: redactSearchText(ref.id) })),
+    sourceClass,
+    sourceClassLabel: kanbanSourceClassLabel(sourceClass),
+    sourceRefs,
     matchFields
   };
 }
@@ -1136,10 +1156,36 @@ function kanbanColumnForSideEffect(row = {}) {
   return "queued";
 }
 
+function kanbanSourceClass(source = "", values = {}) {
+  const explicit = String(values.sourceClass || values.source_class || "").trim();
+  if (["v1", "v2", "shared_substrate"].includes(explicit)) return explicit;
+  const objectType = String(values.objectType || values.object_type || "").trim();
+  if (source.startsWith("workflow_v2_")) return "v2";
+  if (source === "workflow_v2_plans") return "v2";
+  if (source === "workflow_runs") return "v1";
+  if (source === "workflow_tasks") return "v1";
+  if (source === "workflow_task_launch_package") return "v1";
+  if (source === "protocol_objects" && objectType === "workflow_task_launch_package") return "v1";
+  if (source === "evidence_gaps") {
+    const originClass = String(values.originSourceClass || values.origin_source_class || "").trim();
+    return ["v1", "v2", "shared_substrate"].includes(originClass) ? originClass : "shared_substrate";
+  }
+  return "shared_substrate";
+}
+
+function kanbanSourceClassLabel(sourceClass = "") {
+  if (sourceClass === "v1") return "v1 archived/compat";
+  if (sourceClass === "v2") return "v2 active";
+  return "shared substrate";
+}
+
 function makeKanbanCard(column, source, id, values = {}) {
+  const sourceClass = kanbanSourceClass(source, values);
   return {
     id: `${source}:${id}`,
     source,
+    sourceClass,
+    sourceClassLabel: kanbanSourceClassLabel(sourceClass),
     sourceId: id,
     column,
     workflowId: values.workflowId || "",
@@ -1155,6 +1201,7 @@ function makeKanbanCard(column, source, id, values = {}) {
     sideEffectId: values.sideEffectId || "",
     evidenceGapId: values.evidenceGapId || "",
     originSource: values.originSource || "",
+    originSourceClass: values.originSourceClass || "",
     originSourceId: values.originSourceId || "",
     deadLetterKind: values.deadLetterKind || "",
     agentId: values.agentId || "",
@@ -1200,6 +1247,7 @@ function evidenceGapCardsFromKanbanCards(cards = [], limit = 200) {
       sideEffectId: card.sideEffectId,
       evidenceGapId,
       originSource: card.source,
+      originSourceClass: card.sourceClass,
       originSourceId: sourceId,
       agentId: card.agentId,
       runtime: card.runtime,
@@ -1319,10 +1367,19 @@ export class WorkflowReadModel {
     if (!(await tableExists(this.paths.dbFile, "workflow_runs"))) {
       return { count: 0, source: "missing_table", workflows: [] };
     }
+    const hasV2Plans = await tableExists(this.paths.dbFile, "workflow_v2_plans");
+    const v2PlanColumns = hasV2Plans ? await tableColumnSet(this.paths.dbFile, "workflow_v2_plans") : new Set();
+    const hasV2HumanGatePackages = await tableExists(this.paths.dbFile, "workflow_v2_human_gate_packages");
+    const v2HumanGatePackageColumns = hasV2HumanGatePackages ? await tableColumnSet(this.paths.dbFile, "workflow_v2_human_gate_packages") : new Set();
+    const canCountV2Plans = hasV2Plans && v2PlanColumns.has("workflow_id");
+    const canCountV2HumanGatePackages = hasV2HumanGatePackages && v2HumanGatePackageColumns.has("workflow_id");
+    const v2PlanOrderBy = v2PlanColumns.has("updated_at") ? "wvp.updated_at DESC" : v2PlanColumns.has("plan_id") ? "wvp.plan_id ASC" : "wvp.rowid DESC";
+    const v2PlanValue = (columnName) => v2PlanColumns.has(columnName) ? `wvp.${columnName}` : "''";
     const limit = clampLimit(query.limit);
     const filters = [];
     const viewFilter = query.view === undefined ? workflowViewWhere("active") : workflowViewWhere(query.view);
     if (viewFilter) filters.push(viewFilter);
+    if (query.workflowId || query.workflow_id) filters.push(`wr.workflow_id=${sqlValue(query.workflowId || query.workflow_id)}`);
     if (query.status) filters.push(`wr.status=${sqlValue(query.status)}`);
     if (query.owner) filters.push(`wr.owner_agent=${sqlValue(query.owner)}`);
     if (query.q) {
@@ -1349,6 +1406,12 @@ SELECT wr.*,
   (SELECT COUNT(*) FROM telegram_outbox tg WHERE tg.meeting_id=wr.workflow_id AND tg.status='failed') AS failed_outbox,
   (SELECT COUNT(*) FROM incident_states inc WHERE inc.status IN ('active','mitigating','monitoring') AND ${incidentWorkflowWhereSql("wr.workflow_id", "inc")}) AS open_incidents,
   (SELECT COUNT(*) FROM side_effect_ledger se WHERE se.workflow_id=wr.workflow_id AND se.status='uncertain') AS side_effect_uncertain,
+  ${canCountV2Plans ? "(SELECT COUNT(*) FROM workflow_v2_plans wvp WHERE wvp.workflow_id=wr.workflow_id)" : "0"} AS v2_plan_count,
+  ${canCountV2Plans ? `(SELECT ${v2PlanValue("plan_id")} FROM workflow_v2_plans wvp WHERE wvp.workflow_id=wr.workflow_id ORDER BY ${v2PlanOrderBy} LIMIT 1)` : "''"} AS latest_v2_plan_id,
+  ${canCountV2Plans ? `(SELECT ${v2PlanValue("status")} FROM workflow_v2_plans wvp WHERE wvp.workflow_id=wr.workflow_id ORDER BY ${v2PlanOrderBy} LIMIT 1)` : "''"} AS latest_v2_plan_status,
+  ${canCountV2Plans ? `(SELECT ${v2PlanValue("workflow_state")} FROM workflow_v2_plans wvp WHERE wvp.workflow_id=wr.workflow_id ORDER BY ${v2PlanOrderBy} LIMIT 1)` : "''"} AS latest_v2_plan_state,
+  ${canCountV2Plans ? `(SELECT ${v2PlanValue("updated_at")} FROM workflow_v2_plans wvp WHERE wvp.workflow_id=wr.workflow_id ORDER BY ${v2PlanOrderBy} LIMIT 1)` : "''"} AS latest_v2_plan_updated_at,
+  ${canCountV2HumanGatePackages ? "(SELECT COUNT(*) FROM workflow_v2_human_gate_packages whgp WHERE whgp.workflow_id=wr.workflow_id)" : "0"} AS v2_human_gate_package_count,
   (SELECT wc.checkpoint_id FROM workflow_checkpoints wc WHERE wc.workflow_id=wr.workflow_id ORDER BY wc.created_at DESC LIMIT 1) AS latest_checkpoint_id,
   (SELECT wc.created_at FROM workflow_checkpoints wc WHERE wc.workflow_id=wr.workflow_id ORDER BY wc.created_at DESC LIMIT 1) AS latest_checkpoint_at,
   (SELECT wc.path FROM workflow_checkpoints wc WHERE wc.workflow_id=wr.workflow_id ORDER BY wc.created_at DESC LIMIT 1) AS latest_checkpoint_path
@@ -1363,7 +1426,7 @@ LIMIT ${limit};`);
     if (!(await tableExists(this.paths.dbFile, "workflow_runs"))) return null;
     const rows = await sqlite(this.paths.dbFile, `SELECT * FROM workflow_runs WHERE workflow_id=${sqlValue(workflowId)} LIMIT 1;`);
     if (!rows[0]) return null;
-    const list = await this.workflowList({ q: workflowId, limit: 50, view: "" });
+    const list = await this.workflowList({ workflowId, limit: 1, view: "" });
     const enriched = list.workflows.find((item) => item.workflowId === workflowId);
     return enriched || parseWorkflowRow(rows[0]);
   }
@@ -1700,6 +1763,60 @@ LIMIT ${perSourceLimit};`);
       }
     } else addMissing("runtime_agents");
 
+    if (await tableExists(this.paths.dbFile, "workflow_v2_plans")) {
+      const planColumns = await tableColumnSet(this.paths.dbFile, "workflow_v2_plans");
+      const searchableColumns = ["plan_id", "workflow_id", "status", "workflow_state", "task_owner_agent", "planner_agent", "objective", "plan_spec_artifact_ref", "payload_json"]
+        .filter((column) => planColumns.has(column))
+        .map((column) => `wvp.${column}`);
+      if (searchableColumns.length) {
+        const orderBy = planColumns.has("updated_at") ? "updated_at DESC" : "plan_id ASC";
+        const rows = await searchRows("workflow_v2_plans", `
+SELECT
+  ${columnExpr(planColumns, "plan_id", "''")},
+  ${columnExpr(planColumns, "workflow_id", "''")},
+  ${columnExpr(planColumns, "status", "''")},
+  ${columnExpr(planColumns, "workflow_state", "''")},
+  ${columnExpr(planColumns, "task_owner_agent", "''")},
+  ${columnExpr(planColumns, "planner_agent", "''")},
+  ${columnExpr(planColumns, "objective", "''")},
+  ${columnExpr(planColumns, "plan_spec_artifact_ref", "''")},
+  ${columnExpr(planColumns, "payload_json", "'{}'")},
+  ${columnExpr(planColumns, "created_at", "''")},
+  ${columnExpr(planColumns, "updated_at", "''")}
+FROM workflow_v2_plans wvp
+WHERE ${searchWhereSql(searchableColumns, q)}
+ORDER BY ${orderBy}
+LIMIT ${perSourceLimit};`);
+        for (const row of rows) {
+          results.push(searchResult("v2_plan", row.plan_id, row, {
+            source: "workflow_v2_plans",
+            workflowId: row.workflow_id,
+            status: row.workflow_state || row.status,
+            title: row.plan_id,
+            summary: row.objective || row.workflow_state || row.status,
+            agentId: row.task_owner_agent || row.planner_agent,
+            tab: "v2",
+            sourceRefs: [
+              { source: "workflow_v2_plans", field: "plan_id", id: row.plan_id },
+              { source: "workflow_v2_plans", field: "workflow_id", id: row.workflow_id },
+              { source: "workflow_v2_plans", field: "plan_spec_artifact_ref", id: row.plan_spec_artifact_ref }
+            ],
+            matchFields: {
+              planId: row.plan_id,
+              workflowId: row.workflow_id,
+              status: row.status,
+              workflowState: row.workflow_state,
+              taskOwnerAgent: row.task_owner_agent,
+              plannerAgent: row.planner_agent,
+              objective: row.objective,
+              planSpecArtifactRef: row.plan_spec_artifact_ref,
+              payload: row.payload_json
+            }
+          }, q));
+        }
+      }
+    } else addMissing("workflow_v2_plans");
+
     if (await tableExists(this.paths.dbFile, "workflow_tasks")) {
       const rows = await searchRows("workflow_tasks", `
 SELECT task_id, workflow_id, phase, owner_agent, runtime, agent_id, task_type, status, expected_artifact, actual_artifact_ref, summary, prompt, blocked_reason, payload_json, created_at, updated_at
@@ -1966,6 +2083,7 @@ LIMIT ${perSourceLimit};`);
         const isHumanGate = String(row.object_type || "").toLowerCase().includes("human_gate");
         results.push(searchResult(isHumanGate ? "human_gate" : "protocol_object", row.object_id, row, {
           workflowId: row.workflow_id || (isHumanGate ? row.parent_object_id : ""),
+          objectType: row.object_type,
           title: row.object_id,
           summary: row.path || `${row.object_type || ""} from ${row.source_agent || row.source_system || ""}`,
           agentId: row.source_agent,
@@ -2960,26 +3078,104 @@ FROM protocol_objects
 WHERE ${filters.join(" AND ")}
 ORDER BY updated_at DESC
 LIMIT ${limit};`);
-    return {
-      count: rows.length,
-      taskLaunches: rows.map((row) => {
+    const v2Where = [
+      query.workflowId ? `workflow_id=${sqlValue(query.workflowId)}` : "1=1",
+      query.status ? `status=${sqlValue(query.status)}` : "1=1"
+    ].join(" AND ");
+    const v2TaskGroupPackages = await tableExists(this.paths.dbFile, "workflow_v2_task_group_packages")
+      ? (await sqlite(this.paths.dbFile, `
+SELECT package_id, workflow_id, plan_id, task_owner_agent, task_group_agents_json, status, summary, artifact_refs_json, evidence_refs_json, payload_json, created_at, updated_at
+FROM workflow_v2_task_group_packages
+WHERE ${v2Where}
+ORDER BY updated_at DESC
+LIMIT ${limit};`)).map((row) => {
         const payload = redactConsoleValue(parseJson(row.payload_json, {}));
         return {
-          draftId: row.object_id,
-          status: row.status,
-          workflowId: row.parent_object_id || payload.workflowId || "",
-          subject: payload.subject || "",
-          objective: payload.objective || "",
-          sourceAgent: row.source_agent || "",
-          path: redactText(row.path || ""),
-          artifacts: payload.artifactRefs || {},
-          roles: payload.roles || {},
-          taskCount: payload.launchMaterialization?.tasks?.length || 0,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
+          packageId: redactText(row.package_id || ""),
+          workflowId: redactText(row.workflow_id || ""),
+          planId: redactText(row.plan_id || ""),
+          source: "workflow_v2_task_group_packages",
+          sourceClass: "v2",
+          sourceClassLabel: "v2 active",
+          packageClass: "task_group",
+          status: row.status || "",
+          summary: redactText(row.summary || ""),
+          taskOwnerAgent: redactText(row.task_owner_agent || ""),
+          taskGroupAgents: redactConsoleValue(parseJson(row.task_group_agents_json, [])),
+          artifactRefs: redactConsoleValue(parseJson(row.artifact_refs_json, [])),
+          evidenceRefs: redactConsoleValue(parseJson(row.evidence_refs_json, [])),
+          createdAt: row.created_at || "",
+          updatedAt: row.updated_at || "",
           payload
         };
       })
+      : [];
+    const v2HumanGatePackages = await tableExists(this.paths.dbFile, "workflow_v2_human_gate_packages")
+      ? (await sqlite(this.paths.dbFile, `
+SELECT package_id, workflow_id, plan_id, cat_brain_agent, cat_claw_agent, status, options_json, required_controls_json, evidence_refs_json, payload_json, created_at, updated_at
+FROM workflow_v2_human_gate_packages
+WHERE ${v2Where}
+ORDER BY updated_at DESC
+LIMIT ${limit};`)).map((row) => {
+        const payload = redactConsoleValue(parseJson(row.payload_json, {}));
+        return {
+          packageId: redactText(row.package_id || ""),
+          workflowId: redactText(row.workflow_id || ""),
+          planId: redactText(row.plan_id || ""),
+          source: "workflow_v2_human_gate_packages",
+          sourceClass: "v2",
+          sourceClassLabel: "v2 active",
+          packageClass: "human_gate",
+          status: row.status || "",
+          summary: redactText(payload.summary || payload.title || ""),
+          catBrainAgent: redactText(row.cat_brain_agent || ""),
+          catClawAgent: redactText(row.cat_claw_agent || ""),
+          options: redactConsoleValue(parseJson(row.options_json, [])),
+          requiredControls: redactConsoleValue(parseJson(row.required_controls_json, [])),
+          evidenceRefs: redactConsoleValue(parseJson(row.evidence_refs_json, [])),
+          createdAt: row.created_at || "",
+          updatedAt: row.updated_at || "",
+          payload
+        };
+      })
+      : [];
+    const v2Packages = [...v2TaskGroupPackages, ...v2HumanGatePackages]
+      .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
+      .slice(0, limit);
+    const taskLaunches = rows.map((row) => {
+      const payload = redactConsoleValue(parseJson(row.payload_json, {}));
+      return {
+        draftId: row.object_id,
+        status: row.status,
+        workflowId: row.parent_object_id || payload.workflowId || "",
+        subject: payload.subject || "",
+        objective: payload.objective || "",
+        source: "workflow_task_launch_package",
+        sourceClass: "v1",
+        sourceClassLabel: "v1 archived/compat",
+        compatibilityStatus: "legacy_read_only",
+        sourceAgent: row.source_agent || "",
+        path: redactText(row.path || ""),
+        artifacts: payload.artifactRefs || {},
+        roles: payload.roles || {},
+        taskCount: payload.launchMaterialization?.tasks?.length || 0,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        payload
+      };
+    });
+    return {
+      count: rows.length,
+      summary: {
+        legacyTaskLaunchCount: taskLaunches.length,
+        v2TaskGroupPackageCount: v2TaskGroupPackages.length,
+        v2HumanGatePackageCount: v2HumanGatePackages.length,
+        v2PackageCount: v2Packages.length,
+        packageCount: taskLaunches.length + v2Packages.length
+      },
+      packages: [...v2Packages, ...taskLaunches],
+      v2Packages,
+      taskLaunches
     };
   }
 
@@ -5392,6 +5588,11 @@ LIMIT ${limit};`);
       if (!grouped[card.column]) grouped[card.column] = [];
       grouped[card.column].push(card);
     }
+    const bySourceClass = { v2: 0, v1: 0, shared_substrate: 0 };
+    for (const card of cards) {
+      const sourceClass = kanbanSourceClass(card.source, card);
+      bySourceClass[sourceClass] = (bySourceClass[sourceClass] || 0) + 1;
+    }
     return {
       schemaVersion: "workflow_console_kanban.v1",
       generatedAt,
@@ -5404,6 +5605,7 @@ LIMIT ${limit};`);
         syntheticCards: evidenceGapCards.length,
         evidenceGaps: evidenceGapCards.length,
         byColumn: Object.fromEntries(columns.map((column) => [column.id, grouped[column.id]?.length || 0])),
+        bySourceClass,
         workflows: uniqueNonEmpty(cards.map((card) => card.workflowId)).length,
         agents: uniqueNonEmpty(cards.map((card) => card.agentId)).length
       }

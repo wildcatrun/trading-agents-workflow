@@ -35,6 +35,37 @@ inside the same package, not separate package releases.
 - Paper-only trading pre-execution smoke.
 - Release smoke integration for the new v2 rehearsal checks.
 
+## 2026-07-22 Migration Closeout Addendum
+
+The P51-P61 closeout narrows the v1/v2 overlap without deleting recovery
+escape hatches:
+
+- Retargeted approved scheduler dispatch, v2 supervisor report/closeout, Human
+  Gate revision/feedback/retry/archive dispatches, `message_flow.send`,
+  message-flow semantic continuation, and `meeting.disperse` fan-out dispatch
+  creation to the canonical `dispatch.package.create` bridge.
+- Added `dispatch.package.callsites.preview` and aligned parity/topology preview
+  wording so remaining blockers are observation/removal requirements, not
+  unfinished generic migration.
+- Hid frozen mutating legacy actions `workflow.advance`, `workflow.supervise`,
+  and the mutating `workflow.supervisor` alias from the default full-tool action
+  enum while preserving read-only preview and explicitly gated escape-hatch
+  behavior.
+- Preserved `meeting.dispatch` as the public compatibility shell during the
+  observation window; `dispatch.package.create` still delegates through the
+  compatibility writer until parity evidence supports removal.
+
+Local closeout evidence:
+
+- Release smoke run id: `final-v2-migration-closeout-local`
+- Release smoke index:
+  `.tmp-smoke-release/final-v2-migration-closeout-local/index.json`
+- Commands covered: `check`, core smoke, v2 canary, external runner guard
+  matrix, Human Gate package/request/delivery guard smoke, non-trading
+  rehearsal, paper-only pre-execution, MCP smoke, and Hermes MCP smoke.
+- Independent reviewer verdict: PASS; remaining low-risk follow-up is to add a
+  dynamic dispatch call-site audit so the hand-maintained inventory cannot drift.
+
 ## Validation Evidence
 
 - Commit: `84d50c42a4b3d8f5e38835cd4bbb35812bb3497c`

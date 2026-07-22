@@ -12,6 +12,9 @@ import {
 } from "./workflow/sqlite.js";
 
 export const CONTROL_LOOP_JOB_ACTION_HANDLER_NAMES = {
+  "workflow.control_loop.lanes.preview": "workflowControlLoopLanesPreview",
+  "workflow.maintenance.lanes.preview": "workflowControlLoopLanesPreview",
+  "workflow.scheduler.lanes.preview": "workflowControlLoopLanesPreview",
   "workflow.control_loop.job.requeue.preview": "workflowControlLoopJobRequeuePreview",
   "workflow.control_loop.job.retry.preview": "workflowControlLoopJobRequeuePreview",
   "workflow.control-loop.job.requeue.preview": "workflowControlLoopJobRequeuePreview",
@@ -23,6 +26,91 @@ export const CONTROL_LOOP_JOB_ACTION_HANDLER_NAMES = {
   "workflow.job.requeue": "workflowControlLoopJobRequeue",
   "control_loop.job.requeue": "workflowControlLoopJobRequeue"
 };
+
+const CONTROL_LOOP_LANE_OWNERSHIP = Object.freeze([
+  {
+    laneId: "approved_schedule_runner",
+    jobTypes: ["scheduled_dispatch"],
+    ownershipClass: "shared_scheduler",
+    defaultState: "active",
+    seedSurface: "seedDueScheduleJobs",
+    executorSurface: "runScheduledDispatchJob",
+    replacementRole: "approved template / Human-Gate-governed schedule dispatch",
+    freezeEligibility: "not_v1_freeze_candidate_shared_lane"
+  },
+  {
+    laneId: "runtime_drain",
+    jobTypes: ["runtime_drain"],
+    ownershipClass: "shared_runtime_substrate",
+    defaultState: "active",
+    seedSurface: "workflow.control_loop.tick",
+    executorSurface: "runtime.bridge.drain",
+    replacementRole: "bounded runtime dispatch drain through runtime adapters",
+    freezeEligibility: "not_v1_freeze_candidate_shared_lane"
+  },
+  {
+    laneId: "stale_dispatch_reconcile",
+    jobTypes: ["stale_dispatch_reconcile"],
+    ownershipClass: "shared_maintenance",
+    defaultState: "active",
+    seedSurface: "workflow.control_loop.tick",
+    executorSurface: "workflow.dispatch.reconcile",
+    replacementRole: "mechanical stale dispatch receipt/failure reconcile",
+    freezeEligibility: "not_v1_freeze_candidate_shared_lane"
+  },
+  {
+    laneId: "message_flow_reconcile",
+    jobTypes: ["message_flow_reconcile"],
+    ownershipClass: "shared_maintenance",
+    defaultState: "active",
+    seedSurface: "workflow.control_loop.tick",
+    executorSurface: "message_flow.reconcile",
+    replacementRole: "mechanical message_flow delivery/receipt reconcile",
+    freezeEligibility: "not_v1_freeze_candidate_shared_lane"
+  },
+  {
+    laneId: "meeting_dispatch_retry",
+    jobTypes: ["meeting_dispatch_retry"],
+    ownershipClass: "shared_dispatch_compatibility",
+    defaultState: "active_compatibility",
+    seedSurface: "meeting.dispatch compatibility retry",
+    executorSurface: "meeting.dispatch",
+    replacementRole: "compatibility retry while generic dispatch package bridge matures",
+    freezeEligibility: "defer_to_generic_dispatch_bridge_migration"
+  },
+  {
+    laneId: "human_gate_maintenance",
+    jobTypes: ["human_gate_request_ensure", "human_gate_inbox"],
+    ownershipClass: "shared_human_gate",
+    defaultState: "active",
+    seedSurface: "workflow.control_loop.tick",
+    executorSurface: "human_gate request/inbox shared rails",
+    replacementRole: "Human Gate request eligibility and inbox evidence batching",
+    freezeEligibility: "not_v1_freeze_candidate_shared_lane"
+  },
+  {
+    laneId: "telegram_outbox_delivery",
+    jobTypes: ["telegram_outbox_deliver"],
+    ownershipClass: "shared_delivery",
+    defaultState: "active",
+    seedSurface: "workflow.control_loop.tick",
+    executorSurface: "telegram.outbox delivery shared rails",
+    replacementRole: "bounded Telegram/outbox delivery progress",
+    freezeEligibility: "not_v1_freeze_candidate_shared_lane"
+  },
+  {
+    laneId: "legacy_workflow_supervise",
+    jobTypes: ["workflow_supervise"],
+    ownershipClass: "legacy_lane_default_closed",
+    defaultState: "default_closed",
+    seedSurface: "workflow.control_loop.tick legacyWorkflowSuperviseLane flag",
+    executorSurface: "workflow.supervise compatibility",
+    replacementRole: "legacy supervisor compatibility only; not shared maintenance",
+    freezeEligibility: "freeze_candidate_after_observation_window_and_caller_audit"
+  }
+]);
+
+const CONTROL_LOOP_LANE_BY_JOB_TYPE = new Map(CONTROL_LOOP_LANE_OWNERSHIP.flatMap((lane) => lane.jobTypes.map((jobType) => [jobType, lane])));
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -69,6 +157,28 @@ function controlLoopJobSummary(row = {}) {
   };
 }
 
+function countBy(rows = [], key) {
+  const counts = {};
+  for (const row of rows) {
+    const value = String(row[key] || "unknown");
+    counts[value] = (counts[value] || 0) + Number(row.count || 0);
+  }
+  return counts;
+}
+
+function laneForJobType(jobType = "") {
+  return CONTROL_LOOP_LANE_BY_JOB_TYPE.get(String(jobType || "")) || {
+    laneId: "unknown_control_loop_job",
+    jobTypes: [String(jobType || "unknown")],
+    ownershipClass: "unknown",
+    defaultState: "unknown",
+    seedSurface: "unknown",
+    executorSurface: "unknown",
+    replacementRole: "unclassified control_loop_jobs row",
+    freezeEligibility: "not_freeze_eligible_until_classified"
+  };
+}
+
 export function createControlLoopJobActionRegistry(handlers = {}) {
   const entries = Object.entries(CONTROL_LOOP_JOB_ACTION_HANDLER_NAMES).map(([action, handlerName]) => {
     const handler = handlers[handlerName];
@@ -89,6 +199,128 @@ export function createControlLoopJobActionHandlers(context = {}) {
   const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const nowIso = requireContextFunction(context, "nowIso");
   const CONTROL_LOOP_ACTIVE_JOB_STATUSES = requireContextValue(context, "CONTROL_LOOP_ACTIVE_JOB_STATUSES");
+
+  async function workflowControlLoopLanesPreview(rootDir, input = {}) {
+    const paths = await ensureWorkflowLayout(rootDir, input);
+    const generatedAt = nowIso();
+    const workflowId = firstText(input.workflowId, input.workflow_id);
+    const limit = boundedNumber([input.limit], 20, 1, 200);
+    const workflowClause = workflowId ? `WHERE workflow_id=${sqlValue(workflowId)}` : "";
+    const andWorkflowClause = workflowId ? `AND workflow_id=${sqlValue(workflowId)}` : "";
+    const statusRows = await sqlite(paths.dbFile, `
+SELECT job_type, status, COUNT(*) AS count, MAX(updated_at) AS last_updated_at
+FROM control_loop_jobs
+${workflowClause}
+GROUP BY job_type, status
+ORDER BY job_type, status;`, { json: true });
+    const sampleRows = await sqlite(paths.dbFile, `
+SELECT job_id, job_type, dedupe_key, priority, status, workflow_id, runtime, attempt, max_attempts, next_run_at, lease_owner, lease_until, last_error, completed_at, updated_at
+FROM control_loop_jobs
+WHERE 1=1
+  ${andWorkflowClause}
+ORDER BY updated_at DESC, created_at DESC
+LIMIT ${limit};`, { json: true });
+    const observedJobTypes = [...new Set(statusRows.map((row) => String(row.job_type || "unknown")))];
+    const lanesById = new Map(CONTROL_LOOP_LANE_OWNERSHIP.map((lane) => [lane.laneId, {
+      ...lane,
+      jobTypes: [...lane.jobTypes],
+      statusCounts: {},
+      activeJobs: 0,
+      retryJobs: 0,
+      terminalAttentionJobs: 0,
+      lastObservedAt: "",
+      observed: false
+    }]));
+    for (const jobType of observedJobTypes) {
+      const lane = laneForJobType(jobType);
+      if (!lanesById.has(lane.laneId)) {
+        lanesById.set(lane.laneId, {
+          ...lane,
+          jobTypes: [...lane.jobTypes],
+          statusCounts: {},
+          activeJobs: 0,
+          retryJobs: 0,
+          terminalAttentionJobs: 0,
+          lastObservedAt: "",
+          observed: false
+        });
+      }
+    }
+    for (const row of statusRows) {
+      const lane = lanesById.get(laneForJobType(row.job_type).laneId);
+      const status = String(row.status || "unknown");
+      const count = Number(row.count || 0);
+      lane.observed = true;
+      lane.statusCounts[status] = (lane.statusCounts[status] || 0) + count;
+      if (CONTROL_LOOP_ACTIVE_JOB_STATUSES.has(status)) lane.activeJobs += count;
+      if (status === "retry_scheduled") lane.retryJobs += count;
+      if (["failed", "dead_letter"].includes(status)) lane.terminalAttentionJobs += count;
+      if (row.last_updated_at && (!lane.lastObservedAt || row.last_updated_at > lane.lastObservedAt)) lane.lastObservedAt = row.last_updated_at;
+    }
+    const lanes = [...lanesById.values()].map((lane) => ({
+      laneId: lane.laneId,
+      jobTypes: lane.jobTypes,
+      ownershipClass: lane.ownershipClass,
+      defaultState: lane.defaultState,
+      seedSurface: lane.seedSurface,
+      executorSurface: lane.executorSurface,
+      replacementRole: lane.replacementRole,
+      freezeEligibility: lane.freezeEligibility,
+      observed: Boolean(lane.observed),
+      statusCounts: lane.statusCounts,
+      activeJobs: lane.activeJobs,
+      retryJobs: lane.retryJobs,
+      terminalAttentionJobs: lane.terminalAttentionJobs,
+      lastObservedAt: lane.lastObservedAt
+    }));
+    const unclassifiedJobTypes = observedJobTypes.filter((jobType) => !CONTROL_LOOP_LANE_BY_JOB_TYPE.has(jobType));
+    const allStatusCounts = countBy(statusRows, "status");
+    return {
+      schemaVersion: "workflow_control_loop_lanes_preview.v1",
+      action: "workflow.control_loop.lanes.preview",
+      preview: true,
+      readOnly: true,
+      sourceClass: "shared_maintenance",
+      writeBoundary: "read_only_inventory",
+      generatedAt,
+      workflowId,
+      laneCount: lanes.length,
+      lanes,
+      observedJobTypes,
+      unclassifiedJobTypes,
+      queueSummary: {
+        statusCounts: allStatusCounts,
+        activeJobs: lanes.reduce((total, lane) => total + lane.activeJobs, 0),
+        retryJobs: lanes.reduce((total, lane) => total + lane.retryJobs, 0),
+        terminalAttentionJobs: lanes.reduce((total, lane) => total + lane.terminalAttentionJobs, 0)
+      },
+      sampleJobs: sampleRows.map(controlLoopJobSummary),
+      freezeReadiness: {
+        status: "not_ready",
+        blockers: [
+          "shared_maintenance_lanes_must_remain_active",
+          ...(unclassifiedJobTypes.length ? ["unclassified_control_loop_job_types_observed"] : []),
+          ...(lanes.some((lane) => lane.laneId === "legacy_workflow_supervise" && lane.activeJobs > 0) ? ["legacy_workflow_supervise_active_jobs_observed"] : [])
+        ]
+      },
+      limitations: [
+        "Preview is read-only and does not seed, claim, run, requeue, or delete control-loop jobs.",
+        "Lane ownership describes current shared maintenance responsibilities, not a v2-only replacement.",
+        "Only legacy_workflow_supervise may become freeze-eligible after observation and caller audit; shared lanes are not v1 freeze candidates."
+      ],
+      wouldMutate: {
+        controlLoopJobs: 0,
+        workflowEvents: 0,
+        dispatches: 0,
+        runtimeRuns: 0,
+        messageFlows: 0,
+        outbox: 0,
+        humanGate: 0,
+        sideEffects: 0
+      },
+      dbFile: paths.dbFile
+    };
+  }
 
   async function workflowControlLoopJobRequeuePreview(rootDir, input = {}) {
     const paths = await ensureWorkflowLayout(rootDir, input);
@@ -288,6 +520,7 @@ WHERE job_id=${sqlValue(row.job_id)}
   }
 
   return {
+    workflowControlLoopLanesPreview,
     workflowControlLoopJobRequeuePreview,
     workflowControlLoopJobRequeue
   };
