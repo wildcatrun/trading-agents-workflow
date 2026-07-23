@@ -76,6 +76,7 @@ export const WORKFLOW_V2_ACTION_HANDLER_NAMES = {
   "workflow.v2.stop": "workflowV2InterventionExecute",
   "workflow.v2.terminate": "workflowV2InterventionExecute",
   "workflow.v2.evaluation_snapshot.preview": "workflowV2EvaluationSnapshotPreview",
+  "workflow.v2.evaluation.record": "workflowV2EvaluationRecord",
   "workflow.v2.evaluation_compatibility.preview": "workflowV2EvaluationCompatibilityPreview",
   "workflow.v2.evaluation_migration.preview": "workflowV2EvaluationMigrationPreview",
   "workflow.v2.validate": "workflowV2Validate",

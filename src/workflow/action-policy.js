@@ -4,7 +4,8 @@ import {
 
 export const WORKFLOW_LEGACY_MUTATING_ACTIONS = new Set([
   "workflow.advance",
-  "workflow.supervise"
+  "workflow.supervise",
+  "workflow.evaluate"
 ]);
 
 export const WORKFLOW_LEGACY_MEETING_DISCUSSION_ACTIONS = new Set([
@@ -108,9 +109,9 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
   }],
   ["workflow.evaluate", {
     decisionClass: "must_migrate",
-    migrationStatus: "legacy_active",
-    replacement: "workflow.v2.evaluation_snapshot.preview + workflow.v2.validate",
-    recommendation: "use v2 evaluation snapshot for read-only evidence decisions and workflow.v2.validate for consistency checks; keep legacy evaluator writes only during compatibility window"
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.evaluation_snapshot.preview + workflow.v2.evaluation.record + workflow.v2.validate",
+    recommendation: "default-disabled compatibility writer only; use v2 evaluation snapshot/record for evaluator evidence and retain legacy writes only behind the explicit evaluator escape hatch"
   }],
   ["workflow.pause", {
     decisionClass: "must_migrate",
@@ -423,6 +424,7 @@ export const WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS = new Set([
   "workflow.v2.plan.create",
   "workflow.v2.info_stack.record",
   "workflow.v2.read_receipt.record",
+  "workflow.v2.evaluation.record",
   "workflow.v2.worker_backend_preflight.record",
   "workflow.v2.manager_review.record",
   "workflow.v2.owner_review.record",
@@ -516,6 +518,7 @@ export const WORKFLOW_ACTION_PERMISSION_RULES = {
   "workflow.runtime_event.record": { capability: "workflow.event.write", risk: "medium", mutating: true },
   "workflow.verification.record": { capability: "workflow.verify", risk: "medium", mutating: true },
   "workflow.evaluate": { capability: "workflow.verify", risk: "medium", mutating: true },
+  "workflow.v2.evaluation.record": { capability: "workflow.verify", risk: "medium", mutating: true },
   "workflow.session_pack.upsert": { capability: "session.write", risk: "medium", mutating: true },
   "workflow.session_run.start": { capability: "session.run", risk: "medium", mutating: true },
   "workflow.session_run.complete": { capability: "session.run", risk: "medium", mutating: true },
@@ -645,6 +648,7 @@ export function workflowActionOverrideEnabled(input, envName, ...fieldNames) {
 export const WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN = Symbol("workflow.internalLegacyCompatibility");
 
 export function workflowLegacyActionOverrideEnabled(input = {}, action = "") {
+  if (action === "workflow.evaluate" && workflowActionEnvEnabled("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR")) return true;
   if (workflowActionEnvEnabled("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS")) return true;
   const marker = input?.[WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN];
   if (!marker || typeof marker !== "object") return false;

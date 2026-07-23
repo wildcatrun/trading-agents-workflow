@@ -126,9 +126,9 @@ const FREEZE_CANDIDATES = [
     batch: "C",
     family: "workflow evaluator",
     actions: ["workflow.evaluate"],
-    currentStatus: "legacy_active",
-    freezeAction: "do_not_freeze_until evaluator checks are absorbed into v2 validate/readiness",
-    v2Replacement: "workflow.v2.evaluation_snapshot.preview + workflow.v2.validate",
+    currentStatus: "frozen_compatibility",
+    freezeAction: "default-disabled compatibility writer; keep per-family legacy evaluator escape hatch during observation window",
+    v2Replacement: "workflow.v2.evaluation_snapshot.preview + workflow.v2.evaluation.record + workflow.v2.validate",
     v2DependencyPolicy: "allowed_until_replaced"
   },
   {

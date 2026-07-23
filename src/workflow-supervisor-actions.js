@@ -4,6 +4,8 @@ import {
   sqlite
 } from "./workflow/sqlite.js";
 import {
+  WORKFLOW_V2_LEGACY_SECRETARY_CLOSEOUT_REQUIRED,
+  WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED,
   workflowV2IsSecretaryCloseoutRequired
 } from "./workflow-v2/neutral-names.js";
 
@@ -45,6 +47,12 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
   const workflowAdvance = requireContextFunction(context, "workflowAdvance");
   const workflowAdvancePreview = requireContextFunction(context, "workflowAdvancePreview");
   const workflowCheckpointLegacyExport = requireContextFunction(context, "workflowCheckpointLegacyExport");
+
+  function normalizeSupervisorAdvanceDecision(advance = null) {
+    if (!advance || typeof advance !== "object") return advance;
+    if (advance.decision !== WORKFLOW_V2_LEGACY_SECRETARY_CLOSEOUT_REQUIRED) return advance;
+    return { ...advance, decision: WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED };
+  }
 
   function supervisorReportPrompt(workflow, advanceResult, checkpointResult, input = {}) {
     const summary = advanceResult.summary || {};
@@ -94,14 +102,14 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
     const deferredRuntimeDrains = [];
     let finalAdvance = null;
     for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
-      const advance = await workflowAdvance(rootDir, {
+      const advance = normalizeSupervisorAdvanceDecision(await workflowAdvance(rootDir, {
         ...input,
         workflowRootDir: paths.root,
         workflowId,
         meetingId,
         autoDispatch,
         syncDispatches: true
-      });
+      }));
       const cycleRecord = { cycle, advance, runtimeDrains: [], deferredRuntimeDrains: [] };
       cycles.push(cycleRecord);
       finalAdvance = advance;
@@ -125,14 +133,14 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
       }
       break;
     }
-    finalAdvance = await workflowAdvance(rootDir, {
+    finalAdvance = normalizeSupervisorAdvanceDecision(await workflowAdvance(rootDir, {
       ...input,
       workflowRootDir: paths.root,
       workflowId,
       meetingId,
       autoDispatch: false,
       syncDispatches: true
-    });
+    }));
     const dispatched = cycles.flatMap((cycle) => cycle.advance?.dispatched || []);
     const checkpoint = writeCheckpoint
       ? await workflowCheckpointLegacyExport(rootDir, {
@@ -218,14 +226,14 @@ export function createWorkflowSupervisorActionHandlers(context = {}) {
     const reportRuntime = normalizeRuntime(input.reportRuntime || input.report_runtime || "openclaw");
     const reportAgent = normalizeAgentId(input.reportAgent || input.report_agent || "cat_claw");
     const checkpoint = boolOption(input.checkpoint ?? input.writeCheckpoint ?? input.write_checkpoint, true);
-    const advance = await workflowAdvancePreview(rootDir, {
+    const advance = normalizeSupervisorAdvanceDecision(await workflowAdvancePreview(rootDir, {
       ...input,
       workflowRootDir: paths.root,
       workflowId,
       meetingId,
       autoDispatch,
       syncDispatches: true
-    });
+    }));
     const wouldDrainRuntimes = drain && advance.wouldDispatch.length
       ? [...new Set(advance.wouldDispatch.map((item) => item.runtime).filter(Boolean))]
       : [];

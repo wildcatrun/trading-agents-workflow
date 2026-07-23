@@ -621,6 +621,33 @@ async function withLocalCodexRegistryWrite(fn) {
   }
 }
 
+async function withLegacyEvaluatorEnabled(fn) {
+  const previous = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR;
+  process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR = "1";
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR;
+    } else {
+      process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR = previous;
+    }
+  }
+}
+
+async function withLegacyActionsDisabled(fn) {
+  const previousLegacy = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS;
+  const previousEvaluator = process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS;
+  delete process.env.TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR;
+  try {
+    return await fn();
+  } finally {
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS", previousLegacy);
+    restoreEnv("TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR", previousEvaluator);
+  }
+}
+
 async function assertRejectsMessage(fn, expected) {
   try {
     await fn();
@@ -6900,16 +6927,17 @@ async function testWorkflowV2ExtractedActionContracts() {
   const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-extracted-action-contracts");
   const { root, dbFile, workflowId } = fixture;
   const workflowModule = await import("../src/workflow.js");
-  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReportPreview", "workflowSupervisorReport", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2InterventionReadinessPreview", "workflowV2InterventionSettlementPreview", "workflowV2InterventionExecute", "workflowV2EvaluationSnapshotPreview", "workflowV2EvaluationCompatibilityPreview", "workflowV2EvaluationMigrationPreview", "workflowV2Validate"]) {
+  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReportPreview", "workflowSupervisorReport", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2InterventionReadinessPreview", "workflowV2InterventionSettlementPreview", "workflowV2InterventionExecute", "workflowV2EvaluationSnapshotPreview", "workflowV2EvaluationRecord", "workflowV2EvaluationCompatibilityPreview", "workflowV2EvaluationMigrationPreview", "workflowV2Validate"]) {
     assert.equal(typeof workflowModule[exportName], "function", `${exportName} should remain a public workflow.js export`);
   }
-  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.report.preview", "workflow.supervisor.report", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.intervention_readiness.preview", "workflow.v2.intervention_settlement.preview", "workflow.v2.intervention.settlement.preview", "workflow.v2.settlement.preview", "workflow.v2.pause.preview", "workflow.v2.resume.preview", "workflow.v2.stop.preview", "workflow.v2.terminate.preview", "workflow.v2.pause", "workflow.v2.resume", "workflow.v2.stop", "workflow.v2.terminate", "workflow.v2.evaluation_snapshot.preview", "workflow.v2.evaluation_compatibility.preview", "workflow.v2.evaluation_migration.preview", "workflow.v2.validate"]) {
+  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.report.preview", "workflow.supervisor.report", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.intervention_readiness.preview", "workflow.v2.intervention_settlement.preview", "workflow.v2.intervention.settlement.preview", "workflow.v2.settlement.preview", "workflow.v2.pause.preview", "workflow.v2.resume.preview", "workflow.v2.stop.preview", "workflow.v2.terminate.preview", "workflow.v2.pause", "workflow.v2.resume", "workflow.v2.stop", "workflow.v2.terminate", "workflow.v2.evaluation_snapshot.preview", "workflow.v2.evaluation.record", "workflow.v2.evaluation_compatibility.preview", "workflow.v2.evaluation_migration.preview", "workflow.v2.validate"]) {
     assert.equal(workflowModule.WORKFLOW_V2_ACTION_REGISTRY.has(action), true, `${action} should remain registered`);
   }
   assert.equal(canonicalWorkflowAction("workflow.v2.intervention-readiness.preview"), "workflow.v2.intervention_readiness.preview");
   assert.equal(canonicalWorkflowAction("workflow.v2.lifecycle.preview"), "workflow.v2.intervention_readiness.preview");
   assert.equal(canonicalWorkflowAction("workflow.v2.evaluation-snapshot.preview"), "workflow.v2.evaluation_snapshot.preview");
   assert.equal(canonicalWorkflowAction("workflow.v2.evaluate.preview"), "workflow.v2.evaluation_snapshot.preview");
+  assert.equal(canonicalWorkflowAction("workflow.v2.evaluator.record"), "workflow.v2.evaluation.record");
   assert.equal(canonicalWorkflowAction("workflow.v2.evaluation-compatibility.preview"), "workflow.v2.evaluation_compatibility.preview");
   assert.equal(canonicalWorkflowAction("workflow.evaluation.migration.preview"), "workflow.v2.evaluation_migration.preview");
   assert.equal(canonicalWorkflowAction("workflow.v2.plan.pause"), "workflow.v2.pause");
@@ -13282,14 +13310,41 @@ VALUES ('artifact-evaluator', '${workflowId}', 'evidence', 'artifact://evaluator
     outbox: sqliteCount(dbFile, "telegram_outbox"),
     sideEffects: sqliteCount(dbFile, "side_effect_ledger")
   };
-  const first = await runAction(root, {
+  await withLegacyActionsDisabled(async () => {
+    const defaultFrozen = await runAction(root, {
+      action: "workflow.evaluate",
+      verificationId: "evaluation-met-regression",
+      workflowId,
+      phaseKey: "verify",
+      callerAgent: "local_codex",
+      evaluatorAgent: "main"
+    });
+    assert.equal(defaultFrozen.status, "blocked");
+    assert.equal(defaultFrozen.reason, "legacy_evaluator_disabled");
+    assert.equal(defaultFrozen.enableEnv, "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR=1");
+    assert.equal(sqliteCount(dbFile, "workflow_verification_results", "result_type='evaluator'"), 0);
+    for (const alias of ["workflow.evaluator.run", "workflow.evaluation.run", "workflow.goal.evaluate"]) {
+      const aliasFrozen = await runAction(root, {
+        action: alias,
+        verificationId: `evaluation-${alias.replaceAll(".", "-")}-frozen`,
+        workflowId,
+        phaseKey: "verify",
+        callerAgent: "local_codex",
+        evaluatorAgent: "main"
+      });
+      assert.equal(aliasFrozen.status, "blocked");
+      assert.equal(aliasFrozen.reason, "legacy_evaluator_disabled");
+      assert.equal(aliasFrozen.enableEnv, "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR=1");
+    }
+  });
+  const first = await withLegacyEvaluatorEnabled(() => runAction(root, {
     action: "workflow.evaluate",
     verificationId: "evaluation-met-regression",
     workflowId,
     phaseKey: "verify",
     callerAgent: "local_codex",
     evaluatorAgent: "main"
-  });
+  }));
   assert.equal(first.resultType, "evaluator");
   assert.equal(first.decision, "met");
   assert.equal(sqliteJson(dbFile, `SELECT status FROM workflow_runs WHERE workflow_id='${workflowId}';`)[0].status, "active");
@@ -13306,13 +13361,13 @@ VALUES ('artifact-evaluator', '${workflowId}', 'evidence', 'artifact://evaluator
 INSERT INTO side_effect_ledger(side_effect_id, workflow_id, side_effect_type, status, payload_json, created_at, updated_at)
 VALUES ('side-effect-evaluator-uncertain', '${workflowId}', 'test', 'uncertain', '{}', '2026-05-31T00:01:00.000Z', '2026-05-31T00:01:00.000Z');`);
   const sideEffectsBeforeSecondEvaluation = sqliteCount(dbFile, "side_effect_ledger");
-  const second = await runAction(root, {
+  const second = await withLegacyEvaluatorEnabled(() => runAction(root, {
     action: "workflow.evaluator.run",
     verificationId: "evaluation-side-effect-regression",
     workflowId,
     callerAgent: "local_codex",
     evaluatorAgent: "main"
-  });
+  }));
   assert.equal(second.resultType, "evaluator");
   assert.equal(second.decision, "side_effect_uncertain");
   assert.equal(sqliteCount(dbFile, "side_effect_ledger"), sideEffectsBeforeSecondEvaluation);
@@ -13356,6 +13411,10 @@ async function testWorkflowV2EvaluationSnapshotPreview() {
   assert.equal(initial.snapshot.v2.planId, "plan-v2-kernel");
   assert.equal(initial.snapshot.v2.nodesTotal > 0, true);
   assert.equal(initial.snapshot.validation.status, "pass");
+  assert.equal(initial.decision, "needs_evidence");
+  assert.equal(initial.blockerCodes.includes("missing_artifact_evidence"), true);
+  assert.equal(initial.blockerCodes.includes("missing_runtime_receipt"), true);
+  assert.equal(initial.blockerCodes.includes("missing_verification_evidence"), true);
   assert.deepEqual({
     verificationRows: sqliteCount(dbFile, "workflow_verification_results"),
     workflowRuns: sqliteCount(dbFile, "workflow_runs"),
@@ -13373,7 +13432,19 @@ UPDATE workflow_v2_plan_nodes
 SET status='completed'
 WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-kernel';
 INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
-VALUES ('artifact-v2-evaluation-met', '${workflowId}', 'evidence', 'artifact://v2-evaluation/met', 'v2 evaluation evidence', 'main', '2026-07-06T00:00:30.000Z');`);
+VALUES ('artifact-v2-evaluation-met', '${workflowId}', 'evidence', 'artifact://v2-evaluation/met', 'v2 evaluation evidence', 'main', '2026-07-06T00:00:30.000Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES ('runtime-v2-evaluation-met', 'dispatch-v2-evaluation-met', '${workflowId}', '${workflowId}', 'trace-v2-evaluation-met', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'completed', '', 1, '2026-07-06T00:00:30.100Z', '2026-07-06T00:00:30.200Z', 100, '', '', 'hash-v2-evaluation-met', '', '{}');`);
+  await runAction(root, {
+    action: "workflow.verification.record",
+    verificationId: "verification-v2-evaluation-pass",
+    workflowId,
+    resultType: "verifier",
+    decision: "pass",
+    callerAgent: "local_codex",
+    sourceAgent: "cat_claw",
+    summary: "Verifier pass for v2 evaluation."
+  });
   const metSnapshot = await runAction(root, {
     action: "workflow.v2.evaluation_snapshot.preview",
     workflowId,
@@ -13381,7 +13452,72 @@ VALUES ('artifact-v2-evaluation-met', '${workflowId}', 'evidence', 'artifact://v
     generatedAt: "2026-07-06T00:00:30.000Z"
   });
   assert.equal(metSnapshot.decision, "met");
+  assert.equal(metSnapshot.blockerCodes.length, 0);
   assert.equal(JSON.stringify(metSnapshot).includes("must-not-appear-snapshot-objective"), false);
+  await runAction(root, {
+    action: "workflow.v2.plan.create",
+    workflowId,
+    planId: "plan-v2-evaluation-plan-b",
+    objective: "Second plan must not inherit dispatch/runtime blockers from the first plan.",
+    taskOwnerAgent: "cat_heart",
+    participantManagers: ["cat_body", "cat_nose"],
+    ...v2PlanContract()
+  });
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_plans
+SET status='completed', workflow_state='completed'
+WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-evaluation-plan-b';
+UPDATE workflow_v2_plan_nodes
+SET status='completed'
+WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-evaluation-plan-b';
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES ('runtime-v2-evaluation-plan-b-met', 'dispatch-v2-evaluation-plan-b-met', '${workflowId}', '${workflowId}', 'trace-v2-evaluation-plan-b-met', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'completed', '', 1, '2026-07-06T00:00:30.300Z', '2026-07-06T00:00:30.400Z', 100, '', '', 'hash-v2-evaluation-plan-b-met', '', '{"planId":"plan-v2-evaluation-plan-b"}');
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-v2-evaluation-plan-a-failed', '${workflowId}', '${workflowId}', 'trace-v2-evaluation-plan-a-failed', 'idem-v2-evaluation-plan-a-failed', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'failed', 'normal', 1, 1, '', 'runtime_failed', 'plan A failed dispatch token=must-not-appear-plan-scope-dispatch', 'prompt', '{"planId":"plan-v2-kernel"}', 'main', '2026-07-06T00:00:30.500Z', '', '', '', '2026-07-06T00:00:30.500Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES ('runtime-v2-evaluation-plan-a-failed', 'dispatch-v2-evaluation-plan-a-failed', '${workflowId}', '${workflowId}', 'trace-v2-evaluation-plan-a-failed', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'timeout', 1, '2026-07-06T00:00:30.500Z', '2026-07-06T00:00:30.600Z', 100, '', '', '', 'plan A runtime token=must-not-appear-plan-scope-runtime', '{"planId":"plan-v2-kernel"}');`);
+  await runAction(root, {
+    action: "workflow.verification.record",
+    verificationId: "verification-v2-evaluation-plan-b-pass",
+    workflowId,
+    phaseKey: "plan-v2-evaluation-plan-b",
+    resultType: "verifier",
+    decision: "pass",
+    callerAgent: "local_codex",
+    sourceAgent: "cat_claw",
+    summary: "Verifier pass for scoped plan B."
+  });
+  await runAction(root, {
+    action: "workflow.verification.record",
+    verificationId: "verification-v2-evaluation-plan-a-not-met",
+    workflowId,
+    phaseKey: "plan-v2-kernel",
+    resultType: "refuter",
+    decision: "not_met",
+    callerAgent: "local_codex",
+    sourceAgent: "cat_heart",
+    summary: "Refuter for plan A must not affect scoped plan B."
+  });
+  const planBSnapshot = await runAction(root, {
+    action: "workflow.v2.evaluation_snapshot.preview",
+    workflowId,
+    planId: "plan-v2-evaluation-plan-b",
+    generatedAt: "2026-07-06T00:00:30.700Z"
+  });
+  assert.equal(planBSnapshot.snapshot.v2.planCount, 2);
+  assert.equal(planBSnapshot.snapshot.counts.failedDispatches, 0);
+  assert.equal(planBSnapshot.snapshot.counts.failedRuntimeRuns, 0);
+  assert.equal(planBSnapshot.snapshot.counts.verificationCounts.pass, 1);
+  assert.equal(planBSnapshot.snapshot.counts.verificationCounts.not_met || 0, 0);
+  assert.equal(planBSnapshot.blockerCodes.includes("failed_runtime_or_dispatch"), false);
+  assert.equal(planBSnapshot.decision, "met");
+  assert.equal(JSON.stringify(planBSnapshot).includes("must-not-appear-plan-scope"), false);
+  sqliteExec(dbFile, `
+DELETE FROM workflow_v2_plan_nodes WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-evaluation-plan-b';
+DELETE FROM workflow_v2_plans WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-evaluation-plan-b';
+DELETE FROM runtime_runs WHERE runtime_run_id IN ('runtime-v2-evaluation-plan-b-met','runtime-v2-evaluation-plan-a-failed');
+DELETE FROM mixed_meeting_dispatches WHERE dispatch_id='dispatch-v2-evaluation-plan-a-failed';
+DELETE FROM workflow_verification_results WHERE verification_id IN ('verification-v2-evaluation-plan-b-pass','verification-v2-evaluation-plan-a-not-met');`);
   sqliteExec(dbFile, `
 UPDATE workflow_v2_plans
 SET status='running', workflow_state='active'
@@ -13519,6 +13655,22 @@ WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-kernel';`);
   assert.equal(notMetSnapshot.decision, "not_met");
   assert.equal(notMetSnapshot.snapshot.counts.verificationCounts.not_met, 1);
   sqliteExec(dbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-v2-evaluation-failed', '${workflowId}', '${workflowId}', 'trace-v2-evaluation-failed', 'idem-v2-evaluation-failed', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'failed', 'normal', 1, 1, '', 'runtime_failed', 'failed dispatch token=must-not-appear-dispatch', 'prompt', '{}', 'main', '2026-07-06T00:00:55.000Z', '', '', '', '2026-07-06T00:00:55.000Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES ('runtime-v2-evaluation-failed', 'dispatch-v2-evaluation-failed', '${workflowId}', '${workflowId}', 'trace-v2-evaluation-failed', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'failed', 'timeout', 1, '2026-07-06T00:00:55.000Z', '2026-07-06T00:00:56.000Z', 1000, '', '', '', 'runtime token=must-not-appear-runtime', '{}');`);
+  const failedRuntimeSnapshot = await runAction(root, {
+    action: "workflow.v2.evaluation_snapshot.preview",
+    workflowId,
+    planId: "plan-v2-kernel",
+    generatedAt: "2026-07-06T00:00:56.000Z"
+  });
+  assert.equal(failedRuntimeSnapshot.decision, "not_met");
+  assert.equal(failedRuntimeSnapshot.snapshot.counts.failedDispatches, 1);
+  assert.equal(failedRuntimeSnapshot.snapshot.counts.failedRuntimeRuns, 1);
+  assert.equal(failedRuntimeSnapshot.blockerCodes.includes("failed_runtime_or_dispatch"), true);
+  assert.equal(JSON.stringify(failedRuntimeSnapshot).includes("must-not-appear"), false);
+  sqliteExec(dbFile, `
 INSERT INTO side_effect_ledger(side_effect_id, workflow_id, side_effect_type, status, payload_json, created_at, updated_at)
 VALUES ('side-effect-v2-evaluation-uncertain', '${workflowId}', 'test', 'uncertain', '{"secret":"must-not-appear"}', '2026-07-06T00:01:00.000Z', '2026-07-06T00:01:00.000Z');`);
   const sideEffectSnapshot = await runAction(root, {
@@ -13539,6 +13691,9 @@ VALUES ('side-effect-v2-evaluation-uncertain', '${workflowId}', 'test', 'uncerta
   });
   assert.equal(missingPlanSnapshot.decision, "needs_evidence");
   assert.equal(missingPlanSnapshot.snapshot.v2.planFound, false);
+  assert.equal(missingPlanSnapshot.snapshot.v2.planScopeRequired, true);
+  assert.equal(missingPlanSnapshot.snapshot.counts.runtimeReceiptCount, 0);
+  assert.equal(missingPlanSnapshot.snapshot.counts.verificationTotal, 0);
   const partialRoot = await tempRoot("workflow-v2-evaluation-snapshot-partial-schema");
   await workflowStatus(partialRoot, {});
   const partialDbFile = path.join(partialRoot, "tracking.db");
@@ -13554,6 +13709,157 @@ DROP TABLE workflow_v2_worker_adapter_jobs;`);
   assert.equal(partial.snapshot.v2.planFound, true);
   assert.equal(partial.snapshot.validation.status, "pass");
   assert.equal(sqliteCount(partialDbFile, "workflow_v2_worker_adapter_jobs"), 0);
+}
+
+async function testWorkflowV2EvaluationRecord() {
+  const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-evaluation-record");
+  const { root, dbFile, workflowId } = fixture;
+  const countsBefore = {
+    verificationRows: sqliteCount(dbFile, "workflow_verification_results"),
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger")
+  };
+  await assertRejectsMessage(
+    () => runAction(root, {
+      action: "workflow.v2.evaluation.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      generatedAt: "2026-07-06T00:09:59.000Z",
+      callerAgent: "local_codex",
+      callerRuntime: "local_codex",
+      evaluatorAgent: "main"
+    }),
+    /requires verificationId or idempotencyKey/
+  );
+  assert.equal(sqliteCount(dbFile, "workflow_verification_results"), countsBefore.verificationRows);
+  const needsEvidence = await runAction(root, {
+    action: "workflow.v2.evaluation_record",
+    verificationId: "evaluation-v2-record-needs-evidence",
+    workflowId,
+    planId: "plan-v2-kernel",
+    generatedAt: "2026-07-06T00:10:00.000Z",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    evaluatorAgent: "main"
+  });
+  assert.equal(needsEvidence.operation, "workflow.v2.evaluation.record");
+  assert.equal(needsEvidence.schemaVersion, "workflow_v2_evaluation_record_result.v1");
+  assert.equal(needsEvidence.status, "recorded");
+  assert.equal(needsEvidence.replayed, false);
+  assert.equal(needsEvidence.resultType, "evaluator");
+  assert.equal(needsEvidence.decision, "needs_evidence");
+  assert.equal(needsEvidence.blockerCodes.includes("missing_artifact_evidence"), true);
+  assert.equal(sqliteCount(dbFile, "workflow_verification_results"), countsBefore.verificationRows + 1);
+  assert.deepEqual({
+    dispatches: sqliteCount(dbFile, "mixed_meeting_dispatches"),
+    outbox: sqliteCount(dbFile, "telegram_outbox"),
+    sideEffects: sqliteCount(dbFile, "side_effect_ledger")
+  }, {
+    dispatches: countsBefore.dispatches,
+    outbox: countsBefore.outbox,
+    sideEffects: countsBefore.sideEffects
+  });
+  const needsEvidenceRow = sqliteJson(dbFile, `
+SELECT result_type AS resultType, decision, source_agent AS sourceAgent, source_runtime AS sourceRuntime, payload_hash AS payloadHash, payload_json AS payloadJson
+FROM workflow_verification_results
+WHERE verification_id='evaluation-v2-record-needs-evidence';`)[0];
+  assert.equal(needsEvidenceRow.resultType, "evaluator");
+  assert.equal(needsEvidenceRow.decision, "needs_evidence");
+  assert.equal(needsEvidenceRow.sourceAgent, "main");
+  assert.equal(needsEvidenceRow.sourceRuntime, "local_codex");
+  assert.equal(needsEvidenceRow.payloadHash, needsEvidence.payloadHash);
+  assert.equal(JSON.parse(needsEvidenceRow.payloadJson).evaluator, "workflow_v2_evaluator_v1");
+
+  sqliteExec(dbFile, `
+UPDATE workflow_v2_plans
+SET status='completed', workflow_state='completed'
+WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-kernel';
+UPDATE workflow_v2_plan_nodes
+SET status='completed'
+WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-kernel';
+INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
+VALUES ('artifact-v2-evaluation-record-met', '${workflowId}', 'evidence', 'artifact://v2-evaluation/record-met', 'v2 evaluation record evidence', 'main', '2026-07-06T00:11:00.000Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES ('runtime-v2-evaluation-record-met', 'dispatch-v2-evaluation-record-met', '${workflowId}', '${workflowId}', 'trace-v2-evaluation-record-met', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'completed', '', 1, '2026-07-06T00:11:01.000Z', '2026-07-06T00:11:02.000Z', 1000, '', '', 'hash-v2-evaluation-record-met', '', '{}');`);
+  await runAction(root, {
+    action: "workflow.verification.record",
+    verificationId: "verification-v2-evaluation-record-pass",
+    workflowId,
+    resultType: "verifier",
+    decision: "pass",
+    callerAgent: "local_codex",
+    sourceAgent: "cat_claw",
+    summary: "Verifier pass for v2 record."
+  });
+  const metInput = {
+    action: "workflow.v2.evaluation.record",
+    verificationId: "evaluation-v2-record-met",
+    workflowId,
+    planId: "plan-v2-kernel",
+    generatedAt: "2026-07-06T00:11:03.000Z",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    evaluatorAgent: "main",
+    idempotencyKey: "met-replay"
+  };
+  const met = await runAction(root, metInput);
+  assert.equal(met.decision, "met");
+  assert.equal(met.status, "recorded");
+  const rowsAfterMet = sqliteCount(dbFile, "workflow_verification_results");
+  const replay = await runAction(root, metInput);
+  assert.equal(replay.status, "replayed");
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.payloadHash, met.payloadHash);
+  assert.equal(sqliteCount(dbFile, "workflow_verification_results"), rowsAfterMet);
+  await assertRejectsMessage(
+    () => runAction(root, { ...metInput, generatedAt: "2026-07-06T00:11:04.000Z" }),
+    /idempotency conflict/
+  );
+  const concurrentInput = {
+    ...metInput,
+    verificationId: "evaluation-v2-record-concurrent-met",
+    idempotencyKey: "met-concurrent-replay",
+    generatedAt: "2026-07-06T00:11:04.500Z"
+  };
+  const rowsBeforeConcurrent = sqliteCount(dbFile, "workflow_verification_results");
+  const concurrentResults = await Promise.all([
+    runAction(root, concurrentInput),
+    runAction(root, concurrentInput)
+  ]);
+  assert.deepEqual(concurrentResults.map((result) => result.status).sort(), ["recorded", "replayed"]);
+  assert.equal(new Set(concurrentResults.map((result) => result.payloadHash)).size, 1);
+  assert.equal(sqliteCount(dbFile, "workflow_verification_results"), rowsBeforeConcurrent + 1);
+
+  sqliteExec(dbFile, `
+INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
+VALUES ('dispatch-v2-evaluation-record-failed', '${workflowId}', '${workflowId}', 'trace-v2-evaluation-record-failed', 'idem-v2-evaluation-record-failed', 'hermers', 'cat_body', 'hermers:cat_body', 'workflow_task', 'failed', 'normal', 1, 1, '', 'runtime_failed', 'failed record dispatch token=record-dispatch-secret', 'prompt', '{}', 'main', '2026-07-06T00:11:05.000Z', '', '', '', '2026-07-06T00:11:05.000Z');`);
+  const notMet = await runAction(root, {
+    action: "workflow.v2.evaluation.record",
+    verificationId: "evaluation-v2-record-not-met",
+    workflowId,
+    planId: "plan-v2-kernel",
+    generatedAt: "2026-07-06T00:11:06.000Z",
+    callerAgent: "local_codex",
+    evaluatorAgent: "main"
+  });
+  assert.equal(notMet.decision, "not_met");
+  assert.equal(notMet.blockerCodes.includes("failed_runtime_or_dispatch"), true);
+  sqliteExec(dbFile, `
+INSERT INTO incident_states(incident_id, status, mode, affected_planes_json, summary, commander, impact, current_hypothesis, mitigation, rollback_options, exit_criteria, timeline_json, payload_json, declared_at, next_update_at, resolved_at, updated_at)
+VALUES ('incident-v2-evaluation-record', 'active', 'incident', '["workflow"]', 'Active evaluator record incident', 'main', 'workflow evaluation blocked', '', '', '', 'resolve incident', '[]', '{"workflowId":"${workflowId}","token":"record-incident-secret"}', '2026-07-06T00:11:07.000Z', '', '', '2026-07-06T00:11:07.000Z');`);
+  const blocked = await runAction(root, {
+    action: "workflow.v2.evaluation.record",
+    verificationId: "evaluation-v2-record-blocked",
+    workflowId,
+    planId: "plan-v2-kernel",
+    generatedAt: "2026-07-06T00:11:08.000Z",
+    callerAgent: "local_codex",
+    evaluatorAgent: "main"
+  });
+  assert.equal(blocked.decision, "blocked");
+  assert.equal(blocked.blockerCodes.includes("active_incident"), true);
+  assert.equal(JSON.stringify(blocked).includes("record-incident-secret"), false);
 }
 
 async function testWorkflowV2EvaluationCompatibilityPreview() {
@@ -13586,6 +13892,7 @@ async function testWorkflowV2EvaluationCompatibilityPreview() {
   assert.equal(noObservation.previewOnly, true);
   assert.equal(noObservation.writeMode, "read_only_compatibility_audit");
   assert.equal(noObservation.status, "needs_observation");
+  assert.equal(noObservation.replacementAction, "workflow.v2.evaluation_snapshot.preview + workflow.v2.evaluation.record + workflow.v2.validate");
   assert.equal(noObservation.freezeCandidate, false);
   assert.equal(noObservation.freezeReviewCandidate, false);
   assert.equal(noObservation.parity.legacyObserved, false);
@@ -13608,7 +13915,9 @@ UPDATE workflow_v2_plan_nodes
 SET status='completed'
 WHERE workflow_id='${workflowId}' AND plan_id='plan-v2-kernel';
 INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
-VALUES ('artifact-v2-evaluation-compatibility-met', '${workflowId}', 'evidence', 'artifact://v2-evaluation/compatibility-met', 'v2 compatibility evidence', 'main', '2026-07-06T00:03:30.000Z');`);
+VALUES ('artifact-v2-evaluation-compatibility-met', '${workflowId}', 'evidence', 'artifact://v2-evaluation/compatibility-met', 'v2 compatibility evidence', 'main', '2026-07-06T00:03:30.000Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES ('runtime-v2-evaluation-compatibility-met', 'dispatch-v2-evaluation-compatibility-met', '${workflowId}', '${workflowId}', 'trace-v2-evaluation-compatibility-met', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'completed', '', 1, '2026-07-06T00:03:31.000Z', '2026-07-06T00:03:32.000Z', 1000, '', '', 'hash-v2-evaluation-compatibility-met', '', '{}');`);
   await runAction(root, {
     action: "workflow.verification.record",
     verificationId: "verification-v2-evaluation-compatibility-pass",
@@ -13620,14 +13929,14 @@ VALUES ('artifact-v2-evaluation-compatibility-met', '${workflowId}', 'evidence',
     sourceAgent: "cat_claw",
     summary: "Verifier pass for v2 compatibility."
   });
-  await runAction(root, {
+  await withLegacyEvaluatorEnabled(() => runAction(root, {
     action: "workflow.evaluate",
     verificationId: "evaluation-v2-compatibility-met",
     workflowId,
     phaseKey: "verify",
     callerAgent: "local_codex",
     evaluatorAgent: "main"
-  });
+  }));
   const beforeMatchedPreview = {
     verificationRows: sqliteCount(dbFile, "workflow_verification_results"),
     events: sqliteCount(dbFile, "workflow_events"),
@@ -13709,7 +14018,9 @@ async function testWorkflowV2EvaluationMigrationPreview() {
   });
   sqliteExec(dbFile, `
 INSERT INTO artifact_index(artifact_id, workflow_id, kind, path, summary, created_by, created_at)
-VALUES ('artifact-v2-evaluation-migration', '${workflowId}', 'evidence', 'artifact://v2-evaluation/migration', 'migration evidence', 'main', '2026-07-06T00:06:00.000Z');`);
+VALUES ('artifact-v2-evaluation-migration', '${workflowId}', 'evidence', 'artifact://v2-evaluation/migration', 'migration evidence', 'main', '2026-07-06T00:06:00.000Z');
+INSERT INTO runtime_runs(runtime_run_id, dispatch_id, meeting_id, workflow_id, trace_id, runtime, agent_id, adapter, backend, acp_agent, session_key, status, failure_type, attempt, started_at, completed_at, latency_ms, message_id, input_hash, output_hash, error, payload_json)
+VALUES ('runtime-v2-evaluation-migration-met', 'dispatch-v2-evaluation-migration-met', '${workflowId}', '${workflowId}', 'trace-v2-evaluation-migration-met', 'hermers', 'cat_body', 'hermes_acp', '', '', '', 'completed', '', 1, '2026-07-06T00:06:01.000Z', '2026-07-06T00:06:02.000Z', 1000, '', '', 'hash-v2-evaluation-migration-met', '', '{}');`);
   await runAction(root, {
     action: "workflow.verification.record",
     verificationId: "verification-v2-evaluation-migration-pass",
@@ -13720,13 +14031,13 @@ VALUES ('artifact-v2-evaluation-migration', '${workflowId}', 'evidence', 'artifa
     sourceAgent: "cat_claw",
     summary: "Verifier pass for migration inventory."
   });
-  await runAction(root, {
+  await withLegacyEvaluatorEnabled(() => runAction(root, {
     action: "workflow.evaluate",
     verificationId: "evaluation-v2-migration-met",
     workflowId,
     callerAgent: "local_codex",
     evaluatorAgent: "main"
-  });
+  }));
   await runAction(root, {
     action: "workflow.evaluator.record",
     verificationId: "evaluation-v2-migration-needs-evidence",
@@ -13763,11 +14074,15 @@ VALUES ('artifact-v2-evaluation-migration', '${workflowId}', 'evidence', 'artifa
   assert.equal(scoped.observations.decisionCounts.met, 1);
   assert.equal(scoped.observations.latestEvaluatorRows[0].verificationId, "evaluation-v2-migration-met");
   assert.equal(scoped.legacyEntryPoints.some((row) => row.action === "workflow.evaluate" && row.mutating === true), true);
-  assert.equal(scoped.replacementEntryPoints.every((row) => row.mutating === false), true);
+  assert.equal(scoped.legacyEntryPoints.find((row) => row.action === "workflow.evaluate")?.migrationStatus, "frozen_compatibility");
+  assert.equal(scoped.replacementEntryPoints.some((row) => row.action === "workflow.v2.evaluation.record" && row.mutating === true), true);
   assert.equal(scoped.toolSurface.internalRegistryRetainsLegacyEvaluate, true);
+  assert.equal(scoped.toolSurface.legacyEvaluateDefaultFrozen, true);
   assert.equal(scoped.toolSurface.fullToolExposesLegacyEvaluate, false);
+  assert.equal(scoped.toolSurface.fullToolHasV2EvaluationRecord, true);
   assert.equal(scoped.toolSurface.fullToolHasV2EvaluationPreviews, true);
   assert.equal(scoped.toolSurface.governanceToolExposesLegacyEvaluate, false);
+  assert.equal(scoped.toolSurface.governanceToolHasV2EvaluationRecord, true);
   assert.equal(scoped.toolSurface.governanceToolHasV2EvaluationPreviews, true);
   assert.equal(scoped.observations.callerMigrationProof, false);
   assert.equal(scoped.callerOperationEvidence.legacy.sampleCount, 0);
@@ -14412,21 +14727,23 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(workflowActionMigrationInfo("workflow.supervise").decisionClass, "compat_shell_only");
     assert.equal(workflowActionMigrationInfo("workflow.supervise").migrationStatus, "frozen_compatibility");
     assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.supervise"].mutating, true);
+    assert.equal(workflowActionMigrationInfo("workflow.evaluate").migrationStatus, "frozen_compatibility");
+    assert.equal(workflowActionMigrationInfo("workflow.evaluate").replacement, "workflow.v2.evaluation_snapshot.preview + workflow.v2.evaluation.record + workflow.v2.validate");
     assert.equal(workflowActionMigrationInfo("meeting.create").decisionClass, "compat_shell_only");
     assert.equal(workflowActionMigrationInfo("meeting.create").migrationStatus, "frozen_compatibility");
     assert.equal(workflowActionMigrationInfo("meeting.create").replacement, "workflow.v2.plan.create + workflow.v2.task_group_package.record");
     assert.equal(workflowActionMigrationInfo("meeting.action_item").replacement, "workflow.v2.plan.create + workflow.v2.plan_nodes");
     assert.equal(workflowActionMigrationInfo("cat_claw.minutes").replacement, "workflow.v2.protocol_audit.record");
     let aliasBlocked = null;
-    for (const frozenAction of ["workflow.advance", "workflow.supervise", "workflow.supervisor"]) {
+    for (const frozenAction of ["workflow.advance", "workflow.supervise", "workflow.supervisor", "workflow.evaluate"]) {
       const blocked = await runAction(root, {
         action: frozenAction,
         workflowId: "wf-convergence-frozen-compatibility"
       });
       assert.equal(blocked.status, "blocked");
       assert.equal(blocked.allowed, false);
-      assert.equal(blocked.reason, "legacy_action_disabled");
-      assert.equal(blocked.enableEnv, "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1");
+      assert.equal(blocked.reason, frozenAction === "workflow.evaluate" ? "legacy_evaluator_disabled" : "legacy_action_disabled");
+      assert.equal(blocked.enableEnv, frozenAction === "workflow.evaluate" ? "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR=1" : "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1");
       if (frozenAction === "workflow.supervisor") aliasBlocked = blocked;
     }
     assert.equal(aliasBlocked.action, "workflow.supervise");
@@ -14523,17 +14840,18 @@ SELECT status, next_state, payload_json
 FROM workflow_events
 WHERE event_type='workflow.action_migration_telemetry'
 ORDER BY created_at;`);
-    assert.equal(telemetryRows.length, 3);
+    assert.equal(telemetryRows.length, 4);
     const telemetryPayloads = telemetryRows.map((row) => JSON.parse(row.payload_json));
-    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["workflow.advance", "workflow.supervise", "workflow.supervise"]);
+    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["workflow.advance", "workflow.evaluate", "workflow.supervise", "workflow.supervise"]);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.task.launch.list"), false);
     const meetingMirrorTelemetry = telemetryPayloads.filter((row) => row.legacyCompatibilitySource === "meeting.action_item");
     assert.deepEqual(meetingMirrorTelemetry, []);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.run.upsert"), false);
     assert.equal(telemetryRows.filter((row) => row.status === "legacy_active").length, 0);
     assert.equal(telemetryRows.filter((row) => row.status === "deprecated").length, 0);
-    assert.equal(telemetryRows.filter((row) => row.status === "frozen_compatibility").length, 3);
+    assert.equal(telemetryRows.filter((row) => row.status === "frozen_compatibility").length, 4);
     assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 3);
+    assert.equal(telemetryRows.filter((row) => row.next_state === "must_migrate").length, 1);
     assert.equal(telemetryRows.filter((row) => row.next_state === "archive_no_migration").length, 0);
     assert.equal(telemetryPayloads.every((row) => row.telemetryOnly === true), true);
 
@@ -22433,6 +22751,8 @@ async function testWorkflowV2PermissionAndConsoleGate() {
   assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.v2.evaluation_snapshot.preview"), true);
   assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.v2.evaluation_compatibility.preview"), true);
   assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.v2.evaluation_migration.preview"), true);
+  assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.v2.evaluation.record"]?.capability, "workflow.verify");
+  assert.equal(WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS.has("workflow.v2.evaluation.record"), true);
   assert.equal(WORKFLOW_CONSOLE_READ_ONLY_ACTIONS.has("workflow.control_loop.lanes.preview"), true);
   assert.equal(WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS.has("dispatch.package.callsites.preview"), true);
   assert.equal(WORKFLOW_CONSOLE_READ_ONLY_ACTIONS.has("dispatch.package.callsites.preview"), true);
@@ -22536,6 +22856,14 @@ async function testWorkflowV2PermissionAndConsoleGate() {
   });
   assert.equal(evaluationMigrationPolicy.allowed, true);
   assert.equal(evaluationMigrationPolicy.readOnly, true);
+  const evaluationRecordPolicy = await runAction(root, {
+    action: "workflow.permission.check",
+    targetAction: "workflow.v2.evaluation.record",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex"
+  });
+  assert.equal(evaluationRecordPolicy.allowed, true);
+  assert.equal(evaluationRecordPolicy.readOnly, false);
   const indexSource = await fs.readFile(path.join(process.cwd(), "index.js"), "utf8");
   const fullToolActionsSource = indexSource.slice(
     indexSource.indexOf("const toolParameters = {"),
@@ -22543,6 +22871,7 @@ async function testWorkflowV2PermissionAndConsoleGate() {
   );
   assert.equal(fullToolActionsSource.includes('"workflow.evaluate"'), false);
   assert.equal(fullToolActionsSource.includes('"workflow.v2.evaluation_snapshot.preview"'), true);
+  assert.equal(fullToolActionsSource.includes('"workflow.v2.evaluation.record"'), true);
   assert.equal(fullToolActionsSource.includes('"workflow.v2.evaluation_compatibility.preview"'), true);
   assert.equal(fullToolActionsSource.includes('"workflow.v2.evaluation_migration.preview"'), true);
   const governanceActionsSource = indexSource.slice(
@@ -22550,6 +22879,7 @@ async function testWorkflowV2PermissionAndConsoleGate() {
     indexSource.indexOf("]);", indexSource.indexOf("const governanceWorkflowActions = new Set([")) + 3
   );
   assert.equal(governanceActionsSource.includes('"workflow.v2.evaluation_snapshot.preview"'), true);
+  assert.equal(governanceActionsSource.includes('"workflow.v2.evaluation.record"'), true);
   assert.equal(governanceActionsSource.includes('"workflow.v2.evaluation_compatibility.preview"'), true);
   assert.equal(governanceActionsSource.includes('"workflow.v2.evaluation_migration.preview"'), true);
   assert.equal(governanceActionsSource.includes('"workflow.evaluate"'), false);
@@ -25955,6 +26285,7 @@ try {
     ["control_loop tick extracted action contracts", testControlLoopTickExtractedActionContracts],
     ["workflow evaluator evidence", testWorkflowEvaluatorEvidence],
     ["workflow v2 evaluation snapshot preview", testWorkflowV2EvaluationSnapshotPreview],
+    ["workflow v2 evaluation record", testWorkflowV2EvaluationRecord],
     ["workflow v2 evaluation compatibility preview", testWorkflowV2EvaluationCompatibilityPreview],
     ["workflow v2 evaluation migration preview", testWorkflowV2EvaluationMigrationPreview],
     ["human_gate pending cleanup/retry", testHumanGatePendingCleanupAndRetryRedaction],

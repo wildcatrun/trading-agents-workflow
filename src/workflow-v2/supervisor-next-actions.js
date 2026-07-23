@@ -44,6 +44,16 @@ function candidate(id, type, followUpAction, reason, input = {}, details = {}) {
   };
 }
 
+function supervisorSecretaryRole(input = {}) {
+  return workflowGovernanceRole({
+    ...input,
+    reportAgent: "",
+    report_agent: "",
+    reportRuntime: "",
+    report_runtime: ""
+  }, "catClaw");
+}
+
 const CHECKPOINT_PREVIEW_PLAN_DECISIONS = new Set(["blocked", "human_gate_pending", WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED, "cat_claw_summary_required"]);
 const REPORT_PLAN_DECISIONS = new Set(["blocked", "human_gate_pending"]);
 
@@ -513,9 +523,9 @@ function closeoutCandidateForPlan(plan = {}, checkpoints = [], closeouts = [], i
   const workflowId = plan.workflowId || "";
   const planId = plan.planId || "";
   const catBrainRole = workflowGovernanceRole(input, "catBrain");
-  const catClawRole = workflowGovernanceRole(input, "catClaw");
-  const reportRuntime = firstText(input.reportRuntime, input.report_runtime, catClawRole.runtime);
-  const reportAgent = firstText(input.reportAgent, input.report_agent, input.catClawAgent, input.cat_claw_agent, catClawRole.agentId);
+  const catClawRole = supervisorSecretaryRole(input);
+  const reportRuntime = firstText(catClawRole.runtime);
+  const reportAgent = firstText(catClawRole.agentId);
   const matchingCheckpoints = supervisorCheckpointsForPlan(checkpoints, plan, WORKFLOW_V2_SECRETARY_CLOSEOUT_REQUIRED);
   const legacyMatchingCheckpoints = supervisorCheckpointsForPlan(checkpoints, plan, "cat_claw_summary_required");
   const checkpointMatches = matchingCheckpoints.length ? matchingCheckpoints : legacyMatchingCheckpoints;
@@ -558,6 +568,7 @@ function closeoutCandidateForPlan(plan = {}, checkpoints = [], closeouts = [], i
       closeoutId,
       catBrainAgent: firstText(input.catBrainAgent, input.cat_brain_agent, catBrainRole.agentId),
       catClawAgent: reportAgent,
+      reportRuntime,
       readinessDecision: plan.decision || ""
     },
     evidenceRefs: evidenceRefsForPlan(plan),
@@ -594,9 +605,9 @@ function reportCandidateForPlan(plan = {}, checkpoints = [], reports = [], input
   const workflowId = plan.workflowId || "";
   const planId = plan.planId || "";
   const catBrainRole = workflowGovernanceRole(input, "catBrain");
-  const catClawRole = workflowGovernanceRole(input, "catClaw");
-  const reportRuntime = firstText(input.reportRuntime, input.report_runtime, catClawRole.runtime);
-  const reportAgent = firstText(input.reportAgent, input.report_agent, input.catClawAgent, input.cat_claw_agent, catClawRole.agentId);
+  const catClawRole = supervisorSecretaryRole(input);
+  const reportRuntime = firstText(catClawRole.runtime);
+  const reportAgent = firstText(catClawRole.agentId);
   const decision = plan.decision || "";
   const matchingCheckpoints = supervisorCheckpointsForPlan(checkpoints, plan, decision);
   const latestCheckpoint = matchingCheckpoints[0] || null;
@@ -638,6 +649,7 @@ function reportCandidateForPlan(plan = {}, checkpoints = [], reports = [], input
       reportId,
       catBrainAgent: firstText(input.catBrainAgent, input.cat_brain_agent, catBrainRole.agentId),
       catClawAgent: reportAgent,
+      reportRuntime,
       readinessDecision: decision
     },
     evidenceRefs: evidenceRefsForPlan(plan, { includeDraftHumanGatePackages: true }),
@@ -1074,9 +1086,8 @@ ON CONFLICT(artifact_id) DO UPDATE SET workflow_id=excluded.workflow_id, kind=ex
     const createdAt = nowIso();
     const closeoutId = candidate.input.closeoutId;
     const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "workflow_supervisor");
-    const catClawRole = workflowGovernanceRole(input, "catClaw");
-    const reportAgent = firstText(input.reportAgent, input.report_agent, input.catClawAgent, input.cat_claw_agent, candidate.input.catClawAgent, catClawRole.agentId);
-    const reportRuntime = firstText(input.reportRuntime, input.report_runtime, catClawRole.runtime);
+    const reportAgent = firstText(candidate.input.catClawAgent);
+    const reportRuntime = firstText(candidate.input.reportRuntime, supervisorSecretaryRole(input).runtime);
     const reportTarget = `${reportRuntime}:${reportAgent}`;
     const latestCheckpointId = candidate.checkpointPreview.latestCheckpointId || "";
     const closeoutPayload = redactSensitiveForPersistence({
@@ -1320,9 +1331,8 @@ LIMIT 1;`, { json: true });
     const createdAt = nowIso();
     const reportId = candidate.input.reportId;
     const createdBy = firstText(input.createdBy, input.created_by, input.callerAgent, input.caller_agent, "workflow_supervisor");
-    const catClawRole = workflowGovernanceRole(input, "catClaw");
-    const reportAgent = firstText(input.reportAgent, input.report_agent, input.catClawAgent, input.cat_claw_agent, candidate.input.catClawAgent, catClawRole.agentId);
-    const reportRuntime = firstText(input.reportRuntime, input.report_runtime, catClawRole.runtime);
+    const reportAgent = firstText(candidate.input.catClawAgent);
+    const reportRuntime = firstText(candidate.input.reportRuntime, supervisorSecretaryRole(input).runtime);
     const reportTarget = `${reportRuntime}:${reportAgent}`;
     const latestCheckpointId = candidate.checkpointPreview.latestCheckpointId || "";
     const readinessDecision = candidate.input.readinessDecision;

@@ -156,9 +156,11 @@ Rollback:
 Current state:
 
 - `workflow.v2.evaluation_snapshot.preview` is read-only.
+- `workflow.v2.evaluation.record` is the canonical durable evaluator writer on
+  the shared `workflow_verification_results` rail.
 - `workflow.v2.validate` covers v2 structural and consistency checks.
-- `workflow.evaluate` still writes durable evaluator rows and contains useful
-  evidence blockers.
+- `workflow.evaluate` remains registered only as a default-disabled
+  compatibility writer behind `TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR=1`.
 
 Recommended hard-cutover design:
 
@@ -175,9 +177,10 @@ Recommended hard-cutover design:
 
 Implementation units:
 
-1. Extract legacy evaluator check helpers into pure functions shared by
-   `evaluation_snapshot`, `validate`, and `evaluation.record`.
-2. Add `workflow.v2.evaluation.record` with idempotency, payload hash,
+1. Keep evaluator blocker helpers shared across v2 snapshot and record paths,
+   including dispatch/runtime failure, side-effect uncertainty, incidents,
+   Human Gate, and missing evidence/receipt/artifact blockers.
+2. Maintain `workflow.v2.evaluation.record` with idempotency, payload hash,
    evaluator decision, evidence refs, receipt refs, findings, recommendations,
    and created-by fields.
 3. Retarget action policy/tool schema/console preview actions away from
@@ -186,7 +189,7 @@ Implementation units:
    as v2 compatibility/migration previews, if they are explicitly documented as
    archive diagnostics. Do not invent or document `workflow.evaluate.preview`
    unless that action is deliberately added.
-5. Freeze `workflow.evaluate` writer after observation shows v2 evaluation
+5. Remove `workflow.evaluate` after the observation window shows v2 evaluation
    records are the only active evaluator writes.
 
 Freeze criteria:

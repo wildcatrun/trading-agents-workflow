@@ -446,12 +446,15 @@ const WORKFLOW_PURE_PREVIEW_ACTIONS = new Set([
 async function workflowConvergenceGate(rootDir, action, requestedAction, input = {}) {
   if (WORKFLOW_LEGACY_MUTATING_ACTIONS.has(action)
     && !workflowLegacyActionOverrideEnabled(input, action)) {
+    const legacyEvaluator = action === "workflow.evaluate";
     return workflowActionBlockedResult(
       action,
       requestedAction,
-      "legacy_action_disabled",
-      "legacy mutating workflow actions are retained for compatibility but are disabled by default; use approved templates for production workflow execution",
-      "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1"
+      legacyEvaluator ? "legacy_evaluator_disabled" : "legacy_action_disabled",
+      legacyEvaluator
+        ? "legacy workflow.evaluate is retained as a compatibility writer but is disabled by default; use workflow.v2.evaluation_snapshot.preview plus workflow.v2.evaluation.record"
+        : "legacy mutating workflow actions are retained for compatibility but are disabled by default; use approved templates for production workflow execution",
+      legacyEvaluator ? "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR=1" : "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1"
     );
   }
   if (WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS.has(action)
@@ -4840,11 +4843,13 @@ const WORKFLOW_V2_EVALUATION_ACTION_HANDLERS = createWorkflowV2EvaluationActionH
   nowIso,
   pendingHumanGateCount,
   workflowPayloadSqlWhere,
+  workflowPermissionCaller,
   workflowV2Validate
 });
 
 export const {
   workflowV2EvaluationSnapshotPreview,
+  workflowV2EvaluationRecord,
   workflowV2EvaluationCompatibilityPreview,
   workflowV2EvaluationMigrationPreview
 } = WORKFLOW_V2_EVALUATION_ACTION_HANDLERS;
@@ -9111,6 +9116,7 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2InterventionSettlementPreview,
   workflowV2InterventionExecute,
   workflowV2EvaluationSnapshotPreview,
+  workflowV2EvaluationRecord,
   workflowV2EvaluationCompatibilityPreview,
   workflowV2EvaluationMigrationPreview,
   workflowV2Validate,

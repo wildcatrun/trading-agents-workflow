@@ -47,7 +47,7 @@ since moved some entries out of this state; see **Post-P7 Reconciliation** below
 | `route_shell.*` | `source_deleted` / external entrypoints closed | Batch F/G closed public route-shell actions, aliases, CLI, plugin schema/hook, `meeting.dispatch` redirect, and `runtime.bridge.drain` redirect; route-shell runtime input now fails closed as retired evidence. |
 | `workflow.schedule.*`, `workflow.control_loop.*`, `runtime.bridge.drain` | protected shared scheduler/maintenance substrate | Batch C audit keeps these surfaces because they own approved schedule admission, bounded maintenance, stale dispatch/message-flow/Human Gate/outbox repair, and runtime drain evidence. |
 | `workflow.pause` / `workflow.resume` / `workflow.stop` | `legacy_active` until full v2 intervention parity | V2 plan-state transitions exist through `workflow.v2.pause/resume/stop/terminate`, but full active worker, adapter job, session, dispatch, outbox, Human Gate, side-effect, checkpoint, and incident settlement parity is not complete. |
-| `workflow.evaluate` | `legacy_active` until evaluator checks migrate | `workflow.v2.evaluation_snapshot.preview` and `workflow.v2.validate` exist, but legacy evaluator persistence/check coverage is not fully retired. |
+| `workflow.evaluate` | `frozen_compatibility` / default-disabled evaluator writer | `workflow.v2.evaluation_snapshot.preview`, `workflow.v2.evaluation.record`, and `workflow.v2.validate` own the canonical evaluator path; legacy writes require `TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR=1` during the observation window. |
 
 ## Batch Review Standard
 

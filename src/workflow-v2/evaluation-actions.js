@@ -1,5 +1,6 @@
 import {
   firstText,
+  jsonHash,
   redactSensitiveTextForPersistence
 } from "../workflow/json.js";
 import {
@@ -45,6 +46,42 @@ function scopedWhere(workflowId, planId = "", alias = "") {
   return clauses.join(" AND ");
 }
 
+function payloadExpr(alias = "", payloadColumn = "payload_json") {
+  const prefix = alias ? `${alias}.` : "";
+  const column = `${prefix}${payloadColumn}`;
+  return `CASE WHEN json_valid(${column}) THEN ${column} ELSE '{}' END`;
+}
+
+function payloadPlanWhere(planId, alias = "", payloadColumn = "payload_json") {
+  const payload = payloadExpr(alias, payloadColumn);
+  const value = sqlValue(planId);
+  return `(
+    json_extract(${payload}, '$.planId')=${value}
+    OR json_extract(${payload}, '$.plan_id')=${value}
+    OR json_extract(${payload}, '$.plan.planId')=${value}
+    OR json_extract(${payload}, '$.plan.plan_id')=${value}
+    OR json_extract(${payload}, '$.payload.planId')=${value}
+    OR json_extract(${payload}, '$.payload.plan_id')=${value}
+  )`;
+}
+
+function scopedRuntimeDispatchWhere(workflowId, planId = "", planCount = 0, runtimeAlias = "r", dispatchAlias = "d", requirePlanScope = false) {
+  const base = `${runtimeAlias}.workflow_id=${sqlValue(workflowId)}`;
+  if (!planId || (!requirePlanScope && Number(planCount || 0) <= 1)) return base;
+  return `${base} AND (${payloadPlanWhere(planId, runtimeAlias)} OR ${payloadPlanWhere(planId, dispatchAlias)})`;
+}
+
+function scopedDispatchWhere(workflowId, planId = "", planCount = 0, alias = "d", requirePlanScope = false) {
+  const base = `${alias}.workflow_id=${sqlValue(workflowId)}`;
+  if (!planId || (!requirePlanScope && Number(planCount || 0) <= 1)) return base;
+  return `${base} AND ${payloadPlanWhere(planId, alias)}`;
+}
+
+const NON_EVALUATOR_EVIDENCE_ARTIFACT_KINDS = Object.freeze([
+  "workflow_v2_plan_spec_json",
+  "workflow_template_spec_json"
+]);
+
 function evaluationDecision(snapshot = {}) {
   const counts = snapshot.counts || {};
   const v2 = snapshot.v2 || {};
@@ -67,12 +104,14 @@ function evaluationDecision(snapshot = {}) {
   if (["blocked", "cancelled"].includes(planStatus) || ["blocked", "cancelled", "terminated"].includes(workflowState)) return "blocked";
   if (Number(v2.blockedPlans || 0) > 0 || Number(v2.blockedNodes || 0) > 0 || Number(v2.blockedWorkers || 0) > 0) return "blocked";
   if (Number(v2.failedNodes || 0) > 0 || Number(v2.failedWorkers || 0) > 0 || Number(v2.failedAdapterJobs || 0) > 0) return "not_met";
+  if (Number(counts.failedDispatches || 0) > 0 || Number(counts.failedRuntimeRuns || 0) > 0) return "not_met";
   if (failedVerification > 0) return "not_met";
   if (Number(v2.activeWorkers || 0) > 0 || Number(v2.activeAdapterJobs || 0) > 0) return "needs_evidence";
+  if (Number(counts.activeDispatches || 0) > 0 || Number(counts.activeRuntimeRuns || 0) > 0) return "needs_evidence";
   if (Number(v2.reviewWorkers || 0) > 0) return "needs_evidence";
   if (Number(v2.nodesTotal || 0) > 0 && Number(v2.completedNodes || 0) < Number(v2.nodesTotal || 0)) return "needs_evidence";
   if (evidenceNeeds > 0) return "needs_evidence";
-  if (Number(counts.evidenceTotal || 0) <= 0) return "needs_evidence";
+  if (Number(counts.artifactCount || 0) <= 0 || Number(counts.runtimeReceiptCount || 0) <= 0 || Number(counts.verificationTotal || 0) <= 0) return "needs_evidence";
   if (v2.planStatus === "completed" || v2.workflowState === "completed" || (Number(v2.nodesTotal || 0) > 0 && Number(v2.completedNodes || 0) === Number(v2.nodesTotal || 0))) return "met";
   return "needs_evidence";
 }
@@ -100,6 +139,91 @@ function compatibilityStatus(parity = {}) {
   return "mismatch";
 }
 
+function addBlocker(blockers, code, decision, message, evidence = {}) {
+  blockers.push({
+    code,
+    decision,
+    message,
+    evidence
+  });
+}
+
+function evaluationBlockers(snapshot = {}) {
+  const blockers = [];
+  const counts = snapshot.counts || {};
+  const v2 = snapshot.v2 || {};
+  const verificationCounts = counts.verificationCounts || {};
+  const workflowState = String(v2.workflowState || "");
+  const planStatus = String(v2.planStatus || "");
+  if (!v2.planFound) {
+    addBlocker(blockers, "missing_v2_plan", "needs_evidence", "No v2 plan row was found for the requested workflow/plan scope.", { workflowId: snapshot.workflowId || "", planId: v2.planId || "" });
+  }
+  if (Number(counts.sideEffectUncertain || 0) > 0) {
+    addBlocker(blockers, "side_effect_uncertain", "side_effect_uncertain", "Side-effect ledger contains uncertain or failed side effects.", { count: Number(counts.sideEffectUncertain || 0) });
+  }
+  if (workflowV2IsProtocolAuditState(workflowState) || ["human_gate_request_due", "waiting_human"].includes(workflowState)) {
+    addBlocker(blockers, "workflow_state_requires_human_gate", "needs_human_gate", "Workflow state is waiting for Human Gate handling.", { workflowState });
+  }
+  if (Number(v2.workersByStatus?.needs_human_gate || 0) > 0) {
+    addBlocker(blockers, "worker_needs_human_gate", "needs_human_gate", "At least one worker is waiting on Human Gate handling.", { count: Number(v2.workersByStatus.needs_human_gate || 0) });
+  }
+  if (Number(counts.pendingHumanGates || 0) > 0 || Number(verificationCounts.needs_human_gate || 0) > 0) {
+    addBlocker(blockers, "pending_human_gate", "needs_human_gate", "Human Gate evidence is pending.", { pendingHumanGates: Number(counts.pendingHumanGates || 0), verifierNeedsHumanGate: Number(verificationCounts.needs_human_gate || 0) });
+  }
+  if (Number(counts.activeIncidents || 0) > 0) {
+    addBlocker(blockers, "active_incident", "blocked", "Active incident state is linked to this workflow.", { count: Number(counts.activeIncidents || 0) });
+  }
+  if (Number(verificationCounts.blocked || 0) > 0 || ["blocked", "cancelled"].includes(planStatus) || ["blocked", "cancelled", "terminated"].includes(workflowState) || Number(v2.blockedPlans || 0) > 0 || Number(v2.blockedNodes || 0) > 0 || Number(v2.blockedWorkers || 0) > 0) {
+    addBlocker(blockers, "blocked_execution_state", "blocked", "Plan, node, worker, or verification state is blocked/cancelled.", {
+      planStatus,
+      workflowState,
+      blockedPlans: Number(v2.blockedPlans || 0),
+      blockedNodes: Number(v2.blockedNodes || 0),
+      blockedWorkers: Number(v2.blockedWorkers || 0),
+      blockedVerification: Number(verificationCounts.blocked || 0)
+    });
+  }
+  if (Number(v2.failedNodes || 0) > 0 || Number(v2.failedWorkers || 0) > 0 || Number(v2.failedAdapterJobs || 0) > 0 || Number(counts.failedDispatches || 0) > 0 || Number(counts.failedRuntimeRuns || 0) > 0) {
+    addBlocker(blockers, "failed_runtime_or_dispatch", "not_met", "Dispatch, runtime, worker, adapter job, or node failure evidence is present.", {
+      failedNodes: Number(v2.failedNodes || 0),
+      failedWorkers: Number(v2.failedWorkers || 0),
+      failedAdapterJobs: Number(v2.failedAdapterJobs || 0),
+      failedDispatches: Number(counts.failedDispatches || 0),
+      failedRuntimeRuns: Number(counts.failedRuntimeRuns || 0)
+    });
+  }
+  const failedVerification = Number(verificationCounts.fail || 0) + Number(verificationCounts.not_met || 0) + Number(verificationCounts.disputed || 0);
+  if (failedVerification > 0) {
+    addBlocker(blockers, "failed_verification", "not_met", "Verifier/refuter/reducer evidence says acceptance is not met.", { count: failedVerification });
+  }
+  if (Number(v2.activeWorkers || 0) > 0 || Number(v2.activeAdapterJobs || 0) > 0 || Number(counts.activeDispatches || 0) > 0 || Number(counts.activeRuntimeRuns || 0) > 0 || Number(v2.reviewWorkers || 0) > 0) {
+    addBlocker(blockers, "active_or_review_work_remaining", "needs_evidence", "Active dispatch/runtime/worker/review work remains.", {
+      activeWorkers: Number(v2.activeWorkers || 0),
+      activeAdapterJobs: Number(v2.activeAdapterJobs || 0),
+      activeDispatches: Number(counts.activeDispatches || 0),
+      activeRuntimeRuns: Number(counts.activeRuntimeRuns || 0),
+      reviewWorkers: Number(v2.reviewWorkers || 0)
+    });
+  }
+  if (Number(v2.nodesTotal || 0) > 0 && Number(v2.completedNodes || 0) < Number(v2.nodesTotal || 0)) {
+    addBlocker(blockers, "incomplete_v2_nodes", "needs_evidence", "Not all v2 plan nodes are completed.", { completedNodes: Number(v2.completedNodes || 0), nodesTotal: Number(v2.nodesTotal || 0) });
+  }
+  const evidenceNeeds = Number(verificationCounts.needs_evidence || 0) + Number(verificationCounts.uncertain || 0);
+  if (evidenceNeeds > 0) {
+    addBlocker(blockers, "verification_needs_evidence", "needs_evidence", "Verification evidence is uncertain or still missing.", { count: evidenceNeeds });
+  }
+  if (Number(counts.artifactCount || 0) <= 0) {
+    addBlocker(blockers, "missing_artifact_evidence", "needs_evidence", "No artifact evidence is recorded for the workflow.", {});
+  }
+  if (Number(counts.runtimeReceiptCount || 0) <= 0) {
+    addBlocker(blockers, "missing_runtime_receipt", "needs_evidence", "No successful runtime receipt is recorded for the workflow.", {});
+  }
+  if (Number(counts.verificationTotal || 0) <= 0) {
+    addBlocker(blockers, "missing_verification_evidence", "needs_evidence", "No non-evaluator verification evidence is recorded for the workflow.", {});
+  }
+  return blockers;
+}
+
 function boundedLimit(value, fallback = 20, max = 100) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
@@ -110,39 +234,40 @@ const LEGACY_EVALUATOR_ENTRY_POINTS = Object.freeze([
   {
     action: "workflow.evaluate",
     kind: "canonical_legacy_writer",
-    migrationStatus: "legacy_active",
+    migrationStatus: "frozen_compatibility",
     mutating: true,
-    replacement: "workflow.v2.evaluation_snapshot.preview + workflow.v2.evaluation_compatibility.preview"
+    replacement: "workflow.v2.evaluation_snapshot.preview + workflow.v2.evaluation.record + workflow.v2.evaluation_compatibility.preview"
   },
   {
     action: "workflow.evaluator.run",
     kind: "legacy_alias",
-    migrationStatus: "legacy_active",
+    migrationStatus: "frozen_compatibility",
     mutating: true,
     canonical: "workflow.evaluate",
-    replacement: "workflow.v2.evaluation_snapshot.preview"
+    replacement: "workflow.v2.evaluation_snapshot.preview + workflow.v2.evaluation.record + workflow.v2.validate"
   },
   {
     action: "workflow.evaluation.run",
     kind: "legacy_alias",
-    migrationStatus: "legacy_active",
+    migrationStatus: "frozen_compatibility",
     mutating: true,
     canonical: "workflow.evaluate",
-    replacement: "workflow.v2.evaluation_snapshot.preview"
+    replacement: "workflow.v2.evaluation_snapshot.preview + workflow.v2.evaluation.record + workflow.v2.validate"
   },
   {
     action: "workflow.goal.evaluate",
     kind: "legacy_alias",
-    migrationStatus: "legacy_active",
+    migrationStatus: "frozen_compatibility",
     mutating: true,
     canonical: "workflow.evaluate",
-    replacement: "workflow.v2.evaluation_snapshot.preview"
+    replacement: "workflow.v2.evaluation_snapshot.preview + workflow.v2.evaluation.record + workflow.v2.validate"
   }
 ]);
 
 const LEGACY_EVALUATOR_ACTIONS = Object.freeze(LEGACY_EVALUATOR_ENTRY_POINTS.map((entry) => entry.action));
 const V2_EVALUATOR_READ_ACTIONS = Object.freeze([
   "workflow.v2.evaluation_snapshot.preview",
+  "workflow.v2.evaluation.record",
   "workflow.v2.evaluation_compatibility.preview"
 ]);
 
@@ -188,6 +313,7 @@ export function createWorkflowV2EvaluationActionHandlers(context = {}) {
   const nowIso = requireContextFunction(context, "nowIso");
   const pendingHumanGateCount = requireContextFunction(context, "pendingHumanGateCount");
   const workflowPayloadSqlWhere = requireContextFunction(context, "workflowPayloadSqlWhere");
+  const workflowPermissionCaller = requireContextFunction(context, "workflowPermissionCaller");
   const workflowV2Validate = requireContextFunction(context, "workflowV2Validate");
 
   async function workflowV2EvaluationSnapshotPreview(rootDir, input = {}) {
@@ -203,6 +329,7 @@ export function createWorkflowV2EvaluationActionHandlers(context = {}) {
       "workflow_v2_worker_adapter_jobs",
       "workflow_v2_human_gate_packages",
       "artifact_index",
+      "mixed_meeting_dispatches",
       "runtime_runs",
       "workflow_verification_results",
       "side_effect_ledger",
@@ -224,6 +351,11 @@ ORDER BY updated_at DESC
 LIMIT 1;`, { json: true }) : [];
     const plan = planRows[0] || null;
     const effectivePlanId = planId || plan?.plan_id || "";
+    const planCount = hasColumns(columns.workflow_v2_plans, ["workflow_id"]) ? Number((await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM workflow_v2_plans
+WHERE workflow_id=${sqlValue(workflowId)};`, { json: true }))[0]?.count || 0) : 0;
+    const requirePlanScope = Boolean(effectivePlanId && (!plan || Number(planCount || 0) > 1));
     const scoped = scopedWhere(workflowId, effectivePlanId);
     const nodeRows = effectivePlanId && hasColumns(columns.workflow_v2_plan_nodes, ["workflow_id", "plan_id", "status"]) ? await sqlite(paths.dbFile, `
 SELECT status, COUNT(*) AS count
@@ -246,20 +378,47 @@ FROM workflow_v2_human_gate_packages
 WHERE ${scoped}
   AND status NOT IN ('sent','approved','rejected','expired','cancelled','completed')
 GROUP BY status;`, { json: true }) : [];
+    const dispatchRows = hasColumns(columns.mixed_meeting_dispatches, ["workflow_id", "status", "payload_json"]) ? await sqlite(paths.dbFile, `
+SELECT d.status, COUNT(*) AS count
+FROM mixed_meeting_dispatches d
+WHERE ${scopedDispatchWhere(workflowId, effectivePlanId, planCount, "d", requirePlanScope)}
+GROUP BY d.status;`, { json: true }) : [];
+    const runtimeRows = hasColumns(columns.runtime_runs, ["workflow_id", "status", "payload_json"]) ? await sqlite(paths.dbFile, `
+SELECT r.status, COUNT(*) AS count
+FROM runtime_runs r
+LEFT JOIN mixed_meeting_dispatches d ON d.dispatch_id=r.dispatch_id
+WHERE ${scopedRuntimeDispatchWhere(workflowId, effectivePlanId, planCount, "r", "d", requirePlanScope)}
+GROUP BY r.status;`, { json: true }) : [];
+    const artifactKindFilter = hasColumns(columns.artifact_index, ["kind"])
+      ? `AND kind NOT IN (${quotedList(NON_EVALUATOR_EVIDENCE_ARTIFACT_KINDS)})`
+      : "";
     const artifactCount = hasColumns(columns.artifact_index, ["workflow_id"]) ? Number((await sqlite(paths.dbFile, `
 SELECT COUNT(*) AS count
 FROM artifact_index
-WHERE workflow_id=${sqlValue(workflowId)};`, { json: true }))[0]?.count || 0) : 0;
-    const runtimeReceiptCount = hasColumns(columns.runtime_runs, ["workflow_id", "status"]) ? Number((await sqlite(paths.dbFile, `
-SELECT COUNT(*) AS count
-FROM runtime_runs
 WHERE workflow_id=${sqlValue(workflowId)}
-  AND status IN ('acked','completed','success');`, { json: true }))[0]?.count || 0) : 0;
+  ${artifactKindFilter};`, { json: true }))[0]?.count || 0) : 0;
+    const runtimeReceiptCount = hasColumns(columns.runtime_runs, ["workflow_id", "status", "payload_json"]) ? Number((await sqlite(paths.dbFile, `
+SELECT COUNT(*) AS count
+FROM runtime_runs r
+LEFT JOIN mixed_meeting_dispatches d ON d.dispatch_id=r.dispatch_id
+WHERE ${scopedRuntimeDispatchWhere(workflowId, effectivePlanId, planCount, "r", "d", requirePlanScope)}
+  AND r.status IN ('acked','completed','success');`, { json: true }))[0]?.count || 0) : 0;
+    const verificationPlanScope = [];
+    if (effectivePlanId && requirePlanScope) {
+      if (columns.workflow_verification_results.has("phase_key")) verificationPlanScope.push(`v.phase_key=${sqlValue(effectivePlanId)}`);
+      if (columns.workflow_verification_results.has("payload_json")) verificationPlanScope.push(payloadPlanWhere(effectivePlanId, "v"));
+    }
+    const verificationScopeWhere = [
+      `v.workflow_id=${sqlValue(workflowId)}`,
+      "v.result_type != 'evaluator'"
+    ];
+    if (effectivePlanId && requirePlanScope) {
+      verificationScopeWhere.push(verificationPlanScope.length ? `(${verificationPlanScope.join(" OR ")})` : "0=1");
+    }
     const verificationRows = hasColumns(columns.workflow_verification_results, ["workflow_id", "result_type", "decision"]) ? await sqlite(paths.dbFile, `
 SELECT decision AS status, COUNT(*) AS count
-FROM workflow_verification_results
-WHERE workflow_id=${sqlValue(workflowId)}
-  AND result_type != 'evaluator'
+FROM workflow_verification_results v
+WHERE ${verificationScopeWhere.join(" AND ")}
 GROUP BY decision;`, { json: true }) : [];
     const sideEffectUncertain = hasColumns(columns.side_effect_ledger, ["workflow_id", "status"]) ? Number((await sqlite(paths.dbFile, `
 SELECT COUNT(*) AS count
@@ -276,6 +435,8 @@ WHERE status IN ('active','mitigating','monitoring')
     const workerCounts = countByStatus(workerRows);
     const adapterJobCounts = countByStatus(adapterJobRows);
     const humanGatePackageCounts = countByStatus(humanGatePackageRows);
+    const dispatchCounts = countByStatus(dispatchRows);
+    const runtimeCounts = countByStatus(runtimeRows);
     const validation = await workflowV2Validate(rootDir, { ...input, workflowId, planId: effectivePlanId });
     const snapshot = {
       evaluatorVersion: "workflow_v2_evaluation_snapshot_v1",
@@ -284,6 +445,8 @@ WHERE status IN ('active','mitigating','monitoring')
       v2: {
         planFound: Boolean(plan),
         planId: effectivePlanId,
+        planCount,
+        planScopeRequired: requirePlanScope,
         planStatus: plan?.status || "",
         workflowState: plan?.workflow_state || "",
         blockedPlans: plan && (["blocked", "cancelled"].includes(plan.status || "") || ["blocked", "cancelled", "terminated"].includes(plan.workflow_state || "")) ? 1 : 0,
@@ -309,6 +472,14 @@ WHERE status IN ('active','mitigating','monitoring')
       counts: {
         artifactCount,
         runtimeReceiptCount,
+        dispatchCounts,
+        dispatchTotal: countRows(dispatchRows),
+        failedDispatches: Number(dispatchCounts.failed || 0) + Number(dispatchCounts.cancelled || 0) + Number(dispatchCounts.error || 0),
+        activeDispatches: Number(dispatchCounts.queued || 0) + Number(dispatchCounts.sent || 0) + Number(dispatchCounts.dispatched || 0) + Number(dispatchCounts.running || 0) + Number(dispatchCounts.retry_scheduled || 0),
+        runtimeCounts,
+        runtimeTotal: countRows(runtimeRows),
+        failedRuntimeRuns: Number(runtimeCounts.failed || 0) + Number(runtimeCounts.cancelled || 0) + Number(runtimeCounts.error || 0),
+        activeRuntimeRuns: Number(runtimeCounts.queued || 0) + Number(runtimeCounts.dispatched || 0) + Number(runtimeCounts.running || 0) + Number(runtimeCounts.acked || 0),
         verificationCounts: countByStatus(verificationRows),
         verificationTotal: countRows(verificationRows),
         pendingHumanGates,
@@ -327,6 +498,7 @@ WHERE status IN ('active','mitigating','monitoring')
       missingSources
     };
     const decision = evaluationDecision(snapshot);
+    const blockers = evaluationBlockers(snapshot);
     return {
       operation: "workflow.v2.evaluation_snapshot.preview",
       schemaVersion: "workflow_v2_evaluation_snapshot.v1",
@@ -339,10 +511,117 @@ WHERE status IN ('active','mitigating','monitoring')
       ok: ["met", "needs_evidence", "needs_human_gate"].includes(decision),
       decision,
       summary: evaluationSummary(decision, snapshot),
+      blockers,
+      blockerCodes: blockers.map((blocker) => blocker.code),
       recommendations: decision === "met"
         ? ["Prepare Cat Claw secretary audit and Human Gate closeout evidence before continuation."]
         : ["Resolve blockers or collect missing v2 evidence before treating evaluation as met."],
       snapshot,
+      dbFile: paths.dbFile
+    };
+  }
+
+  async function workflowV2EvaluationRecord(rootDir, input = {}, permissionDecision = null) {
+    const paths = await ensureWorkflowLayout(rootDir, input);
+    const workflowId = firstText(input.workflowId, input.workflow_id);
+    if (!workflowId) throw new Error("workflowId is required");
+    const planId = firstText(input.planId, input.plan_id);
+    const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+    const snapshotResult = await workflowV2EvaluationSnapshotPreview(rootDir, {
+      ...input,
+      workflowId,
+      planId,
+      generatedAt
+    });
+    const idempotencyKey = firstText(input.idempotencyKey, input.idempotency_key);
+    const explicitVerificationId = firstText(input.verificationId, input.verification_id);
+    if (!explicitVerificationId && !idempotencyKey) {
+      throw new Error("workflow.v2.evaluation.record requires verificationId or idempotencyKey for deterministic replay");
+    }
+    const verificationId = explicitVerificationId || `evaluation.v2.${jsonHash({ workflowId, planId: snapshotResult.snapshot?.v2?.planId || planId, idempotencyKey }).slice(0, 24)}`;
+    const caller = permissionDecision?.caller || workflowPermissionCaller(input);
+    const callerAgent = String(caller.agentId || "").trim();
+    const callerRuntime = String(caller.runtime || "").trim();
+    const sourceAgent = firstText(input.sourceAgent, input.source_agent, input.evaluatorAgent, input.evaluator_agent, callerAgent, "unknown");
+    const sourceRuntime = firstText(input.sourceRuntime, input.source_runtime, input.runtime, callerRuntime);
+    const decision = snapshotResult.decision;
+    const confidence = firstText(input.confidence, decision === "met" ? "medium" : "low");
+    const riskBand = firstText(input.riskBand, input.risk_band, ["met", "needs_evidence"].includes(decision) ? "medium" : "high");
+    const summary = redactSensitiveTextForPersistence(input.summary || snapshotResult.summary || "");
+    const findings = Array.isArray(input.findings)
+      ? input.findings.map((item) => redactSensitiveTextForPersistence(item))
+      : snapshotResult.blockers.map((blocker) => `${blocker.code}: ${blocker.message}`);
+    const recommendations = Array.isArray(input.recommendations)
+      ? input.recommendations.map((item) => redactSensitiveTextForPersistence(item))
+      : snapshotResult.recommendations;
+    const evidenceRefs = Array.isArray(input.evidenceRefs || input.evidence_refs)
+      ? (input.evidenceRefs || input.evidence_refs).map((item) => redactSensitiveTextForPersistence(item))
+      : [];
+    const artifactRefs = Array.isArray(input.artifactRefs || input.artifact_refs)
+      ? (input.artifactRefs || input.artifact_refs).map((item) => redactSensitiveTextForPersistence(item))
+      : [];
+    const receiptRefs = Array.isArray(input.receiptRefs || input.receipt_refs)
+      ? (input.receiptRefs || input.receipt_refs).map((item) => redactSensitiveTextForPersistence(item))
+      : [];
+    const payload = {
+      evaluator: "workflow_v2_evaluator_v1",
+      operation: "workflow.v2.evaluation.record",
+      idempotencyKey,
+      snapshot: snapshotResult.snapshot,
+      decision,
+      blockers: snapshotResult.blockers,
+      blockerCodes: snapshotResult.blockerCodes,
+      previewSummary: snapshotResult.summary,
+      generatedAt
+    };
+    const payloadHash = jsonHash(payload);
+    const createdAt = firstText(input.createdAt, input.created_at, generatedAt);
+    const phaseKey = firstText(input.phaseKey, input.phase_key, input.phase, snapshotResult.snapshot?.v2?.planId, planId);
+    const insertChanges = await sqlite(paths.dbFile, `
+BEGIN IMMEDIATE;
+INSERT OR IGNORE INTO workflow_verification_results(verification_id, workflow_id, phase_id, phase_key, task_id, agent_run_id, dispatch_id, runtime_run_id, result_type, decision, verifier_agent, refuter_agent, source_runtime, source_agent, confidence, risk_band, summary, findings_json, recommendations_json, evidence_refs_json, artifact_refs_json, receipt_refs_json, payload_hash, payload_json, created_by, created_at)
+VALUES (${sqlValue(verificationId)}, ${sqlValue(workflowId)}, ${sqlValue(firstText(input.phaseId, input.phase_id))}, ${sqlValue(phaseKey)}, ${sqlValue(firstText(input.taskId, input.task_id))}, ${sqlValue(firstText(input.agentRunId, input.agent_run_id))}, ${sqlValue(firstText(input.dispatchId, input.dispatch_id))}, ${sqlValue(firstText(input.runtimeRunId, input.runtime_run_id))}, 'evaluator', ${sqlValue(decision)}, '', '', ${sqlValue(sourceRuntime)}, ${sqlValue(sourceAgent)}, ${sqlValue(confidence)}, ${sqlValue(riskBand)}, ${sqlValue(summary)}, ${sqlValue(JSON.stringify(findings))}, ${sqlValue(JSON.stringify(recommendations))}, ${sqlValue(JSON.stringify(evidenceRefs))}, ${sqlValue(JSON.stringify(artifactRefs))}, ${sqlValue(JSON.stringify(receiptRefs))}, ${sqlValue(payloadHash)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(callerAgent || firstText(input.createdBy, input.created_by, input.actor, sourceAgent, "unknown"))}, ${sqlValue(createdAt)});
+SELECT changes() AS changes;
+COMMIT;`, { json: true });
+    const inserted = Number(insertChanges[0]?.changes || 0) > 0;
+    const persisted = await sqlite(paths.dbFile, `
+SELECT verification_id, workflow_id, result_type, decision, phase_key, task_id, agent_run_id, payload_hash, created_at
+FROM workflow_verification_results
+WHERE verification_id=${sqlValue(verificationId)}
+LIMIT 1;`, { json: true });
+    if (!persisted[0]) throw new Error(`workflow v2 evaluation record failed to persist: ${verificationId}`);
+    if (persisted[0].payload_hash !== payloadHash) {
+      throw new Error(`workflow v2 evaluation record idempotency conflict: ${verificationId}`);
+    }
+    if (!inserted) {
+      return {
+        operation: "workflow.v2.evaluation.record",
+        schemaVersion: "workflow_v2_evaluation_record_result.v1",
+        status: "replayed",
+        replayed: true,
+        verificationId: persisted[0].verification_id || verificationId,
+        workflowId: persisted[0].workflow_id || workflowId,
+        planId: snapshotResult.snapshot?.v2?.planId || planId,
+        resultType: persisted[0].result_type || "evaluator",
+        decision: persisted[0].decision || decision,
+        payloadHash,
+        createdAt: persisted[0].created_at || "",
+        dbFile: paths.dbFile
+      };
+    }
+    return {
+      operation: "workflow.v2.evaluation.record",
+      schemaVersion: "workflow_v2_evaluation_record_result.v1",
+      status: "recorded",
+      replayed: false,
+      verificationId,
+      workflowId,
+      planId: snapshotResult.snapshot?.v2?.planId || planId,
+      resultType: "evaluator",
+      decision,
+      payloadHash,
+      createdAt,
+      blockerCodes: snapshotResult.blockerCodes,
       dbFile: paths.dbFile
     };
   }
@@ -400,7 +679,7 @@ GROUP BY decision;`, { json: true }) : [];
       writeMode: "read_only_compatibility_audit",
       sourceClass: "v2",
       legacyAction: "workflow.evaluate",
-      replacementAction: "workflow.v2.evaluation_snapshot.preview",
+      replacementAction: "workflow.v2.evaluation_snapshot.preview + workflow.v2.evaluation.record + workflow.v2.validate",
       workflowId,
       phaseKey,
       generatedAt,
@@ -544,6 +823,11 @@ LIMIT ${limit};`, { json: true }) : [];
           mutating: false
         },
         {
+          action: "workflow.v2.evaluation.record",
+          kind: "durable_evaluator_evidence_writer",
+          mutating: true
+        },
+        {
           action: "workflow.v2.evaluation_compatibility.preview",
           kind: "read_only_legacy_v2_parity_audit",
           mutating: false
@@ -551,9 +835,12 @@ LIMIT ${limit};`, { json: true }) : [];
       ],
       toolSurface: {
         internalRegistryRetainsLegacyEvaluate: true,
+        legacyEvaluateDefaultFrozen: true,
         fullToolExposesLegacyEvaluate: false,
+        fullToolHasV2EvaluationRecord: true,
         fullToolHasV2EvaluationPreviews: true,
         governanceToolExposesLegacyEvaluate: false,
+        governanceToolHasV2EvaluationRecord: true,
         governanceToolHasV2EvaluationPreviews: true
       },
       observations: {
@@ -590,9 +877,10 @@ LIMIT ${limit};`, { json: true }) : [];
       },
       migrationChecklist: [
         "Retarget new read-only evaluator decisions to workflow.v2.evaluation_snapshot.preview.",
+        "Record durable v2 evaluator evidence with workflow.v2.evaluation.record.",
         "Use workflow.v2.evaluation_compatibility.preview only for parity observation against existing legacy evaluator rows.",
         "Do not freeze workflow.evaluate until caller migration evidence and release-smoke observation are recorded.",
-        "Keep workflow.evaluate as a compatibility writer only during the explicit evidence window."
+        "Keep workflow.evaluate as a default-frozen compatibility writer only during the explicit evidence window."
       ],
       dbFile: paths.dbFile
     };
@@ -600,6 +888,7 @@ LIMIT ${limit};`, { json: true }) : [];
 
   return {
     workflowV2EvaluationSnapshotPreview,
+    workflowV2EvaluationRecord,
     workflowV2EvaluationCompatibilityPreview,
     workflowV2EvaluationMigrationPreview
   };
