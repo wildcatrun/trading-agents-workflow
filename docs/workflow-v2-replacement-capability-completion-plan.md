@@ -269,6 +269,9 @@ Build intervention and evaluation as explicit state-machine operations:
 - `intervention_readiness`: read-only safety preview over v2 plan, node, worker,
   adapter job, session, dispatch, Human Gate, outbox, checkpoint, side-effect,
   incident, and receipt state.
+- `intervention_settlement`: read-only settlement preview that turns active
+  external work and unresolved side effects into explicit closeout evidence
+  requirements before any pause/resume/stop/terminate state transition.
 - `plan_pause`, `plan_resume`, `plan_stop`, `plan_terminate`: authorized
   transitions with idempotency keys, reason, owner, rollback/checkpoint pointer,
   Protocol audit, and Human Gate evidence where required.
@@ -283,17 +286,20 @@ Build intervention and evaluation as explicit state-machine operations:
 
 1. Extract evaluator checks into reusable shared/v2 validation helpers.
 2. Add v2 intervention readiness preview with deterministic blockers.
-3. Add regression fixtures for active worker, leased adapter job, pending Human
+3. Add v2 intervention settlement preview that enumerates required closeout
+   receipts for active workers, adapter jobs, sessions, dispatches, outbox,
+   Human Gates, side effects, incidents, and checkpoint boundaries.
+4. Add regression fixtures for active worker, leased adapter job, pending Human
    Gate, queued outbox, stale dispatch, active incident, and unresolved side
    effect.
-4. Implement authorized pause/resume/stop transitions as separate state updates,
+5. Implement authorized pause/resume/stop transitions as separate state updates,
    not one legacy status edit.
-5. Require checkpoint and rollback anchors before stop/terminate.
-6. Compare legacy preview and v2 readiness decisions until deltas are explained.
-7. Keep rerun previews read-only until successor/handoff readiness covers their
+6. Require checkpoint and rollback anchors before stop/terminate.
+7. Compare legacy preview and v2 readiness decisions until deltas are explained.
+8. Keep rerun previews read-only until successor/handoff readiness covers their
    diagnostic value, then either retarget or archive aliases with unknown-action
    regressions.
-8. Freeze legacy intervention/evaluate entry points only after v2 parity and
+9. Freeze legacy intervention/evaluate entry points only after v2 parity and
    operator path migration.
 
 ### 2026-07-20 Implementation Note
@@ -337,6 +343,27 @@ claim so blocked, cancelled, completed, or terminated plans do not continue
 creating or claiming work. This still does not freeze legacy intervention entry
 points; evaluator parity and an observation window remain required before any
 freeze decision.
+
+### 2026-07-23 Settlement Preview Progress
+
+The v2 intervention surface now includes
+`workflow.v2.intervention_settlement.preview` with aliases
+`workflow.v2.intervention.settlement.preview` and
+`workflow.v2.settlement.preview`.
+
+This action is read-only and intentionally does not call layout/schema
+initialization. It resolves the scoped v2 plan from the existing database and
+emits deterministic `settlementItems` for active worker runs, adapter jobs,
+session runs, runtime dispatches, Telegram outbox rows, pending Human Gates,
+draft/protocol-audited Human Gate packages, unresolved side effects, and active
+incidents. The latest checkpoint/rollback boundary is returned separately as
+`latestCheckpoint`.
+
+Each item names the source row, owner, status, required closeout action, and
+evidence summary. It intentionally does not cancel workers, adapter jobs,
+sessions, dispatches, outbox delivery, Human Gates, incidents, or side effects.
+Therefore it closes the planning/diagnostic half of settlement parity, but does
+not by itself authorize freezing legacy lifecycle entry points.
 
 ### P42 Progress
 

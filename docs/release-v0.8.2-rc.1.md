@@ -98,7 +98,8 @@ The v1 retirement plan is now controlled by one rollout matrix:
   scheduler/maintenance/runtime substrate, and remaining legacy-active
   intervention/evaluator work.
 - Remaining v1.0.0 blockers are narrowed to full v2 intervention parity beyond
-  the existing v2 plan-state transition actions, evaluator parity, shared
+  readiness, settlement preview, and existing v2 plan-state transition actions,
+  evaluator parity, shared
   maintenance service ownership, adapter parity for meeting
   dispatch/ingest/runtime bridge evidence, and legacy read-history retirement
   criteria.

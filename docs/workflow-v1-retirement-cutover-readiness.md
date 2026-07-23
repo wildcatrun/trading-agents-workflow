@@ -31,7 +31,8 @@ and are covered by `npm run check:freeze`.
 The remaining v1.0.0 cutover blockers are narrower:
 
 1. full v2 intervention parity for `workflow.pause`, `workflow.resume`, and
-   `workflow.stop`, beyond the existing v2 plan-state transition actions;
+   `workflow.stop`; v2 now has readiness, settlement preview, and plan-state
+   transition actions, but not mutating external cancellation/closeout actions;
 2. evaluator parity for `workflow.evaluate` persistence and blocker checks;
 3. a service ownership decision for shared scheduler/control-loop maintenance;
 4. adapter parity and observation window for `meeting.dispatch` /
@@ -52,7 +53,7 @@ The remaining v1.0.0 cutover blockers are narrower:
 | `workflow.advance.preview`, `workflow.supervise.preview` | `compat_shell_only` | supervisor readiness/next-actions previews | Keep as explicit legacy diagnostics; do not use for new v2 planning. |
 | `workflow.checkpoint` | frozen writer diagnostic | `workflow.supervisor.checkpoint`, `workflow.archive.checkpoint`, `workflow.checkpoint.legacy_export` | Keep non-mutating diagnostic; no legacy writes. |
 | `workflow.task.draft`, `workflow.task.list`, `workflow.tasks`, `workflow.task.launch.list` | read/history shells | v2 plan preview/create and v2 read models | Keep explicit diagnostics/history until v2-first read models prove coverage. |
-| `workflow.pause`, `workflow.resume`, `workflow.stop` | `legacy_active` | `workflow.v2.intervention_readiness.preview` plus `workflow.v2.pause/resume/stop` plan-state transitions | Do not freeze legacy lifecycle until v2 intervention also covers active worker, adapter job, session, dispatch, outbox, Human Gate, side-effect, checkpoint, and incident settlement parity. |
+| `workflow.pause`, `workflow.resume`, `workflow.stop` | `legacy_active` | `workflow.v2.intervention_readiness.preview`, `workflow.v2.intervention_settlement.preview`, and `workflow.v2.pause/resume/stop` plan-state transitions | Do not freeze legacy lifecycle until v2 intervention has audited external cancellation/closeout semantics or an explicit decision that read-only settlement plus gated state transitions are sufficient. |
 | `workflow.evaluate` | `legacy_active` | `workflow.v2.evaluation_snapshot.preview`, `workflow.v2.validate` | Migrate remaining blocker checks and persistence before freezing legacy evaluator writes. |
 | `workflow.schedule.*` | `shared_scheduler_keep` | approved template / Human-Gate-approved v2 plan schedule binding | Keep; do not build a parallel v2 scheduler. Audit aliases only after usage evidence. |
 | `workflow.control_loop.*` | `shared_maintenance_keep` / `shared_repair_keep` | generic bounded maintenance plus v2 worker control-loop adjacency | Keep shared maintenance; only legacy lanes may be retired. |
@@ -74,10 +75,10 @@ The remaining v1.0.0 cutover blockers are narrower:
 
 ### Phase 2: Remaining Migration Work
 
-1. Extend existing v2 intervention execute actions beyond plan-state mutation so
-   pause/resume/stop have explicit worker, adapter job, session, dispatch,
-   outbox, Human Gate, side-effect, checkpoint, and incident settlement
-   evidence.
+1. Use `workflow.v2.intervention_settlement.preview` as the operator-facing
+   evidence package before pause/resume/stop; separately audit whether v2 needs
+   mutating external cancellation/closeout actions or should keep those actions
+   under runtime-specific receipt flows.
 2. Move evaluator blocker checks into `workflow.v2.validate` and/or supervisor
    readiness while preserving durable evaluator evidence.
 3. Decide whether shared schedule/control-loop maintenance remains in the

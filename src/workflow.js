@@ -44,6 +44,7 @@ import { createWorkflowV2HumanGateActionHandlers } from "./workflow-v2/human-gat
 import { createWorkflowV2PlanActionHandlers } from "./workflow-v2/plan-actions.js";
 import { createWorkflowV2ReadinessActionHandlers } from "./workflow-v2/readiness-actions.js";
 import { createWorkflowV2InterventionReadinessActionHandlers } from "./workflow-v2/intervention-readiness-actions.js";
+import { createWorkflowV2InterventionSettlementActionHandlers } from "./workflow-v2/intervention-settlement-actions.js";
 import { createWorkflowV2InterventionActionHandlers } from "./workflow-v2/intervention-actions.js";
 import { createWorkflowV2EvaluationActionHandlers } from "./workflow-v2/evaluation-actions.js";
 import { createWorkflowSupervisorNextActionsHandlers } from "./workflow-v2/supervisor-next-actions.js";
@@ -4565,6 +4566,15 @@ const WORKFLOW_V2_INTERVENTION_READINESS_ACTION_HANDLERS = createWorkflowV2Inter
 export const {
   workflowV2InterventionReadinessPreview
 } = WORKFLOW_V2_INTERVENTION_READINESS_ACTION_HANDLERS;
+
+const WORKFLOW_V2_INTERVENTION_SETTLEMENT_ACTION_HANDLERS = createWorkflowV2InterventionSettlementActionHandlers({
+  nowIso,
+  workflowPayloadSqlWhere
+});
+
+export const {
+  workflowV2InterventionSettlementPreview
+} = WORKFLOW_V2_INTERVENTION_SETTLEMENT_ACTION_HANDLERS;
 
 const WORKFLOW_V2_INTERVENTION_ACTION_HANDLERS = createWorkflowV2InterventionActionHandlers({
   ensureWorkflowLayout,
@@ -9098,6 +9108,7 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2HumanGateRequestPreview,
   workflowV2HumanGateRequest,
   workflowV2InterventionReadinessPreview,
+  workflowV2InterventionSettlementPreview,
   workflowV2InterventionExecute,
   workflowV2EvaluationSnapshotPreview,
   workflowV2EvaluationCompatibilityPreview,
