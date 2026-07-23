@@ -85,6 +85,24 @@ Local closeout evidence:
 - Independent reviewer verdict: PASS; remaining low-risk follow-up is to add a
   dynamic dispatch call-site audit so the hand-maintained inventory cannot drift.
 
+## 2026-07-23 v1 Retirement Readiness Addendum
+
+The v1 retirement plan is now controlled by one rollout matrix:
+`docs/workflow-v1-retirement-cutover-readiness.md`.
+
+- Reconciled P7/P26/P34/Batch F/G status so `workflow.advance` /
+  `workflow.supervise`, `workflow.checkpoint`, and `route_shell.*` no longer
+  appear as unresolved P7-era exclusions.
+- Updated `scripts/workflow_batch_freeze_audit.mjs` to distinguish frozen
+  compatibility, frozen checkpoint diagnostics, protected shared
+  scheduler/maintenance/runtime substrate, and remaining legacy-active
+  intervention/evaluator work.
+- Remaining v1.0.0 blockers are narrowed to full v2 intervention parity beyond
+  the existing v2 plan-state transition actions, evaluator parity, shared
+  maintenance service ownership, adapter parity for meeting
+  dispatch/ingest/runtime bridge evidence, and legacy read-history retirement
+  criteria.
+
 ## Validation Evidence
 
 - Commit: `84d50c42a4b3d8f5e38835cd4bbb35812bb3497c`

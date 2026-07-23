@@ -3,6 +3,7 @@
 Status: active freeze-batch ledger  
 Created: 2026-07-15  
 Release line: `v0.8.2-rc.1` -> `v1.0.0`
+Last reconciled: 2026-07-23
 
 ## Purpose
 
@@ -23,16 +24,30 @@ Current freeze policy is defined in
 | `workflow.task.create` / `workflow.task.update` | P7 froze direct task mutation; P10 removed the external surface. V2 owns new work as plan nodes, worker runs, manager/owner reviews, and worker result state. | `workflow.v2.plan.create`, `workflow.v2.worker_result.submit`, v2 review/readiness surfaces. | V2 plan/node/worker state does not call the external `workflow.task.*` actions. | Direct `runAction` callers, plugin schema actions, plugin commands, mutating CLI shell, permission rules, migration metadata, public registry dispatch, and exported helper surfaces were removed in P10. | `workflow_runs`, `workflow_tasks`, `workflow_task_dependencies`, `workflow_events`. | External mutation now fails closed as `unknown_workflow_action`; list/history reads remain available; `meeting.action_item` uses an internal Symbol compatibility token scoped to `workflow.task.create/update`, so JSON/request-level fields cannot forge the source. | No env escape hatch remains for external task mutation. |
 | `workflow.swarm.plan` / `workflow.swarm` | P7. Legacy swarm fanout is superseded by v2 manager/worker/task-group and adapter-job mechanics. It should not be migrated. | `workflow.v2.worker_spawn.create` and v2 manager/worker/task-group surfaces. | V2 worker spawn/lifecycle/adapter actions do not call `workflowSwarmPlan`. | Former direct `runAction` callers, `workflow.swarm` alias, historical tests. | Former `workflow_runs`, `workflow_tasks`, dependency rows, `workflow_events`. | Removed in P8. | No swarm escape hatch remains. |
 
-## Not Frozen In This Batch
+## Original P7 Not-Frozen Rationale
 
-| Entry / code block | Reason |
+This section records the original P7 exclusion rationale. Later batches have
+since moved some entries out of this state; see **Post-P7 Reconciliation** below.
+
+| Entry / code block | Original P7 reason |
 | --- | --- |
 | `workflow.advance` / `workflow.supervise` | They are high-risk mutating operations and remain default-blocked, but not retirement-frozen in P7. P11 confirms valid readiness/progression, checkpoint, runtime-drain, and Cat Claw closeout behavior still need migration into v2/shared validators before deletion. |
-| `workflow.checkpoint` | V2 checkpoint/recovery parity is not proven. |
+| `workflow.checkpoint` | Original P7 reason: v2 checkpoint/recovery parity was not yet proven. Superseded by P27-P34; see Post-P7 reconciliation. |
 | `workflow.schedule.*` | Production template/approved-plan scheduler is not fully cut over. |
 | `workflow.control_loop.*`, `runtime.bridge.drain` | Shared maintenance and runtime-drain evidence still exist; v2 service ownership is not fully proven. |
 | `meeting.*`, `message_flow.*`, `human_gate.*`, `incident.*`, `side_effect.*`, `trade.*`, `runtime.agent.*` | Shared substrate, not v1-only freeze targets. `meeting.action_item` mirroring remains active through an internal, non-JSON-forgeable compatibility token until a v2/shared task writer replaces it. |
-| `route_shell.*` | Deprecated and should not be used for active execution, but P7 does not close this entry until historical ingestion/read evidence requirements are separately audited. |
+| `route_shell.*` | Original P7 reason: historical ingestion/read evidence still needed audit before closing source entry points. Superseded by Batch F/G; see Post-P7 reconciliation. |
+
+## Post-P7 Reconciliation
+
+| Entry / code block | Current status | Evidence |
+| --- | --- | --- |
+| `workflow.advance` / `workflow.supervise` | `frozen_compatibility` | P19-P26 migrated supervisor readiness/next-actions/closeout/report parity, isolated `workflow_supervise`, found no live dev-server dependency, default-closed the legacy lane, and froze standalone mutating entry points behind `TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1`. |
+| `workflow.checkpoint` | `compat_shell_only` / frozen writer diagnostic | P27-P34 added v2/shared checkpoint writers, archive checkpoint, explicit source-class routing, read-only legacy export, and froze the mutating legacy writer. |
+| `route_shell.*` | `source_deleted` / external entrypoints closed | Batch F/G closed public route-shell actions, aliases, CLI, plugin schema/hook, `meeting.dispatch` redirect, and `runtime.bridge.drain` redirect; route-shell runtime input now fails closed as retired evidence. |
+| `workflow.schedule.*`, `workflow.control_loop.*`, `runtime.bridge.drain` | protected shared scheduler/maintenance substrate | Batch C audit keeps these surfaces because they own approved schedule admission, bounded maintenance, stale dispatch/message-flow/Human Gate/outbox repair, and runtime drain evidence. |
+| `workflow.pause` / `workflow.resume` / `workflow.stop` | `legacy_active` until full v2 intervention parity | V2 plan-state transitions exist through `workflow.v2.pause/resume/stop/terminate`, but full active worker, adapter job, session, dispatch, outbox, Human Gate, side-effect, checkpoint, and incident settlement parity is not complete. |
+| `workflow.evaluate` | `legacy_active` until evaluator checks migrate | `workflow.v2.evaluation_snapshot.preview` and `workflow.v2.validate` exist, but legacy evaluator persistence/check coverage is not fully retired. |
 
 ## Batch Review Standard
 

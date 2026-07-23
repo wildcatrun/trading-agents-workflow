@@ -2,7 +2,7 @@
 
 Status: active cleanup/convergence pass
 Created: 2026-07-09
-Related design context: `docs/workflow-v2-unified-next-plan.md`, `docs/workflow-v1-v2-function-matrix.md`, `docs/workflow-v1-v2-refactor-migration-plan.md`, `docs/workflow-v1-v2-migration-worthiness-audit.md`
+Related design context: `docs/workflow-v2-unified-next-plan.md`, `docs/workflow-v1-v2-function-matrix.md`, `docs/workflow-v1-v2-refactor-migration-plan.md`, `docs/workflow-v1-v2-migration-worthiness-audit.md`, `docs/workflow-v1-retirement-cutover-readiness.md`
 Scope: organize existing legacy/v2/shared orchestration surfaces into safer production defaults without deleting generic authoring capability, pretending legacy diagnostics have no value, or freezing future v2 feature development
 
 ## Operating Principle
@@ -18,6 +18,8 @@ to compatibility shims and making v2 the default kernel is maintained in
 whether a legacy block should be migrated, wrapped, left for templates, kept as
 shared substrate, or archived is
 `docs/workflow-v1-v2-migration-worthiness-audit.md`.
+The current cross-batch v1 retirement and v2 cutover readiness matrix is
+`docs/workflow-v1-retirement-cutover-readiness.md`.
 
 The production-oriented convergence target is:
 

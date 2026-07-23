@@ -9,8 +9,17 @@ Status: audit only. This document does not authorize freezing, deleting, or chan
 Implementation update, 2026-07-20: P35 added
 `workflow.v2.intervention_readiness.preview` as the first v2 replacement
 readiness surface. It is a read-only preflight over v2 plan state and shared
-runtime evidence; it does not freeze or retire legacy lifecycle/evaluate
-actions.
+runtime evidence.
+
+Implementation update, 2026-07-23: v2 also has governed
+`workflow.v2.pause`, `workflow.v2.resume`, `workflow.v2.stop`, and
+`workflow.v2.terminate` plan-state transition actions. These actions require
+Human Gate evidence, Protocol audit evidence, operator reason, idempotency, and
+checkpoint/rollback evidence where appropriate. They intentionally mutate only
+`workflow_v2_plans` and `workflow_events`; they do not cancel active workers,
+adapter jobs, sessions, dispatches, outbox rows, Human Gates, or side effects.
+Therefore they reduce the gap but do not by themselves authorize freezing the
+legacy lifecycle shell.
 
 ## Executive Conclusion
 
@@ -24,6 +33,8 @@ The correct Batch C posture is:
 
 - keep lifecycle mutating actions gated and do not expand them;
 - migrate useful preview safety checks into v2/shared intervention readiness;
+- extend existing v2 plan-state transition actions to cover active external
+  work settlement before legacy lifecycle freeze;
 - migrate evaluator checks into v2/shared validators/readiness;
 - freeze or remove the legacy lifecycle shells only after v2 plan/node/worker/adapter/Human Gate/side-effect transition semantics exist and pass regression.
 
@@ -33,7 +44,7 @@ The correct Batch C posture is:
 | --- | --- | --- | --- | --- |
 | Lifecycle action registry and aliases | `intervention-actions.js` registers `workflow.pause`, `workflow.resume`, `workflow.stop`, `workflow.terminate`, preview aliases, and rerun previews. | V2 should expose audited intervention readiness/actions, not direct legacy aliases. | `must_migrate_then_retire_aliases`. | Operators lose governed intervention diagnostics or accidentally call hidden legacy aliases. |
 | Pause/resume/stop preview | `workflowInterventionPreview` reads legacy `workflow_runs`, `workflow_tasks`, `mixed_meeting_dispatches`, `workflow_phases`, `workflow_checkpoints`, `side_effect_ledger`, and `workflow_agent_runs`; it returns eligibility, warnings, Human Gate/Cat Claw requirements, latest checkpoint, active dispatches, pending Human Gates, and side-effect uncertainty. | V2 intervention readiness should read `workflow_v2_plans`, nodes, workers, adapter jobs, sessions, Human Gate packages, side effects, dispatches, and checkpoints. | `must_migrate_valid_checks`. | A freeze would remove the only existing operator preview for intervention risk before v2 parity exists. |
-| Pause/resume/stop execution | `workflowInterventionExecute` requires operator reason and rollback/checkpoint boundary, then updates only `workflow_runs.status/current_decision/updated_at` and appends a workflow event. | V2 needs explicit plan/node/worker/session/adapter job/Human Gate/side-effect transition actions with leases and idempotency. | `legacy_shell_limited_value`. | Status may appear paused/stopped while active workers, adapter jobs, dispatches, outbox, or side effects continue. |
+| Pause/resume/stop execution | `workflowInterventionExecute` requires operator reason and rollback/checkpoint boundary, then updates only `workflow_runs.status/current_decision/updated_at` and appends a workflow event. | `workflow.v2.pause/resume/stop/terminate` now provide governed v2 plan-state transitions with idempotent events, but active external work settlement remains incomplete. | `legacy_shell_limited_value` until full v2 settlement parity. | Status may appear paused/stopped while active workers, adapter jobs, dispatches, outbox, or side effects continue. |
 | Human Gate / Cat Claw enforcement | Preview marks Human Gate and Cat Claw audit required; permission policy marks pause/resume/stop high-risk with Human Gate evidence and Cat Claw audit requirements. Execute itself does not re-check these fields and relies on the action policy/permission gate. | V2 intervention must produce Human Gate package/request and Cat Claw audited evidence before mutation. | `must_migrate`. | High-impact intervention becomes a silent local status edit. |
 | Side-effect uncertainty awareness | Preview warns on `side_effect_ledger` uncertain/failed statuses and raises stop risk tier to `P0-critical` when uncertain side effects exist. | V2 intervention should bind side-effect ledger and trading-core handoff uncertainty before stop/resume. | `must_migrate`. | Pausing/stopping could mask unresolved external side effects. |
 | Rerun previews | `workflow.rerun.agent.preview` and `workflow.rerun.phase.preview` are read-only diagnostics that check target evidence; execute path does not support rerun. | V2 worker successor/handoff/retire and manager review paths are the real replacement direction. | `compat_diagnostic_only`. | Mistaken deletion could remove diagnostics, but there is no mutating rerun executor to preserve. |
@@ -64,7 +75,10 @@ The correct Batch C posture is:
 ## Required Migration Sequence
 
 1. Define v2 intervention readiness covering plan, node, worker run, adapter job, session run, dispatch, Human Gate package/request, outbox, checkpoint, side-effect ledger, and incident state.
-2. Implement v2 pause/resume/stop transitions as explicit authorized state-machine operations, not a single status edit.
+2. Extend v2 pause/resume/stop transitions beyond plan-state updates to cover
+   active worker runs, adapter jobs, session runs, dispatches, Human Gate waits,
+   outbox rows, side-effect uncertainty, and incident state with durable
+   receipts.
 3. Require Cat Claw audit and Human Gate package/request before high-impact intervention execution.
 4. Map stop/terminate to v2 states consistently: v2 uses `terminated` / `cancelled`, while legacy `workflow.stop` writes `stopped`.
 5. Extract evaluator checks into `workflow.v2.validate` and/or supervisor readiness; preserve evaluator evidence rows or define a v2 equivalent artifact.

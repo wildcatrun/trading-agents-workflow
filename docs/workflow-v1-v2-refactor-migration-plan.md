@@ -18,6 +18,10 @@ Migration implementation targets must first pass the value audit in
 `docs/workflow-v1-v2-migration-worthiness-audit.md`. A code block being old,
 large, or marked legacy is not sufficient reason to migrate it.
 The active batch freeze ledger is `docs/workflow-freeze-pool-p7.md`.
+The current single rollout matrix for v1 retirement and v2 default-kernel
+cutover readiness is
+`docs/workflow-v1-retirement-cutover-readiness.md`; use it as the current
+state control document when older P-slice notes disagree.
 The replacement capability completion plan for the remaining non-freezable
 execution surfaces is
 `docs/workflow-v2-replacement-capability-completion-plan.md`; its read-model and

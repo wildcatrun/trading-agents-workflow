@@ -88,36 +88,85 @@ const FREEZE_CANDIDATES = [
     batch: "C",
     family: "legacy mutating progression",
     actions: ["workflow.advance", "workflow.supervise"],
+    currentStatus: "frozen_compatibility",
+    freezeAction: "default-disabled compatibility executor only; retain explicit legacy escape hatch until v1.0.0 removal window",
+    v2Replacement: "workflow.supervisor.readiness.preview + workflow.supervisor.next_actions.preview + workflow.dispatch.reconcile + shared maintenance lanes",
+    v2DependencyPolicy: "must_not_depend_for_new_v2_planning",
+    allowedPlanningRefs: {
+      "workflow.advance": [
+        "static/console/app.js",
+        "static/console/preview-actions.js"
+      ],
+      "workflow.supervise": [
+        "src/console/read-model.js",
+        "static/console/app.js",
+        "static/console/preview-actions.js"
+      ]
+    }
+  },
+  {
+    batch: "C",
+    family: "legacy checkpoint writer",
+    actions: ["workflow.checkpoint"],
+    currentStatus: "compat_shell_only",
+    freezeAction: "frozen writer diagnostic; no legacy checkpoint writes",
+    v2Replacement: "workflow.supervisor.checkpoint + workflow.archive.checkpoint + workflow.checkpoint.legacy_export",
+    v2DependencyPolicy: "must_not_depend_for_new_v2_planning"
+  },
+  {
+    batch: "C",
+    family: "workflow lifecycle interventions",
+    actions: ["workflow.pause", "workflow.resume", "workflow.stop"],
     currentStatus: "legacy_active",
-    freezeAction: "do_not_freeze_until_mutating_parity_or_explicit_retirement",
-    v2Replacement: "semantic supervisor readiness/next-actions plus executor parity",
+    freezeAction: "do_not_freeze_until v2 intervention execute covers external active work cancellation/settlement parity",
+    v2Replacement: "workflow.v2.intervention_readiness.preview + workflow.v2.pause/resume/stop plan-state transitions",
     v2DependencyPolicy: "allowed_until_replaced"
   },
   {
     batch: "C",
-    family: "workflow lifecycle mutations",
-    actions: ["workflow.checkpoint", "workflow.pause", "workflow.resume", "workflow.stop", "workflow.evaluate"],
+    family: "workflow evaluator",
+    actions: ["workflow.evaluate"],
     currentStatus: "legacy_active",
-    freezeAction: "do_not_freeze_until v2 lifecycle/checkpoint parity",
-    v2Replacement: "v2 plan/node/worker lifecycle and recovery model",
+    freezeAction: "do_not_freeze_until evaluator checks are absorbed into v2 validate/readiness",
+    v2Replacement: "workflow.v2.evaluation_snapshot.preview + workflow.v2.validate",
     v2DependencyPolicy: "allowed_until_replaced"
   },
   {
     batch: "C",
-    family: "schedules and control-loop",
+    family: "workflow scheduler",
     actions: [
       "workflow.schedule.upsert",
       "workflow.schedule.list",
       "workflow.schedule.pause",
       "workflow.schedule.resume",
-      "workflow.schedule.disable",
+      "workflow.schedule.disable"
+    ],
+    currentStatus: "shared_scheduler_keep",
+    freezeAction: "do_not_freeze; protected governed scheduler substrate",
+    v2Replacement: "approved v2/template scheduler",
+    v2DependencyPolicy: "allowed_until_service_cutover"
+  },
+  {
+    batch: "C",
+    family: "workflow control-loop maintenance",
+    actions: [
       "workflow.control_loop.tick",
-      "workflow.control_loop.job.requeue",
+      "workflow.control_loop.job.requeue"
+    ],
+    currentStatus: "shared_maintenance_keep",
+    freezeAction: "do_not_freeze; protected shared maintenance and repair substrate",
+    v2Replacement: "shared maintenance service + v2 worker control-loop adjacency",
+    v2DependencyPolicy: "allowed_until_service_cutover"
+  },
+  {
+    batch: "C",
+    family: "runtime bridge drain",
+    actions: [
       "runtime.bridge.drain"
     ],
-    currentStatus: "legacy_active/shared maintenance",
-    freezeAction: "do_not_freeze; separate v1 orchestration from shared maintenance first",
-    v2Replacement: "approved v2/template scheduler + v2 adapter runner service",
+    currentStatus: "shared_runtime_keep",
+    freezeAction: "do_not_freeze; protected shared runtime bridge substrate",
+    v2Replacement: "v2 adapter runner for worker jobs plus shared dispatch drain evidence",
     v2DependencyPolicy: "allowed_until_service_cutover"
   },
   {
@@ -353,7 +402,14 @@ function auditPolicy(candidate, registryActions, registrySources) {
       continue;
     }
 
-    if (candidate.currentStatus === "compat_shell_only" || candidate.currentStatus === "frozen_compatibility" || candidate.currentStatus.startsWith("legacy_active") || candidate.currentStatus.includes("deprecated") || candidate.currentStatus === "shared_substrate") {
+    if (
+      candidate.currentStatus === "compat_shell_only"
+      || candidate.currentStatus === "frozen_compatibility"
+      || candidate.currentStatus.startsWith("legacy_active")
+      || candidate.currentStatus.includes("deprecated")
+      || candidate.currentStatus === "shared_substrate"
+      || candidate.currentStatus.includes("shared_")
+    ) {
       if (!registered && !aliasTarget) failures.push(`${action}: active/shared/compat action is not registered and is not an alias`);
     }
 
@@ -412,7 +468,7 @@ async function main() {
         policy.failures.push(`${action}: removed action reappeared in public surface ${summarizeOccurrences(publicRefs[action]).join("; ")}`);
       }
 
-      if (candidate.v2DependencyPolicy === "must_not_depend") {
+      if (candidate.v2DependencyPolicy === "must_not_depend" || candidate.v2DependencyPolicy === "must_not_depend_for_new_v2_planning") {
         const allowed = allowedPlanningFiles(candidate, action);
         const unapprovedPlanningRefs = v2PlanningRefs[action].filter((hit) => !allowed.has(hit.file));
         if (unapprovedPlanningRefs.length > 0) {
