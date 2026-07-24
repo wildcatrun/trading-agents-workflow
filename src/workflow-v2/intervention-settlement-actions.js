@@ -3,11 +3,14 @@ import {
   workflowPaths
 } from "../workflow/paths.js";
 import {
-  firstText
+  firstText,
+  jsonHash,
+  redactSensitiveForPersistence
 } from "../workflow/json.js";
 import {
   sqlValue,
   sqlite,
+  sqliteTransaction,
   tableColumns
 } from "../workflow/sqlite.js";
 import {
@@ -26,6 +29,46 @@ const UNRESOLVED_SIDE_EFFECT_STATUSES = new Set(["uncertain", "side_effect_uncer
 const ACTIVE_INCIDENT_STATUSES = new Set(["active", "mitigating", "monitoring"]);
 const TERMINAL_PLAN_STATUSES = new Set(["completed", "cancelled", "superseded"]);
 const TERMINAL_WORKFLOW_STATES = new Set(["completed", "terminated", "cancelled"]);
+const SETTLEMENT_SOURCE_KINDS = new Set([
+  "worker_run",
+  "adapter_job",
+  "session_run",
+  "runtime_dispatch",
+  "outbox_delivery",
+  "side_effect",
+  "incident",
+  "human_gate",
+  "human_gate_package"
+]);
+const SETTLEMENT_RESOLUTIONS = new Set([
+  "terminal_receipt",
+  "superseded",
+  "cancelled_with_evidence",
+  "human_accepted",
+  "resolved",
+  "waived_by_human_gate"
+]);
+const HUMAN_ACCEPTED_SETTLEMENT_RESOLUTIONS = new Set(["human_accepted", "waived_by_human_gate", "cancelled_with_evidence", "superseded"]);
+const TERMINAL_RECEIPT_SETTLEMENT_RESOLUTIONS = new Set(["terminal_receipt", "resolved"]);
+const TERMINAL_SOURCE_STATUSES = new Set([
+  "completed",
+  "succeeded",
+  "success",
+  "done",
+  "sent",
+  "delivered",
+  "resolved",
+  "closed",
+  "approved",
+  "waived",
+  "rejected",
+  "cancelled",
+  "canceled",
+  "superseded",
+  "failed",
+  "dead_letter",
+  "terminal"
+]);
 
 function requireContextFunction(context, name) {
   const value = context?.[name];
@@ -69,6 +112,232 @@ function interventionKind(input = {}) {
 
 function hasAllColumns(columns, names = []) {
   return names.every((name) => columns.has(name));
+}
+
+function settlementRecordSummary(row = {}) {
+  return {
+    settlementId: row.settlement_id || "",
+    workflowId: row.workflow_id || "",
+    planId: row.plan_id || "",
+    sourceKind: row.source_kind || "",
+    sourceId: row.source_id || "",
+    resolution: row.resolution || "",
+    receiptRef: row.receipt_ref || "",
+    humanGateId: row.human_gate_id || "",
+    sideEffectId: row.side_effect_id || "",
+    incidentId: row.incident_id || "",
+    idempotencyKey: row.idempotency_key || "",
+    payloadHash: row.payload_hash || "",
+    createdBy: row.created_by || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function settlementKey(kind, source) {
+  return `${kind || ""}\n${source || ""}`;
+}
+
+function settlementSourceIdForRecord(input = {}, sourceKind, sourceId) {
+  if (sourceKind === "side_effect") return firstText(input.sideEffectId, input.side_effect_id, sourceId);
+  if (sourceKind === "incident") return firstText(input.incidentId, input.incident_id, sourceId);
+  if (sourceKind === "human_gate") return firstText(input.humanGateId, input.human_gate_id, sourceId);
+  return sourceId;
+}
+
+function settlementActor(input = {}, permissionDecision = null) {
+  return firstText(input.actor, input.createdBy, input.created_by, permissionDecision?.caller?.agentId, "unknown");
+}
+
+function normalizeSourceKind(input = {}) {
+  return String(firstText(input.sourceKind, input.source_kind, input.kind, input.source) || "").trim().toLowerCase().replace(/-/g, "_");
+}
+
+function normalizeResolution(input = {}) {
+  return String(firstText(input.resolution, input.status) || "").trim().toLowerCase().replace(/-/g, "_");
+}
+
+async function loadSettlementRecords(dbFile, workflowId, planId) {
+  const columns = await tableColumns(dbFile, "workflow_v2_intervention_settlements");
+  if (!hasAllColumns(columns, ["settlement_id", "workflow_id", "plan_id", "source_kind", "source_id", "resolution", "updated_at"])) return [];
+  const planClause = planId ? `AND (plan_id=${sqlValue(planId)} OR plan_id='')` : "";
+  return sqlite(dbFile, `
+SELECT *
+FROM workflow_v2_intervention_settlements
+WHERE workflow_id=${sqlValue(workflowId)}
+  ${planClause}
+ORDER BY updated_at DESC, created_at DESC;`, { json: true });
+}
+
+function splitSettlementItems(settlementItems = [], settlementRows = []) {
+  const settledBySource = new Map();
+  for (const row of settlementRows) {
+    const sourceKind = row.source_kind || "";
+    const sourceId = row.source_id || "";
+    const resolution = row.resolution || "";
+    if (!SETTLEMENT_SOURCE_KINDS.has(sourceKind) || !SETTLEMENT_RESOLUTIONS.has(resolution) || !sourceId) continue;
+    const key = settlementKey(sourceKind, sourceId);
+    if (!settledBySource.has(key)) settledBySource.set(key, settlementRecordSummary(row));
+  }
+  const openItems = [];
+  const settledItems = [];
+  for (const item of settlementItems) {
+    const settlementRecord = settledBySource.get(settlementKey(item.kind, item.source));
+    if (settlementRecord) {
+      settledItems.push({
+        ...item,
+        settlementRecord
+      });
+    } else {
+      openItems.push(item);
+    }
+  }
+  return { openItems, settledItems, settlementRecords: [...settledBySource.values()] };
+}
+
+function terminalStatus(status = "") {
+  return TERMINAL_SOURCE_STATUSES.has(String(status || "").trim().toLowerCase());
+}
+
+async function tableHasColumns(dbFile, table, columns = []) {
+  const existing = await tableColumns(dbFile, table);
+  return hasAllColumns(existing, columns);
+}
+
+async function settlementSourceState(dbFile, workflowId, planId, sourceKind, sourceId) {
+  const source = sqlValue(sourceId);
+  if (sourceKind === "worker_run" && await tableHasColumns(dbFile, "workflow_v2_worker_runs", ["worker_run_id", "workflow_id", "plan_id", "status"])) {
+    const rows = await sqlite(dbFile, `
+SELECT status, receipt_ref
+FROM workflow_v2_worker_runs
+WHERE worker_run_id=${source}
+  AND workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId)}
+LIMIT 1;`, { json: true });
+    return rows[0] ? { exists: true, terminal: terminalStatus(rows[0].status), receiptRef: rows[0].receipt_ref || "" } : { exists: false, terminal: false, receiptRef: "" };
+  }
+  if (sourceKind === "adapter_job" && await tableHasColumns(dbFile, "workflow_v2_worker_adapter_jobs", ["adapter_job_id", "workflow_id", "plan_id", "status"])) {
+    const rows = await sqlite(dbFile, `
+SELECT status, runner_receipt_ref, artifact_ref
+FROM workflow_v2_worker_adapter_jobs
+WHERE adapter_job_id=${source}
+  AND workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId)}
+LIMIT 1;`, { json: true });
+    return rows[0] ? { exists: true, terminal: terminalStatus(rows[0].status), receiptRef: firstText(rows[0].runner_receipt_ref, rows[0].artifact_ref) } : { exists: false, terminal: false, receiptRef: "" };
+  }
+  if (sourceKind === "session_run" && await tableHasColumns(dbFile, "workflow_session_runs", ["run_id", "workflow_id", "status"])) {
+    const rows = await sqlite(dbFile, `
+SELECT status, receipt_ref
+FROM workflow_session_runs
+WHERE run_id=${source}
+  AND workflow_id=${sqlValue(workflowId)}
+LIMIT 1;`, { json: true });
+    return rows[0] ? { exists: true, terminal: terminalStatus(rows[0].status), receiptRef: rows[0].receipt_ref || "" } : { exists: false, terminal: false, receiptRef: "" };
+  }
+  if (sourceKind === "runtime_dispatch" && await tableHasColumns(dbFile, "mixed_meeting_dispatches", ["dispatch_id", "workflow_id", "status"])) {
+    const rows = await sqlite(dbFile, `
+SELECT status
+FROM mixed_meeting_dispatches
+WHERE dispatch_id=${source}
+  AND workflow_id=${sqlValue(workflowId)}
+LIMIT 1;`, { json: true });
+    return rows[0] ? { exists: true, terminal: terminalStatus(rows[0].status), receiptRef: "" } : { exists: false, terminal: false, receiptRef: "" };
+  }
+  if (sourceKind === "outbox_delivery" && await tableHasColumns(dbFile, "telegram_outbox", ["outbox_id", "meeting_id", "status"])) {
+    const rows = await sqlite(dbFile, `
+SELECT status
+FROM telegram_outbox
+WHERE outbox_id=${source}
+  AND meeting_id=${sqlValue(workflowId)}
+LIMIT 1;`, { json: true });
+    return rows[0] ? { exists: true, terminal: terminalStatus(rows[0].status), receiptRef: "" } : { exists: false, terminal: false, receiptRef: "" };
+  }
+  if (sourceKind === "side_effect" && await tableHasColumns(dbFile, "side_effect_ledger", ["side_effect_id", "workflow_id", "status"])) {
+    const rows = await sqlite(dbFile, `
+SELECT status, artifact_ref
+FROM side_effect_ledger
+WHERE side_effect_id=${source}
+  AND workflow_id=${sqlValue(workflowId)}
+LIMIT 1;`, { json: true });
+    return rows[0] ? { exists: true, terminal: terminalStatus(rows[0].status), receiptRef: rows[0].artifact_ref || "" } : { exists: false, terminal: false, receiptRef: "" };
+  }
+  if (sourceKind === "incident" && await tableHasColumns(dbFile, "incident_states", ["incident_id", "status"])) {
+    const rows = await sqlite(dbFile, `
+SELECT status, resolved_at
+FROM incident_states
+WHERE incident_id=${source}
+LIMIT 1;`, { json: true });
+    return rows[0] ? { exists: true, terminal: terminalStatus(rows[0].status) || Boolean(rows[0].resolved_at), receiptRef: "" } : { exists: false, terminal: false, receiptRef: "" };
+  }
+  if (sourceKind === "human_gate") {
+    const reviewGateRows = await tableHasColumns(dbFile, "review_gates", ["gate_id", "workflow_id", "status"]) ? await sqlite(dbFile, `
+SELECT status
+FROM review_gates
+WHERE gate_id=${source}
+  AND workflow_id=${sqlValue(workflowId)}
+LIMIT 1;`, { json: true }) : [];
+    if (reviewGateRows[0]) return { exists: true, terminal: terminalStatus(reviewGateRows[0].status), receiptRef: "" };
+    const protocolRows = await tableHasColumns(dbFile, "protocol_objects", ["object_id", "object_type", "status", "parent_object_id", "payload_json"]) ? await sqlite(dbFile, `
+SELECT status
+FROM protocol_objects
+WHERE object_id=${source}
+  AND object_type='human_gate_record'
+  AND (parent_object_id=${sqlValue(workflowId)} OR payload_json LIKE ${sqlValue(`%${workflowId}%`)})
+LIMIT 1;`, { json: true }) : [];
+    return protocolRows[0] ? { exists: true, terminal: terminalStatus(protocolRows[0].status), receiptRef: "" } : { exists: false, terminal: false, receiptRef: "" };
+  }
+  if (sourceKind === "human_gate_package" && await tableHasColumns(dbFile, "workflow_v2_human_gate_packages", ["package_id", "workflow_id", "plan_id", "status"])) {
+    const rows = await sqlite(dbFile, `
+SELECT status
+FROM workflow_v2_human_gate_packages
+WHERE package_id=${source}
+  AND workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId)}
+LIMIT 1;`, { json: true });
+    return rows[0] ? { exists: true, terminal: terminalStatus(rows[0].status), receiptRef: "" } : { exists: false, terminal: false, receiptRef: "" };
+  }
+  return { exists: false, terminal: false, receiptRef: "" };
+}
+
+async function approvedHumanGateExists(dbFile, workflowId, humanGateId) {
+  if (!humanGateId) return false;
+  if (await tableHasColumns(dbFile, "review_gates", ["gate_id", "workflow_id", "status"])) {
+    const rows = await sqlite(dbFile, `
+SELECT gate_id
+FROM review_gates
+WHERE gate_id=${sqlValue(humanGateId)}
+  AND workflow_id=${sqlValue(workflowId)}
+  AND status IN ('approved','waived')
+LIMIT 1;`, { json: true });
+    if (rows[0]) return true;
+  }
+  if (await tableHasColumns(dbFile, "protocol_objects", ["object_id", "object_type", "status", "parent_object_id", "payload_json"])) {
+    const rows = await sqlite(dbFile, `
+SELECT object_id
+FROM protocol_objects
+WHERE object_id=${sqlValue(humanGateId)}
+  AND object_type='human_gate_record'
+  AND status IN ('approved','waived')
+  AND (parent_object_id=${sqlValue(workflowId)} OR payload_json LIKE ${sqlValue(`%${workflowId}%`)})
+LIMIT 1;`, { json: true });
+    if (rows[0]) return true;
+  }
+  return false;
+}
+
+async function approvedProtocolAuditExists(dbFile, workflowId, planId, auditId) {
+  if (!auditId) return false;
+  if (!await tableHasColumns(dbFile, "workflow_v2_protocol_audits", ["audit_id", "workflow_id", "plan_id", "decision"])) return false;
+  const rows = await sqlite(dbFile, `
+SELECT audit_id
+FROM workflow_v2_protocol_audits
+WHERE audit_id=${sqlValue(auditId)}
+  AND workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId)}
+  AND decision IN ('pass','approved','met')
+LIMIT 1;`, { json: true });
+  return Boolean(rows[0]);
 }
 
 async function firstRows(dbFile, table, whereClause, orderColumn, limit = 20) {
@@ -290,7 +559,7 @@ function buildSettlementItems({
   ];
 }
 
-function buildStateTransitionBlockers(kind, plan, settlementItems = [], checkpoint = null) {
+function buildStateTransitionBlockers(kind, plan, settlementItems = [], checkpoint = null, rollbackBoundary = "") {
   const blockers = [];
   if (!plan) {
     blockers.push({ code: "v2_plan_not_found", detail: "v2 plan scope did not match any workflow_v2_plans row" });
@@ -301,7 +570,7 @@ function buildStateTransitionBlockers(kind, plan, settlementItems = [], checkpoi
   if (kind === "resume_plan" && !planPaused(plan) && plan.workflowState !== "waiting_human") {
     blockers.push({ code: "resume_invalid_state", detail: `resume requires blocked/waiting_human state, got status=${plan.status} workflowState=${plan.workflowState}` });
   }
-  if ((kind === "stop_plan" || kind === "terminate_plan") && !checkpoint) {
+  if ((kind === "stop_plan" || kind === "terminate_plan") && !checkpoint && !rollbackBoundary) {
     blockers.push({ code: "checkpoint_required", detail: "stop/terminate settlement requires a latest checkpoint or rollback boundary" });
   }
   for (const item of settlementItems) {
@@ -311,7 +580,15 @@ function buildStateTransitionBlockers(kind, plan, settlementItems = [], checkpoi
   return blockers;
 }
 
+function riskTier(kind, settlementItems = []) {
+  if (settlementItems.some((item) => item.kind === "side_effect" && item.severity === "critical")) return "P0-critical";
+  if (kind === "stop_plan" || kind === "terminate_plan") return "P1-high";
+  if (kind === "pause_plan" || kind === "resume_plan") return "P2-medium";
+  return "P2-medium";
+}
+
 export function createWorkflowV2InterventionSettlementActionHandlers(context = {}) {
+  const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const nowIso = requireContextFunction(context, "nowIso");
   const workflowPayloadSqlWhere = requireContextFunction(context, "workflowPayloadSqlWhere");
 
@@ -319,6 +596,7 @@ export function createWorkflowV2InterventionSettlementActionHandlers(context = {
     const paths = workflowPaths(rootDir, input);
     const generatedAt = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
     const kind = interventionKind(input);
+    const rollbackBoundary = firstText(input.rollbackBoundary, input.rollback_boundary, input.resumeBoundary, input.resume_boundary, input.stopCondition, input.stop_condition);
     const planScope = scopedPlanWhere(input, "p");
     if (!planScope && !firstText(input.workflowId, input.workflow_id)) throw new Error("workflowId or planId is required");
     if (!fileExistsSync(paths.dbFile)) {
@@ -333,6 +611,7 @@ export function createWorkflowV2InterventionSettlementActionHandlers(context = {
           workflowId: firstText(input.workflowId, input.workflow_id),
           planId: firstText(input.planId, input.plan_id)
         },
+        riskTier: "P2-medium",
         plan: null,
         blockers: [{ code: "workflow_database_missing", detail: "workflow database does not exist" }],
         readiness: {
@@ -365,6 +644,7 @@ LIMIT 20;`, { json: true }) : [];
         kind,
         generatedAt,
         scope: { workflowId, planId },
+        riskTier: "P2-medium",
         plan,
         blockers: [{ code: "v2_plan_not_found", detail: "v2 plan scope did not match any workflow_v2_plans row" }],
         readiness: {
@@ -413,7 +693,7 @@ LIMIT 20;`, { json: true }) : [];
       ...reviewGateRows.map((row) => ({ ...row, source_table: "review_gates" })),
       ...protocolHumanGateRows.map((row) => ({ ...row, source_table: "protocol_objects" }))
     ];
-    const settlementItems = buildSettlementItems({
+    const rawSettlementItems = buildSettlementItems({
       workerRows,
       adapterRows,
       sessionRows,
@@ -424,7 +704,13 @@ LIMIT 20;`, { json: true }) : [];
       humanGateRows,
       humanGatePackageRows
     });
-    const blockers = buildStateTransitionBlockers(kind, plan, settlementItems, checkpoint);
+    const settlementRecords = await loadSettlementRecords(paths.dbFile, workflowId, planId);
+    const {
+      openItems: settlementItems,
+      settledItems,
+      settlementRecords: matchedSettlementRecords
+    } = splitSettlementItems(rawSettlementItems, settlementRecords);
+    const blockers = buildStateTransitionBlockers(kind, plan, settlementItems, checkpoint, rollbackBoundary);
     const eligibleForStateTransition = blockers.length === 0;
     const readiness = {
       operation: "workflow.v2.intervention_settlement.readiness_summary",
@@ -440,16 +726,20 @@ LIMIT 20;`, { json: true }) : [];
       kind,
       generatedAt,
       scope: { workflowId, planId },
+      riskTier: riskTier(kind, settlementItems),
       plan,
       readiness,
       blockers,
       latestCheckpoint: checkpoint,
       settlementItems,
+      settledItems,
+      settlementRecords: matchedSettlementRecords,
       settlementSummary: {
         total: settlementItems.length,
         blocking: settlementItems.filter((item) => item.severity === "blocking").length,
         critical: settlementItems.filter((item) => item.severity === "critical").length,
-        warning: settlementItems.filter((item) => item.severity === "warning").length
+        warning: settlementItems.filter((item) => item.severity === "warning").length,
+        settled: settledItems.length
       },
       requiredEvidence: [
         "terminal_worker_or_cancellation_receipts",
@@ -472,7 +762,172 @@ LIMIT 20;`, { json: true }) : [];
     };
   }
 
+  async function workflowV2InterventionSettlementRecord(rootDir, input = {}, permissionDecision = null) {
+    const paths = await ensureWorkflowLayout(rootDir, input);
+    const workflowId = firstText(input.workflowId, input.workflow_id);
+    const planId = firstText(input.planId, input.plan_id);
+    if (!workflowId) throw new Error("workflowId is required for workflow v2 intervention settlement record");
+    if (!planId) throw new Error("planId is required for workflow v2 intervention settlement record");
+    const sourceKind = normalizeSourceKind(input);
+    if (!SETTLEMENT_SOURCE_KINDS.has(sourceKind)) {
+      throw new Error(`unsupported workflow v2 intervention settlement sourceKind: ${sourceKind || "missing"}`);
+    }
+    const sourceId = firstText(input.sourceId, input.source_id, input.sourceRef, input.source_ref);
+    if (!sourceId) throw new Error("sourceId is required for workflow v2 intervention settlement record");
+    const resolution = normalizeResolution(input);
+    if (!SETTLEMENT_RESOLUTIONS.has(resolution)) {
+      throw new Error(`unsupported workflow v2 intervention settlement resolution: ${resolution || "missing"}`);
+    }
+    const receiptRef = firstText(input.receiptRef, input.receipt_ref, input.artifactRef, input.artifact_ref);
+    const humanGateId = firstText(input.humanGateId, input.human_gate_id);
+    const protocolAuditId = firstText(input.protocolAuditId, input.protocol_audit_id);
+    const sideEffectId = sourceKind === "side_effect"
+      ? settlementSourceIdForRecord(input, sourceKind, sourceId)
+      : firstText(input.sideEffectId, input.side_effect_id);
+    const incidentId = sourceKind === "incident"
+      ? settlementSourceIdForRecord(input, sourceKind, sourceId)
+      : firstText(input.incidentId, input.incident_id);
+    if (!receiptRef && !humanGateId && !sideEffectId && !incidentId) {
+      throw new Error("receiptRef, humanGateId, sideEffectId, or incidentId is required for workflow v2 intervention settlement record");
+    }
+    const idempotencyKey = firstText(input.idempotencyKey, input.idempotency_key);
+    const explicitSettlementId = firstText(input.settlementId, input.settlement_id);
+    if (!idempotencyKey && !explicitSettlementId) {
+      throw new Error("idempotencyKey or settlementId is required for workflow v2 intervention settlement record");
+    }
+    const now = firstText(input.generatedAt, input.generated_at, input.now) || nowIso();
+    const actor = settlementActor(input, permissionDecision);
+    const settlementId = explicitSettlementId || `workflow_v2_intervention_settlement.${jsonHash({
+      workflowId,
+      planId,
+      sourceKind,
+      sourceId,
+      idempotencyKey
+    }).slice(0, 24)}`;
+    const payload = redactSensitiveForPersistence({
+      schemaVersion: "workflow_v2_intervention_settlement.v1",
+      workflowId,
+      planId,
+      sourceKind,
+      sourceId,
+      resolution,
+      receiptRef,
+      humanGateId,
+      sideEffectId,
+      incidentId,
+      idempotencyKey,
+      protocolAuditId,
+      operatorReasonPresent: Boolean(firstText(input.operatorReason, input.operator_reason, input.reason, input.summary)),
+      evidenceRefs: Array.isArray(input.evidenceRefs) ? input.evidenceRefs : Array.isArray(input.evidence_refs) ? input.evidence_refs : [],
+      permissionPolicyOutcome: permissionDecision?.policyOutcome || ""
+    });
+    const payloadHash = jsonHash(payload);
+    const sourceState = await settlementSourceState(paths.dbFile, workflowId, planId, sourceKind, sourceId);
+    if (!sourceState.exists) {
+      throw new Error(`workflow v2 intervention settlement source evidence not found: sourceKind=${sourceKind} sourceId=${sourceId}`);
+    }
+    const humanGateApproved = await approvedHumanGateExists(paths.dbFile, workflowId, humanGateId);
+    const protocolAuditApproved = await approvedProtocolAuditExists(paths.dbFile, workflowId, planId, protocolAuditId);
+    if (TERMINAL_RECEIPT_SETTLEMENT_RESOLUTIONS.has(resolution) && !sourceState.terminal) {
+      throw new Error(`workflow v2 intervention settlement terminal source evidence is required: sourceKind=${sourceKind} sourceId=${sourceId} resolution=${resolution}`);
+    }
+    if (HUMAN_ACCEPTED_SETTLEMENT_RESOLUTIONS.has(resolution) && !humanGateApproved && !protocolAuditApproved) {
+      throw new Error(`workflow v2 intervention settlement approved Human Gate or protocol audit evidence is required: sourceKind=${sourceKind} sourceId=${sourceId} resolution=${resolution}`);
+    }
+    const existingByIdempotencyRows = idempotencyKey ? await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_intervention_settlements
+WHERE idempotency_key=${sqlValue(idempotencyKey)}
+LIMIT 1;`, { json: true }) : [];
+    if (existingByIdempotencyRows[0]) {
+      if (existingByIdempotencyRows[0].payload_hash !== payloadHash) {
+        throw new Error("workflow v2 intervention settlement idempotency conflict: payloadHash does not match existing idempotencyKey");
+      }
+      return {
+        operation: "workflow.v2.intervention_settlement.record",
+        workflowId,
+        planId,
+        settlementId: existingByIdempotencyRows[0].settlement_id || settlementId,
+        sourceKind,
+        sourceId,
+        resolution,
+        receiptRef,
+        humanGateId,
+        sideEffectId,
+        incidentId,
+        idempotencyKey,
+        payloadHash,
+        status: "replayed",
+        replayed: true,
+        record: settlementRecordSummary(existingByIdempotencyRows[0]),
+        dbFile: paths.dbFile
+      };
+    }
+    const existingRows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_intervention_settlements
+WHERE settlement_id=${sqlValue(settlementId)}
+LIMIT 1;`, { json: true });
+    if (existingRows[0]) {
+      if (existingRows[0].payload_hash !== payloadHash) {
+        throw new Error("workflow v2 intervention settlement idempotency conflict: payloadHash does not match existing record");
+      }
+      return {
+        operation: "workflow.v2.intervention_settlement.record",
+        workflowId,
+        planId,
+        settlementId,
+        sourceKind,
+        sourceId,
+        resolution,
+        receiptRef,
+        humanGateId,
+        sideEffectId,
+        incidentId,
+        idempotencyKey,
+        payloadHash,
+        status: "replayed",
+        replayed: true,
+        record: settlementRecordSummary(existingRows[0]),
+        dbFile: paths.dbFile
+      };
+    }
+    await sqliteTransaction(paths.dbFile, `
+INSERT OR IGNORE INTO workflow_v2_intervention_settlements(settlement_id, workflow_id, plan_id, source_kind, source_id, resolution, receipt_ref, human_gate_id, side_effect_id, incident_id, idempotency_key, payload_hash, payload_json, created_by, created_at, updated_at)
+VALUES (${sqlValue(settlementId)}, ${sqlValue(workflowId)}, ${sqlValue(planId)}, ${sqlValue(sourceKind)}, ${sqlValue(sourceId)}, ${sqlValue(resolution)}, ${sqlValue(receiptRef)}, ${sqlValue(humanGateId)}, ${sqlValue(sideEffectId)}, ${sqlValue(incidentId)}, ${sqlValue(idempotencyKey)}, ${sqlValue(payloadHash)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(actor)}, ${sqlValue(now)}, ${sqlValue(now)});`);
+    const rows = await sqlite(paths.dbFile, `
+SELECT *
+FROM workflow_v2_intervention_settlements
+WHERE settlement_id=${sqlValue(settlementId)}
+LIMIT 1;`, { json: true });
+    const row = rows[0] || null;
+    if (!row) throw new Error(`workflow v2 intervention settlement record failed: ${settlementId}`);
+    if (row.payload_hash !== payloadHash) {
+      throw new Error("workflow v2 intervention settlement idempotency conflict: payloadHash does not match existing record");
+    }
+    return {
+      operation: "workflow.v2.intervention_settlement.record",
+      workflowId,
+      planId,
+      settlementId,
+      sourceKind,
+      sourceId,
+      resolution,
+      receiptRef,
+      humanGateId,
+      sideEffectId,
+      incidentId,
+      idempotencyKey,
+      payloadHash,
+      status: "recorded",
+      replayed: false,
+      record: settlementRecordSummary(row),
+      dbFile: paths.dbFile
+    };
+  }
+
   return {
-    workflowV2InterventionSettlementPreview
+    workflowV2InterventionSettlementPreview,
+    workflowV2InterventionSettlementRecord
   };
 }

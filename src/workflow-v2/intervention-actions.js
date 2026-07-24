@@ -146,7 +146,7 @@ function mergeInterventionPayload(payload = {}, patch = {}) {
 export function createWorkflowV2InterventionActionHandlers(context = {}) {
   const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const nowIso = requireContextFunction(context, "nowIso");
-  const workflowV2InterventionReadinessPreview = requireContextFunction(context, "workflowV2InterventionReadinessPreview");
+  const workflowV2InterventionSettlementPreview = requireContextFunction(context, "workflowV2InterventionSettlementPreview");
 
   async function workflowV2InterventionExecute(rootDir, input = {}, permissionDecision = null) {
     const paths = await ensureWorkflowLayout(rootDir, input);
@@ -182,12 +182,13 @@ export function createWorkflowV2InterventionActionHandlers(context = {}) {
       rollbackBoundary
     });
     if (replay) return replay;
-    const readiness = await workflowV2InterventionReadinessPreview(rootDir, {
+    const readiness = await workflowV2InterventionSettlementPreview(rootDir, {
       ...input,
       action: `${action}.preview`,
       targetAction: action
     });
-    if (!readiness.eligible) {
+    const eligible = Boolean(readiness.eligibleForStateTransition ?? readiness.eligible);
+    if (!eligible) {
       const codes = (readiness.blockers || []).map((item) => item.code).join(",") || "unknown";
       throw new Error(`workflow v2 intervention not eligible: action=${action} blockers=${codes}`);
     }
@@ -223,6 +224,7 @@ LIMIT 1;`, { json: true });
       latestCheckpoint: readiness.latestCheckpoint?.path || "",
       operatorReasonPresent: true,
       actor: firstText(input.actor, input.createdBy, input.created_by, permissionDecision?.caller?.agentId, "unknown"),
+      settlementSummary: readiness.settlementSummary || {},
       executedAt: now
     };
     const nextPayload = mergeInterventionPayload(payload, record);
@@ -239,6 +241,7 @@ LIMIT 1;`, { json: true });
       rollbackBoundary: record.rollbackBoundary,
       riskTier: readiness.riskTier,
       blockersChecked: (readiness.blockers || []).length,
+      settlementSummary: readiness.settlementSummary || {},
       warnings: readiness.warnings || [],
       permissionPolicyOutcome: permissionDecision?.policyOutcome || ""
     });
@@ -274,7 +277,7 @@ LIMIT 1;`, { json: true });
       protocolAuditId,
       idempotencyKey,
       rollbackBoundary: record.rollbackBoundary,
-      riskTier: readiness.riskTier,
+      riskTier: readiness.riskTier || (kind === "stop_plan" || kind === "terminate_plan" ? "P1-high" : "P2-medium"),
       changed: 1,
       plan: workflowV2PlanSummary(updatedRows[0] || null),
       limitations: [

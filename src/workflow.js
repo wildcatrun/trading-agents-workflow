@@ -2678,6 +2678,26 @@ CREATE TABLE IF NOT EXISTS workflow_v2_human_gate_packages (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_hgate_workflow ON workflow_v2_human_gate_packages(workflow_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_v2_intervention_settlements (
+  settlement_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  source_kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  resolution TEXT NOT NULL,
+  receipt_ref TEXT NOT NULL DEFAULT '',
+  human_gate_id TEXT NOT NULL DEFAULT '',
+  side_effect_id TEXT NOT NULL DEFAULT '',
+  incident_id TEXT NOT NULL DEFAULT '',
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  payload_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_intervention_settlements_scope ON workflow_v2_intervention_settlements(workflow_id, plan_id, source_kind, source_id, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_v2_intervention_settlements_idempotency ON workflow_v2_intervention_settlements(idempotency_key) WHERE idempotency_key != '';
 CREATE TABLE IF NOT EXISTS workflow_v2_backend_preflights (
   preflight_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL DEFAULT '',
@@ -3623,6 +3643,24 @@ CREATE TABLE IF NOT EXISTS workflow_v2_human_gate_packages (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS workflow_v2_intervention_settlements (
+  settlement_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  source_kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  resolution TEXT NOT NULL,
+  receipt_ref TEXT NOT NULL DEFAULT '',
+  human_gate_id TEXT NOT NULL DEFAULT '',
+  side_effect_id TEXT NOT NULL DEFAULT '',
+  incident_id TEXT NOT NULL DEFAULT '',
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  payload_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS workflow_v2_backend_preflights (
   preflight_id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL DEFAULT '',
@@ -3980,6 +4018,23 @@ CREATE TABLE IF NOT EXISTS workflow_v2_template_events (
     ["updated_at", "TEXT NOT NULL DEFAULT ''"]
   ]);
   await ensureWorkflowV2HumanGatePackageCanonicalSchema(dbFile);
+  await ensureColumns(dbFile, "workflow_v2_intervention_settlements", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["source_kind", "TEXT NOT NULL DEFAULT ''"],
+    ["source_id", "TEXT NOT NULL DEFAULT ''"],
+    ["resolution", "TEXT NOT NULL DEFAULT ''"],
+    ["receipt_ref", "TEXT NOT NULL DEFAULT ''"],
+    ["human_gate_id", "TEXT NOT NULL DEFAULT ''"],
+    ["side_effect_id", "TEXT NOT NULL DEFAULT ''"],
+    ["incident_id", "TEXT NOT NULL DEFAULT ''"],
+    ["idempotency_key", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_hash", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["created_by", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ["updated_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
   await ensureColumns(dbFile, "workflow_v2_backend_preflights", [
     ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
     ["backend_id", "TEXT NOT NULL DEFAULT ''"],
@@ -4093,6 +4148,8 @@ CREATE INDEX IF NOT EXISTS idx_workflow_v2_protocol_audits_workflow ON workflow_
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_notifications_workflow ON workflow_v2_notifications(workflow_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_notifications_info ON workflow_v2_notifications(info_id, inbox_item_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_hgate_workflow ON workflow_v2_human_gate_packages(workflow_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_intervention_settlements_scope ON workflow_v2_intervention_settlements(workflow_id, plan_id, source_kind, source_id, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_v2_intervention_settlements_idempotency ON workflow_v2_intervention_settlements(idempotency_key) WHERE idempotency_key != '';
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_backend_preflights_backend ON workflow_v2_backend_preflights(backend_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_template_specs_status ON workflow_v2_template_specs(family_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_v2_template_specs_owner ON workflow_v2_template_specs(owner_agent, updated_at DESC);
@@ -4571,18 +4628,21 @@ export const {
 } = WORKFLOW_V2_INTERVENTION_READINESS_ACTION_HANDLERS;
 
 const WORKFLOW_V2_INTERVENTION_SETTLEMENT_ACTION_HANDLERS = createWorkflowV2InterventionSettlementActionHandlers({
+  ensureWorkflowLayout,
   nowIso,
   workflowPayloadSqlWhere
 });
 
 export const {
-  workflowV2InterventionSettlementPreview
+  workflowV2InterventionSettlementPreview,
+  workflowV2InterventionSettlementRecord
 } = WORKFLOW_V2_INTERVENTION_SETTLEMENT_ACTION_HANDLERS;
 
 const WORKFLOW_V2_INTERVENTION_ACTION_HANDLERS = createWorkflowV2InterventionActionHandlers({
   ensureWorkflowLayout,
   nowIso,
-  workflowV2InterventionReadinessPreview
+  workflowV2InterventionReadinessPreview,
+  workflowV2InterventionSettlementPreview
 });
 
 export const {
@@ -9114,6 +9174,7 @@ export const WORKFLOW_V2_ACTION_REGISTRY = createWorkflowV2ActionRegistry({
   workflowV2HumanGateRequest,
   workflowV2InterventionReadinessPreview,
   workflowV2InterventionSettlementPreview,
+  workflowV2InterventionSettlementRecord,
   workflowV2InterventionExecute,
   workflowV2EvaluationSnapshotPreview,
   workflowV2EvaluationRecord,

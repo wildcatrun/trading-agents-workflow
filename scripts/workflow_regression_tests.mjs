@@ -156,6 +156,8 @@ import {
   workflowInterventionPreview,
   workflowV2InterventionReadinessPreview,
   workflowV2InterventionSettlementPreview,
+  workflowV2InterventionSettlementRecord,
+  workflowV2InterventionExecute,
   dispatchPackageCreate,
   dispatchPackageCallsitesPreview,
   dispatchPackageParityPreview,
@@ -5806,6 +5808,127 @@ VALUES ('package-v2-settlement-draft', '${workflowId}', 'plan-v2-kernel', '', ''
   assert.equal(blocked.settlementItems.find((item) => item.kind === "side_effect").requiredAction, "resolve_side_effect_uncertainty_before_stop_terminate_or_rerun");
   const afterCounts = Object.fromEntries(Object.keys(beforeCounts).map((table) => [table, sqliteCount(blockedFixture.dbFile, table)]));
   assert.deepEqual(afterCounts, beforeCounts);
+
+  await assertRejectsMessage(
+    () => workflowV2InterventionSettlementRecord(blockedFixture.root, {
+      action: "workflow.v2.intervention_settlement.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      sourceKind: "worker_run",
+      sourceId: "worker-v2-settlement-active",
+      resolution: "terminal_receipt",
+      idempotencyKey: "idem-v2-settlement-missing-evidence"
+    }),
+    /receiptRef, humanGateId, sideEffectId, or incidentId is required/
+  );
+  await assertRejectsMessage(
+    () => workflowV2InterventionSettlementRecord(blockedFixture.root, {
+      action: "workflow.v2.intervention_settlement.record",
+      workflowId,
+      planId: "plan-v2-kernel",
+      sourceKind: "worker_run",
+      sourceId: "worker-v2-settlement-active",
+      resolution: "human_accepted",
+      humanGateId: "hg-v2-settlement-record-missing",
+      idempotencyKey: "idem-v2-settlement-missing-approved-hgate"
+    }),
+    /approved Human Gate or protocol audit evidence is required/
+  );
+
+  await assertRejectsMessage(
+    () => workflowV2InterventionExecute(blockedFixture.root, {
+      action: "workflow.v2.terminate",
+      workflowId,
+      planId: "plan-v2-kernel",
+      operatorReason: "terminate without settlement records",
+      humanGateId: "hg-v2-settlement-terminate",
+      protocolAuditId: "audit-v2-settlement-terminate",
+      idempotencyKey: "idem-v2-settlement-terminate-blocked",
+      rollbackBoundary: "artifact://checkpoint-v2-settlement-blockers",
+      callerAgent: "local_codex",
+      callerRuntime: "local_codex",
+      sourceSystem: "local_codex"
+    }, { caller: { agentId: "local_codex", runtime: "local_codex" }, policyOutcome: "allowed" }),
+    /workflow v2 intervention not eligible: action=workflow\.v2\.terminate blockers=settlement_required:worker_run/
+  );
+
+  sqliteExec(blockedFixture.dbFile, `
+INSERT INTO review_gates(gate_id, workflow_id, gate_type, status, summary, reviewer_agent, human_gate_required, resume_pointer, expires_at, decision_at, approver, evidence_paths_json, created_by, created_at, updated_at)
+VALUES ('hg-v2-settlement-record', '${workflowId}', 'workflow_v2_intervention_settlement', 'approved', 'Approved settlement record gate', 'cat_claw', 1, 'artifact://settlement/approved', '', '2026-07-20T03:02:00.000Z', 'flashcat', '["artifact://settlement/approved"]', 'cat_claw', '2026-07-20T03:02:00.000Z', '2026-07-20T03:02:00.000Z');`);
+  const evidenceCounts = Object.fromEntries(Object.keys(beforeCounts).map((table) => [table, sqliteCount(blockedFixture.dbFile, table)]));
+
+  const settlementInputs = blocked.settlementItems.map((item, index) => ({
+    action: "workflow.v2.intervention_settlement.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    settlementId: `settlement-v2-${item.kind}-${index}`,
+    sourceKind: item.kind,
+    sourceId: item.source,
+    resolution: "human_accepted",
+    receiptRef: `artifact://settlement/${item.kind}/${item.source}`,
+    humanGateId: "hg-v2-settlement-record",
+    protocolAuditId: "audit-v2-settlement-record",
+    idempotencyKey: `idem-v2-settlement-${item.kind}-${index}`,
+    operatorReason: "record governed settlement evidence",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex",
+    generatedAt: "2026-07-20T03:02:00.000Z"
+  }));
+  for (const input of settlementInputs) {
+    const record = await runAction(blockedFixture.root, input);
+    assert.equal(record.operation, "workflow.v2.intervention_settlement.record");
+    assert.equal(record.status, "recorded");
+    assert.equal(record.sourceKind, input.sourceKind);
+  }
+  const replayedRecord = await runAction(blockedFixture.root, settlementInputs[0]);
+  assert.equal(replayedRecord.status, "replayed");
+  assert.equal(replayedRecord.replayed, true);
+  await assertRejectsMessage(
+    () => runAction(blockedFixture.root, {
+      ...settlementInputs[0],
+      receiptRef: "artifact://settlement/conflicting-receipt"
+    }),
+    /workflow v2 intervention settlement idempotency conflict/
+  );
+  const replayedDifferentSettlementId = await runAction(blockedFixture.root, {
+    ...settlementInputs[0],
+    settlementId: "settlement-v2-different-id-same-idempotency"
+  });
+  assert.equal(replayedDifferentSettlementId.status, "replayed");
+  assert.equal(replayedDifferentSettlementId.settlementId, settlementInputs[0].settlementId);
+  assert.equal(sqliteCount(blockedFixture.dbFile, "workflow_v2_intervention_settlements", `workflow_id='${workflowId}'`), 10);
+  const settled = await runAction(blockedFixture.root, {
+    action: "workflow.v2.intervention_settlement.preview",
+    targetAction: "workflow.v2.terminate",
+    workflowId,
+    planId: "plan-v2-kernel"
+  });
+  assert.equal(settled.eligibleForStateTransition, true);
+  assert.equal(settled.settlementSummary.total, 0);
+  assert.equal(settled.settlementSummary.settled, 10);
+  assert.equal(settled.settledItems.length, 10);
+  const terminated = await workflowV2InterventionExecute(blockedFixture.root, {
+    action: "workflow.v2.terminate",
+    workflowId,
+    planId: "plan-v2-kernel",
+    operatorReason: "terminate after settlement receipts",
+    humanGateId: "hg-v2-settlement-terminate",
+    protocolAuditId: "audit-v2-settlement-terminate",
+    idempotencyKey: "idem-v2-settlement-terminate",
+    rollbackBoundary: "artifact://checkpoint-v2-settlement-blockers",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    sourceSystem: "local_codex"
+  }, { caller: { agentId: "local_codex", runtime: "local_codex" }, policyOutcome: "allowed" });
+  assert.equal(terminated.status, "executed");
+  assert.equal(terminated.nextWorkflowState, "terminated");
+  const sourceAfterSettlementCounts = Object.fromEntries(Object.keys(evidenceCounts).map((table) => [table, sqliteCount(blockedFixture.dbFile, table)]));
+  assert.equal(sourceAfterSettlementCounts.workflow_events, evidenceCounts.workflow_events + 1);
+  delete sourceAfterSettlementCounts.workflow_events;
+  const sourceBeforeCounts = { ...evidenceCounts };
+  delete sourceBeforeCounts.workflow_events;
+  assert.deepEqual(sourceAfterSettlementCounts, sourceBeforeCounts);
 }
 
 async function testWorkflowV2InterventionStateTransitions() {
@@ -5951,7 +6074,7 @@ VALUES ('checkpoint-v2-intervention-transition', '${workflowId}', 'active', 'v2'
       callerRuntime: "local_codex",
       sourceSystem: "local_codex"
     }),
-    /workflow v2 intervention not eligible: action=workflow\.v2\.terminate blockers=active_workers,active_session_runs/
+    /workflow v2 intervention not eligible: action=workflow\.v2\.terminate blockers=settlement_required:worker_run,settlement_required:session_run/
   );
   assert.equal(sqliteCount(blockedFixture.dbFile, "workflow_v2_plans", "plan_id='plan-v2-kernel' AND workflow_state='planned'"), 1);
 
@@ -6927,14 +7050,16 @@ async function testWorkflowV2ExtractedActionContracts() {
   const fixture = await setupWorkflowV2KernelExecutionFixture("workflow-v2-extracted-action-contracts");
   const { root, dbFile, workflowId } = fixture;
   const workflowModule = await import("../src/workflow.js");
-  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReportPreview", "workflowSupervisorReport", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2InterventionReadinessPreview", "workflowV2InterventionSettlementPreview", "workflowV2InterventionExecute", "workflowV2EvaluationSnapshotPreview", "workflowV2EvaluationRecord", "workflowV2EvaluationCompatibilityPreview", "workflowV2EvaluationMigrationPreview", "workflowV2Validate"]) {
+  for (const exportName of ["workflowV2ControlLoopPreview", "workflowV2ControlLoopTick", "workflowSupervisorNextActionsPreview", "workflowSupervisorCheckpointPreview", "workflowSupervisorCloseoutPreview", "workflowSupervisorReportPreview", "workflowSupervisorReport", "workflowSupervisorReadinessPreview", "workflowV2ReadinessPreview", "workflowV2InterventionReadinessPreview", "workflowV2InterventionSettlementPreview", "workflowV2InterventionSettlementRecord", "workflowV2InterventionExecute", "workflowV2EvaluationSnapshotPreview", "workflowV2EvaluationRecord", "workflowV2EvaluationCompatibilityPreview", "workflowV2EvaluationMigrationPreview", "workflowV2Validate"]) {
     assert.equal(typeof workflowModule[exportName], "function", `${exportName} should remain a public workflow.js export`);
   }
-  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.report.preview", "workflow.supervisor.report", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.intervention_readiness.preview", "workflow.v2.intervention_settlement.preview", "workflow.v2.intervention.settlement.preview", "workflow.v2.settlement.preview", "workflow.v2.pause.preview", "workflow.v2.resume.preview", "workflow.v2.stop.preview", "workflow.v2.terminate.preview", "workflow.v2.pause", "workflow.v2.resume", "workflow.v2.stop", "workflow.v2.terminate", "workflow.v2.evaluation_snapshot.preview", "workflow.v2.evaluation.record", "workflow.v2.evaluation_compatibility.preview", "workflow.v2.evaluation_migration.preview", "workflow.v2.validate"]) {
+  for (const action of ["workflow.v2.control_loop.preview", "workflow.v2.control_loop.tick", "workflow.supervisor.next_actions.preview", "workflow.supervisor.checkpoint.preview", "workflow.supervisor.closeout.preview", "workflow.supervisor.report.preview", "workflow.supervisor.report", "workflow.supervisor.readiness.preview", "workflow.v2.readiness.preview", "workflow.v2.intervention_readiness.preview", "workflow.v2.intervention_settlement.preview", "workflow.v2.intervention.settlement.preview", "workflow.v2.settlement.preview", "workflow.v2.intervention_settlement.record", "workflow.v2.intervention.settlement.record", "workflow.v2.settlement.record", "workflow.v2.pause.preview", "workflow.v2.resume.preview", "workflow.v2.stop.preview", "workflow.v2.terminate.preview", "workflow.v2.pause", "workflow.v2.resume", "workflow.v2.stop", "workflow.v2.terminate", "workflow.v2.evaluation_snapshot.preview", "workflow.v2.evaluation.record", "workflow.v2.evaluation_compatibility.preview", "workflow.v2.evaluation_migration.preview", "workflow.v2.validate"]) {
     assert.equal(workflowModule.WORKFLOW_V2_ACTION_REGISTRY.has(action), true, `${action} should remain registered`);
   }
   assert.equal(canonicalWorkflowAction("workflow.v2.intervention-readiness.preview"), "workflow.v2.intervention_readiness.preview");
   assert.equal(canonicalWorkflowAction("workflow.v2.lifecycle.preview"), "workflow.v2.intervention_readiness.preview");
+  assert.equal(canonicalWorkflowAction("workflow.v2.intervention-settlement.preview"), "workflow.v2.intervention_settlement.preview");
+  assert.equal(canonicalWorkflowAction("workflow.v2.intervention.settlement.record"), "workflow.v2.intervention_settlement.record");
   assert.equal(canonicalWorkflowAction("workflow.v2.evaluation-snapshot.preview"), "workflow.v2.evaluation_snapshot.preview");
   assert.equal(canonicalWorkflowAction("workflow.v2.evaluate.preview"), "workflow.v2.evaluation_snapshot.preview");
   assert.equal(canonicalWorkflowAction("workflow.v2.evaluator.record"), "workflow.v2.evaluation.record");
@@ -22874,6 +22999,9 @@ async function testWorkflowV2PermissionAndConsoleGate() {
   assert.equal(fullToolActionsSource.includes('"workflow.v2.evaluation.record"'), true);
   assert.equal(fullToolActionsSource.includes('"workflow.v2.evaluation_compatibility.preview"'), true);
   assert.equal(fullToolActionsSource.includes('"workflow.v2.evaluation_migration.preview"'), true);
+  for (const action of ["workflow.v2.intervention_settlement.preview", "workflow.v2.intervention.settlement.preview", "workflow.v2.settlement.preview", "workflow.v2.intervention_settlement.record", "workflow.v2.intervention.settlement.record", "workflow.v2.settlement.record"]) {
+    assert.equal(fullToolActionsSource.includes(`"${action}"`), true, `full tool schema should expose ${action}`);
+  }
   const governanceActionsSource = indexSource.slice(
     indexSource.indexOf("const governanceWorkflowActions = new Set(["),
     indexSource.indexOf("]);", indexSource.indexOf("const governanceWorkflowActions = new Set([")) + 3
@@ -22882,6 +23010,9 @@ async function testWorkflowV2PermissionAndConsoleGate() {
   assert.equal(governanceActionsSource.includes('"workflow.v2.evaluation.record"'), true);
   assert.equal(governanceActionsSource.includes('"workflow.v2.evaluation_compatibility.preview"'), true);
   assert.equal(governanceActionsSource.includes('"workflow.v2.evaluation_migration.preview"'), true);
+  for (const action of ["workflow.v2.intervention_settlement.preview", "workflow.v2.intervention.settlement.preview", "workflow.v2.settlement.preview", "workflow.v2.intervention_settlement.record", "workflow.v2.intervention.settlement.record", "workflow.v2.settlement.record"]) {
+    assert.equal(governanceActionsSource.includes(`"${action}"`), true, `governance tool guard should expose ${action}`);
+  }
   assert.equal(governanceActionsSource.includes('"workflow.evaluate"'), false);
   const handoffPreviewPolicy = await runAction(root, {
     action: "workflow.permission.check",
