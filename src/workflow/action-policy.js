@@ -2,10 +2,18 @@ import {
   strictBoolOption
 } from "./json.js";
 
+export const WORKFLOW_LEGACY_LIFECYCLE_ACTIONS = new Set([
+  "workflow.pause",
+  "workflow.resume",
+  "workflow.stop",
+  "workflow.terminate"
+]);
+
 export const WORKFLOW_LEGACY_MUTATING_ACTIONS = new Set([
   "workflow.advance",
   "workflow.supervise",
-  "workflow.evaluate"
+  "workflow.evaluate",
+  ...WORKFLOW_LEGACY_LIFECYCLE_ACTIONS
 ]);
 
 export const WORKFLOW_LEGACY_MEETING_DISCUSSION_ACTIONS = new Set([
@@ -114,22 +122,22 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
     recommendation: "default-disabled compatibility writer only; use v2 evaluation snapshot/record for evaluator evidence and retain legacy writes only behind the explicit evaluator escape hatch"
   }],
   ["workflow.pause", {
-    decisionClass: "must_migrate",
-    migrationStatus: "legacy_active",
-    replacement: "v2 plan/node/worker pause state transition",
-    recommendation: "map pause semantics onto v2 plans, nodes, workers, adapter jobs, Human Gate waits, and side-effect uncertainty"
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.intervention_readiness.preview + workflow.v2.intervention_settlement.preview + workflow.v2.pause",
+    recommendation: "default-disabled compatibility executor only; use v2 readiness/settlement previews and gated v2 pause transitions for new callers"
   }],
   ["workflow.resume", {
-    decisionClass: "must_migrate",
-    migrationStatus: "legacy_active",
-    replacement: "v2 plan/node/worker resume state transition",
-    recommendation: "map resume semantics onto v2 plans, nodes, workers, adapter jobs, Human Gate waits, and side-effect uncertainty"
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.intervention_readiness.preview + workflow.v2.intervention_settlement.preview + workflow.v2.resume",
+    recommendation: "default-disabled compatibility executor only; use v2 readiness/settlement previews and gated v2 resume transitions for new callers"
   }],
   ["workflow.stop", {
-    decisionClass: "must_migrate",
-    migrationStatus: "legacy_active",
-    replacement: "v2 plan/node/worker stop state transition",
-    recommendation: "map stop semantics onto v2 plans, nodes, workers, adapter jobs, Human Gate waits, and side-effect uncertainty"
+    decisionClass: "compat_shell_only",
+    migrationStatus: "frozen_compatibility",
+    replacement: "workflow.v2.intervention_readiness.preview + workflow.v2.intervention_settlement.preview + workflow.v2.stop/workflow.v2.terminate",
+    recommendation: "default-disabled compatibility executor only; use v2 readiness/settlement previews and gated v2 stop/terminate transitions for new callers"
   }],
   ["meeting.dispatch", {
     decisionClass: "must_migrate",
@@ -412,9 +420,6 @@ export const WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS = new Set([
 ]);
 
 export const WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS = new Set([
-  "workflow.pause",
-  "workflow.resume",
-  "workflow.stop",
   "workflow.incident.from_dead_letter",
   "workflow.control_loop.job.requeue",
   "workflow.incident.closeout.worklist.artifact",

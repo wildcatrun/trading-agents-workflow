@@ -48,6 +48,16 @@ The correct Batch C posture is:
 - migrate evaluator checks into v2/shared validators/readiness;
 - freeze or remove the legacy lifecycle shells only after v2 plan/node/worker/adapter/Human Gate/side-effect transition semantics exist and pass regression.
 
+## 2026-07-24 Closeout Update
+
+The v1.0 hard-cutover decision now treats read-only intervention settlement
+evidence plus gated `workflow.v2.pause/resume/stop/terminate` plan-state
+transitions as sufficient for new callers. Legacy `workflow.pause`,
+`workflow.resume`, `workflow.stop`, and the `workflow.terminate` alias are
+default-disabled compatibility writers behind
+`TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1`; they are no longer default
+operator write surfaces.
+
 ## Responsibility Decomposition
 
 | Responsibility | Current Implementation | V2 / Shared Replacement | Migration Class | Wrong-Freeze Failure |

@@ -117,10 +117,10 @@ const FREEZE_CANDIDATES = [
     batch: "C",
     family: "workflow lifecycle interventions",
     actions: ["workflow.pause", "workflow.resume", "workflow.stop", "workflow.terminate"],
-    currentStatus: "legacy_active",
-    freezeAction: "do_not_freeze_until v2 intervention execute covers external active work cancellation/settlement parity",
+    currentStatus: "frozen_compatibility",
+    freezeAction: "default-disabled compatibility executor only; settlement receipt-only plus gated v2 intervention transitions are the v1.0 hard-cutover path",
     v2Replacement: "workflow.v2.intervention_readiness.preview + workflow.v2.intervention_settlement.preview + workflow.v2.pause/resume/stop/terminate plan-state transitions",
-    v2DependencyPolicy: "allowed_until_replaced"
+    v2DependencyPolicy: "must_not_depend_for_new_v2_planning"
   },
   {
     batch: "C",

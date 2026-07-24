@@ -268,6 +268,7 @@ import {
 } from "./workflow/json.js";
 import {
   WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS,
+  WORKFLOW_LEGACY_LIFECYCLE_ACTIONS,
   WORKFLOW_LEGACY_MUTATING_ACTIONS,
   WORKFLOW_ACTION_PERMISSION_RULES,
   WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN,
@@ -447,13 +448,16 @@ async function workflowConvergenceGate(rootDir, action, requestedAction, input =
   if (WORKFLOW_LEGACY_MUTATING_ACTIONS.has(action)
     && !workflowLegacyActionOverrideEnabled(input, action)) {
     const legacyEvaluator = action === "workflow.evaluate";
+    const legacyLifecycle = WORKFLOW_LEGACY_LIFECYCLE_ACTIONS.has(action);
     return workflowActionBlockedResult(
       action,
       requestedAction,
       legacyEvaluator ? "legacy_evaluator_disabled" : "legacy_action_disabled",
       legacyEvaluator
         ? "legacy workflow.evaluate is retained as a compatibility writer but is disabled by default; use workflow.v2.evaluation_snapshot.preview plus workflow.v2.evaluation.record"
-        : "legacy mutating workflow actions are retained for compatibility but are disabled by default; use approved templates for production workflow execution",
+        : legacyLifecycle
+          ? "legacy workflow lifecycle interventions are retained as compatibility writers but are disabled by default; use workflow.v2.intervention_readiness.preview plus workflow.v2.intervention_settlement.preview and gated workflow.v2.pause/resume/stop/terminate"
+          : "legacy mutating workflow actions are retained for compatibility but are disabled by default; use approved templates for production workflow execution",
       legacyEvaluator ? "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR=1" : "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1"
     );
   }
@@ -1158,7 +1162,8 @@ async function authorizeWorkflowAction(rootDir, input = {}) {
     }).catch(() => {});
     throw new Error(`workflow permission denied: action=${decision.action} caller=${decision.caller.agentId || "<local>"} requiredCapability=${decision.requiredCapability} reason=${decision.reason}`);
   }
-  if (isWorkflowPolicyHardGateAction(action) && decision.actionable === false) {
+  const legacyDefaultFrozen = WORKFLOW_LEGACY_MUTATING_ACTIONS.has(action) && !workflowLegacyActionOverrideEnabled(input, action);
+  if (isWorkflowPolicyHardGateAction(action) && decision.actionable === false && !legacyDefaultFrozen) {
     await appendWorkflowEvent(paths, {
       eventType: "permission.policy_blocked",
       status: "denied",

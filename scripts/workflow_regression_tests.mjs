@@ -21,6 +21,7 @@ import {
   WORKFLOW_GENERIC_ORCHESTRATION_WRITE_ACTIONS,
   WORKFLOW_INTERNAL_LEGACY_COMPATIBILITY_TOKEN,
   WORKFLOW_LEGACY_COMPATIBILITY_RETIREMENT,
+  WORKFLOW_LEGACY_LIFECYCLE_ACTIONS,
   WORKFLOW_LEGACY_MEETING_DISCUSSION_ACTIONS,
   WORKFLOW_PERMISSION_KNOWN_ACTIONS,
   WORKFLOW_PERMISSION_READ_ACTIONS,
@@ -12907,7 +12908,7 @@ VALUES ('dispatch-intervention-execute', '${workflowId}', '${workflowId}', 'trac
   assert.equal(resume.nextStatus, "active");
 
   const gateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { readOnly: false, allowWrites: true });
-  const stop = await gateway.handle({
+  const gatewayStop = await gateway.handle({
     action: "workflow.stop",
     actor: "flashcat",
     reason: "stop token abc after final review",
@@ -12919,9 +12920,22 @@ VALUES ('dispatch-intervention-execute', '${workflowId}', '${workflowId}', 'trac
       rollbackBoundary: "artifact://checkpoint-intervention-execute"
     }
   });
-  assert.equal(stop.ok, true);
-  assert.equal(stop.dryRun, false);
-  assert.equal(stop.result.nextStatus, "stopped");
+  assert.equal(gatewayStop.ok, false);
+  assert.equal(gatewayStop.errorCode, "action_not_allowed");
+
+  const stop = await runAction(root, {
+    action: "workflow.stop",
+    workflowId,
+    traceId: "trace-intervention-stop",
+    humanGateId: "hg-intervention-execute",
+    protocolAuditId: "audit-intervention-execute",
+    actor: "flashcat",
+    operatorReason: "stop token abc after final review",
+    rollbackBoundary: "artifact://checkpoint-intervention-execute",
+    idempotencyKey: "idem-intervention-stop"
+  });
+  assert.equal(stop.status, "executed");
+  assert.equal(stop.nextStatus, "stopped");
   workflowRow = sqliteJson(dbFile, `SELECT status, current_decision AS currentDecision FROM workflow_runs WHERE workflow_id='${workflowId}' LIMIT 1;`)[0];
   assert.equal(workflowRow.status, "stopped");
   assert.equal(workflowRow.currentDecision, "stop_workflow_executed");
@@ -12937,19 +12951,17 @@ ORDER BY created_at ASC;`);
   assert.equal(eventRows.length, 3);
   assert.equal(eventRows.some((row) => row.payloadJson.includes("abc")), false);
   const operationRow = sqliteJson(dbFile, `
-SELECT action, status, dry_run AS dryRun, preview_result_json AS previewResultJson, result_json AS resultJson, reason
+SELECT action, status, error, reason
 FROM workflow_operations
 WHERE workflow_id='${workflowId}' AND action='workflow.stop'
 LIMIT 1;`)[0];
-  assert.equal(operationRow.status, "completed");
-  assert.equal(operationRow.dryRun, 0);
-  assert.equal(operationRow.previewResultJson, "{}");
-  assert.equal(operationRow.resultJson.includes("\"nextStatus\":\"stopped\""), true);
+  assert.equal(operationRow.status, "rejected");
+  assert.equal(operationRow.error.includes("action is not allowed by workflow console MVP: workflow.stop"), true);
   assert.equal(operationRow.reason.includes("abc"), false);
 
   const readOnlyGateway = new WorkflowActionGateway({ root, dbFile, bridgeDir }, { readOnly: true, allowWrites: true });
   const readOnlyStop = await readOnlyGateway.handle({
-    action: "workflow.stop",
+    action: "workflow.v2.stop",
     actor: "flashcat",
     reason: "read-only stop blocked",
     payload: { workflowId, humanGateId: "hg", protocolAuditId: "audit", rollbackBoundary: "artifact://checkpoint" }
@@ -14934,8 +14946,17 @@ async function testWorkflowConvergenceDefaultGates() {
     assert.equal(workflowActionMigrationInfo("meeting.create").replacement, "workflow.v2.plan.create + workflow.v2.task_group_package.record");
     assert.equal(workflowActionMigrationInfo("meeting.action_item").replacement, "workflow.v2.plan.create + workflow.v2.plan_nodes");
     assert.equal(workflowActionMigrationInfo("cat_claw.minutes").replacement, "workflow.v2.protocol_audit.record");
+    assert.equal(workflowActionMigrationInfo("workflow.pause").decisionClass, "compat_shell_only");
+    assert.equal(workflowActionMigrationInfo("workflow.pause").migrationStatus, "frozen_compatibility");
+    assert.equal(workflowActionMigrationInfo("workflow.pause").replacement, "workflow.v2.intervention_readiness.preview + workflow.v2.intervention_settlement.preview + workflow.v2.pause");
+    assert.equal(workflowActionMigrationInfo("workflow.resume").decisionClass, "compat_shell_only");
+    assert.equal(workflowActionMigrationInfo("workflow.resume").migrationStatus, "frozen_compatibility");
+    assert.equal(workflowActionMigrationInfo("workflow.stop").decisionClass, "compat_shell_only");
+    assert.equal(workflowActionMigrationInfo("workflow.stop").migrationStatus, "frozen_compatibility");
+    assert.equal(canonicalWorkflowAction("workflow.terminate"), "workflow.stop");
     let aliasBlocked = null;
-    for (const frozenAction of ["workflow.advance", "workflow.supervise", "workflow.supervisor", "workflow.evaluate"]) {
+    let terminateAliasBlocked = null;
+    for (const frozenAction of ["workflow.advance", "workflow.supervise", "workflow.supervisor", "workflow.evaluate", ...WORKFLOW_LEGACY_LIFECYCLE_ACTIONS]) {
       const blocked = await runAction(root, {
         action: frozenAction,
         workflowId: "wf-convergence-frozen-compatibility"
@@ -14945,9 +14966,12 @@ async function testWorkflowConvergenceDefaultGates() {
       assert.equal(blocked.reason, frozenAction === "workflow.evaluate" ? "legacy_evaluator_disabled" : "legacy_action_disabled");
       assert.equal(blocked.enableEnv, frozenAction === "workflow.evaluate" ? "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_EVALUATOR=1" : "TRADING_AGENTS_WORKFLOW_ENABLE_LEGACY_ACTIONS=1");
       if (frozenAction === "workflow.supervisor") aliasBlocked = blocked;
+      if (frozenAction === "workflow.terminate") terminateAliasBlocked = blocked;
     }
     assert.equal(aliasBlocked.action, "workflow.supervise");
     assert.equal(aliasBlocked.requestedAction, "workflow.supervisor");
+    assert.equal(terminateAliasBlocked.action, "workflow.stop");
+    assert.equal(terminateAliasBlocked.requestedAction, "workflow.terminate");
     for (const frozenMeetingAction of ["meeting.create", "meeting.append", "meeting.action_item", "meeting.minutes", "cat_claw.minutes"]) {
       const blocked = await runAction(root, {
         action: frozenMeetingAction,
@@ -14968,7 +14992,6 @@ async function testWorkflowConvergenceDefaultGates() {
     for (const retainedMeetingAction of ["meeting.validate", "meeting.runtime_participant", "meeting.dispatch", "meeting.ingest", "meeting.resume", "meeting.disperse", "meeting.show", "meeting.list"]) {
       assert.equal(toolEnumBody.includes(JSON.stringify(retainedMeetingAction)), true, `${retainedMeetingAction} should remain visible because it is read/archive or shared substrate`);
     }
-    assert.equal(workflowActionMigrationInfo("workflow.pause").decisionClass, "must_migrate");
     assert.equal(workflowActionMigrationInfo("workflow.swarm.plan"), null);
     assert.equal(workflowActionMigrationInfo("route_shell.ingest"), null);
     assert.equal(workflowActionMigrationInfo("route_shell.route"), null);
@@ -15040,17 +15063,17 @@ SELECT status, next_state, payload_json
 FROM workflow_events
 WHERE event_type='workflow.action_migration_telemetry'
 ORDER BY created_at;`);
-    assert.equal(telemetryRows.length, 4);
+    assert.equal(telemetryRows.length, 8);
     const telemetryPayloads = telemetryRows.map((row) => JSON.parse(row.payload_json));
-    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["workflow.advance", "workflow.evaluate", "workflow.supervise", "workflow.supervise"]);
+    assert.deepEqual(telemetryPayloads.map((row) => row.action).sort(), ["workflow.advance", "workflow.evaluate", "workflow.pause", "workflow.resume", "workflow.stop", "workflow.stop", "workflow.supervise", "workflow.supervise"]);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.task.launch.list"), false);
     const meetingMirrorTelemetry = telemetryPayloads.filter((row) => row.legacyCompatibilitySource === "meeting.action_item");
     assert.deepEqual(meetingMirrorTelemetry, []);
     assert.equal(telemetryPayloads.some((row) => row.action === "workflow.run.upsert"), false);
     assert.equal(telemetryRows.filter((row) => row.status === "legacy_active").length, 0);
     assert.equal(telemetryRows.filter((row) => row.status === "deprecated").length, 0);
-    assert.equal(telemetryRows.filter((row) => row.status === "frozen_compatibility").length, 4);
-    assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 3);
+    assert.equal(telemetryRows.filter((row) => row.status === "frozen_compatibility").length, 8);
+    assert.equal(telemetryRows.filter((row) => row.next_state === "compat_shell_only").length, 7);
     assert.equal(telemetryRows.filter((row) => row.next_state === "must_migrate").length, 1);
     assert.equal(telemetryRows.filter((row) => row.next_state === "archive_no_migration").length, 0);
     assert.equal(telemetryPayloads.every((row) => row.telemetryOnly === true), true);
@@ -22953,6 +22976,12 @@ async function testWorkflowV2PermissionAndConsoleGate() {
   assert.equal(WORKFLOW_PERMISSION_READ_ACTIONS.has("workflow.v2.evaluation_migration.preview"), true);
   assert.equal(WORKFLOW_ACTION_PERMISSION_RULES["workflow.v2.evaluation.record"]?.capability, "workflow.verify");
   assert.equal(WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS.has("workflow.v2.evaluation.record"), true);
+  for (const legacyLifecycleAction of ["workflow.pause", "workflow.resume", "workflow.stop"]) {
+    assert.equal(WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS.has(legacyLifecycleAction), false, `${legacyLifecycleAction} should not be exposed as a console write action`);
+  }
+  for (const v2LifecycleAction of ["workflow.v2.pause", "workflow.v2.resume", "workflow.v2.stop", "workflow.v2.terminate"]) {
+    assert.equal(WORKFLOW_CONSOLE_OPTIONAL_WRITE_ACTIONS.has(v2LifecycleAction), true, `${v2LifecycleAction} should be exposed as the console write action`);
+  }
   assert.equal(WORKFLOW_CONSOLE_READ_ONLY_ACTIONS.has("workflow.control_loop.lanes.preview"), true);
   assert.equal(WORKFLOW_CONSOLE_DEFAULT_ALLOWED_ACTIONS.has("dispatch.package.callsites.preview"), true);
   assert.equal(WORKFLOW_CONSOLE_READ_ONLY_ACTIONS.has("dispatch.package.callsites.preview"), true);
@@ -22977,7 +23006,14 @@ async function testWorkflowV2PermissionAndConsoleGate() {
   assert.equal(fullToolSchemaSource.includes('"workflow.advance"'), false);
   assert.equal(fullToolSchemaSource.includes('"workflow.supervise"'), false);
   assert.equal(fullToolSchemaSource.includes('"workflow.supervisor"'), false);
+  assert.equal(fullToolSchemaSource.includes('"workflow.pause"'), false);
+  assert.equal(fullToolSchemaSource.includes('"workflow.resume"'), false);
+  assert.equal(fullToolSchemaSource.includes('"workflow.stop"'), false);
   assert.equal(fullToolSchemaSource.includes('"workflow.advance.preview"'), true);
+  assert.equal(fullToolSchemaSource.includes('"workflow.v2.pause"'), true);
+  assert.equal(fullToolSchemaSource.includes('"workflow.v2.resume"'), true);
+  assert.equal(fullToolSchemaSource.includes('"workflow.v2.stop"'), true);
+  assert.equal(fullToolSchemaSource.includes('"workflow.v2.terminate"'), true);
   assert.equal(fullToolSchemaSource.includes('"workflow.supervise.preview"'), true);
   assert.equal(fullToolSchemaSource.includes('"workflow.supervisor.preview"'), true);
   assert.equal(workflowActionIndexSource.includes('"dispatch.package.callsites"'), true);
