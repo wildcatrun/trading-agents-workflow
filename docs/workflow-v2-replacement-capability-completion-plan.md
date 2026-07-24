@@ -72,7 +72,7 @@ Remaining replacement work is **4 capability families**:
 | Checkpoint and archive recovery | `workflow.checkpoint`, `workflow.context_checkpoint`, `context.checkpoint`, operator `workflow-checkpoint` | `frozen_writer_diagnostic / read_only_legacy_export / v2_shared_writers` | `workflow.supervisor.checkpoint`, `workflow.archive.checkpoint`, and `workflow.checkpoint.legacy_export` | P34 complete: legacy writer frozen; v2/shared writers and read-only export remain. |
 | Intervention and evaluation | `workflow.pause`, `workflow.resume`, `workflow.stop`, `workflow.terminate`, `workflow.evaluate`, `workflow.rerun.agent.preview`, `workflow.rerun.phase.preview` | `frozen_compatibility` for lifecycle/evaluator writers; rerun previews remain read-only compatibility | `workflow.v2.intervention_readiness.preview`, settlement evidence, gated `workflow.v2.pause/resume/stop/terminate`, `workflow.v2.evaluation_snapshot.preview`, `workflow.v2.evaluation.record`, and `workflow.v2.validate`; rerun previews remain read-only compatibility until mapped to v2 successor/handoff readiness | Keep legacy lifecycle/evaluator writers default blocked behind explicit escape hatches during the observation window. |
 | Scheduler and maintenance service | `workflow.schedule.*`, `workflow.scheduler.*`, `workflow.control_loop.tick`, `workflow.loop.tick`, `workflow.reconciler.tick`, `workflow.control_loop.job.*` | `shared_scheduler / shared_maintenance` with one legacy lane default-closed | Approved-plan schedule runner and shared maintenance service with lane ownership, receipts, requeue, and evidence | Do not freeze whole surface; split and retire only legacy lanes/aliases after service cutover. |
-| Generic runtime dispatch bridge | `runtime.bridge.drain`, `meeting.dispatch`, `meeting.ingest`, `meeting.resume`, `meeting.disperse`, `meeting.runtime_participant` | `shared_runtime_substrate / shared_adapter` | Generic dispatch package bridge that preserves `runtime_agents`, `message_flow`, idempotency, receipts, and adapter evidence | Do not freeze until replacement proves generic dispatch parity. |
+| Generic runtime dispatch bridge | `runtime.bridge.drain`, `meeting.dispatch`, `meeting.ingest`, `meeting.resume`, `meeting.disperse`, `meeting.runtime_participant` | `shared_runtime_substrate`; `meeting.dispatch` is `compatibility_writer_observation`; other meeting adapter names remain `shared_adapter` / `legacy_active` | Generic dispatch package bridge that preserves `runtime_agents`, `message_flow`, idempotency, receipts, and adapter evidence | Do not freeze until replacement proves generic dispatch parity and the `meeting.dispatch` compatibility observation window closes. |
 
 Secondary compatibility/read-only surfaces remain tracked but are not current
 kernel blockers:
@@ -901,6 +901,24 @@ blockers are now expressed as observation/removal requirements:
 
 This is a read-only metadata/contract correction only; no writer, runtime drain,
 Telegram, Gateway, or trading behavior changes in this batch.
+
+### P63 Progress
+
+P63 separates `meeting.dispatch` from the broader meeting/runtime adapter bucket.
+
+`meeting.dispatch` is now tracked as `compatibility_writer_observation` rather
+than `legacy_active`: `dispatch.package.create` is the canonical public create
+surface, but it still delegates to the registered compatibility writer and the
+shared `mixed_meeting_dispatches` ledger. The compatibility writer remains
+visible and callable until the observation/removal window proves there are no
+public compatibility callers.
+
+The 2026-07-24 dev-server live audit found no active queued/sent dispatch rows
+and no `workflow_operations` rows for `meeting.dispatch`,
+`dispatch.package.create`, or `workflow.dispatch.package.create`. This evidence
+supports metadata closeout only; it is not a freeze approval because runtime
+bridge, receipt, stale reconcile, message_flow linkage, and the canonical
+delegate path still depend on the shared dispatch ledger.
 
 ### P61 Progress
 

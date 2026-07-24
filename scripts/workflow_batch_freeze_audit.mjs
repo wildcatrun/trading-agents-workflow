@@ -171,11 +171,20 @@ const FREEZE_CANDIDATES = [
   },
   {
     batch: "C",
+    family: "meeting.dispatch compatibility writer",
+    actions: ["meeting.dispatch"],
+    currentStatus: "compatibility_writer_observation",
+    freezeAction: "do_not_freeze; canonical dispatch.package.create still delegates to the compatibility writer until the observation/removal window closes",
+    v2Replacement: "dispatch.package.preview + dispatch.package.create",
+    v2DependencyPolicy: "allowed_until_replaced"
+  },
+  {
+    batch: "C",
     family: "meeting/runtime adapter surfaces",
-    actions: ["meeting.dispatch", "meeting.ingest", "meeting.resume", "meeting.disperse", "meeting.runtime_participant"],
+    actions: ["meeting.ingest", "meeting.resume", "meeting.disperse", "meeting.runtime_participant"],
     currentStatus: "legacy_active/shared adapter",
     freezeAction: "do_not_freeze_without adapter parity audit",
-    v2Replacement: "shared runtime adapter or v2 package bridge",
+    v2Replacement: "shared runtime adapter evidence and archive/maintenance surfaces",
     v2DependencyPolicy: "allowed_until_replaced"
   },
   {
@@ -406,6 +415,7 @@ function auditPolicy(candidate, registryActions, registrySources) {
       candidate.currentStatus === "compat_shell_only"
       || candidate.currentStatus === "frozen_compatibility"
       || candidate.currentStatus.startsWith("legacy_active")
+      || candidate.currentStatus.includes("compatibility_writer")
       || candidate.currentStatus.includes("deprecated")
       || candidate.currentStatus === "shared_substrate"
       || candidate.currentStatus.includes("shared_")

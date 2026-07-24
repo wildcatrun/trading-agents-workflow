@@ -148,9 +148,15 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
   }],
   ["meeting.dispatch", {
     decisionClass: "must_migrate",
-    migrationStatus: "legacy_active",
+    migrationStatus: "compatibility_writer_observation",
     replacement: "dispatch.package.preview + dispatch.package.create",
-    recommendation: "use canonical generic dispatch package actions for new callers; keep meeting.dispatch as a compatibility shim during the observation window"
+    recommendation: "use canonical dispatch.package.create for new callers; keep meeting.dispatch as the registered compatibility writer until the observation/removal window closes"
+  }],
+  ["meeting.ingest", {
+    decisionClass: "must_migrate",
+    migrationStatus: "legacy_active",
+    replacement: "shared runtime receipt/evidence ingestion surfaces",
+    recommendation: "keep telemetry visible during adapter parity audit; do not freeze until receipt and runtime evidence ingestion replacement is explicit"
   }],
   ["meeting.create", {
     decisionClass: "compat_shell_only",

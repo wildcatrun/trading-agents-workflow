@@ -14999,6 +14999,14 @@ async function testWorkflowConvergenceDefaultGates() {
     for (const retainedMeetingAction of ["meeting.validate", "meeting.runtime_participant", "meeting.dispatch", "meeting.ingest", "meeting.resume", "meeting.disperse", "meeting.show", "meeting.list"]) {
       assert.equal(toolEnumBody.includes(JSON.stringify(retainedMeetingAction)), true, `${retainedMeetingAction} should remain visible because it is read/archive or shared substrate`);
     }
+    assert.equal(workflowActionMigrationInfo("meeting.dispatch").decisionClass, "must_migrate");
+    assert.equal(workflowActionMigrationInfo("meeting.dispatch").migrationStatus, "compatibility_writer_observation");
+    assert.equal(workflowActionMigrationInfo("meeting.dispatch").replacement, "dispatch.package.preview + dispatch.package.create");
+    assert.equal(workflowActionMigrationInfo("meeting.ingest").decisionClass, "must_migrate");
+    assert.equal(workflowActionMigrationInfo("meeting.ingest").migrationStatus, "legacy_active");
+    assert.equal(workflowActionMigrationInfo("meeting.resume").migrationStatus, "legacy_active");
+    assert.equal(workflowActionMigrationInfo("meeting.disperse").migrationStatus, "legacy_active");
+    assert.equal(workflowActionMigrationInfo("meeting.runtime_participant").migrationStatus, "legacy_active");
     assert.equal(workflowActionMigrationInfo("workflow.swarm.plan"), null);
     assert.equal(workflowActionMigrationInfo("route_shell.ingest"), null);
     assert.equal(workflowActionMigrationInfo("route_shell.route"), null);

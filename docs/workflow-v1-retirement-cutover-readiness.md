@@ -61,7 +61,8 @@ The remaining v1.0.0 cutover blockers are narrower:
 | `workflow.schedule.*` | `shared_scheduler_keep` | approved template / Human-Gate-approved v2 plan schedule binding | Keep; do not build a parallel v2 scheduler. Audit aliases only after usage evidence. |
 | `workflow.control_loop.*` | `shared_maintenance_keep` / `shared_repair_keep` | generic bounded maintenance plus v2 worker control-loop adjacency | Keep shared maintenance; only legacy lanes may be retired. |
 | `runtime.bridge.drain` | `shared_runtime_keep` | v2 adapter runner for worker jobs plus shared dispatch drain evidence | Keep until generic dispatch drain has equivalent service ownership and observation evidence. |
-| `meeting.dispatch`, `meeting.ingest`, `meeting.resume`, `meeting.disperse`, `meeting.runtime_participant` | shared adapter / legacy-active mix | dispatch package surfaces plus shared runtime adapter evidence | Do not freeze without adapter parity audit and call-site migration evidence. |
+| `meeting.dispatch` | `compatibility_writer_observation` | `dispatch.package.preview`, `dispatch.package.create` | Do not freeze yet; canonical create still delegates to the compatibility writer. Keep observing public compatibility use before the removal window. |
+| `meeting.ingest`, `meeting.resume`, `meeting.disperse`, `meeting.runtime_participant` | shared adapter / legacy-active mix | shared runtime adapter evidence plus archive/maintenance surfaces | Do not freeze without adapter parity audit and call-site migration evidence. |
 | `message_flow.*`, `human_gate.*`, `incident.*`, `side_effect.*`, `trade.*`, `runtime.agent.*`, `workflow.event.*`, `workflow.session_*` | shared substrate | shared control-plane infrastructure | Forbidden to freeze as v1 code. |
 | `research.*`, `instrument.*`, `radar.*`, `thesis.*`, `gate.review` | domain template later | future research/data workflow templates | Keep outside core v2 cutover until a concrete template plan requires migration. |
 
