@@ -1759,6 +1759,17 @@ CREATE INDEX IF NOT EXISTS idx_workflow_verification_workflow ON workflow_verifi
 CREATE INDEX IF NOT EXISTS idx_workflow_verification_phase ON workflow_verification_results(workflow_id, phase_key, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_verification_task ON workflow_verification_results(workflow_id, task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_verification_decision ON workflow_verification_results(workflow_id, decision, created_at DESC);
+DROP INDEX IF EXISTS idx_workflow_v2_evaluation_record_idempotency;
+CREATE TABLE IF NOT EXISTS workflow_v2_evaluation_record_idempotency (
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  idempotency_key TEXT NOT NULL,
+  verification_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(workflow_id, plan_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_evaluation_record_idem_verification ON workflow_v2_evaluation_record_idempotency(verification_id);
 CREATE TABLE IF NOT EXISTS workflow_session_packs (
   session_id TEXT PRIMARY KEY,
   version INTEGER NOT NULL DEFAULT 1,
@@ -2790,7 +2801,26 @@ CREATE INDEX IF NOT EXISTS idx_session_runs_dispatch ON workflow_session_runs(di
 CREATE INDEX IF NOT EXISTS idx_workflow_verification_workflow ON workflow_verification_results(workflow_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_verification_phase ON workflow_verification_results(workflow_id, phase_key, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workflow_verification_task ON workflow_verification_results(workflow_id, task_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_workflow_verification_decision ON workflow_verification_results(workflow_id, decision, created_at DESC);`, { json: false });
+CREATE INDEX IF NOT EXISTS idx_workflow_verification_decision ON workflow_verification_results(workflow_id, decision, created_at DESC);
+DROP INDEX IF EXISTS idx_workflow_v2_evaluation_record_idempotency;
+CREATE TABLE IF NOT EXISTS workflow_v2_evaluation_record_idempotency (
+  workflow_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '',
+  idempotency_key TEXT NOT NULL,
+  verification_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(workflow_id, plan_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_v2_evaluation_record_idem_verification ON workflow_v2_evaluation_record_idempotency(verification_id);`, { json: false });
+  await ensureColumns(dbFile, "workflow_v2_evaluation_record_idempotency", [
+    ["workflow_id", "TEXT NOT NULL DEFAULT ''"],
+    ["plan_id", "TEXT NOT NULL DEFAULT ''"],
+    ["idempotency_key", "TEXT NOT NULL DEFAULT ''"],
+    ["verification_id", "TEXT NOT NULL DEFAULT ''"],
+    ["payload_hash", "TEXT NOT NULL DEFAULT ''"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"]
+  ]);
   await ensureColumns(dbFile, "workflow_operations", [
     ["operation_id", "TEXT"],
     ["action", "TEXT NOT NULL DEFAULT ''"],

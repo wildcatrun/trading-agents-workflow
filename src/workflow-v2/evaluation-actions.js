@@ -4,8 +4,10 @@ import {
   redactSensitiveTextForPersistence
 } from "../workflow/json.js";
 import {
+  isSqliteConstraintError,
   sqlValue,
   sqlite,
+  sqliteTransaction,
   tableColumns
 } from "../workflow/sqlite.js";
 import {
@@ -308,6 +310,93 @@ function summarizeOperationRows(rows = []) {
   };
 }
 
+function v2EvaluationPayloadExpr(alias = "") {
+  const prefix = alias ? `${alias}.` : "";
+  return `CASE WHEN json_valid(${prefix}payload_json) THEN ${prefix}payload_json ELSE '{}' END`;
+}
+
+async function findV2EvaluationRecordByIdempotency(paths, workflowId, planId, idempotencyKey) {
+  if (!idempotencyKey) return null;
+  const payload = v2EvaluationPayloadExpr("v");
+  const rows = await sqlite(paths.dbFile, `
+SELECT verification_id, workflow_id, result_type, decision, phase_key, task_id, agent_run_id, payload_hash, created_at
+FROM workflow_verification_results v
+WHERE v.workflow_id=${sqlValue(workflowId)}
+  AND v.result_type='evaluator'
+  AND json_extract(${payload}, '$.operation')='workflow.v2.evaluation.record'
+  AND COALESCE(json_extract(${payload}, '$.snapshot.v2.planId'), '')=${sqlValue(planId || "")}
+  AND COALESCE(json_extract(${payload}, '$.idempotencyKey'), '')=${sqlValue(idempotencyKey)}
+ORDER BY v.created_at DESC
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function findV2EvaluationClaim(paths, workflowId, planId, idempotencyKey) {
+  if (!idempotencyKey) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT workflow_id, plan_id, idempotency_key, verification_id, payload_hash, created_at
+FROM workflow_v2_evaluation_record_idempotency
+WHERE workflow_id=${sqlValue(workflowId)}
+  AND plan_id=${sqlValue(planId || "")}
+  AND idempotency_key=${sqlValue(idempotencyKey)}
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+async function findV2EvaluationRecordByVerificationId(paths, verificationId) {
+  if (!verificationId) return null;
+  const rows = await sqlite(paths.dbFile, `
+SELECT verification_id, workflow_id, result_type, decision, phase_key, task_id, agent_run_id, payload_hash, created_at
+FROM workflow_verification_results
+WHERE verification_id=${sqlValue(verificationId)}
+LIMIT 1;`, { json: true });
+  return rows[0] || null;
+}
+
+function v2EvaluationClaimHash(input = {}) {
+  return jsonHash({
+    operation: "workflow.v2.evaluation.record",
+    workflowId: input.workflowId || "",
+    planId: input.planId || "",
+    idempotencyKey: input.idempotencyKey || "",
+    phaseId: firstText(input.phaseId, input.phase_id),
+    phaseKey: input.phaseKey || "",
+    taskId: firstText(input.taskId, input.task_id),
+    agentRunId: firstText(input.agentRunId, input.agent_run_id),
+    dispatchId: firstText(input.dispatchId, input.dispatch_id),
+    runtimeRunId: firstText(input.runtimeRunId, input.runtime_run_id),
+    sourceAgent: input.sourceAgent || "",
+    sourceRuntime: input.sourceRuntime || "",
+    confidence: input.confidence || "",
+    riskBand: input.riskBand || "",
+    summary: input.summary || "",
+    findings: input.findings || [],
+    recommendations: input.recommendations || [],
+    evidenceRefs: input.evidenceRefs || [],
+    artifactRefs: input.artifactRefs || [],
+    receiptRefs: input.receiptRefs || [],
+    explicitDecision: firstText(input.explicitDecision),
+    explicitGeneratedAt: input.explicitGeneratedAt || ""
+  });
+}
+
+function replayedEvaluationRecord(row, snapshotResult, planId, payloadHash, paths) {
+  return {
+    operation: "workflow.v2.evaluation.record",
+    schemaVersion: "workflow_v2_evaluation_record_result.v1",
+    status: "replayed",
+    replayed: true,
+    verificationId: row.verification_id,
+    workflowId: row.workflow_id,
+    planId: snapshotResult.snapshot?.v2?.planId || planId,
+    resultType: row.result_type || "evaluator",
+    decision: row.decision,
+    payloadHash,
+    createdAt: row.created_at || "",
+    dbFile: paths.dbFile
+  };
+}
+
 export function createWorkflowV2EvaluationActionHandlers(context = {}) {
   const ensureWorkflowLayout = requireContextFunction(context, "ensureWorkflowLayout");
   const nowIso = requireContextFunction(context, "nowIso");
@@ -577,13 +666,78 @@ WHERE status IN ('active','mitigating','monitoring')
     const payloadHash = jsonHash(payload);
     const createdAt = firstText(input.createdAt, input.created_at, generatedAt);
     const phaseKey = firstText(input.phaseKey, input.phase_key, input.phase, snapshotResult.snapshot?.v2?.planId, planId);
-    const insertChanges = await sqlite(paths.dbFile, `
-BEGIN IMMEDIATE;
-INSERT OR IGNORE INTO workflow_verification_results(verification_id, workflow_id, phase_id, phase_key, task_id, agent_run_id, dispatch_id, runtime_run_id, result_type, decision, verifier_agent, refuter_agent, source_runtime, source_agent, confidence, risk_band, summary, findings_json, recommendations_json, evidence_refs_json, artifact_refs_json, receipt_refs_json, payload_hash, payload_json, created_by, created_at)
+    const effectivePlanId = snapshotResult.snapshot?.v2?.planId || planId;
+    const claimHash = v2EvaluationClaimHash({
+      workflowId,
+      planId: effectivePlanId,
+      idempotencyKey,
+      phaseId: firstText(input.phaseId, input.phase_id),
+      phaseKey,
+      taskId: firstText(input.taskId, input.task_id),
+      agentRunId: firstText(input.agentRunId, input.agent_run_id),
+      dispatchId: firstText(input.dispatchId, input.dispatch_id),
+      runtimeRunId: firstText(input.runtimeRunId, input.runtime_run_id),
+      sourceAgent: firstText(input.sourceAgent, input.source_agent, input.evaluatorAgent, input.evaluator_agent),
+      sourceRuntime: firstText(input.sourceRuntime, input.source_runtime, input.runtime),
+      confidence: firstText(input.confidence),
+      riskBand: firstText(input.riskBand, input.risk_band),
+      summary: firstText(input.summary),
+      findings: Array.isArray(input.findings) ? input.findings : [],
+      recommendations: Array.isArray(input.recommendations) ? input.recommendations : [],
+      evidenceRefs: Array.isArray(input.evidenceRefs || input.evidence_refs) ? (input.evidenceRefs || input.evidence_refs) : [],
+      artifactRefs: Array.isArray(input.artifactRefs || input.artifact_refs) ? (input.artifactRefs || input.artifact_refs) : [],
+      receiptRefs: Array.isArray(input.receiptRefs || input.receipt_refs) ? (input.receiptRefs || input.receipt_refs) : [],
+      explicitDecision: firstText(input.decision),
+      explicitGeneratedAt: firstText(input.generatedAt, input.generated_at, input.now)
+    });
+    const existingClaim = await findV2EvaluationClaim(paths, workflowId, effectivePlanId, idempotencyKey);
+    if (existingClaim) {
+      if (existingClaim.payload_hash !== claimHash) {
+        throw new Error(`workflow v2 evaluation record idempotency conflict: ${idempotencyKey}`);
+      }
+      const row = await findV2EvaluationRecordByVerificationId(paths, existingClaim.verification_id);
+      if (!row) throw new Error(`workflow v2 evaluation record idempotency claim target missing: ${existingClaim.verification_id}`);
+      return replayedEvaluationRecord(row, snapshotResult, planId, row.payload_hash || payloadHash, paths);
+    }
+    const existingByKey = await findV2EvaluationRecordByIdempotency(paths, workflowId, effectivePlanId, idempotencyKey);
+    if (existingByKey) {
+      if (firstText(input.generatedAt, input.generated_at, input.now) && existingByKey.payload_hash !== payloadHash) {
+        throw new Error(`workflow v2 evaluation record idempotency conflict: ${idempotencyKey}`);
+      }
+      return replayedEvaluationRecord(existingByKey, snapshotResult, planId, existingByKey.payload_hash || payloadHash, paths);
+    }
+    const existingById = await findV2EvaluationRecordByVerificationId(paths, verificationId);
+    if (existingById) {
+      if (existingById.payload_hash !== payloadHash) {
+        throw new Error(`workflow v2 evaluation record idempotency conflict: ${verificationId}`);
+      }
+      return replayedEvaluationRecord(existingById, snapshotResult, planId, payloadHash, paths);
+    }
+    try {
+      await sqliteTransaction(paths.dbFile, `
+${idempotencyKey ? `INSERT INTO workflow_v2_evaluation_record_idempotency(workflow_id, plan_id, idempotency_key, verification_id, payload_hash, created_at)
+VALUES (${sqlValue(workflowId)}, ${sqlValue(effectivePlanId)}, ${sqlValue(idempotencyKey)}, ${sqlValue(verificationId)}, ${sqlValue(claimHash)}, ${sqlValue(createdAt)});` : ""}
+INSERT INTO workflow_verification_results(verification_id, workflow_id, phase_id, phase_key, task_id, agent_run_id, dispatch_id, runtime_run_id, result_type, decision, verifier_agent, refuter_agent, source_runtime, source_agent, confidence, risk_band, summary, findings_json, recommendations_json, evidence_refs_json, artifact_refs_json, receipt_refs_json, payload_hash, payload_json, created_by, created_at)
 VALUES (${sqlValue(verificationId)}, ${sqlValue(workflowId)}, ${sqlValue(firstText(input.phaseId, input.phase_id))}, ${sqlValue(phaseKey)}, ${sqlValue(firstText(input.taskId, input.task_id))}, ${sqlValue(firstText(input.agentRunId, input.agent_run_id))}, ${sqlValue(firstText(input.dispatchId, input.dispatch_id))}, ${sqlValue(firstText(input.runtimeRunId, input.runtime_run_id))}, 'evaluator', ${sqlValue(decision)}, '', '', ${sqlValue(sourceRuntime)}, ${sqlValue(sourceAgent)}, ${sqlValue(confidence)}, ${sqlValue(riskBand)}, ${sqlValue(summary)}, ${sqlValue(JSON.stringify(findings))}, ${sqlValue(JSON.stringify(recommendations))}, ${sqlValue(JSON.stringify(evidenceRefs))}, ${sqlValue(JSON.stringify(artifactRefs))}, ${sqlValue(JSON.stringify(receiptRefs))}, ${sqlValue(payloadHash)}, ${sqlValue(JSON.stringify(payload))}, ${sqlValue(callerAgent || firstText(input.createdBy, input.created_by, input.actor, sourceAgent, "unknown"))}, ${sqlValue(createdAt)});
-SELECT changes() AS changes;
-COMMIT;`, { json: true });
-    const inserted = Number(insertChanges[0]?.changes || 0) > 0;
+`);
+    } catch (error) {
+      if (idempotencyKey && isSqliteConstraintError(error)) {
+        const claim = await findV2EvaluationClaim(paths, workflowId, effectivePlanId, idempotencyKey);
+        if (claim && claim.payload_hash === claimHash) {
+          const row = await findV2EvaluationRecordByVerificationId(paths, claim.verification_id);
+          if (row) return replayedEvaluationRecord(row, snapshotResult, planId, row.payload_hash || payloadHash, paths);
+        }
+        throw new Error(`workflow v2 evaluation record idempotency conflict: ${idempotencyKey}`);
+      }
+      if (isSqliteConstraintError(error)) {
+        const row = await findV2EvaluationRecordByVerificationId(paths, verificationId);
+        if (row && row.payload_hash === payloadHash) {
+          return replayedEvaluationRecord(row, snapshotResult, planId, payloadHash, paths);
+        }
+        throw new Error(`workflow v2 evaluation record idempotency conflict: ${verificationId}`);
+      }
+      throw error;
+    }
     const persisted = await sqlite(paths.dbFile, `
 SELECT verification_id, workflow_id, result_type, decision, phase_key, task_id, agent_run_id, payload_hash, created_at
 FROM workflow_verification_results
@@ -592,22 +746,6 @@ LIMIT 1;`, { json: true });
     if (!persisted[0]) throw new Error(`workflow v2 evaluation record failed to persist: ${verificationId}`);
     if (persisted[0].payload_hash !== payloadHash) {
       throw new Error(`workflow v2 evaluation record idempotency conflict: ${verificationId}`);
-    }
-    if (!inserted) {
-      return {
-        operation: "workflow.v2.evaluation.record",
-        schemaVersion: "workflow_v2_evaluation_record_result.v1",
-        status: "replayed",
-        replayed: true,
-        verificationId: persisted[0].verification_id || verificationId,
-        workflowId: persisted[0].workflow_id || workflowId,
-        planId: snapshotResult.snapshot?.v2?.planId || planId,
-        resultType: persisted[0].result_type || "evaluator",
-        decision: persisted[0].decision || decision,
-        payloadHash,
-        createdAt: persisted[0].created_at || "",
-        dbFile: paths.dbFile
-      };
     }
     return {
       operation: "workflow.v2.evaluation.record",

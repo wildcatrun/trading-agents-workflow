@@ -13935,7 +13935,16 @@ VALUES ('runtime-v2-evaluation-record-met', 'dispatch-v2-evaluation-record-met',
   const replay = await runAction(root, metInput);
   assert.equal(replay.status, "replayed");
   assert.equal(replay.replayed, true);
+  assert.equal(replay.verificationId, "evaluation-v2-record-met");
   assert.equal(replay.payloadHash, met.payloadHash);
+  assert.equal(sqliteCount(dbFile, "workflow_verification_results"), rowsAfterMet);
+  const replayWithDifferentVerificationId = await runAction(root, {
+    ...metInput,
+    verificationId: "evaluation-v2-record-met-different-id"
+  });
+  assert.equal(replayWithDifferentVerificationId.status, "replayed");
+  assert.equal(replayWithDifferentVerificationId.verificationId, "evaluation-v2-record-met");
+  assert.equal(replayWithDifferentVerificationId.payloadHash, met.payloadHash);
   assert.equal(sqliteCount(dbFile, "workflow_verification_results"), rowsAfterMet);
   await assertRejectsMessage(
     () => runAction(root, { ...metInput, generatedAt: "2026-07-06T00:11:04.000Z" }),
@@ -13955,6 +13964,60 @@ VALUES ('runtime-v2-evaluation-record-met', 'dispatch-v2-evaluation-record-met',
   assert.deepEqual(concurrentResults.map((result) => result.status).sort(), ["recorded", "replayed"]);
   assert.equal(new Set(concurrentResults.map((result) => result.payloadHash)).size, 1);
   assert.equal(sqliteCount(dbFile, "workflow_verification_results"), rowsBeforeConcurrent + 1);
+  const concurrentDifferentIds = [
+    {
+      ...metInput,
+      verificationId: "evaluation-v2-record-concurrent-different-id-a",
+      idempotencyKey: "met-concurrent-different-id-replay",
+      generatedAt: "2026-07-06T00:11:04.600Z"
+    },
+    {
+      ...metInput,
+      verificationId: "evaluation-v2-record-concurrent-different-id-b",
+      idempotencyKey: "met-concurrent-different-id-replay",
+      generatedAt: "2026-07-06T00:11:04.600Z"
+    }
+  ];
+  const rowsBeforeConcurrentDifferentIds = sqliteCount(dbFile, "workflow_verification_results");
+  const concurrentDifferentIdResults = await Promise.all(concurrentDifferentIds.map((item) => runAction(root, item)));
+  assert.deepEqual(concurrentDifferentIdResults.map((result) => result.status).sort(), ["recorded", "replayed"]);
+  assert.equal(new Set(concurrentDifferentIdResults.map((result) => result.verificationId)).size, 1);
+  assert.equal(sqliteCount(dbFile, "workflow_verification_results"), rowsBeforeConcurrentDifferentIds + 1);
+  const noGeneratedAtInput = {
+    action: "workflow.v2.evaluation.record",
+    workflowId,
+    planId: "plan-v2-kernel",
+    callerAgent: "local_codex",
+    callerRuntime: "local_codex",
+    evaluatorAgent: "main",
+    idempotencyKey: "met-no-generated-at-replay"
+  };
+  const noGeneratedAt = await runAction(root, noGeneratedAtInput);
+  assert.equal(noGeneratedAt.status, "recorded");
+  const rowsAfterNoGeneratedAt = sqliteCount(dbFile, "workflow_verification_results");
+  const noGeneratedAtReplay = await runAction(root, noGeneratedAtInput);
+  assert.equal(noGeneratedAtReplay.status, "replayed");
+  assert.equal(noGeneratedAtReplay.verificationId, noGeneratedAt.verificationId);
+  assert.equal(noGeneratedAtReplay.payloadHash, noGeneratedAt.payloadHash);
+  assert.equal(sqliteCount(dbFile, "workflow_verification_results"), rowsAfterNoGeneratedAt);
+  const phaseScopedInput = {
+    ...metInput,
+    verificationId: "evaluation-v2-record-phase-scoped",
+    idempotencyKey: "met-phase-scoped-replay",
+    phaseKey: "verify",
+    generatedAt: "2026-07-06T00:11:04.700Z"
+  };
+  const phaseScoped = await runAction(root, phaseScopedInput);
+  assert.equal(phaseScoped.status, "recorded");
+  const rowsAfterPhaseScoped = sqliteCount(dbFile, "workflow_verification_results");
+  const phaseScopedReplay = await runAction(root, {
+    ...phaseScopedInput,
+    verificationId: "evaluation-v2-record-phase-scoped-different-id"
+  });
+  assert.equal(phaseScopedReplay.status, "replayed");
+  assert.equal(phaseScopedReplay.verificationId, "evaluation-v2-record-phase-scoped");
+  assert.equal(phaseScopedReplay.payloadHash, phaseScoped.payloadHash);
+  assert.equal(sqliteCount(dbFile, "workflow_verification_results"), rowsAfterPhaseScoped);
 
   sqliteExec(dbFile, `
 INSERT INTO mixed_meeting_dispatches(dispatch_id, meeting_id, workflow_id, trace_id, idempotency_key, runtime, agent_id, agent_key, dispatch_type, status, priority, attempt, max_attempts, next_retry_at, failure_type, last_error, prompt, payload_json, created_by, created_at, sent_at, acked_at, completed_at, updated_at)
@@ -13985,6 +14048,18 @@ VALUES ('incident-v2-evaluation-record', 'active', 'incident', '["workflow"]', '
   assert.equal(blocked.decision, "blocked");
   assert.equal(blocked.blockerCodes.includes("active_incident"), true);
   assert.equal(JSON.stringify(blocked).includes("record-incident-secret"), false);
+
+  const dirtyRoot = await tempRoot("workflow-v2-evaluation-record-dirty-history");
+  await workflowStatus(dirtyRoot, {});
+  const dirtyDbFile = path.join(dirtyRoot, "tracking.db");
+  sqliteExec(dirtyDbFile, `
+INSERT INTO workflow_verification_results(verification_id, workflow_id, phase_id, phase_key, task_id, agent_run_id, dispatch_id, runtime_run_id, result_type, decision, verifier_agent, refuter_agent, source_runtime, source_agent, confidence, risk_band, summary, findings_json, recommendations_json, evidence_refs_json, artifact_refs_json, receipt_refs_json, payload_hash, payload_json, created_by, created_at)
+VALUES
+  ('dirty-v2-evaluation-a', 'wf-dirty-evaluator', '', 'plan-dirty', '', '', '', '', 'evaluator', 'met', '', '', 'local_codex', 'main', 'medium', 'medium', 'dirty duplicate A', '[]', '[]', '[]', '[]', '[]', 'hash-dirty-a', '{"operation":"workflow.v2.evaluation.record","idempotencyKey":"dirty-key","snapshot":{"v2":{"planId":"plan-dirty"}}}', 'main', '2026-07-06T00:12:00.000Z'),
+  ('dirty-v2-evaluation-b', 'wf-dirty-evaluator', '', 'plan-dirty', '', '', '', '', 'evaluator', 'met', '', '', 'local_codex', 'main', 'medium', 'medium', 'dirty duplicate B', '[]', '[]', '[]', '[]', '[]', 'hash-dirty-b', '{"operation":"workflow.v2.evaluation.record","idempotencyKey":"dirty-key","snapshot":{"v2":{"planId":"plan-dirty"}}}', 'main', '2026-07-06T00:12:01.000Z');`);
+  const dirtyStatus = await workflowStatus(dirtyRoot, {});
+  assert.equal(dirtyStatus.schemaVersion >= 16, true);
+  assert.equal(sqliteCount(dirtyDbFile, "workflow_verification_results", "workflow_id='wf-dirty-evaluator'"), 2);
 }
 
 async function testWorkflowV2EvaluationCompatibilityPreview() {
