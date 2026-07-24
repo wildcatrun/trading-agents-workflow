@@ -413,6 +413,10 @@ function auditPolicy(candidate, registryActions, registrySources) {
       if (!registered && !aliasTarget) failures.push(`${action}: active/shared/compat action is not registered and is not an alias`);
     }
 
+    if (candidate.currentStatus === "compat_shell_only" && migration?.migrationStatus === "legacy_active") {
+      failures.push(`${action}: compat shell must not retain legacy_active migration metadata`);
+    }
+
     if (candidate.freezeAction === "forbidden_to_freeze_as_v1") {
       if (candidate.currentStatus !== "shared_substrate") failures.push(`${action}: forbidden batch entry must remain shared_substrate`);
       if (!registered && !aliasTarget) failures.push(`${action}: shared substrate registry entry missing`);

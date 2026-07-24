@@ -76,20 +76,27 @@ const WORKFLOW_ACTION_MIGRATION_EXACT = new Map([
   }],
   ["workflow.task.draft", {
     decisionClass: "compat_shell_only",
-    migrationStatus: "legacy_active",
+    migrationStatus: "compat_preview_only",
     replacement: "workflow.v2.plan.preview",
-    recommendation: "use v2 plan preview/create or template instantiate for new authoring"
+    recommendation: "use only as a legacy authoring preview shell; use workflow.v2.plan.preview/create or template instantiate for new authoring"
   }],
   ["workflow.task.list", {
     decisionClass: "compat_shell_only",
-    migrationStatus: "legacy_active",
-    recommendation: "keep for legacy history/read compatibility"
+    migrationStatus: "legacy_read_only_archive",
+    replacement: "workflow.v2 plan/package read models and explicit archive reads",
+    recommendation: "use only for legacy workflow_tasks history lookup; do not use as a new v2 planning read model"
   }],
   ["workflow.tasks", {
     decisionClass: "compat_shell_only",
-    migrationStatus: "legacy_active",
+    migrationStatus: "legacy_read_only_alias",
     replacement: "workflow.task.list",
-    recommendation: "canonicalize legacy task list reads before retirement"
+    recommendation: "canonicalize to workflow.task.list for legacy history lookup only"
+  }],
+  ["workflow.task.launch.list", {
+    decisionClass: "compat_shell_only",
+    migrationStatus: "legacy_read_only_archive",
+    replacement: "workflow.v2.human_gate_package.preview + workflow.v2.plan.preview",
+    recommendation: "use only to inspect archived v1 launch packages; use v2 Human Gate package and plan previews for new admission"
   }],
   ["workflow.advance", {
     decisionClass: "compat_shell_only",

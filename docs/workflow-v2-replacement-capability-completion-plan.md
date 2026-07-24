@@ -77,8 +77,10 @@ Remaining replacement work is **4 capability families**:
 Secondary compatibility/read-only surfaces remain tracked but are not current
 kernel blockers:
 
-- `workflow.task.list`, `workflow.tasks`, and `workflow.task.launch.list` need a
-  v2-first read model before final archive, but they do not execute new work.
+- `workflow.task.draft`, `workflow.task.list`, `workflow.tasks`, and
+  `workflow.task.launch.list` are explicit compatibility preview/archive
+  shells. They do not execute new work and are not kernel blockers; final
+  removal still needs archive/read-model observation evidence.
 - `research.*`, `instrument.*`, `radar.*`, `thesis.*`, and `gate.review` belong
   to a future research/data workflow-template plan, not the current kernel
   cutover.
